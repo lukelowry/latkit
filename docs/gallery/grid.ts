@@ -32,8 +32,8 @@ export function states(outline = '#26364a'): Mark[] {
   ];
 }
 
-export default function grid(): Piece {
-  const c = readCase('activsg70k');
+export default async function grid(): Promise<Piece> {
+  const c = await readCase('activsg70k');
   return {
     name: 'grid',
     alt: 'Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage',

@@ -9,7 +9,7 @@
  * every view is complete, and no tile is loading. Work in progress that wakes no frame is awaited
  * until it finishes. A steady phase acts before each of a set number of frames, so each action
  * shows in its own frame, and its CPU and GPU times are per frame. A lost device fails the phase at
- * once, and every wait races a deadline.
+ * once, and every wait has a deadline that cancels the work it waits on.
  */
 import {
   Data,
@@ -21,6 +21,7 @@ import {
   type View,
   type Work,
 } from 'latkit';
+import { quantile } from '../../npm/examples/gate/quantile.ts';
 
 /** Writes a dataset's rows into a patch, from arrays made beforehand. */
 export type Write = (patch: Patch) => Patch;
@@ -58,18 +59,6 @@ const DEADLINE = 30_000;
 export const LIMIT = 10_000;
 /** Frames a steady phase runs before it starts measuring. */
 export const WARM = 10;
-
-const quantile = (xs: number[], q: number) =>
-  xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(q * (xs.length - 1))]! : 0;
-
-/** Races `work` against a timer that rejects after `ms` with an error naming `what`. */
-export function deadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} took over ${ms} ms`)), ms);
-  });
-  return Promise.race([work, late]).finally(() => clearTimeout(timer));
-}
 
 /** The frames a phase drew, and the CPU and GPU times of those measured. */
 interface Drawn {
@@ -216,7 +205,15 @@ export class Stage {
       if (this.views.some((v) => v.wantsFrame)) {
         await this.#frame(drawn, measuring);
         frames++;
-      } else await Promise.race([coming, this.gpu.landed().catch(() => {})]);
+      } else {
+        // Waits for the answer or for work to land, then stops waiting for work, so no wait is left
+        // pending.
+        const answered = new AbortController();
+        const timeout = AbortSignal.timeout(Math.max(0, late - performance.now()));
+        const landed = this.gpu.landed({ signal: AbortSignal.any([answered.signal, timeout]) });
+        await Promise.race([coming, landed.catch(() => {})]);
+        answered.abort();
+      }
     }
     return answer;
   }
@@ -271,7 +268,7 @@ export class Stage {
     if (this.gpu.lost) throw new Error('the GPU device was lost');
     const before = this.views.map((v) => v.stats.frames);
     this.gpu.step((this.#now += FRAME));
-    await deadline(this.gpu.done(), DEADLINE, 'a frame');
+    await this.gpu.done({ signal: AbortSignal.timeout(DEADLINE) });
     let [drew, cpu, gpu] = [false, 0, 0];
     this.views.forEach((view, i) => {
       const stats = view.stats;
@@ -290,7 +287,7 @@ export class Stage {
    * tile is loading. Work in progress that wakes no frame, such as a layout or a fetch, is awaited
    * until it finishes. `measuring` is true for a once phase, whose every frame is measured. */
   async #settle(drawn: Drawn, measuring: boolean): Promise<void> {
-    await deadline(this.gpu.done(), DEADLINE, 'the GPU');
+    await this.gpu.done({ signal: AbortSignal.timeout(DEADLINE) });
     for (let frames = 0; frames < MOST;) {
       if (this.gpu.lost) throw new Error('the GPU device was lost');
       if (this.views.some((v) => v.wantsFrame)) {
@@ -299,7 +296,10 @@ export class Stage {
         continue;
       }
       if (this.views.every((v) => v.complete && !v.stats.tilesLoading)) return;
-      await deadline(this.gpu.landed(), DEADLINE, `waiting on ${this.#waiting()}`);
+      await this.gpu.landed({ signal: AbortSignal.timeout(DEADLINE) }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`waiting on ${this.#waiting() || 'nothing'}: ${message}`);
+      });
     }
     throw new Error(
       `still drawing after ${MOST} frames: waiting on ${this.#waiting() || 'nothing'}`,

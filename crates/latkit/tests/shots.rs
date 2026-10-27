@@ -9,7 +9,9 @@ mod common;
 use std::time::Duration;
 
 use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane, step};
-use latkit::{Color, Data, Ids, Image, Scene, Shot, Table, Theme, Vertices, View};
+use latkit::{
+    Areas, Color, Data, Edges, Faces, Fit, Ids, Image, Label, Lines, Patch, Scene, Shot, Table, Theme, Vertices, View,
+};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
@@ -62,6 +64,37 @@ fn pictures_compile_only_the_pipelines_they_draw_with() {
     // pipeline it creates was requested up front.
     assert_eq!(gpu.work().pipelines, made, "another picture compiles no pipeline");
     assert_eq!(gpu.work().late, 0, "no pipeline compiles at first use");
+}
+
+#[test]
+fn every_kind_of_mark_draws_with_the_pipelines_it_requested() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    let square = vec![vec![[-60.0, -60.0], [-40.0, -60.0], [-40.0, -40.0], [-60.0, -40.0], [-60.0, -60.0]]];
+    let nodes = Table::new("Node", vec![1_u64, 2, 3])
+        .field("x", vec![-20.0, 20.0, 0.0])
+        .field("y", vec![0.0, 0.0, 20.0])
+        .field("name", vec!["a", "b", "c"]);
+    let link =
+        Table::new("Link", vec![1_u64]).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![2_u64]);
+    let face = Table::new("Face", vec![1_u64])
+        .reference("a", "Node", vec![1_u64])
+        .reference("b", "Node", vec![2_u64])
+        .reference("c", "Node", vec![3_u64]);
+    let zone = Table::new("Zone", vec![1_u64]).field("geometry", vec![square]);
+    data.apply(Patch::new().set(nodes).set(link).set(face).set(zone)).expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Areas::of("graph", "Zone"))
+        .draw(Lines::of("graph", "Zone"))
+        .draw(Faces::of("graph", "Face").corners("a", "b", "c"))
+        .draw(Edges::of("graph", "Link").ends("from", "to"))
+        .draw(Vertices::of("graph", "Node").position("x", "y").label(Label::new("name")));
+    let mut view = view(&gpu, scene, &data);
+    // A fit measures every mark that frames it.
+    view.fit(Fit::All);
+    pollster::block_on(Shot::new([SIZE, SIZE]).image(&mut [&mut view])).expect("a picture");
+    assert_eq!(gpu.work().late, 0, "every pipeline drawn with was requested, by the same name");
 }
 
 #[test]

@@ -100,9 +100,9 @@ impl Timer {
 
 /// Milliseconds between the two timestamps of `bytes`, ticks `period` nanoseconds long.
 fn elapsed_ms(bytes: &[u8], period: f64) -> Option<f32> {
-    let tick = |i: usize| Some(u64::from_le_bytes(bytes.get(i * 8..i * 8 + 8)?.try_into().ok()?));
-    let ticks = tick(1)?.checked_sub(tick(0)?)?;
-    Some((ticks as f64 * period / 1e6) as f32)
+    let mut ticks = crate::wire::In::new(bytes);
+    let (start, end) = (ticks.u64()?, ticks.u64()?);
+    Some((end.checked_sub(start)? as f64 * period / 1e6) as f32)
 }
 
 /// Records an empty pass that writes timestamp `beginning` at its start, or `end` at its end.

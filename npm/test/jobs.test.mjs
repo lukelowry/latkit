@@ -3,11 +3,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const { jobs } = await import(
-  process.env.LATKIT_TEST_PACKAGE
-    ? pathToFileURL(path.join(process.env.LATKIT_TEST_PACKAGE, 'dist/jobs.js')).href
-    : new URL('../src/jobs.ts', import.meta.url).href
-);
+const directory = process.env.LATKIT_TEST_PACKAGE ?? path.resolve(import.meta.dirname, '..');
+const { jobs } = await import(pathToFileURL(path.join(directory, 'dist/jobs.js')).href);
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 

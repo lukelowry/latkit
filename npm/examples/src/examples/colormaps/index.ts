@@ -8,6 +8,7 @@ import {
   Data,
   Patch,
   colormapCss,
+  colormaps,
   field,
   type Colormap,
   type ColormapName,
@@ -71,60 +72,19 @@ type Show = 'all' | 'inside' | 'outside' | 'not' | 'class' | 'others';
 /** A checkerboard behind each ramp, so a colormap's transparent parts are visible. */
 const CHECKS = 'repeating-conic-gradient(#888 0 25%, #ccc 0 50%) 0 0 / 8px 8px';
 
-/** Every catalog colormap grouped by kind, then the custom ones. */
-const CATALOG: readonly (readonly [string, readonly Choice[]])[] = [
-  [
-    'Sequential',
-    [
-      'viridis',
-      'cividis',
-      'plasma',
-      'inferno',
-      'magma',
-      'mako',
-      'rocket',
-      'crest',
-      'flare',
-      'amber',
-      'amp',
-      'batlow',
-      'deep',
-      'devon',
-      'grays',
-      'haline',
-      'lajolla',
-      'oslo',
-      'thermal',
-      'turku',
-      'turbo',
-    ],
-  ],
-  [
-    'Diverging',
-    [
-      'balance',
-      'berlin',
-      'brbg',
-      'broc',
-      'coolwarm',
-      'cork',
-      'icefire',
-      'managua',
-      'piyg',
-      'puor',
-      'rdbu',
-      'spectral',
-      'vanimo',
-      'vik',
-      'vlag',
-    ],
-  ],
-  ['Cyclic', ['phase', 'romao', 'twilight']],
-  ['Categorical', ['tab10', 'tab20', 'tableau10', 'set2', 'dark2', 'paired', 'okabeito']],
-  ['Custom', ['custom', 'diverging', 'cyclic']],
-];
-const CATEGORICAL = new Set<Choice>(CATALOG.find(([kind]) => kind === 'Categorical')![1]);
-const KINDS = ['All', ...CATALOG.map(([kind]) => kind)] as const;
+/** The catalog's colormaps grouped by kind, each kind titled, then the custom ones. */
+function catalog(): (readonly [kind: string, names: readonly Choice[]])[] {
+  const all = colormaps();
+  const kinds = [...new Set(all.map((map) => map.kind))];
+  const title = (kind: string) => `${kind[0]!.toUpperCase()}${kind.slice(1)}`;
+  return [
+    ...kinds.map(
+      (kind) =>
+        [title(kind), all.filter((map) => map.kind === kind).map((map) => map.name)] as const,
+    ),
+    ['Custom', ['custom', 'diverging', 'cyclic']],
+  ];
+}
 
 /** Fields the cells can show, each a value from 0 to 1 at a point. Categorical colormaps show the
  * value's class instead. */
@@ -171,6 +131,8 @@ function hexagons(columns: number, rows: number, value: FieldName): Patch {
 }
 
 export default function page(stage: Stage): void {
+  const byKind = catalog();
+  const categoricalMaps = new Set<Choice>(byKind.find(([kind]) => kind === 'Categorical')?.[1]);
   let colormap: Choice = 'viridis';
   let value: FieldName = 'peaks';
   let size: [number, number] = [96, 64];
@@ -209,7 +171,7 @@ export default function page(stage: Stage): void {
   };
 
   const scene = (): Scene => {
-    const categorical = CATEGORICAL.has(colormap);
+    const categorical = categoricalMaps.has(colormap);
     const input = categorical ? field('class') : TRANSFORMS[transform]![1](field('value'));
     const mapped = input.colormap(mapOf(colormap));
     const outlines: Mark[] = outline
@@ -262,7 +224,7 @@ export default function page(stage: Stage): void {
     view.scene = scene();
     legend.ramp(
       mapOf(colormap),
-      `${colormap}${CATEGORICAL.has(colormap) ? ', ten classes' : reversed ? ', reversed' : ''}`,
+      `${colormap}${categoricalMaps.has(colormap) ? ', ten classes' : reversed ? ', reversed' : ''}`,
     );
     legend.hidden = ownLegend;
     for (const [name, swatch] of swatches)
@@ -277,7 +239,7 @@ export default function page(stage: Stage): void {
   };
   const choose = palette.choice(
     'Colormap',
-    CATALOG.flatMap(([kind, names]) =>
+    byKind.flatMap(([kind, names]) =>
       names.map(
         (name) =>
           [
@@ -423,11 +385,11 @@ export default function page(stage: Stage): void {
 
   // The catalog as CSS ramps: the same colors the GPU draws, drawn by the browser over a
   // checkerboard so transparent parts show.
-  const catalog = stage.section('Catalog');
+  const ramps = stage.section('Catalog');
   const groups: [string, HTMLElement[]][] = [];
-  catalog.choice(
+  ramps.choice(
     'Kind',
-    KINDS.map((kind) => [kind, kind] as const),
+    ['All', ...byKind.map(([kind]) => kind)].map((kind) => [kind, kind] as const),
     'All',
     (shown) => {
       for (const [kind, elements] of groups)
@@ -435,11 +397,11 @@ export default function page(stage: Stage): void {
     },
   );
   const swatches = new Map<Choice, HTMLButtonElement>();
-  for (const [kind, names] of CATALOG) {
+  for (const [kind, names] of byKind) {
     const title = h('p', { class: 'note' }, kind);
     const grid = h('div', { class: 'swatches' });
     groups.push([kind, [title, grid]]);
-    catalog.content.append(title);
+    ramps.content.append(title);
     for (const name of names) {
       const swatch = h(
         'button',
@@ -453,7 +415,7 @@ export default function page(stage: Stage): void {
         'click',
         () => {
           colormap = name;
-          choose.selectedIndex = CATALOG.flatMap(([, n]) => n).indexOf(name);
+          choose.selectedIndex = byKind.flatMap(([, n]) => n).indexOf(name);
           restyle();
         },
         { signal: stage.signal },
@@ -461,7 +423,7 @@ export default function page(stage: Stage): void {
       swatches.set(name, swatch);
       grid.append(swatch);
     }
-    catalog.content.append(grid);
+    ramps.content.append(grid);
   }
 
   stage.meter(view);

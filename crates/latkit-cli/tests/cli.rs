@@ -91,7 +91,7 @@ fn usage_errors_exit_2_before_reading_or_drawing() {
         vec!["render", "missing.json", "-o", "out.png", "--deadline", "0"],
         vec!["render", "missing.json", "-o", "out.gif"],
         vec!["render", "missing.json", "-o", "out.mp4"],
-        vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--size", "62x64"],
+        vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--size", "3x64"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--transparent"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--fps", "0"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out/%04d.y4m"],
@@ -134,6 +134,12 @@ fn validation_reads_everything_without_a_gpu_and_is_silent_on_success() {
     let told: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(told["detail"]["path"], "frames[0].camera[0]");
     assert!(told["detail"]["source"].as_str().unwrap().ends_with("bad.jsonl"));
+    // `--camera` takes JSON or a file of it, as a query does.
+    ok(&run(dir.path(), &["validate", "scene.json", "-d", "grid.json", "--camera", CAMERA], None));
+    let plot = r#"{"x": [0, 1], "y": [0, 1]}"#;
+    let args = ["--diagnostics", "json", "validate", "scene.json", "-d", "grid.json", "--camera", plot];
+    let told: serde_json::Value = serde_json::from_slice(&run(dir.path(), &args, None).stderr).unwrap();
+    assert_eq!(told["detail"]["path"], "--camera[0]");
 }
 
 #[test]
@@ -347,6 +353,13 @@ fn a_frame_stream_writes_every_output_and_repeats_unchanged_frames() {
         |n: u32| Image::from_png(&std::fs::read(dir.path().join(format!("pngs/frame-{n:03}.png"))).unwrap()).unwrap();
     assert_eq!(&png(0).rgba[..], first);
     assert_eq!(png(1), png(2));
+    // A file that cannot be written is named in the error, which is not the frames file's fault.
+    let mut args = [&["--diagnostics", "json"][..], &COMMON].concat();
+    args.extend(["-o", "absent/frame-%03d.png"]);
+    let stderr = String::from_utf8(run(dir.path(), &args, None).stderr).unwrap();
+    let told: serde_json::Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+    assert_eq!((&told["detail"]["code"], &told["detail"]["source"]), (&"io".into(), &serde_json::Value::Null));
+    assert!(told["detail"]["message"].as_str().unwrap().contains("absent/frame-000.png"), "{told}");
 
     let mut args = COMMON.to_vec();
     args.extend(["-o", "out.y4m"]);
@@ -355,6 +368,11 @@ fn a_frame_stream_writes_every_output_and_repeats_unchanged_frames() {
     let header = b"YUV4MPEG2 W64 H64 F60:1 Ip A1:1 C420jpeg XCOLORRANGE=LIMITED\n";
     assert!(y4m.starts_with(header));
     assert_eq!(y4m.len(), header.len() + 3 * (6 + 64 * 64 * 3 / 2));
+    // A video rounds its size down to whole 4×2 blocks.
+    args[8] = "--size=67x65";
+    args[10] = "odd.y4m";
+    ok(&run(dir.path(), &args, None));
+    assert!(std::fs::read(dir.path().join("odd.y4m")).unwrap().starts_with(header));
 
     #[cfg(windows)]
     {

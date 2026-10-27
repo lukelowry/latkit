@@ -79,9 +79,8 @@ impl Manifest {
             #[serde(rename = "frames")]
             _frames: Vec<serde::de::IgnoredAny>,
         }
-        let text = std::str::from_utf8(bytes).ok()?;
-        crate::from_json::<Listing>(text).ok()?;
-        let manifest = crate::from_json::<Manifest>(text).and_then(|m| {
+        crate::json::from_bytes::<Listing>(bytes).ok()?;
+        let manifest = crate::json::from_bytes::<Manifest>(bytes).and_then(|m| {
             if !chunks(m.chunk) {
                 return Err(Error::invalid("a span must hold a multiple of 8 entries, from 8 to 2^20").at("chunk"));
             }

@@ -1,8 +1,9 @@
 //! One frame, in order: tick the clock, settle readbacks, advance the camera, derive the tables
 //! marks read beside their data, lay out drawings, sync columns, stream uploads, give marks word
-//! pages for their rows, freeze transitions, pack the program buffer, write focus words and
+//! pages for their rows, start transitions, pack the program buffer, write focus words and
 //! uniforms, then record the compute, label, render, probe, and query passes into the caller's
-//! encoder.
+//! encoder. No pass is recorded before the program buffer is packed, since packing may move a
+//! mark's words with copies recorded in the encoder.
 //!
 //! The frame submits nothing itself except setup that must run before its recorded passes:
 //! clearing newly handed-out pages, and copying buffers that grew.
@@ -12,7 +13,7 @@ use web_time::Instant;
 use super::drawing::Drawn;
 use super::marks::Holding;
 use super::resources::{MARK_STRIDE, Resources};
-use super::sync::{Inputs, Rebuilt, Rows, Source, Window, table_of};
+use super::sync::{Inputs, Rebuilt, Rows, Source, Window};
 use super::transition::{bound, holds_alike, in_place, moved};
 use super::words::Kept;
 use super::{Camera, Event, Frame, View, timer, uniforms};
@@ -156,6 +157,7 @@ impl View {
         for shown in &mut self.marks {
             shown.before = shown.held();
             shown.words.settle();
+            shown.remap = wgsl::NONE;
             shown.carry = false;
         }
         self.events.extend(inner.atlas.errors.drain(..).map(Event::Error));
@@ -215,7 +217,7 @@ impl View {
         let fresh = self.fit_words(inner);
         self.fit_easing(inner);
         inner.arena.clear(device, &gpu.0.queue);
-        self.transitions(encoder, inner);
+        self.transitions(inner);
         self.attach_ends();
         let domains = self.place_domains();
         let resources = self.resources.as_mut().expect("created");
@@ -232,32 +234,16 @@ impl View {
     fn fit_words(&mut self, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = (&gpu.0.device, &gpu.0.queue);
-        let mut normals = vec![false; self.marks.len()];
-        for shown in self.marks.iter().filter(|m| m.kind() == MarkKind::Faces) {
-            let Some(compiled) = &shown.compiled else { continue };
-            for end in &compiled.program.ends {
-                if let Some(m) = super::graph::end_mark(&self.marks, &shown.mark.style().data, &end.table) {
-                    normals[m] = true;
-                }
-            }
-        }
+        let summing = super::graph::summing(&self.marks);
         let (mut fresh, mut short, mut changed) = (false, false, false);
-        for (i, shown) in self.marks.iter_mut().enumerate() {
+        for (shown, summing) in self.marks.iter_mut().zip(summing) {
             let rows = shown.page_rows();
-            let labeled = shown.compiled.as_ref().is_some_and(|c| c.drawing.label.is_some());
-            let fits = [
-                (Kept::State, shown.stride() + shown.extras()),
-                (Kept::Focus, 1),
-                (Kept::Candidates, if labeled { wgsl::CANDIDATE_WORDS } else { 0 }),
-                (Kept::Normals, if normals[i] { wgsl::NORMAL_WORDS } else { 0 }),
-            ];
-            for (kept, width) in fits {
-                let had = shown.words.pages(kept).blocks.len();
-                let Some(new) = shown.words.fit(kept, &rows, width, device, &mut inner.arena) else {
+            for (kept, width) in shown.kept_widths(summing) {
+                let Some(fitted) = shown.words.fit(kept, &rows, width, device, &mut inner.arena) else {
                     short = true;
                     continue;
                 };
-                if new.is_empty() && had == shown.words.pages(kept).blocks.len() {
+                if !fitted.changed {
                     continue;
                 }
                 shown.packed = false;
@@ -265,8 +251,8 @@ impl View {
                 fresh |= kept == Kept::Focus;
                 // Rows in new state pages evaluate every channel, writing every word first.
                 if kept == Kept::State {
-                    shown.slots_bound(&new);
-                    shown.fresh.extend(&new);
+                    shown.slots_bound(&fitted.new);
+                    shown.fresh.extend(&fitted.new);
                 }
             }
         }
@@ -540,10 +526,8 @@ impl View {
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(compiled) = &shown.compiled else { continue };
             let style = shown.mark.style();
-            let Some(data) = self.snapshots.iter().find(|d| *d.name() == style.data) else { continue };
-            let Some(table) = data.table(&style.table) else { continue };
-            let derived = self.derived.beside(&style.data, &style.table);
-            let source = Source { data, table, derived, paged: self.derived.paged(&style.data, &style.table) };
+            let Some(mut source) = Source::of(style, &self.snapshots, &self.derived) else { continue };
+            source.paged = self.derived.paged(&style.data, &style.table);
             let drawing = self.drawings.get(&(style.data.clone(), style.table.clone())).and_then(Drawn::latest);
             let rows = drawing.map_or(Rows::Own, |drawing| Rows::Held(drawing));
             let window = Window { steps: compiled.drawing.flags & (wgsl::STEP_BEFORE | wgsl::STEP_AFTER), ..window };
@@ -618,30 +602,19 @@ impl View {
             Some(drawing) => drawing.live(),
             None => self.snapshot(&key.0).and_then(|d| d.table(&key.1)).map_or(0, |t| t.len() as u32),
         };
-        // Size new pages as `page_rows` will: a whole page per slot of a paged table, else the
-        // table's own rows, a page at a time.
-        let held = live + shown.exits;
+        // New pages are sized as they will be once the rows arrive.
         let mut rows = shown.page_rows();
         let had = rows.len();
-        for p in had as u32..held.div_ceil(wgsl::PAGE_ROWS) {
-            let start = p * wgsl::PAGE_ROWS;
-            let full = drawing.is_some() && start < live;
-            rows.push(if full { wgsl::PAGE_ROWS } else { held.min(start + wgsl::PAGE_ROWS) - start });
-        }
+        rows.extend(super::marks::page_rows(live, live + shown.exits, drawing.is_some()).into_iter().skip(had));
         if rows.len() == had {
             return true;
         }
-        let labeled = shown.compiled.as_ref().is_some_and(|c| c.drawing.label.is_some());
-        let fits = [
-            (Kept::State, shown.stride() + shown.extras()),
-            (Kept::Focus, 1),
-            (Kept::Candidates, if labeled { wgsl::CANDIDATE_WORDS } else { 0 }),
-        ];
+        let widths = shown.kept_widths(super::graph::summing(&self.marks)[i]);
         let gpu = self.gpu.clone();
         let shown = &mut self.marks[i];
-        fits.into_iter().all(|(kept, width)| {
+        widths.into_iter().all(|(kept, width)| {
             let fitted = shown.words.fit(kept, &rows, width, (&gpu.0.device, &gpu.0.queue), &mut inner.arena);
-            shown.packed &= fitted.as_ref().is_some_and(Vec::is_empty);
+            shown.packed &= fitted.as_ref().is_some_and(|f| !f.changed);
             fitted.is_some()
         })
     }
@@ -718,12 +691,13 @@ impl View {
         shown.packed = false;
         if let Some(published) = &published {
             shown.columns_changed(published.data, published.blocks.as_deref());
-            let source = Source { data, table, derived: self.derived.beside(&key.0, &key.1), paged: Vec::new() };
+            let source = Source::of(shown.mark.style(), &self.snapshots, &self.derived);
             for text in &program.texts {
                 let column = &program.columns[text.column as usize];
-                let code = table_of(column, &source, &self.snapshots).map_or(wgsl::NONE, |(d, t)| {
-                    inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
-                });
+                let code =
+                    source.as_ref().and_then(|s| s.table_of(column, &self.snapshots)).map_or(wgsl::NONE, |(d, t)| {
+                        inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
+                    });
                 shown.constants[text.constant as usize] = code;
             }
         }

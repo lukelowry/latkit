@@ -118,6 +118,20 @@ impl Host for Serving {
 }
 
 #[test]
+fn an_index_that_is_not_tile_json_fails_as_invalid_input() {
+    let Some(gpu) = gpu() else { return };
+    // The host serves empty bytes for anything outside `tiles/`.
+    gpu.set_host(Serving(Arc::new(Served::default())));
+    let scene = Scene::new(Earth::default()).draw(Areas::of("base", "water"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_sources([&Tiles::new("base", "index.json")]).expect("a source");
+    frame(&gpu, &mut view);
+    let errors = errors(&mut view);
+    let [latkit::Error::Invalid { path, .. }] = errors.as_slice() else { panic!("one invalid input: {errors:?}") };
+    assert_eq!(path.to_string(), "base", "named by the tiles' dataset");
+}
+
+#[test]
 fn tiles_the_camera_needs_draw_as_a_dataset() {
     let Some(gpu) = gpu() else { return };
     let served = Arc::new(Served::default());

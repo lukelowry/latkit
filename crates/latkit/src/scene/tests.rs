@@ -36,6 +36,18 @@ fn scenes_match_builders() {
 }
 
 #[test]
+fn every_mark_defaults_as_its_json_form_does() {
+    let json = |kind: &str| -> Mark {
+        serde_json::from_str(&format!(r#"{{ "{kind}": {{ "of": ["d", "t"] }} }}"#)).expect(kind)
+    };
+    assert_eq!(json("vertices"), Vertices::of("d", "t").into());
+    assert_eq!(json("edges"), Edges::of("d", "t").into());
+    assert_eq!(json("faces"), Faces::of("d", "t").into());
+    assert_eq!(json("lines"), Lines::of("d", "t").into());
+    assert_eq!(json("areas"), Areas::of("d", "t").into());
+}
+
+#[test]
 fn rows_pick_by_default_and_geometry_only_when_asked() {
     let picks = |mark: Mark| mark.picks();
     assert!(picks(Vertices::of("d", "t").into()) && picks(Edges::of("d", "t").into()), "vertices and edges");

@@ -1,18 +1,8 @@
 /** Pictures of views: images to encode as files, and H.264 video written as frames are drawn. */
 
 import type * as bindings from '../pkg/latkit.js';
-import { placed, type Panel } from './canvas.js';
-import {
-  hold,
-  inner,
-  release,
-  thrown,
-  waited,
-  wasm,
-  type LatkitError,
-  type Wait,
-} from './internal.js';
-import { handleOf } from './view.js';
+import { encoded, type Panel } from './canvas.js';
+import { Handle, inner, thrown, waited, wasm, type LatkitError, type Wait } from './internal.js';
 
 /** Options for a {@link Shot}. */
 export interface ShotOptions {
@@ -51,10 +41,13 @@ export class Shot {
   /** How the picture is taken, and in `layout`, the panel each view is drawn into. */
   readonly options: ShotOptions & { layout?: readonly Panel[] };
 
-  /** Creates a shot of `size`, `[width, height]` in pixels, of the views in `options.layout`. */
+  /** Creates a shot of `size`, `[width, height]` in pixels. */
   constructor(
     size: readonly [number, number],
-    options: ShotOptions & { layout?: readonly Panel[] } = {},
+    options: ShotOptions & {
+      /** The views drawn, each in its panel of the picture. */
+      layout?: readonly Panel[];
+    } = {},
   ) {
     this.size = size;
     this.options = options;
@@ -62,70 +55,52 @@ export class Shot {
 
   /**
    * Draws the picture once every view is complete, as `capture` says, and resolves to the
-   * {@link Image}. Rejects with an `invalid` error for invalid options or a view in two panels, and
-   * with the first error a view reports while drawing.
+   * {@link Image}. Rejects with the first error a view reports while drawing.
    */
   async image(wait: Wait = {}): Promise<Image> {
-    const taken = wasm().image(this.#json(this.size), this.#views());
-    const image = await waited<bindings.Image>(taken, wait, 'taking a picture');
-    return Image.made(image);
+    const taken = wasm().image(this.#json(), ...encoded(this.options.layout ?? []));
+    return Image.made(await waited<bindings.Image>(taken, wait, 'taking a picture'));
   }
 
   /**
-   * Starts a video of this shot: H.264 in MP4 at `options.fps` frames per second, written to
-   * `options.output` as frames are drawn. `options.bitrate` is in bits per second, about 0.15 bits
-   * per pixel per frame by default. The width is rounded down to a multiple of 4 and the height to a
-   * multiple of 2, as the encoder requires. Canvases showing the views keep their last frame until
-   * the video finishes or aborts. Aborting `options.signal` aborts the video and its output; frames
-   * have no other time limit.
+   * Starts a video of this shot: H.264 in MP4, written to `options.output` as frames are drawn. The
+   * width is rounded down to a multiple of 4 and the height to an even number, as the encoder
+   * requires. Canvases showing the views keep their last frame until the video finishes or aborts.
+   * Aborting `options.signal` aborts the video and its output; frames have no other time limit.
    */
   video(
-    options: { fps: number; output: WritableStream<Uint8Array>; bitrate?: number } & Wait,
+    options: {
+      /** Frames per second. */
+      fps: number;
+      /** Where the file's bytes go, locked until the video finishes or aborts. */
+      output: WritableStream<Uint8Array>;
+      /** Bits per second; about 0.15 bits per pixel per frame by default. */
+      bitrate?: number;
+    } & Wait,
   ): Video {
-    const { fps, output, bitrate, signal } = options;
-    signal?.throwIfAborted();
-    const writer = output.getWriter();
+    options.signal?.throwIfAborted();
+    const writer = options.output.getWriter();
     try {
-      const [width, height] = this.size;
-      const blocks = [
-        Math.max(4, width - (width % 4)),
-        Math.max(2, height - (height % 2)),
-      ] as const;
-      return Video.made(
-        wasm().video(this.#json(blocks), this.#views(), fps, bitrate),
-        writer,
-        fps,
-        signal,
-      );
+      const layout = encoded(this.options.layout ?? []);
+      const video = wasm().video(this.#json(), ...layout, options.fps, options.bitrate);
+      return Video.made(video, writer, options.fps, options.signal);
     } catch (error) {
       writer.releaseLock();
       throw error;
     }
   }
 
-  /** The shot as JSON for the bindings, at `size` pixels, with times in seconds. */
-  #json(size: readonly [number, number]): string {
-    const {
-      scale = 1,
-      transparent = false,
-      capture = 'still',
-      elapsed,
-      layout = [],
-    } = this.options;
-    const placing = Array.from(placed(layout));
-    const panels = Array.from({ length: layout.length }, (_, i) => placing.slice(i * 4, i * 4 + 4));
-    return JSON.stringify({ size: [...size], scale, panels, transparent, capture, elapsed });
-  }
-
-  #views(): bindings.Handle[] {
-    return (this.options.layout ?? []).map(({ view }) => handleOf(view));
+  /** The shot as JSON for the bindings, with times in seconds; the layout crosses on its own. */
+  #json(): string {
+    const { scale = 1, transparent = false, capture = 'still', elapsed } = this.options;
+    return JSON.stringify({ size: [...this.size], scale, transparent, capture, elapsed });
   }
 }
 
 /** A picture's RGBA pixels, with straight alpha, rows top to bottom. */
-export class Image {
+export class Image extends Handle {
   private constructor(image: bindings.Image) {
-    hold(this, image);
+    super(image, 'Image');
   }
 
   /** @internal Wraps a bindings image. */
@@ -135,46 +110,33 @@ export class Image {
 
   /** Width in pixels. */
   get width(): number {
-    return pixels(this).width;
+    return inner<bindings.Image>(this).width;
   }
 
   /** Height in pixels. */
   get height(): number {
-    return pixels(this).height;
+    return inner<bindings.Image>(this).height;
   }
 
   /** A copy of the pixels: 4 bytes per pixel, `width * height * 4` bytes in all. */
   get rgba(): Uint8Array {
-    return pixels(this).rgba;
+    return inner<bindings.Image>(this).rgba;
   }
 
   /**
-   * Encodes the image as a file, in a worker. PNG is lossless with alpha. JPEG uses
-   * `options.quality` from 1 to 100 (90 by default) and drops alpha. WebP is lossless with alpha
-   * and smaller than PNG. Rejects with an `invalid` error for a quality outside 1 to 100 or an
-   * unknown format.
+   * Encodes the image as a file, in a worker. PNG is lossless with alpha. JPEG drops alpha. WebP
+   * is lossless with alpha and smaller than PNG.
    */
-  encode(format: ImageFormat, options: { quality?: number } & Wait = {}): Promise<Uint8Array> {
-    return waited<Uint8Array>(
-      pixels(this).encode(format, options.quality),
-      options,
-      'encoding an image',
-    );
+  encode(
+    format: ImageFormat,
+    options: {
+      /** JPEG quality, from 1 (smallest) to 100 (sharpest); 90 by default. */
+      quality?: number;
+    } & Wait = {},
+  ): Promise<Uint8Array> {
+    const encoding = inner<bindings.Image>(this).encode(format, options.quality);
+    return waited<Uint8Array>(encoding, options, 'encoding an image');
   }
-
-  /** Frees the pixels. Other methods throw afterwards. */
-  destroy(): void {
-    release<bindings.Image>(this)?.free();
-  }
-
-  /** Calls {@link Image.destroy}, so a `using` declaration destroys it when its block ends. */
-  [Symbol.dispose](): void {
-    this.destroy();
-  }
-}
-
-function pixels(owner: Image): bindings.Image {
-  return inner<bindings.Image>(owner, 'Image');
 }
 
 /** An image file format for {@link Image.encode}. */
@@ -185,8 +147,11 @@ export type ImageFormat = 'png' | 'jpeg' | 'webp';
  * {@link Video.frame} or {@link Video.record}, then call {@link Video.finish}.
  */
 export class Video {
+  #video: bindings.Video | undefined;
   #state: 'open' | 'finishing' | 'aborting' | 'closed' = 'open';
+  /** The operation in progress, and the bindings task it waits on. */
   #operation?: Promise<void>;
+  #task?: bindings.Task;
   #finished?: Promise<void>;
   #aborted?: Promise<void>;
   #reason: unknown;
@@ -201,13 +166,11 @@ export class Video {
     fps: number,
     signal?: AbortSignal,
   ) {
-    hold(this, video);
+    this.#video = video;
     this.#writer = writer;
     this.#fps = fps;
     if (signal) {
-      const abort = () => {
-        void this.abort(signal.reason);
-      };
+      const abort = () => void this.abort(signal.reason);
       signal.addEventListener('abort', abort, { once: true });
       this.#removeAbort = () => signal.removeEventListener('abort', abort);
       if (signal.aborted) abort();
@@ -224,25 +187,6 @@ export class Video {
     return new Video(video, writer, fps, signal);
   }
 
-  #check(): bindings.Video {
-    const video =
-      this.#state === 'aborting' || this.#state === 'closed' ? undefined : encoder(this);
-    if (!video) throw this.#ended();
-    return video;
-  }
-
-  /**
-   * The error for a call after the video ended: `cancelled` with the abort reason as its `cause`
-   * once aborted, else `invalid`.
-   */
-  #ended(): LatkitError {
-    return this.#aborted
-      ? Object.assign(thrown({ code: 'cancelled', message: 'this Video was aborted' }), {
-          cause: this.#reason,
-        })
-      : thrown({ code: 'invalid', message: 'a Video draws no frames after finish()' });
-  }
-
   /** The time in seconds at which the next frame shows. Still readable after the video ends. */
   get time(): number {
     return this.frames / this.#fps;
@@ -253,7 +197,7 @@ export class Video {
    * the video ends.
    */
   get frames(): number {
-    return encoder(this)?.frames ?? this.#frames;
+    return this.#video?.frames ?? this.#frames;
   }
 
   /**
@@ -268,20 +212,12 @@ export class Video {
       return Promise.reject(
         thrown({ code: 'invalid', message: 'a Video draws one frame at a time' }),
       );
-    const operation = (async () => {
-      const bytes = (await this.#check().frame()) as Uint8Array;
-      this.#frames = this.#check().frames;
+    return this.#run(async () => {
+      const bytes = await this.#await(this.#open().frame());
+      // An abort while the frame drew rejects it, even if the frame finished first.
+      this.#open();
       if (bytes.length) await this.#writer.write(bytes);
-    })();
-    this.#operation = operation;
-    return operation
-      .catch(async (error: unknown) => {
-        await this.abort(error);
-        throw error;
-      })
-      .finally(() => {
-        if (this.#operation === operation) this.#operation = undefined;
-      });
+    });
   }
 
   /**
@@ -316,23 +252,15 @@ export class Video {
     if (this.#state !== 'open') return Promise.reject(this.#ended());
     this.#state = 'finishing';
     const frame = this.#operation;
-    const operation = (async () => {
+    this.#finished = this.#run(async () => {
       await frame;
-      const bytes = (await this.#check().finish()) as Uint8Array;
-      this.#check();
+      const bytes = await this.#await(this.#open().finish());
       if (bytes.length) await this.#writer.write(bytes);
-      this.#check();
+      this.#open();
       await this.#writer.close();
-    })();
-    this.#operation = operation;
-    this.#finished = operation
-      .then(() => {
-        if (this.#state === 'finishing') this.#release();
-      })
-      .catch(async (error: unknown) => {
-        await this.abort(error);
-        throw error;
-      });
+    }).then(() => {
+      if (this.#state === 'finishing') this.#release();
+    });
     return this.#finished;
   }
 
@@ -347,28 +275,63 @@ export class Video {
     this.#state = 'aborting';
     this.#reason = reason;
     this.#frames = this.frames;
-    encoder(this)?.cancel();
+    this.#task?.cancel();
+    this.#video?.cancel();
     this.#aborted = Promise.allSettled([this.#operation, this.#writer.abort(reason)]).then(() =>
       this.#release(),
     );
     return this.#aborted;
   }
 
+  /** Runs `operation` as the one in progress. A failure aborts the video and is rethrown. */
+  #run(operation: () => Promise<void>): Promise<void> {
+    const running = operation();
+    this.#operation = running;
+    return running
+      .catch(async (error: unknown) => {
+        await this.abort(error);
+        throw error;
+      })
+      .finally(() => {
+        if (this.#operation === running) this.#operation = undefined;
+      });
+  }
+
+  /** Awaits bindings task `task`, which `abort()` cancels, and frees it. */
+  async #await(task: bindings.Task): Promise<Uint8Array> {
+    this.#task = task;
+    try {
+      return (await task.promise) as Uint8Array;
+    } finally {
+      this.#task = undefined;
+      task.free();
+    }
+  }
+
+  /** The bindings video while the video is open or finishing; else throws why it ended. */
+  #open(): bindings.Video {
+    const open = this.#state === 'open' || this.#state === 'finishing';
+    if (!open || !this.#video) throw this.#ended();
+    return this.#video;
+  }
+
+  /**
+   * The error for a call after the video ended: `cancelled` with the abort reason as its `cause`
+   * once aborted, else `invalid`.
+   */
+  #ended(): LatkitError {
+    return this.#aborted
+      ? thrown({ code: 'cancelled', message: 'this Video was aborted', cause: this.#reason })
+      : thrown({ code: 'invalid', message: 'a Video draws no frames after finish()' });
+  }
+
   #release(): void {
     this.#frames = this.frames;
-    release<bindings.Video>(this)?.free();
+    this.#video?.free();
+    this.#video = undefined;
     this.#removeAbort?.();
     this.#removeAbort = undefined;
     this.#writer.releaseLock();
     this.#state = 'closed';
-  }
-}
-
-/** The video's bindings object, or `undefined` once it is released. */
-function encoder(owner: Video): bindings.Video | undefined {
-  try {
-    return inner<bindings.Video>(owner, 'Video');
-  } catch {
-    return undefined;
   }
 }

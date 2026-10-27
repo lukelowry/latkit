@@ -43,8 +43,13 @@ use places::Places;
 
 /// Hashes `inputs` into a stamp. Never 0, which means no value has been made yet.
 pub(crate) fn stamp_of(inputs: impl Hash) -> u64 {
+    stamp_with(|hasher| inputs.hash(hasher))
+}
+
+/// A stamp of what `hash` writes, for inputs that hash themselves into a hasher.
+pub(crate) fn stamp_with(hash: impl FnOnce(&mut FxHasher)) -> u64 {
     let mut hasher = FxHasher::default();
-    inputs.hash(&mut hasher);
+    hash(&mut hasher);
     hasher.finish().max(1)
 }
 
@@ -66,16 +71,72 @@ impl Answer for Pending<Vec<u8>> {
     }
 }
 
+/// Work under way: its answer, the stamp of the inputs it was started for, and the context its
+/// answer is read with. Work that lands counts as done for its stamp, whether it succeeded or
+/// failed, so no work for that stamp starts again: a job runs once for each set of inputs. Stamp 0
+/// is for work started on request rather than for inputs, which this does not track.
+pub(crate) struct Working<C, A: Answer = Pending<Vec<u8>>> {
+    pending: Option<(u64, A, C)>,
+    /// The stamp of the work that landed last; 0 for none.
+    done: u64,
+}
+
+impl<C, A: Answer> Default for Working<C, A> {
+    fn default() -> Self {
+        Working { pending: None, done: 0 }
+    }
+}
+
+impl<C, A: Answer> Working<C, A> {
+    /// Whether work is pending.
+    pub(crate) fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Whether work for `stamp` may start: none is pending, and none for `stamp` landed.
+    pub(crate) fn may_start(&self, stamp: u64) -> bool {
+        self.pending.is_none() && (stamp == 0 || stamp != self.done)
+    }
+
+    /// The stamp of the pending work.
+    pub(crate) fn stamp(&self) -> Option<u64> {
+        self.pending.as_ref().map(|(stamp, ..)| *stamp)
+    }
+
+    /// The context of the pending work.
+    pub(crate) fn context(&self) -> Option<&C> {
+        self.pending.as_ref().map(|(_, _, context)| context)
+    }
+
+    /// Records `answer` as pending for `stamp`, read with `context`, replacing any pending work.
+    pub(crate) fn start(&mut self, stamp: u64, answer: A, context: C) {
+        self.pending = Some((stamp, answer, context));
+    }
+
+    /// Drops the pending work; its answer is ignored.
+    pub(crate) fn cancel(&mut self) {
+        self.pending = None;
+    }
+
+    /// Takes finished work: its stamp, context, and bytes or error.
+    pub(crate) fn landed(&mut self) -> Option<(u64, C, Result<Vec<u8>>)> {
+        let answer = self.pending.as_ref()?.1.take()?;
+        let (stamp, _, context) = self.pending.take().expect("pending work");
+        self.done = stamp;
+        Some((stamp, context, answer))
+    }
+}
+
 /// A derived value, the stamp it was made from, and any pending work toward a newer stamp.
 pub(crate) struct Derived<T, A: Answer = Readback> {
     pub(crate) value: T,
     stamp: u64,
-    working: Option<(u64, A)>,
+    working: Working<(), A>,
 }
 
 impl<T: Default, A: Answer> Default for Derived<T, A> {
     fn default() -> Self {
-        Derived { value: T::default(), stamp: 0, working: None }
+        Derived { value: T::default(), stamp: 0, working: Working::default() }
     }
 }
 
@@ -87,35 +148,31 @@ impl<T, A: Answer> Derived<T, A> {
 
     /// Whether `stamp` matches neither the value nor the pending work, so new work is needed.
     pub(crate) fn due(&self, stamp: u64) -> bool {
-        stamp != self.stamp && self.working.as_ref().is_none_or(|(s, _)| *s != stamp)
+        stamp != self.stamp && self.working.stamp() != Some(stamp)
     }
 
     /// Stores `value` as made from `stamp`, dropping any pending work.
     pub(crate) fn make(&mut self, stamp: u64, value: T) {
         self.value = value;
-        self.stamp = stamp;
-        self.working = None;
+        self.mark(stamp);
     }
 
     /// Marks the current value, unchanged, as made from `stamp`, dropping any pending work.
     pub(crate) fn mark(&mut self, stamp: u64) {
         self.stamp = stamp;
-        self.working = None;
+        self.working.cancel();
     }
 
     /// Records `work` as pending toward `stamp`, replacing any pending work.
     pub(crate) fn start(&mut self, stamp: u64, work: A) {
-        self.working = Some((stamp, work));
+        self.working.start(stamp, work, ());
     }
 
     /// Takes the bytes of finished work and the stamp it was for. Failed work marks its stamp as
     /// made and keeps the old value, so it is not retried until the inputs change.
     pub(crate) fn landed(&mut self) -> Option<(u64, Vec<u8>)> {
-        let (stamp, work) = self.working.as_ref()?;
-        let stamp = *stamp;
-        let landed = work.take()?;
-        self.working = None;
-        let Ok(bytes) = landed else {
+        let (stamp, (), answer) = self.working.landed()?;
+        let Ok(bytes) = answer else {
             self.stamp = stamp;
             return None;
         };
@@ -124,7 +181,7 @@ impl<T, A: Answer> Derived<T, A> {
 
     /// Whether work is pending.
     pub(crate) fn busy(&self) -> bool {
-        self.working.is_some()
+        self.working.busy()
     }
 }
 
@@ -507,6 +564,37 @@ pub(crate) fn answers(bytes: &[u8], fields: &[&str]) -> Vec<(Key, Vec<Option<Val
         }
     }
     out
+}
+
+/// Hosts for derivations' tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::Pending;
+    use crate::host::{Host, Job, Raster, TextRun};
+
+    /// A host whose every job fails, counting the jobs it is given.
+    #[derive(Default)]
+    pub(crate) struct Failing(AtomicUsize);
+
+    impl Failing {
+        /// The jobs it was given.
+        pub(crate) fn jobs(&self) -> usize {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Host for Failing {
+        fn rasterize(&self, _: &TextRun) -> crate::Result<Raster> {
+            Err(crate::Error::Unsupported("this host has no text".into()))
+        }
+
+        fn spawn(&self, _: Job) -> Pending<Vec<u8>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Pending::ready(Err(crate::Error::Io("the worker stopped".into())))
+        }
+    }
 }
 
 #[cfg(test)]

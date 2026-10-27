@@ -100,12 +100,12 @@ struct Entry {
 
 include!(concat!(env!("OUT_DIR"), "/colormaps.rs"));
 
-/// The catalog's names, in order.
-pub(crate) fn catalog() -> impl Iterator<Item = &'static str> {
-    CATALOG.iter().map(|e| e.name)
-}
-
 impl Colormap {
+    /// Every catalog colormap, in order.
+    pub fn catalog() -> impl Iterator<Item = Colormap> {
+        (0..CATALOG.len()).map(|i| Colormap(Map::Catalog(i as u8)))
+    }
+
     /// The catalog colormap named `name`, such as `"viridis"`; `None` if the catalog has none.
     pub fn named(name: &str) -> Option<Colormap> {
         CATALOG.iter().position(|e| e.name == name).map(|i| Colormap(Map::Catalog(i as u8)))

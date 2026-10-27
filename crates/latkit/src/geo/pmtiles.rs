@@ -2,6 +2,7 @@
 //! the tile data, each read with range requests.
 
 use crate::tiles::TileKey;
+use crate::wire::In;
 
 /// Size of the header in bytes.
 pub(crate) const HEADER: usize = 127;
@@ -83,19 +84,8 @@ pub(crate) enum Entry {
 impl Directory {
     /// Decodes a directory from already decompressed `bytes`. `None` if malformed.
     pub(crate) fn decode(bytes: &[u8]) -> Option<Directory> {
-        let mut at = 0;
-        let mut next = || -> Option<u64> {
-            let mut value = 0_u64;
-            for shift in (0..64).step_by(7) {
-                let byte = *bytes.get(at)?;
-                at += 1;
-                value |= u64::from(byte & 0x7f) << shift;
-                if byte < 0x80 {
-                    return Some(value);
-                }
-            }
-            None
-        };
+        let mut input = In::new(bytes);
+        let mut next = || input.varint();
         let count = usize::try_from(next()?).ok()?;
         if count > bytes.len() {
             return None;

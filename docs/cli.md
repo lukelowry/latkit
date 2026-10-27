@@ -1,46 +1,28 @@
 # Command line
 
-The `latkit` executable renders scenes to images, image sequences, raw frames, and video on the
-machine's GPU, with the same renderer as the browser. Its inputs are latkit's JSON, so any language
-can write them.
+The `latkit` executable draws [scenes](guide.md#scenes) of datasets to images, image sequences, raw
+frames, and video on the machine's GPU, with the same renderer as the browser. Its inputs are
+latkit's JSON, so any language can write them: a dataset is a [JSON document](guide.md#json),
+latkit's [bytes](guide.md#bytes), or GeoJSON named with `NAME=`. The
+[command reference](reference/cli.md) documents every command and option.
 
 ```sh
 cargo install latkit-cli   # or, from the repository: cargo build --locked -p latkit-cli --profile cli
-latkit validate scene.json -d grid.json
+latkit validate scene.json -d grid.json        # check every input without a GPU
 latkit render scene.json -d grid.json -o grid.png --size 2400x1350 --scale 2
+latkit render scene.json -d grid.json --camera '{"center":[-97,31],"zoom":5,"pitch":0,"bearing":0}' -o tx.png
 latkit render map.json plot.json -d grid.json -d states=usa.geojson \
   --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4
 latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i - film.webm
-latkit inspect grid.bin
+latkit render scene.json -d grid.json --frames frames.jsonl -o frames/%04d.png
+latkit inspect grid.bin                        # tables, fields, and the axis, as JSON
 latkit query grid.bin '{"of":"Branch","filter":{"op":"gt","args":["loading",90]},"limit":20}'
-latkit tile history.bin -o history/
+latkit tile history.bin -o history/            # time tiles, which --tiles opens
 latkit render plot.json --tiles grid=history/frames.json -o year.png
 latkit schema scene > scene.schema.json
 ```
 
-| Command    | Does                                                                                                      |
-| ---------- | --------------------------------------------------------------------------------------------------------- |
-| `render`   | draws the scenes, one per `--panel`, and writes `--output`                                                |
-| `validate` | reads and checks everything `render` would, frames included, without a GPU                                |
-| `inspect`  | prints datasets as JSON: tables, rows, fields and their kinds, the axis and its span                      |
-| `query`    | prints the rows a query matches, sorted and paged, as JSON Lines                                          |
-| `tile`     | writes a dataset as [time tiles](guide.md#fetch-long-histories-in-spans) in `--output`                    |
-| `schema`   | prints the JSON Schema of every input, or of `scene`, `data`, `patch`, `query`, `camera`, `fit`, `frames` |
-
-## Inputs
-
-- **Scenes** are [scene](guide.md#scenes) JSON files, one per panel; their titles, subtitles, and
-  mark legends are drawn into the picture. `--camera FILE` sets a scene's camera, in scene order; a
-  view without one frames `--fit` (`all`, or a fit as JSON). `--insets T,R,B,L` keeps CSS pixels
-  clear at each edge.
-- **Datasets** (`-d [NAME=]FILE`) are a [JSON document](guide.md#json), latkit's
-  [bytes](guide.md#bytes), or GeoJSON, which needs a `NAME`. A `NAME` renames any dataset.
-  Binary file slices load relative to the document.
-- **Tiles** (`--tiles NAME=FILE`) are a time-tile `frames.json` written by `tile`, or vector tiles
-  on disk: a PMTiles file, TileJSON, or a `{z}/{x}/{y}` template.
-- **Fonts** (`--font FILE`, repeatable) replace the system fonts; the first is used for generic
-  families such as `sans-serif`.
-- At most one input can read stdin (`-`).
+At most one input reads stdin (`-`).
 
 ## Frames
 
@@ -100,7 +82,8 @@ default).
 ## Diagnostics
 
 Exit codes: 0 success, 1 failure, 2 usage error. Errors print as `latkit: SOURCE: message`, where
-`SOURCE` is the input file; for invalid input, the message starts with the path to the invalid
-part, such as `frames[3].patch.grid[0].Bus.x`. `--diagnostics json` writes one JSON object per line
-to stderr, `{ type, detail }`: `progress` after each frame, `stats` when done, and `error` with its
-`code`, `message`, `path`, and `source`.
+`SOURCE` is the input file at fault; for invalid input, the message starts with the path to the
+invalid part, such as `frames[3].patch.grid[0].Bus.x`. An output that cannot be written is named in
+the message. `--diagnostics json` writes one JSON object per line to stderr, `{ type, detail }`:
+`progress` after each frame, `stats` when done, and `error` with its `code`, `message`, `path`, and
+`source`.

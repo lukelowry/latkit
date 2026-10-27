@@ -17,11 +17,16 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-use crate::gpu::pipelines::Pipelines;
+use crate::gpu::grown::Grown;
+use crate::gpu::pipelines::{Pipelines, Variant};
 use crate::gpu::shaders::{FIELD_AT, FIELD_COLUMNS, FIELD_COVERAGE, FIELD_HEIGHT, FIELD_ROW, FIELD_WIDTH, FIELD_WORDS};
 use crate::gpu::shaders::{Shader, TEXT_BASE, TEXT_SPREAD};
 use crate::gpu::work::{Count, Counters, Queue};
 use crate::host::{Host, Raster, TextRun};
+
+/// The passes building distance fields: along columns, then along rows.
+pub(crate) const FIELDS: [Variant; 2] =
+    [Variant::compute(Shader::Fields, "columns"), Variant::compute(Shader::Fields, "rows")];
 
 /// Texels across the atlas: room for about 1,400 labels of ten characters at the base size.
 const SIZE: u32 = 4096;
@@ -114,8 +119,9 @@ pub(crate) struct Atlas {
     runs: HashMap<TextRun, Option<(Glyphs, usize)>>,
     /// Rasterized runs whose fields the next frame builds.
     waiting: Vec<Waiting>,
-    /// Scratch buffer for building fields, and its bind group.
-    work: Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    /// Scratch buffer for building fields, and its bind group once built.
+    work: Grown,
+    work_group: Option<wgpu::BindGroup>,
     /// Frame counter for shelf use.
     clock: u64,
     /// Changes whenever runs are evicted, so anything referencing them looks them up again.
@@ -146,7 +152,8 @@ impl Atlas {
             shelves: Vec::new(),
             runs: HashMap::new(),
             waiting: Vec::new(),
-            work: None,
+            work: Grown::new(device, "latkit fields", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC),
+            work_group: None,
             clock: 0,
             evictions: 0,
             counters,
@@ -309,9 +316,10 @@ impl Atlas {
             pass.set_bind_group(0, &pipelines.empty, &[]);
             pass.set_bind_group(1, &pipelines.empty, &[]);
             pass.set_bind_group(2, &group, &[]);
-            pass.set_pipeline(&pipelines.compute(device, Shader::Fields, "columns"));
+            let [columns, rows] = FIELDS;
+            pass.set_pipeline(&pipelines.compute(device, columns));
             pass.dispatch_workgroups(most[0].div_ceil(16), most[1].div_ceil(16), laid.len() as u32);
-            pass.set_pipeline(&pipelines.compute(device, Shader::Fields, "rows"));
+            pass.set_pipeline(&pipelines.compute(device, rows));
             pass.dispatch_workgroups(most[0].div_ceil(4).div_ceil(16), most[1].div_ceil(16), laid.len() as u32);
         }
         for (w, run) in laid.iter().zip(&runs) {
@@ -336,30 +344,21 @@ impl Atlas {
         }
     }
 
-    /// The scratch buffer for building fields, at least `bytes` long, and its bind group. A new
-    /// buffer gets half again as much room.
+    /// The scratch buffer for building fields, at least `bytes` long, and its bind group.
     fn fit_work(
         &mut self,
         device: &wgpu::Device,
         pipelines: &mut Pipelines,
         bytes: u64,
     ) -> (wgpu::Buffer, wgpu::BindGroup) {
-        if let Some((buffer, group)) = self.work.as_ref().filter(|(buffer, _)| buffer.size() >= bytes) {
-            return (buffer.clone(), group.clone());
+        if self.work.ensure(device, bytes) || self.work_group.is_none() {
+            self.work_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("latkit fields"),
+                layout: &pipelines.pass_layout(device, Shader::Fields),
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.work.buffer.as_entire_binding() }],
+            }));
         }
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("latkit fields"),
-            size: (bytes + bytes / 2).next_multiple_of(256),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("latkit fields"),
-            layout: &pipelines.pass_layout(device, Shader::Fields),
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-        });
-        self.work = Some((buffer.clone(), group.clone()));
-        (buffer, group)
+        (self.work.buffer.clone(), self.work_group.clone().expect("built above"))
     }
 
     /// Finds room for `width` by `height` texels, returning the shelf and top-left corner.

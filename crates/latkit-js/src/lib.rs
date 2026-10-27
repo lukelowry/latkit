@@ -62,6 +62,15 @@ pub fn module() -> JsValue {
     wasm_bindgen::module()
 }
 
+/// The catalog of named colormaps, in order, as JSON `[{ name, label, kind }]`.
+#[wasm_bindgen]
+pub fn colormaps() -> String {
+    let catalog: Vec<serde_json::Value> = latkit::Colormap::catalog()
+        .map(|map| serde_json::json!({ "name": map.name(), "label": map.label(), "kind": map.kind() }))
+        .collect();
+    to_json(&catalog)
+}
+
 /// A CSS `linear-gradient` toward `direction` through `map`, given as JSON (a catalog name or
 /// custom colors), in the colors the GPU draws. A categorical map gets one band per category.
 #[wasm_bindgen(js_name = colormapCss)]

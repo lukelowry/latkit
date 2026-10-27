@@ -1,8 +1,9 @@
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::TAU;
 
 use glam::{DMat3, DMat4, DVec3, DVec4};
 
 use crate::Space;
+use crate::geo::mercator::{self, MAX_LATITUDE, latitude};
 use crate::gpu::shaders as wgsl;
 
 /// Where a view looks.
@@ -61,7 +62,6 @@ mod center {
 
 /// Vertical field of view in radians, chosen so the camera stands 1.5 view heights from its center.
 const FOV: f64 = 0.643_501_108_793_284_4;
-const MAX_LATITUDE: f64 = 85.051_128_779_806_59;
 pub(crate) const MAX_PITCH: f64 = 75.0;
 const MAX_ZOOM: f64 = 24.0;
 
@@ -288,7 +288,7 @@ impl Camera {
                 Camera::Plot { x, y: Some(pad(min[1], max[1], room[1])) }
             }
             Space::Earth(_) => {
-                let (y0, y1) = (mercator_y(min[1]), mercator_y(max[1]));
+                let (y0, y1) = (mercator::y(min[1]), mercator::y(max[1]));
                 let dx = (max[0] - min[0]).to_radians().max(1e-9);
                 let dy = (y1 - y0).max(1e-9);
                 let px_per_radian = (room[0] / dx).min(room[1] / dy);
@@ -346,15 +346,6 @@ impl Camera {
 /// Longitude in `-180..180`.
 fn wrap(lon: f64) -> f64 {
     (lon + 180.0).rem_euclid(360.0) - 180.0
-}
-
-pub(crate) fn mercator_y(latitude: f64) -> f64 {
-    let lat = latitude.clamp(-MAX_LATITUDE, MAX_LATITUDE).to_radians();
-    (PI / 4.0 + lat / 2.0).tan().ln()
-}
-
-pub(crate) fn latitude(mercator_y: f64) -> f64 {
-    (2.0 * mercator_y.exp().atan() - PI / 2.0).to_degrees()
 }
 
 /// A camera's projection of a space into a view of some size, which frames and gestures use to
@@ -432,7 +423,7 @@ impl Projected {
         let world_from_view = view.inverse();
         let eye = world_from_view.transform_point3(DVec3::ZERO);
         let light = world_from_view.transform_vector3(DVec3::new(-0.4, 0.8, 1.0)).normalize_or_zero();
-        let mercator = if space_code == wgsl::SPACE_EARTH { mercator_y(center[1]) } else { 0.0 };
+        let mercator = if space_code == wgsl::SPACE_EARTH { mercator::y(center[1]) } else { 0.0 };
         Projected {
             clip_from_world,
             world_from_clip: clip_from_world.inverse(),
@@ -497,7 +488,7 @@ impl Projected {
         if self.space != wgsl::SPACE_EARTH {
             return DVec3::new(x - self.center[0], y - self.center[1], z);
         }
-        let flat = DVec3::new((x - self.center[0]).to_radians(), mercator_y(y) - self.mercator_y, z);
+        let flat = DVec3::new((x - self.center[0]).to_radians(), mercator::y(y) - self.mercator_y, z);
         if self.globe <= 0.0 {
             return flat;
         }
@@ -733,7 +724,6 @@ mod tests {
             let ground = view.position(view.ground(s).expect("the ground"));
             assert!((ground[0] - p[0]).abs() < 1e-6 && (ground[1] - p[1]).abs() < 1e-6, "globe {globe}: {ground:?}");
         }
-        assert!((latitude(mercator_y(37.5)) - 37.5).abs() < 1e-9);
     }
 
     #[test]

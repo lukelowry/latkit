@@ -299,13 +299,15 @@ mod tests {
             let reading = Reading { host: Some(&host), ..Reading::default() };
             pollster::block_on(Patch::read(json.as_bytes(), reading)).map(|_| ()).unwrap_err().to_string()
         };
-        assert!(
-            error(r#"[{"replace": {"table": "Bus", "ids": {"count": 2}, "fields": {"x": [1, "a"]}}}]"#)
-                .contains("field x")
-        );
+        let mixed = error(r#"[{"replace": {"table": "Bus", "ids": {"count": 2}, "fields": {"x": [1, "a"]}}}]"#);
+        assert!(mixed.starts_with("[0].replace.fields.x: "), "{mixed}");
         assert!(error(r#"[{"bend": {}}]"#).contains("unknown variant"));
         let named = error(r#"[{"axis": {"name": "t", "unit": "s"}}, {"remove": {"table": 3, "ids": []}}]"#);
         assert!(named.starts_with("[1].remove.table"), "{named}");
+        // Errors found after reading name the part the same way.
+        let reference =
+            error(r#"[{"append": {"table": "Bus", "at": 0, "fields": {"x": {"reference": "Other", "ids": [1]}}}}]"#);
+        assert!(reference.starts_with("[0].append.fields.x: append records values"), "{reference}");
         assert!(
             error(
                 r#"[{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {"x": {"file": "f", "count": 1}}}}]"#

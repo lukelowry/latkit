@@ -148,6 +148,10 @@ pub(crate) enum Picks<'a> {
     Writes { from: &'a [Option<usize>], kept: usize },
 }
 
+/// A run of values to copy: a source and its first row (consecutive rows follow), or `None` for
+/// missing values, with the run's length.
+type Run = (Option<(usize, usize)>, usize);
+
 impl Picks<'_> {
     fn len(self) -> usize {
         match self {
@@ -169,10 +173,9 @@ impl Picks<'_> {
         }
     }
 
-    /// The picks grouped into runs, in order. Each run is a source and its first row (consecutive
-    /// rows follow), or `None` for missing values, with the run's length.
-    fn runs(self) -> Vec<(Option<(usize, usize)>, usize)> {
-        let mut runs: Vec<(Option<(usize, usize)>, usize)> = Vec::new();
+    /// The picks grouped into runs, in order.
+    fn runs(self) -> Vec<Run> {
+        let mut runs: Vec<Run> = Vec::new();
         for i in 0..self.len() {
             let pick = self.get(i);
             match runs.last_mut() {
@@ -260,35 +263,21 @@ impl Values {
         Values { array, valid: self.valid.as_ref().map(|v| v.slice(range)) }
     }
 
-    /// Maps every value, read as by `number` (`None` where missing), through `f`. One loop per
-    /// storage type, so the storage is matched once rather than per value.
-    pub(crate) fn map_numbers<T>(&self, mut f: impl FnMut(Option<f64>) -> T) -> Vec<T> {
-        macro_rules! each {
-            ($v:expr, $number:expr) => {
-                match &self.valid {
-                    None => $v.iter().map(|&x| f(Some($number(x)))).collect(),
-                    Some(valid) => $v.iter().enumerate().map(|(i, &x)| f(valid.get(i).then(|| $number(x)))).collect(),
-                }
-            };
-        }
-        match &self.array {
-            Array::F64(v) => each!(v, |x: f64| x),
-            Array::F32(v) => each!(v, f64::from),
-            Array::I32(v) => each!(v, f64::from),
-            Array::U32(v) => each!(v, f64::from),
-            Array::U64(v) => each!(v, |x: u64| x as f64),
-            _ => (0..self.len()).map(|i| f(self.is_valid(i).then(|| self.number(i)))).collect(),
-        }
+    /// Maps every value, read as by `number` (`None` where missing), through `f`.
+    pub(crate) fn map_numbers<T>(&self, f: impl FnMut(Option<f64>) -> T) -> Vec<T> {
+        let mut out = Vec::with_capacity(self.len());
+        self.extend_numbers(&mut out, f);
+        out
     }
 
-    /// Calls `f` with every value, read as by `number` (`None` where missing). One loop per storage
-    /// type, with no allocation.
-    pub(crate) fn each_number(&self, mut f: impl FnMut(Option<f64>)) {
+    /// Appends every value to `out`, read as by `number` (`None` where missing) and mapped through
+    /// `f`. One loop per storage type, so the storage is matched once rather than per value.
+    pub(crate) fn extend_numbers<T>(&self, out: &mut Vec<T>, mut f: impl FnMut(Option<f64>) -> T) {
         macro_rules! each {
             ($v:expr, $number:expr) => {
                 match &self.valid {
-                    None => $v.iter().for_each(|&x| f(Some($number(x)))),
-                    Some(valid) => $v.iter().enumerate().for_each(|(i, &x)| f(valid.get(i).then(|| $number(x)))),
+                    None => out.extend($v.iter().map(|&x| f(Some($number(x))))),
+                    Some(valid) => out.extend($v.iter().enumerate().map(|(i, &x)| f(valid.get(i).then(|| $number(x))))),
                 }
             };
         }
@@ -298,7 +287,7 @@ impl Values {
             Array::I32(v) => each!(v, f64::from),
             Array::U32(v) => each!(v, f64::from),
             Array::U64(v) => each!(v, |x: u64| x as f64),
-            _ => (0..self.len()).for_each(|i| f(self.is_valid(i).then(|| self.number(i)))),
+            _ => out.extend((0..self.len()).map(|i| f(self.is_valid(i).then(|| self.number(i))))),
         }
     }
 
@@ -341,19 +330,67 @@ impl Values {
         Values { array: Array::Geometry(geometry), valid: None }
     }
 
+    /// Geometry of `depth` copying each of `rows`: a row of a geometry, or `None` for an empty row,
+    /// which draws nothing.
+    pub(crate) fn of_rows<'g>(depth: u8, rows: impl IntoIterator<Item = Option<(&'g Geometry, usize)>>) -> Values {
+        let mut builder = GeometryBuilder::new(depth);
+        for row in rows {
+            match row {
+                Some((geometry, i)) => builder.push_from(geometry, i),
+                None => builder.push_empty(),
+            }
+        }
+        Values::of_geometry(builder.finish())
+    }
+
+    /// A field of `values` typed by what is present: numbers if every present value is a number,
+    /// booleans if every one is a boolean, and texts otherwise, with other values written as text.
+    /// GeoJSON and vector tiles type their properties so.
+    pub(crate) fn infer(values: &[Option<Value>]) -> Values {
+        let present = || values.iter().flatten();
+        if present().all(|v| matches!(v, Value::Number(_))) {
+            let numbers = values.iter().map(|v| if let Some(Value::Number(n)) = v { Some(*n) } else { None });
+            return numbers.collect::<Vec<_>>().into();
+        }
+        if present().all(|v| matches!(v, Value::Bool(_))) {
+            let booleans = values.iter().map(|v| if let Some(Value::Bool(b)) = v { Some(*b) } else { None });
+            return booleans.collect::<Vec<_>>().into();
+        }
+        let text = |value: &Value| match value {
+            Value::Text(text) => text.to_string(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        values.iter().map(|v| v.as_ref().map(text)).collect::<Vec<Option<String>>>().into()
+    }
+
     /// The values `picks` names among `sources`, missing where it names none.
     ///
     /// The result keeps the first source's storage; numbers from other sources convert to it. A
     /// source of another kind is an error.
     pub(crate) fn assemble(sources: &[&Values], picks: Picks<'_>) -> Result<Values> {
-        let len = picks.len();
-        let like = sources.first().expect("a source");
-        let kind = like.kind();
+        let kind = sources.first().expect("a source").kind();
         if let Some(other) = sources.iter().find(|s| s.kind() != kind) {
             return Err(Error::invalid(format!("{:?} values for a {kind:?} field", other.kind())));
         }
         // Consecutive rows from one source copy as a run.
-        let runs = picks.runs();
+        Ok(Values::of_runs(sources, &picks.runs()))
+    }
+
+    /// `parts` concatenated in the first part's storage, converting numbers from other storages.
+    /// Joins a column's pages by copying each part whole. Every part must have the first's kind.
+    pub(crate) fn concat(parts: &[&Values]) -> Values {
+        debug_assert!(parts.iter().all(|p| p.kind() == parts[0].kind()));
+        let runs: Vec<Run> = parts.iter().enumerate().map(|(s, part)| (Some((s, 0)), part.len())).collect();
+        Values::of_runs(parts, &runs)
+    }
+
+    /// The values `runs` copy from `sources`, in the first source's storage; numbers from other
+    /// sources convert to it.
+    fn of_runs(sources: &[&Values], runs: &[Run]) -> Values {
+        let len = runs.iter().map(|&(_, n)| n).sum();
+        let like = sources.first().expect("a source");
         macro_rules! numbers {
             ($variant:ident, $t:ty, $store:expr) => {{
                 let cast: Vec<Values> = sources.iter().map(|s| s.cast(|x| x as $t, $store)).collect();
@@ -365,7 +402,7 @@ impl Values {
                     })
                     .collect();
                 let mut out: Vec<$t> = Vec::with_capacity(len);
-                for &(run, n) in &runs {
+                for &(run, n) in runs {
                     match run {
                         Some((s, r)) => out.extend_from_slice(&typed[s][r..r + n]),
                         None => out.resize(out.len() + n, <$t>::default()),
@@ -388,16 +425,17 @@ impl Values {
             ),
             Array::Text(_) => {
                 let mut builder = TextBuilder::with_capacity(len);
-                for &(run, n) in &runs {
-                    for k in 0..n {
-                        builder.push(run.and_then(|(s, r)| sources[s].text().map(|t| t.get(r + k))).unwrap_or(""));
+                for &(run, n) in runs {
+                    match run.and_then(|(s, r)| Some((sources[s].text()?, r))) {
+                        Some((text, r)) => (r..r + n).for_each(|i| builder.push(text.get(i))),
+                        None => (0..n).for_each(|_| builder.push("")),
                     }
                 }
                 Array::Text(builder.finish())
             }
             Array::Geometry(g) => {
                 let mut builder = GeometryBuilder::new(g.depth());
-                for &(run, n) in &runs {
+                for &(run, n) in runs {
                     match run.and_then(|(s, r)| Some((sources[s].geometry()?, r))) {
                         Some((geometry, r)) => builder.push_rows(geometry, r..r + n),
                         None => (0..n).for_each(|_| builder.push_empty()),
@@ -406,22 +444,22 @@ impl Values {
                 Array::Geometry(builder.finish())
             }
         };
-        // No validity bits are needed when no pick is missing and no picked source has missing
+        // No validity bits are needed when no run is missing and no source it reads has missing
         // values.
         let gaps = runs.iter().any(|(run, _)| run.is_none_or(|(s, _)| sources[s].valid.is_some()));
         if !gaps {
-            return Ok(Values { array, valid: None });
+            return Values { array, valid: None };
         }
         let mut bits = BitsBuilder::with_capacity(len);
         let mut all = true;
-        for &(run, n) in &runs {
+        for &(run, n) in runs {
             for k in 0..n {
                 let valid = run.is_some_and(|(s, r)| sources[s].is_valid(r + k));
                 all &= valid;
                 bits.push(valid);
             }
         }
-        Ok(Values { array, valid: (!all).then(|| bits.finish()) })
+        Values { array, valid: (!all).then(|| bits.finish()) }
     }
 
     /// Whether `other` holds exactly these values in the same storage. Compares the stored
@@ -466,64 +504,6 @@ impl Values {
             (Array::Geometry(a), Array::Geometry(b)) => a.same_row(i, b, j),
             _ => false,
         }
-    }
-
-    /// `parts` concatenated in the first part's storage, converting numbers from other storages.
-    /// Joins a column's pages by copying each part whole. Every part must have the first's kind.
-    pub(crate) fn concat(parts: &[&Values]) -> Values {
-        let first = parts.first().expect("a part");
-        debug_assert!(parts.iter().all(|p| p.kind() == first.kind()));
-        let len = parts.iter().map(|p| p.len()).sum();
-        macro_rules! numbers {
-            ($variant:ident, $t:ty, $store:expr) => {{
-                let mut out: Vec<$t> = Vec::with_capacity(len);
-                for part in parts {
-                    match &part.cast(|x| x as $t, $store).array {
-                        Array::$variant(v) => out.extend_from_slice(v),
-                        _ => unreachable!("cast to the first part's storage"),
-                    }
-                }
-                Array::$variant(Buffer::from(out))
-            }};
-        }
-        let array = match &first.array {
-            Array::F64(_) => numbers!(F64, f64, Store::F64),
-            Array::F32(_) => numbers!(F32, f32, Store::F32),
-            Array::I32(_) => numbers!(I32, i32, Store::I32),
-            Array::U32(_) => numbers!(U32, u32, Store::U32),
-            Array::U64(_) => numbers!(U64, u64, Store::U64),
-            Array::Bool(_) => {
-                let mut bits = BitsBuilder::with_capacity(len);
-                for part in parts {
-                    if let Array::Bool(v) = &part.array {
-                        (0..v.len()).for_each(|i| bits.push(v.get(i)));
-                    }
-                }
-                Array::Bool(bits.finish())
-            }
-            Array::Text(_) => {
-                let mut builder = TextBuilder::with_capacity(len);
-                for text in parts.iter().filter_map(|p| p.text()) {
-                    (0..text.len()).for_each(|i| builder.push(text.get(i)));
-                }
-                Array::Text(builder.finish())
-            }
-            Array::Geometry(g) => {
-                let mut builder = GeometryBuilder::new(g.depth());
-                for geometry in parts.iter().filter_map(|p| p.geometry()) {
-                    (0..geometry.len()).for_each(|i| builder.push_from(geometry, i));
-                }
-                Array::Geometry(builder.finish())
-            }
-        };
-        let valid = parts.iter().any(|p| p.valid.is_some()).then(|| {
-            let mut bits = BitsBuilder::with_capacity(len);
-            for part in parts {
-                (0..part.len()).for_each(|i| bits.push(part.is_valid(i)));
-            }
-            bits.finish()
-        });
-        Values { array, valid }
     }
 
     /// Numbers converted to `store`; other kinds unchanged.

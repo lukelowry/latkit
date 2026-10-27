@@ -1,9 +1,11 @@
-//! Geography: GeoJSON and vector tiles read as data, polygon triangulation, and lines given extra
-//! points so they follow the globe.
+//! Geography: GeoJSON and vector tiles read as data, polygon triangulation, lines given extra
+//! points so they follow the globe, and Web Mercator.
 
 #[cfg(feature = "gpu")]
 mod earcut;
 mod geojson;
+#[cfg(feature = "gpu")]
+pub(crate) mod mercator;
 #[cfg(feature = "gpu")]
 pub(crate) mod mvt;
 #[cfg(feature = "gpu")]

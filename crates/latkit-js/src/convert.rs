@@ -5,9 +5,6 @@ use js_sys::{Array, Float64Array, Object, Reflect};
 use latkit::Error;
 use wasm_bindgen::{JsCast, JsValue};
 
-/// The largest integer a JavaScript number represents exactly: 2^53 - 1.
-const SAFE: f64 = 9_007_199_254_740_991.0;
-
 /// `value` as a JavaScript value. Numbers, booleans, and text convert directly. A geometry becomes
 /// nested `[x, y]` arrays, and a referenced row becomes its id.
 fn value(value: &latkit::Value) -> JsValue {
@@ -69,23 +66,21 @@ pub(crate) fn object(entries: &[(&str, JsValue)]) -> JsValue {
     object.into()
 }
 
-/// An id as a number or string. A number above 2^53 - 1 becomes its decimal string, which
-/// identifies the same row.
+/// An id as JSON writes it: a number, or a string for a text id or a number above 2^53 − 1.
 pub(crate) fn id_value(id: &latkit::Id) -> JsValue {
-    match id {
-        latkit::Id::Number(n) if *n as f64 <= SAFE => (*n as f64).into(),
-        latkit::Id::Number(n) => JsValue::from_str(&n.to_string()),
-        latkit::Id::Text(t) => JsValue::from_str(t),
-    }
+    id.exact_number().map_or_else(|| JsValue::from_str(&id.to_string()), JsValue::from)
 }
 
-/// Parses a JavaScript id: an integer from 0 to 2^53 - 1, or a string.
+/// Parses a JavaScript id: a whole number from 0 to 2^53 − 1, or a string.
 pub(crate) fn id(value: &JsValue) -> Result<latkit::Id, Error> {
-    if let Some(text) = value.as_string() {
-        return Ok(latkit::Id::from(text));
-    }
-    match value.as_f64() {
-        Some(n) if n.fract() == 0.0 && (0.0..=SAFE).contains(&n) => Ok(latkit::Id::Number(n as u64)),
-        _ => Err(Error::invalid("expected a whole number from 0 to 2^53 - 1, or a string").at("id")),
-    }
+    value
+        .as_string()
+        .map(latkit::Id::from)
+        .or_else(|| value.as_f64().and_then(latkit::Id::from_number))
+        .ok_or_else(|| Error::invalid("expected a whole number from 0 to 2^53 - 1, or a string").at("id"))
+}
+
+/// `values` as exactly `N` numbers, or an invalid error at `what`.
+pub(crate) fn fixed<T: Copy, const N: usize>(values: &[T], what: &str) -> Result<[T; N], Error> {
+    values.try_into().map_err(|_| Error::invalid(format!("expected {N} numbers")).at(what))
 }

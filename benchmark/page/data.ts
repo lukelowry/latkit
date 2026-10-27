@@ -4,20 +4,15 @@
  * arrays.
  */
 import { reference, type Values } from 'latkit';
+import { congruential } from '../../npm/examples/src/random.ts';
 import type { Write } from './stage.ts';
 
 /** Samples per second on the time axis. */
 const RATE = 60;
 
-/** A seeded generator of numbers in [0, 1), the same every run. */
-function random(seed: number): () => number {
-  let s = seed >>> 0 || 1;
-  return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32;
-}
-
 /** `n` points in the unit square, each with a value, and a name when `named`. */
 export function scatter(n: number, seed = 1, named = false): Write {
-  const next = random(seed);
+  const next = congruential(seed);
   const [x, y, v] = [new Float64Array(n), new Float64Array(n), new Float32Array(n)];
   for (let i = 0; i < n; i++) [x[i], y[i], v[i]] = [next(), next(), next()];
   const fields: Record<string, Values> = { x, y, v };

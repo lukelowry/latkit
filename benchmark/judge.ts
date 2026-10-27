@@ -12,6 +12,7 @@
  * its baseline. A machine stall slows one repeat, but a regression slows every one.
  */
 import type { Work } from 'latkit';
+import { quantile } from '../npm/examples/gate/quantile.ts';
 import type { Listed, Run } from './page/main.ts';
 
 /** A phase at one size, summarized across repeats: its fastest times and its least work. */
@@ -73,8 +74,6 @@ const STEADY = 2;
 const WORK_FLOOR = { bytes: 64 * 1024, count: 8 };
 const BYTES = new Set(['uploaded', 'written', 'resident']);
 
-const median = (xs: number[]) =>
-  [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)] ?? 0;
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const mib = (n: number) => `${(n / 2 ** 20).toFixed(1)} MiB`;
 
@@ -93,12 +92,13 @@ function summarize(runs: Run[]): By<Summary> {
     const { scenario, size, phases } = group[0]!;
     for (const [phase, { steady }] of Object.entries(phases)) {
       const costs = group.map((r) => r.phases[phase]!);
+      const frames = costs.map((c) => c.frames);
       const work = costs.map((c) => ({ ...c.work, resident: c.resident }));
       ((out[scenario] ??= {})[size] ??= {})[phase] = {
         steady,
         time: Math.min(...costs.map((c) => (steady ? c.cpu : c.ms))),
         gpu: Math.min(...costs.map((c) => c.gpu)),
-        frames: median(costs.map((c) => c.frames)),
+        frames: quantile(frames, 0.5),
         work: Object.fromEntries(
           Object.keys(work[0]!).map((k) => [
             k,

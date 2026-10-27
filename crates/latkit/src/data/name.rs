@@ -125,6 +125,21 @@ impl Id {
             Id::Text(t) => IdRef::Text(t),
         }
     }
+
+    /// The id as a number every JSON reader represents exactly, as it serializes; `None` for a
+    /// text id or a number above 2^53 − 1.
+    pub fn exact_number(&self) -> Option<f64> {
+        match self {
+            Id::Number(n) if *n <= SAFE => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    /// The id a JSON or JavaScript number names: a whole number from 0 to 2^53 − 1. `None` for any
+    /// other number, which may already be rounded.
+    pub fn from_number(number: f64) -> Option<Id> {
+        (number.fract() == 0.0 && (0.0..=SAFE as f64).contains(&number)).then_some(Id::Number(number as u64))
+    }
 }
 
 /// The largest whole number every JSON reader represents exactly.

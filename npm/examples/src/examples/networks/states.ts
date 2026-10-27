@@ -4,7 +4,7 @@
  * simulated grid, each state also gets its machines' largest speed swing, frame by frame.
  */
 import { Patch, type Data, type Id, type Snapshot } from 'latkit';
-import type { Case } from './cases.js';
+import { extent, type Case } from './cases.js';
 
 /** The per-state fields, with their labels and units. */
 export const STATE_FIELDS = {
@@ -52,13 +52,7 @@ function inside(state: State, x: number, y: number): boolean {
  * snapshot of the states from before, for restoring them. */
 export function joinStates(states: Data, grid: Case): Joined {
   const { positions, simulation } = grid;
-  const extent = [Infinity, Infinity, -Infinity, -Infinity];
-  for (let b = 0; b < grid.buses; b++) {
-    extent[0] = Math.min(extent[0]!, positions[b * 2]!);
-    extent[1] = Math.min(extent[1]!, positions[b * 2 + 1]!);
-    extent[2] = Math.max(extent[2]!, positions[b * 2]!);
-    extent[3] = Math.max(extent[3]!, positions[b * 2 + 1]!);
-  }
+  const box = extent(positions);
   const ids: Id[] = states.query({ of: 'polygons', select: {} }).ids;
   const found: State[] = [];
   ids.forEach((id, row) => {
@@ -73,10 +67,7 @@ export function joinStates(states: Data, grid: Case): Joined {
         bounds[3] = Math.max(bounds[3], y);
       }
     const meets =
-      bounds[0] <= extent[2]! &&
-      bounds[2] >= extent[0]! &&
-      bounds[1] <= extent[3]! &&
-      bounds[3] >= extent[1]!;
+      bounds[0] <= box[2] && bounds[2] >= box[0] && bounds[1] <= box[3] && bounds[3] >= box[1];
     if (meets) found.push({ row, bounds, rings });
   });
   // Index the states by one-degree cell, so each bus tests only the states near it.
@@ -84,8 +75,8 @@ export function joinStates(states: Data, grid: Case): Joined {
   const cell = (x: number, y: number) => Math.floor(x + 180) * 180 + Math.floor(y + 90);
   for (const state of found) {
     const [w, s, e, n] = state.bounds;
-    for (let x = Math.floor(Math.max(w, extent[0]!)); x <= Math.min(e, extent[2]!); x++)
-      for (let y = Math.floor(Math.max(s, extent[1]!)); y <= Math.min(n, extent[3]!); y++) {
+    for (let x = Math.floor(Math.max(w, box[0])); x <= Math.min(e, box[2]); x++)
+      for (let y = Math.floor(Math.max(s, box[1])); y <= Math.min(n, box[3]); y++) {
         const key = cell(x, y);
         let list = cells.get(key);
         if (!list) cells.set(key, (list = []));

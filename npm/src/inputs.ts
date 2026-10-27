@@ -14,50 +14,12 @@ export interface AreaTheme {
  * earth, areas follow the globe's curve and stay whole across the antimeridian. To outline areas,
  * add a `Lines` mark of the same table, which draws their rings.
  */
-export interface Areas {
-  /** The dataset and table drawn. */
-  of: [data: string, table: string];
+export interface Areas extends MarkOptions {
   /**
    * The polygon field each row fills, holding one polygon's rings or several polygons; the field
    * named `geometry` by default.
    */
   geometry?: string | null;
-  /**
-   * Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-   * corners' colors.
-   */
-  color?: PaintInput | null;
-  /** Whether each row is drawn and can be picked. Default `true`. */
-  visible?: ExprInput;
-  /**
-   * Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-   * the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-   * labeled first.
-   */
-  priority?: ExprInput | null;
-  /** Distinguishes two marks of the same table across scenes, and names the mark in hits. */
-  name?: string | null;
-  /**
-   * Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-   * do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-   */
-  pick?: boolean | null;
-  /** Whether clicking a row selects it. Default `true`. */
-  select?: boolean;
-  /**
-   * Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-   * camera. Default `false`.
-   */
-  drag?: boolean;
-  /** Each row's label: a text field, or label options. */
-  label?: Label | null;
-  /**
-   * A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-   * across its domain, a cell for each category, or a swatch beside each name of a map's
-   * `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-   * conditional, `otherwise` is searched before the cases.
-   */
-  legend?: string | null;
 }
 
 /** A plot axis. */
@@ -436,9 +398,7 @@ export interface EdgeTheme {
  * wires. In a diagram, a row without ends is a net, joining every vertex port whose reference
  * field names it.
  */
-export interface Edges {
-  /** The dataset and table drawn. */
-  of: [data: string, table: string];
+export interface Edges extends MarkOptions, StrokeOptions {
   /** The reference fields naming each row's two vertices. */
   ends?: [from: string, to: string] | null;
   /** A path field whose points each row passes through between its ends. */
@@ -463,55 +423,6 @@ export interface Edges {
    * `reference` field names it: a star from their center to each member.
    */
   joins?: [table: string, reference: string] | null;
-  /**
-   * Each row's width, in the space's unit (units in a diagram, CSS pixels elsewhere) unless given
-   * with `px` or `units`. The theme's width unless set.
-   */
-  width?: Size | null;
-  /** Whether each row is dashed, with the theme's `dash` period. Default `false`. */
-  dash?: ExprInput;
-  /**
-   * The speed of comets flowing along each row, per second, in the unit of the theme's `flow`
-   * lengths. Negative speeds flow backward; 0, the default, draws no comets. When the speed changes,
-   * comets continue from where they are.
-   */
-  flow?: ExprInput;
-  /**
-   * Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-   * corners' colors.
-   */
-  color?: PaintInput | null;
-  /** Whether each row is drawn and can be picked. Default `true`. */
-  visible?: ExprInput;
-  /**
-   * Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-   * the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-   * labeled first.
-   */
-  priority?: ExprInput | null;
-  /** Distinguishes two marks of the same table across scenes, and names the mark in hits. */
-  name?: string | null;
-  /**
-   * Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-   * do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-   */
-  pick?: boolean | null;
-  /** Whether clicking a row selects it. Default `true`. */
-  select?: boolean;
-  /**
-   * Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-   * camera. Default `false`.
-   */
-  drag?: boolean;
-  /** Each row's label: a text field, or label options. */
-  label?: Label | null;
-  /**
-   * A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-   * across its domain, a cell for each category, or a swatch beside each name of a map's
-   * `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-   * conditional, `otherwise` is searched before the cases.
-   */
-  legend?: string | null;
 }
 
 /**
@@ -555,50 +466,12 @@ export type ExprNode =
  * and fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen
  * from above shows its exact colors.
  */
-export interface Faces {
-  /** The dataset and table drawn. */
-  of: [data: string, table: string];
+export interface Faces extends MarkOptions {
   /**
    * The reference fields naming each row's three vertices; required. Without a color, a face blends
    * the colors of its corners.
    */
   corners?: [a: string, b: string, c: string] | null;
-  /**
-   * Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-   * corners' colors.
-   */
-  color?: PaintInput | null;
-  /** Whether each row is drawn and can be picked. Default `true`. */
-  visible?: ExprInput;
-  /**
-   * Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-   * the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-   * labeled first.
-   */
-  priority?: ExprInput | null;
-  /** Distinguishes two marks of the same table across scenes, and names the mark in hits. */
-  name?: string | null;
-  /**
-   * Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-   * do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-   */
-  pick?: boolean | null;
-  /** Whether clicking a row selects it. Default `true`. */
-  select?: boolean;
-  /**
-   * Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-   * camera. Default `false`.
-   */
-  drag?: boolean;
-  /** Each row's label: a text field, or label options. */
-  label?: Label | null;
-  /**
-   * A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-   * across its domain, a cell for each category, or a swatch beside each name of a map's
-   * `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-   * conditional, `otherwise` is searched before the cases.
-   */
-  legend?: string | null;
 }
 
 /**
@@ -830,9 +703,7 @@ export interface LineTheme {
  * as a monitor does. On the earth, paths follow the globe's curve and stay whole across the
  * antimeridian.
  */
-export interface Lines {
-  /** The dataset and table drawn. */
-  of: [data: string, table: string];
+export interface Lines extends MarkOptions, StrokeOptions {
   /**
    * The path or polygon field each row runs along; the field named `geometry` by default. Not
    * allowed on a plot.
@@ -845,19 +716,35 @@ export interface Lines {
   trace?: string | null;
   /** How each row runs between its samples on a plot; `linear` by default. */
   interpolation?: Interpolation;
-  /**
-   * Each row's width, in the space's unit (units in a diagram, CSS pixels elsewhere) unless given
-   * with `px` or `units`. The theme's width unless set.
-   */
-  width?: Size | null;
-  /** Whether each row is dashed, with the theme's `dash` period. Default `false`. */
-  dash?: ExprInput;
-  /**
-   * The speed of comets flowing along each row, per second, in the unit of the theme's `flow`
-   * lengths. Negative speeds flow backward; 0, the default, draws no comets. When the speed changes,
-   * comets continue from where they are.
-   */
-  flow?: ExprInput;
+}
+
+/** One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: options }`. */
+export type Mark =
+  | {
+      /** Rows drawn as markers. */
+      vertices: Vertices;
+    }
+  | {
+      /** Rows drawn as strokes between two vertices. */
+      edges: Edges;
+    }
+  | {
+      /** Rows drawn as triangles between three vertices. */
+      faces: Faces;
+    }
+  | {
+      /** Rows drawn as lines along their paths, or on a plot through their samples. */
+      lines: Lines;
+    }
+  | {
+      /** Rows drawn as the areas their polygons cover. */
+      areas: Areas;
+    };
+
+/** The options every mark has. */
+export interface MarkOptions {
+  /** The dataset and table drawn. */
+  of: [data: string, table: string];
   /**
    * Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
    * corners' colors.
@@ -895,29 +782,6 @@ export interface Lines {
    */
   legend?: string | null;
 }
-
-/** One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: options }`. */
-export type Mark =
-  | {
-      /** Rows drawn as markers. */
-      vertices: Vertices;
-    }
-  | {
-      /** Rows drawn as strokes between two vertices. */
-      edges: Edges;
-    }
-  | {
-      /** Rows drawn as triangles between three vertices. */
-      faces: Faces;
-    }
-  | {
-      /** Rows drawn as lines along their paths, or on a plot through their samples. */
-      lines: Lines;
-    }
-  | {
-      /** Rows drawn as the areas their polygons cover. */
-      areas: Areas;
-    };
 
 /**
  * How a vertex is drawn: a shape's name, `"block"`, or
@@ -1255,6 +1119,23 @@ export interface Stress {
   gap?: number;
 }
 
+/** The options of marks drawn as strokes: edges and lines. */
+export interface StrokeOptions {
+  /**
+   * Each row's width, in the space's unit (units in a diagram, CSS pixels elsewhere) unless given
+   * with `px` or `units`. The theme's width unless set.
+   */
+  width?: Size | null;
+  /** Whether each row is dashed, with the theme's `dash` period. Default `false`. */
+  dash?: ExprInput;
+  /**
+   * The speed of comets flowing along each row, per second, in the unit of the theme's `flow`
+   * lengths. Negative speeds flow backward; 0, the default, draws no comets. When the speed changes,
+   * comets continue from where they are.
+   */
+  flow?: ExprInput;
+}
+
 /** How labels, axis ticks, and titles look. */
 export interface TextTheme {
   /** The text color. */
@@ -1350,9 +1231,7 @@ export interface VertexTheme {
 }
 
 /** Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram. */
-export interface Vertices {
-  /** The dataset and table drawn. */
-  of: [data: string, table: string];
+export interface Vertices extends MarkOptions {
   /**
    * Each row's x and y. Without a position, the point field that `geometry` names places rows, and
    * the scene's layout places rows that have neither.
@@ -1398,42 +1277,6 @@ export interface Vertices {
    * Default `false`. Diagrams only.
    */
   shadow?: boolean;
-  /**
-   * Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-   * corners' colors.
-   */
-  color?: PaintInput | null;
-  /** Whether each row is drawn and can be picked. Default `true`. */
-  visible?: ExprInput;
-  /**
-   * Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-   * the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-   * labeled first.
-   */
-  priority?: ExprInput | null;
-  /** Distinguishes two marks of the same table across scenes, and names the mark in hits. */
-  name?: string | null;
-  /**
-   * Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-   * do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-   */
-  pick?: boolean | null;
-  /** Whether clicking a row selects it. Default `true`. */
-  select?: boolean;
-  /**
-   * Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-   * camera. Default `false`.
-   */
-  drag?: boolean;
-  /** Each row's label: a text field, or label options. */
-  label?: Label | null;
-  /**
-   * A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-   * across its domain, a cell for each category, or a swatch beside each name of a map's
-   * `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-   * conditional, `otherwise` is searched before the cases.
-   */
-  legend?: string | null;
 }
 
 /** The value of the first case whose condition holds, else `otherwise`. */

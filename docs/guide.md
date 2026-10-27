@@ -1,12 +1,12 @@
 # Guide
 
-How latkit works: datasets and the patches that change them, scenes, views, pictures and video,
-the data formats, and deployment.
+How to use latkit: write and change datasets, describe scenes, show them in views, and draw
+pictures and video. The [API reference](reference/api.md) documents every method and option.
 
 ## Data
 
 A dataset is a name and a set of tables. A table has rows, each with an id, and fields, each with
-one value per row. A patch applies atomically: all of its changes, or none.
+one value per row. A [patch](reference/api.md#patch) changes a dataset: all of its changes, or none.
 
 ### Write a dataset
 
@@ -34,32 +34,17 @@ const grid = new Data('grid').apply(
 );
 ```
 
-- **Ids** are a list of nonnegative safe integers (`0..2^53 - 1`) or strings, or `{ count: n }`
-  for rows `0` to `n - 1`.
-- **Values** are one column per field: typed arrays of numbers, or arrays of numbers, booleans,
-  strings, or geometries. `null` is missing. A `Uint8Array` holds booleans, so use `Uint32Array`
-  for small unsigned integers.
-- **Geometries** are `[x, y]` points, paths of points, parts (a polygon's rings, or a path's
-  pieces), or polygons.
+- **Ids** are nonnegative safe integers or strings, or `{ count: n }` for rows `0` to `n - 1`.
+- **Values** are one column per field: typed arrays, or arrays of numbers, booleans, strings, or
+  geometries, with `null` for missing. A `Uint8Array` holds booleans.
+- **Geometries** are `[x, y]` points, paths of points, parts (a polygon's rings), or polygons.
 - **References** name rows of another table by id: `reference(table, ids)`.
-
-| Change                                               | Does                                                                    |
-| ---------------------------------------------------- | ----------------------------------------------------------------------- |
-| `replace(table, ids, fields)`                        | replaces the table, or adds it                                          |
-| `set(table, ids, fields)`                            | updates those rows and adds unknown ids; other fields keep their values |
-| `remove(table, ids)`                                 | removes the rows                                                        |
-| `axis(name, unit)`                                   | names the axis that sampled fields are recorded over                    |
-| `append(table, at, fields, { ids })`                 | records a frame at each coordinate of `at`, for every row or for `ids`  |
-| `forget(before)`                                     | drops the frames before a coordinate                                    |
-| `frames(table, field, { level, first, at, values })` | adds a run of a sampled field's stored entries, as a time tile does     |
-
-`patch.extend(next)` appends another patch's changes.
 
 ### Change it
 
 `apply` changes a dataset in place; every view drawing it shows the change on the next frame.
-`snapshot()` keeps the current version in O(1) by sharing pages with the dataset, so an undo history
-costs only the pages that changed:
+`snapshot()` keeps the current version in O(1) by sharing pages, so an undo history costs only the
+pages that changed:
 
 ```ts
 const before = grid.snapshot();
@@ -69,13 +54,10 @@ grid.restore(before); // and undone
 
 ### Record over time
 
-A field becomes sampled with its first frame. Sampled values are stored as `f32`, even when given
-as a `Float64Array`, so a history is for visualization, not a lossless `f64` archive. Axis
-coordinates stay `f64`, and static columns keep their original numeric type. NaN marks a missing
-value in sampled fields and in numeric query results. A view shows the axis coordinate `view.at`:
-marks interpolate each sampled field linearly between the frames on either side of it, or show the
-last frame at or before it when read with `field(name).step()`. `get` and `query` read the last
-frame at or before the `at` they are given, or the last frame without one.
+A field becomes sampled with its first frame. A view shows the axis coordinate `view.at`: marks
+interpolate each sampled field between the frames on either side of it, or show the last frame at
+or before it when read with `field(name).step()`. Sampled values are stored as `f32` for drawing;
+axis coordinates stay `f64`.
 
 ```ts
 grid.apply(new Patch().axis('time', 's'));
@@ -86,7 +68,7 @@ grid.apply(new Patch().forget(1)); // a rolling window
 view.at = 1.2;
 ```
 
-As it records, each sampled field keeps levels of detail: level `k` holds each row's minimum and
+Each sampled field keeps levels of detail as it records: level `k` holds each row's minimum and
 maximum over buckets of `8^k` frames. A line tracing a field on a plot reads the level that gives
 each pixel column one or two buckets, so a long history draws as fast as a short one.
 
@@ -102,26 +84,21 @@ latkit tile history.latk -o history/
 view.sources = [new Tiles('grid', 'history/frames.json')];
 ```
 
-`tile` writes `frames.json`, `base.latk` (the dataset without its sampled fields' frames), and each
-sampled field's history in spans of `--chunk` entries (256 by default) at every level of detail. In
-Rust, `Snapshot::to_tiles` writes the same files. A line tracing a field fetches the spans its plot
-window shows, at the detail it draws. A mark showing a field fetches the frames around `view.at`.
-While a span loads, the view draws the coarser span above it, as a map shows the parent tile while a
-tile loads.
+A line tracing a field fetches the spans its plot window shows, at the detail it draws; other marks
+fetch the frames around `view.at`. While a span loads, the view draws the coarser span above it. In
+Rust, `Snapshot::to_tiles` writes the same files.
 
 ### Stream
 
-`patch.toBytes()` encodes a patch as one frame, and frames written back to back form a stream. Each
-frame's header gives its length, so `Patch.stream` refuses a frame longer than `limit` (256 MiB by
-default) before reading its body. It buffers at most one frame, besides the current input chunk and
-the patches you keep, and cancels the reader on an error or when you break out of the loop. A server
-in any language can write the same frames ([format](#bytes)).
+`patch.toBytes()` encodes a patch as one frame, and frames written back to back form a stream that
+a server in any language can write ([format](#bytes)). `Patch.stream` yields each patch as its last
+byte arrives:
 
 ```ts
 for await (const patch of Patch.stream((await fetch('/feed')).body!)) grid.apply(patch);
 ```
 
-`new Patch('grid')` names its dataset; applying it to any other dataset throws.
+`new Patch('grid')` names its dataset; applying it to another dataset fails.
 
 ### Read files
 
@@ -131,14 +108,12 @@ const saved = await Data.read(bytes); // latkit's bytes, as data.toBytes() wrote
 const states = await Data.read(geojson, { name: 'states' }); // GeoJSON, gzip-compressed or not
 ```
 
-GeoJSON becomes the tables `points`, `lines`, and `polygons`, each with a `geometry` field and one
-field per property; it is parsed in a worker. [Formats](#json) describes the JSON document.
-`Patch.read(source)` reads one patch from the same kinds of source; reading bytes needs no
-WebAssembly.
+GeoJSON becomes the tables `points`, `lines`, and `polygons`. [Formats](#json) describes the JSON
+document. `Patch.read` reads one patch from the same kinds of source.
 
 ### Read back
 
-Reading needs no GPU. Queries use the same expressions as marks:
+Reading needs no GPU, and queries use the same expressions as marks:
 
 ```ts
 grid.get('Bus', 101, 'name'); // 'Northgate'
@@ -152,20 +127,14 @@ const hot = grid.query({
 // { table, ids, fields: { name: string[], loading: Float64Array }, total }
 ```
 
-`total` is the number of rows the query matched before `limit`. `field('name').contains('north')`
-matches text, ignoring case. `describe()` lists the tables, their rows, their fields and field
-kinds, and the axis with its span. `envelope({ table, field, range, spans, ids })` returns each
-row's minimum and maximum of a sampled field over equal spans of the axis. It reads the levels of
-detail, so each span costs a few reads however many frames it covers. A `Snapshot` has the same
-read methods and reads its own version.
-
-The [API reference](reference/api.md) lists every method's signature.
+[`Dataset`](reference/api.md#dataset) lists the reads, `describe()` and `envelope()` among them. A
+`Snapshot` reads its own version the same way.
 
 ## Scenes
 
 A scene is plain data: a `space`, a list of `marks` drawn in order, and optional `layout`, `theme`,
-`controls`, `ease` (the seconds a change eases over, 0.3 by default), `title`, and `subtitle`.
-Setting `view.scene = next` replaces the scene, and each row eases from where it was drawn.
+`controls`, `ease` (the seconds a change eases over), `title`, and `subtitle`. Setting
+`view.scene = next` replaces the scene, and each row eases from where it was drawn.
 
 ```ts
 const scene: Scene = {
@@ -188,6 +157,8 @@ const scene: Scene = {
 };
 ```
 
+The [scene types](reference/types.md#scene) document every option and its default.
+
 ### Spaces
 
 | Space       | Positions                                                             |
@@ -197,37 +168,30 @@ const scene: Scene = {
 | `'plot'`    | the axis coordinate across, values up                                 |
 | `'diagram'` | a flat sheet, y down, sizes in position units; ports, groups, layouts |
 
-To set options, write the space as an object: `{ plane: { grid } }`, `{ diagram: { grid } }`,
-`{ earth: { projection, graticule, daylight, atmosphere } }`, or `{ plot: { x, y } }`. The earth's
-`projection` is `'mercator'` (the default) or `'globe'`. A grid is `'off'`, `{ lines: { pitch } }`,
-or `{ dots: { pitch, snap } }`. A plot's axes reserve room for their labels and titles.
+Written as an object, a space takes options: `{ earth: { projection: 'globe' } }`,
+`{ plane: { grid: { lines: { pitch: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes.
 
 ### Marks
 
-Every mark names its table with `of: [dataset, table]` and takes `color`, `visible`, `priority`,
-`label`, `legend`, `name`, `pick`, `select`, and `drag`. By default, the pointer hovers, clicks,
-and probes vertices, edges, faces, and a plot's traces, but not geometry such as areas and lines
-along paths (coasts, borders, roads). Set `pick: true` to make, for example, a map's states or cells
-respond to the pointer.
+Every mark names its table with `of: [dataset, table]`. The pointer hovers and clicks vertices,
+edges, faces, and a plot's traces; set `pick: true` to make areas and lines respond too.
 
-| Mark       | Draws each row as                                                        | Its own options                                                                |
-| ---------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `vertices` | a marker at `position` (or at the point field `geometry`)                | `elevation`, `radius`, `size`, `marker`, `ring`, `ports`, `contains`, `shadow` |
-| `edges`    | a stroke between the two rows its `ends` fields reference                | `ends`, `bends`, `route`, `arrows`, `width`, `dash`, `flow`                    |
-| `lines`    | a stroke along a path field; on a plot, a sampled field traced over time | `geometry`, `trace`, `interpolation`, `width`, `dash`, `flow`                  |
-| `areas`    | the area a polygon field covers                                          | `geometry`                                                                     |
-| `faces`    | a triangle between three vertices                                        | `corners`                                                                      |
+| Mark       | Draws each row as                                                        |
+| ---------- | ------------------------------------------------------------------------ |
+| `vertices` | a marker at `position` (or at the point field `geometry`)                |
+| `edges`    | a stroke between the two rows its `ends` fields reference                |
+| `lines`    | a stroke along a path field; on a plot, a sampled field traced over time |
+| `areas`    | the area a polygon field covers                                          |
+| `faces`    | a triangle between three vertices                                        |
 
-`flow` animates comets along a stroke. In a diagram, vertices are blocks with `ports`. A vertex mark
-with `contains` draws each row as a group around the rows that reference it. An edges mark of a
-table without `ends` draws nets, each joining the ports that reference it. The theme's `diagram`
-group (`outline`, `corner`, `portSize`, `bend`) styles blocks, groups, ports, and wires, and
-`shadow: true` gives blocks and groups a drop shadow.
+`flow` animates comets along a stroke. In a diagram, vertices are blocks with `ports`, a vertex
+mark with `contains` draws groups around the rows that reference them, and an edges mark of a table
+without `ends` draws nets joining the ports that reference it.
 
 ### Expressions
 
-Options that vary by row take an expression: a number, a field name, or a builder. Color options
-differ: a string is a CSS color, and a field sets colors only through a colormap or a conditional.
+Options that vary by row take an expression: a number, a field name, or a builder. A string given
+to a color option is a CSS color; a field sets colors through a colormap or a conditional.
 
 ```ts
 import { field, when, selected, units, px } from 'latkit';
@@ -242,32 +206,23 @@ field('vm').from('weather', 'Station'); // read from another dataset, joined by 
 ```
 
 Sizes are in CSS pixels on a plane, the earth, and a plot, and in position units in a diagram,
-unless wrapped in `px()` or `units()`; on the earth a position unit is a degree. State expressions
-read the view: `selected()`, `hovered()`, `pointer()`, `elapsed()`, and `zoom()`. A colormap is a
-catalog name or your own `{ kind, colors }`; a categorical colormap can name its `categories` for
-the legend. A colormap draws a missing value in the theme's `missing` color, while an option given
-`missing()` takes its theme value. `colormapCss(map)` returns the same colors as a CSS gradient.
+unless wrapped in `px()` or `units()`. State expressions read the view: `selected()`, `hovered()`,
+`pointer()`, `elapsed()`, and `zoom()`. `colormaps()` lists the catalog, and `colormapCss(map)`
+gives a colormap's colors as a CSS gradient for legends drawn in HTML.
 
 ### Themes, controls, and layouts
 
 - **Theme**: `'dark'`, `'light'`, or overrides of a base theme, grouped by what they style:
-  `{ base: 'light', text: { size: 12 }, edge: { width: 2 } }`. `edge: { color: null }` colors each
-  edge by blending its two vertices' colors, and `focus: { selected: null }` draws the selection
-  glow in each row's own color. The `flow` group's comet `spacing` and `length` take `{ px: n }` or
-  `{ units: n }`.
-- **Controls**: options `pan`, `zoom`, `turn`, `keyboard`, `hover`, `pickRadius`, `selectBox`,
-  `connect`, `delete`, `cycle`, `press`, and `motion`; by default the pointer pans, zooms, turns,
-  and hovers. The presets are `'inspect'`, which leaves the camera to the application, and
-  `'none'`, for a still picture.
-- **Layout** places vertex rows that have no position, in any space but a plot: `'stress'`,
-  `'layered'`, or their options. Without a layout, such rows are not drawn. A row keeps its place
-  once laid out; `view.arrange()` lays out every row again.
+  `{ base: 'light', text: { size: 12 }, edge: { width: 2 } }`.
+- **Controls**: what the pointer and keys do. By default the pointer pans, zooms, turns, and
+  hovers; `'inspect'` leaves the camera to the application, and `'none'` suits a still picture.
+- **Layout** places vertex rows that have no position: `'stress'` or `'layered'`. A row keeps its
+  place once laid out.
 
 ## Views
 
 A `Gpu` creates views and canvases. A view draws one scene from its sources, the datasets its marks
-name. A canvas shows views, one per panel, and passes each view the pointer and key input on its
-panel.
+name. A canvas shows views, one per panel, and passes each the pointer and key input on its panel.
 
 ```ts
 const gpu = await Gpu.create();
@@ -281,20 +236,9 @@ gpu.canvas(element, {
 });
 ```
 
-### Sources
-
-`view.sources` lists the datasets a view draws, each matched by its name. A source is one of:
-
-- `Data`: the view draws its latest version, from the frame after each patch applies.
-- `Snapshot`: the view draws that version, unchanged.
-- `Tiles`: pieces fetched as the view needs them, shared by every view of the GPU. The URL is a
-  [time tiles](#fetch-long-histories-in-spans) `frames.json` manifest, or vector tiles fetched as
-  the camera moves: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` template. Each vector
-  layer becomes a table of the features that match the mark drawing it (polygons, lines, or points);
-  name the table `layer:polygons`, `layer:lines`, or `layer:points` to choose explicitly.
-
-`view.snapshot(name)` returns the version of a source the view draws now, including the tiles
-fetched so far.
+`view.sources` matches datasets to marks by name: a `Data` draws at its latest version, a
+`Snapshot` as it is, and [`Tiles`](reference/api.md#tiles) as the pieces the view needs, from time
+tiles or vector tiles.
 
 ### Camera
 
@@ -309,11 +253,9 @@ view.orbit = 6; // degrees a second
 
 ### Events
 
-`view.on(type, listener)` returns a function that removes the listener. Intent events (`click`,
-`open`, `menu`, `drag`, `connect`, `delete`) fire once each, in the order the user acted. Change
-events (`hovered`, `selection`, `camera`, `waiting`) report only the latest state, which the
-property of the same name always holds (`view.hovered`, `view.selection`, and so on). Setters fire
-no events, so events report only what the application did not do itself.
+Intent events (`click`, `open`, `menu`, `drag`, `connect`, `delete`) fire once each, in the order
+the user acted. Change events (`hovered`, `selection`, `camera`, `waiting`) carry the latest state,
+which the property of the same name holds. Setters fire no events.
 
 ```ts
 view.on('click', ({ hit }) => console.log(hit.row, hit.point));
@@ -324,8 +266,7 @@ view.on('error', (error) => console.error(error.code, error.path, error.message)
 
 ### Rows
 
-A row is `{ data, table, id }`. A set of rows in one table is `{ data, table, ids }`; the
-selection, `selection` and `delete` events, fits, and `neighbors` use sets:
+A row is `{ data, table, id }`, and a set of rows in one table `{ data, table, ids }`:
 
 ```ts
 view.selection = [{ data: 'grid', table: 'Bus', ids: [101, 102] }];
@@ -334,66 +275,33 @@ const hits = await view.pick([x, y], { radius: 8 }); // rows within 8 CSS pixels
 const at = await view.screenOf({ data: 'grid', table: 'Bus', id: 101 }); // [x, y] on screen, or null
 ```
 
-`pick` and `screenOf` resolve once a frame draws the view. Calls that wait take `{ signal }` and
-stop waiting when it aborts; without one, they time out after 30 seconds. They reject with code
-`timeout` on a timeout, and `cancelled` when aborted or when the view is destroyed.
-
 ### Layouts into data
 
-A scene's `layout` places vertex rows that have no position. `view.arrange()` lays them all out
-again and resolves to one patch per dataset that writes their places into the mark's position
-fields. Applied, the places become part of the data:
+`view.arrange()` lays out every vertex row without a position again, and resolves to one patch per
+dataset that writes their places into the mark's position fields. Applied, the places become part
+of the data:
 
 ```ts
 for (const patch of await view.arrange()) if (patch.data === grid.name) grid.apply(patch);
 ```
 
-### Stats and memory
+### Memory
 
-`view.stats` reports, per frame, the rows drawn, draw calls, tiles, and CPU and GPU milliseconds.
-`gpu.resident` and `gpu.uploading` are the bytes of data on the GPU and waiting to upload, across all
-views of that GPU. `gpu.work` counts exactly what the GPU did: bytes uploaded, written, and cleared;
-rows evaluated, resolved (edge and face endpoints found), and packed; readbacks, jobs, texts, and
-pipelines compiled.
+`gpu.budget = { bytes, uploadPerFrame }` caps the GPU memory data takes and the bytes uploaded per
+frame; set it before data draws. The views of one GPU share it: a view that needs less than an even
+split gets all it needs, and the others divide the rest. A table too large for its view's share is
+paged, and the view draws only the pages its camera needs. Each frame does only the work its
+changes need: a patch re-evaluates only the pages it wrote.
 
-`gpu.budget = { bytes, uploadPerFrame }` caps the GPU memory data may take (by default half the
-device's largest storage buffer) and the bytes uploaded per frame (32 MiB by default). Set it before
-data draws: the memory pool grows as needed and never shrinks. The views of one GPU share the
-budget: a view that needs less than an even split gets all it needs, and the others divide the
-rest. Pages that several views draw count once.
-
-A table too large for its view's share is paged: the view draws only the pages the camera needs. A
-page the camera leaves stays resident while the budget allows, so returning to it needs no upload.
-Drawn edges need their endpoints resident: a vertex page that many drawn edges end in is made
-resident whole, and scattered endpoints are made resident individually, so edges between far-apart
-vertices still fit the budget.
-
-Each frame does only the work its changes need. A patch re-evaluates only the pages it wrote, unless
-a fitted domain or a join reads them. A transition evaluates once, then blends each frame. Rows of a
-paged table keep their GPU slots while the camera moves, so only newly needed rows upload.
-
-`Data`, `Snapshot`, `Gpu`, `View`, `Canvas`, and `Image` have an idempotent `destroy()` and
-`Symbol.dispose`, so they work with `using`. Destroying a `Gpu` also destroys its canvases, views,
-and frame listeners.
-
-Finish a video with `await video.finish()` or cancel it with `await video.abort(reason)`. `record`
-finishes the video itself, and aborts it on an error.
-
-`gpu.lost` tells whether the device is gone. To recover, create a new `Gpu`, views, and canvases,
-and give them your scenes and datasets again. `view.failures` lists the marks that draw nothing
-because their data no longer fits them, with the reason. To drive frames yourself, call
-`gpu.step(now)`: after the first call, latkit stops requesting animation frames, and
-`view.wantsFrame` tells whether a view needs one. `gpu.done()` resolves once submitted GPU work,
-readbacks, and requested pipeline compiles have finished; `gpu.landed()` resolves when work a view
-waits on (a readback, compile, job, text, or fetch) arrives, or a view needs a frame.
-`view.position([x, y])` is the position under a canvas point, and `view.screen(position)` is the
-screen point where a position draws.
+`view.stats`, `gpu.work`, `gpu.resident`, and `gpu.uploading` report what the views draw and what
+the GPU did. A test or benchmark drives frames itself with `gpu.step(now)`, waiting on
+`gpu.landed()` between them.
 
 ## Pictures and video
 
-A `Shot` is plain data: a size in pixels and how views are drawn into it. It draws views whether or
-not a canvas shows them; a canvas showing one keeps its last frame while the shot draws.
-`canvas.shot()` makes a shot of exactly what the canvas shows.
+A [`Shot`](reference/api.md#shot) is plain data: a size in pixels and the views drawn into it. It
+draws views whether or not a canvas shows them, and `canvas.shot()` makes a shot of exactly what a
+canvas shows.
 
 ```ts
 const shot = new Shot([3840, 2160], { scale: 2, layout: [{ view }] }); // 1920 by 1080 CSS pixels
@@ -402,47 +310,25 @@ const png = await image.encode('png'); // or 'jpeg' with { quality }, or 'webp'
 image.destroy();
 ```
 
-| Option        | Does                                                                                          |
-| ------------- | --------------------------------------------------------------------------------------------- |
-| `scale`       | draws `scale` pixels per CSS pixel (1 by default)                                             |
-| `layout`      | the views and where each draws, `at: [x, y, width, height]` as fractions                      |
-| `transparent` | keeps alpha where the themes' backgrounds would be                                            |
-| `capture`     | waits until views are complete and still (`'still'`, the default), or only complete (`'now'`) |
-| `elapsed`     | fixes `elapsed()` and animated effects, such as comets, at `elapsed` seconds                  |
-
-Images are encoded in a worker where workers are available, and on the calling thread otherwise.
-
 ### Video
 
-`shot.video({ fps, output, bitrate })` encodes H.264 MP4 with WebCodecs as frames are drawn, and
-writes it to a `WritableStream`, such as a file's or an in-memory buffer's. `bitrate` defaults to
-about 0.15 bits per pixel per frame. Each frame draws the views at its own time, `frames / fps`
-seconds, so motion follows the video rather than the wall clock. `record(step)` calls `step(time)`
-before each frame and finishes the video when it returns `false`.
+`shot.video({ fps, output })` encodes H.264 MP4 with WebCodecs as frames are drawn, and writes it
+to a `WritableStream`. Each frame draws the views at its own time, `frames / fps` seconds, so motion
+follows the video rather than the wall clock, and a frame where nothing moved repeats the one
+before. `record(step)` calls `step(time)` before each frame, and finishes the video when it returns
+`false`:
 
 ```ts
 const file = await (await showSaveFilePicker()).createWritable();
-const video = new Shot([1920, 1080], { layout: [{ view }] }).video({
-  fps: 60,
-  output: file,
-  bitrate: 12e6,
-});
+const video = new Shot([1920, 1080], { layout: [{ view }] }).video({ fps: 60, output: file });
 await video.record((time) => {
   view.at = time;
   return time < 10;
 });
 ```
 
-The width is rounded down to a multiple of 4 and the height to a multiple of 2, as H.264 needs. A
-frame where nothing moved is not drawn; the previous frame is shown again. A `signal` passed to
-`shot.video` aborts the video: its output is aborted and its views are released.
-
-For manual control, call `await video.frame()` for each frame, then `await video.finish()`.
-`finish` and `abort` are idempotent; both release the output's writer lock, the encoder, and the
-abort listener. `frames` and `time` stay readable afterwards. An error in a step, frame, write, or
-progress callback aborts `record`. Aborting cancels pending drawing and encoding at once, but the
-writer lock is released only after the stream settles its in-flight write. In the browser, the
-output is Constrained Baseline H.264, with output timestamps checked against input order.
+To draw frames one at a time, call `video.frame()`, then `video.finish()`, or `video.abort()` to
+stop.
 
 ## Formats
 
@@ -494,16 +380,10 @@ an object keyed by its method name, with its parameters by name:
 }
 ```
 
-- `replace` and `set` take `{ table, ids, fields }`, `remove` `{ table, ids }`, `append`
-  `{ at, table, ids?, fields }`, `forget` `{ before }`, `axis` `{ name, unit }`, and `frames`
-  `{ table, field, level?, first, at, values }`, a run of a sampled field's entries as stored in a
-  [time tile](#fetch-long-histories-in-spans).
-- `ids` are numbers or strings, or `{ "count": n }`; a `null` id in a reference leaves that row
-  unconnected.
-- A field is an array of one kind of value, a reference `{ reference, ids }`, or a slice of a binary
-  file beside the document, `{ file, dtype, offset, count }`: `count` values starting at byte
-  `offset`, of dtype `f32le`, `f64le`, `i32le`, `u32le`, `u64le`, `u8` (numbers), or `bool` (one
-  byte each, nonzero is true).
+A field is an array of one kind of value, a reference `{ reference, ids }`, or a slice of a binary
+file beside the document, `{ file, dtype, offset, count }`: `count` values starting at byte
+`offset`, of dtype `f32le`, `f64le`, `i32le`, `u32le`, `u64le`, `u8` (numbers), or `bool` (one byte
+each, nonzero is true). A `null` id in a reference leaves that row unconnected.
 
 (bytes)=
 
@@ -531,31 +411,23 @@ endian.
 | text         | `u32` byte length, UTF-8                                                                                                                                                                                                  |
 
 Bits are packed into `u64` words, low bit first. A sampled field's entries are frames at level 0,
-and buckets of `8^k` frames at level `k`. A bucket is left out when all eight entries one level
-below it are stored, since it can be computed from them. Writers outside latkit should record
-frames as `append` changes.
+and buckets of `8^k` frames at level `k`, from 0 to 21. A bucket is left out when all eight entries
+one level below it are stored, since it can be computed from them. Writers outside latkit should
+record frames as `append` changes.
 
 The header is 12 bytes: the magic `LATK` and the frame's length. Readers reject other bytes,
 unknown operation or storage tags, truncated frames, and trailing bytes. The format carries no
 version: a release that changes it says so, and files written before it no longer open. Rust and
 JavaScript tests both check the committed `patch.hex` fixture.
 
-Absolute frame indexes are `u64`; counts within an encoded run are `u32`. A run's end and its span
-in frames must fit in `u64`. JavaScript builders accept only safe integers, including the run's end
-(`2^53 - 1` at most). Levels 0 through 21 are valid. The writer records the highest stored level, so
-a change to the renderer's detail policy does not change how a file reads. Appends currently derive
-up to six levels. Tile manifests record each field's `levels`. In query and pick JSON output, sample
-indexes above JavaScript's safe-integer range are written as decimal strings.
-
-[Stream](#stream) describes the limits `Patch.stream` applies. In Rust, `Patch::from_bytes` decodes
-with the default `DecodeLimits`: a 256 MiB frame and 512 MiB of decoded storage (a conservative
-estimate). `Patch::stream(read, limits)` takes other limits. Applying patches and keeping snapshots
-cost memory beyond decoding.
+Absolute frame indexes are `u64`; counts within an encoded run are `u32`. JavaScript builders
+accept only safe integers. In Rust, `Patch::from_bytes` decodes with the default `DecodeLimits`: a
+256 MiB frame and 512 MiB of decoded storage; `Patch::stream(read, limits)` takes others.
 
 ## Deploying
 
 Install `latkit` from npm for JavaScript, and `latkit-cli` from Cargo for the `latkit` command.
-The Rust library is the `latkit` crate; the crate that binds it to WebAssembly is internal.
+The Rust library is the `latkit` crate.
 
 | Capability                          | Browser                        | Node                             | Native CLI                   |
 | ----------------------------------- | ------------------------------ | -------------------------------- | ---------------------------- |
@@ -565,15 +437,14 @@ The Rust library is the `latkit` crate; the crate that binds it to WebAssembly i
 | File/URL slices                     | Browser fetch and CORS         | Supply data directly             | Local paths and `file:` URLs |
 | H.264 MP4                           | WebCodecs Constrained Baseline | Use the CLI                      | Windows Media Foundation     |
 
-Serve WASM with `Content-Type: application/wasm`. WebGPU requires HTTPS or localhost and a
-supported device. Serve the JavaScript, WASM, and worker from the same package version. Where native
-MP4 encoding is unavailable, the CLI still writes images and raw frames.
+Serve WASM with `Content-Type: application/wasm`, and the JavaScript, WASM, and worker from the
+same package version. WebGPU requires HTTPS or localhost and a supported device.
 
 ### Assets and workers
 
 By default, `load()` finds the WASM and worker files next to the installed modules. With Vite or
-another bundler that supports URL imports, you can pass their URLs explicitly, which also works under
-nested deployment paths:
+another bundler that supports URL imports, pass their URLs, which also works under nested
+deployment paths:
 
 ```ts
 import { load } from 'latkit';
@@ -583,15 +454,10 @@ import workerUrl from 'latkit/worker?url';
 await load({ wasm: wasmUrl, worker: () => new Worker(workerUrl) });
 ```
 
-`latkit/worker` is a standalone classic worker. A custom factory may use a Blob URL; keep the URL
-valid while the factory can be called, and revoke it when the application shuts down. Workers start
-on demand and stop after 30 seconds idle. Where workers are unavailable, jobs run on the calling
-thread.
-
-Your Content Security Policy must allow the WASM asset and data origins in `connect-src`,
-WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), and the worker URL in
-`worker-src`. Add `blob:` only when using Blob workers. Cross-origin resources need CORS headers.
-latkit never changes your policy.
+`latkit/worker` is a standalone classic worker, fine as a Blob URL. Workers start on demand and
+stop after 30 seconds idle; where workers are unavailable, jobs run on the calling thread. Your
+Content Security Policy must allow the WASM asset and data origins in `connect-src`, WebAssembly
+compilation (typically `'wasm-unsafe-eval'` in `script-src`), and the worker URL in `worker-src`.
 
 ### Server-side builders and data
 
@@ -604,10 +470,7 @@ const expression = field('value').gt(0).toJSON();
 
 Patches and expressions need no WebAssembly. To use datasets and queries in Node, compile the
 package's WASM bytes into a `WebAssembly.Module` and pass it to `load({ wasm })`. To render in a
-worker, pass an `OffscreenCanvas` to `gpu.canvas`, and call `gpu.step(now)` yourself if the
-environment has no animation-frame loop.
-
-See [resource lifetimes](#stats-and-memory) and [video cleanup](#video).
+worker, pass an `OffscreenCanvas` to `gpu.canvas`.
 
 ## In Rust
 
@@ -628,16 +491,10 @@ let saved = grid.snapshot().to_bytes();
 let restored = Data::read(&saved, Reading::default()).await?;
 ```
 
-A `Data` changes in place, and its clones share it; a view drawing it draws its latest version, and
-a `Snapshot` keeps one version. `Data::read` and `Patch::read` take a `Reading`: the dataset's name,
-the base its slices are relative to, and the `resource::Fetch` that fetches them. A `Fetch`
-implements `fetch(&Request) -> Pending<Vec<u8>>`; `Pending::ready` wraps an immediate result, and
-`Pending::new` returns a pending value with a resolver for asynchronous work. Every rendering
-`Host` is also a `Fetch`, so the native and browser hosts read slices directly.
-
+`Data::read` and `Patch::read` take a `Reading`: the dataset's name, the base its slices are
+relative to, and the `resource::Fetch` that fetches them. Every rendering `Host` is also a `Fetch`.
 Enable `gpu` for scenes, views, and wgpu rendering; `native` adds system fonts, jobs, files, and
-Windows H.264. `web` enables browser integration for the WASM target. Native file loading includes
-no HTTP client; applications can provide one through `Fetch` or `Host`.
+Windows H.264; `web` adds browser integration for the WASM target.
 
 ### Share an existing device
 
@@ -649,10 +506,6 @@ device.set_device_lost_callback(move |_, _| loss.lost());
 device.on_uncaptured_error(std::sync::Arc::new(move |error| events.error(&error)));
 ```
 
-Forward device loss and uncaptured errors from your application's own callbacks, as above.
-`from_wgpu` checks the device's limits and leaves its callbacks to you. Clone one `Gpu` for views
-that should share caches and a budget. `Gpu::new` instead creates its own device and installs its
-own callbacks. After device loss, create a new device and views; datasets and scenes can be reused.
-
-The [Rust API reference](https://docs.rs/latkit) documents each type, method, feature, and example.
-The [format specification](#bytes) describes cross-language LATK storage.
+`from_wgpu` checks the device's limits and leaves its callbacks to you, so forward device loss and
+uncaptured errors from your own, as above. Clone one `Gpu` for views that should share caches and a
+budget. The [Rust API reference](https://docs.rs/latkit) documents each type, feature, and example.

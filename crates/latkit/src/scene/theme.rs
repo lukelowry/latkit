@@ -5,7 +5,7 @@ use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
-use super::form::{Presets, presets};
+use super::form::{Presets, preset_schema, presets};
 use crate::Color;
 
 /// Default colors and sizes for marks whose options leave them unset or missing, and the look of
@@ -392,21 +392,7 @@ impl Default for Theme {
     }
 }
 
-impl Presets for Theme {
-    const NAMES: &'static [&'static str] = &["dark", "light"];
-
-    fn preset(name: &str) -> Option<Theme> {
-        match name {
-            "dark" => Some(Theme::dark()),
-            "light" => Some(Theme::light()),
-            _ => None,
-        }
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Theme, D::Error> {
-        Theme::deserialize(deserializer)
-    }
-}
+presets!(Theme { "dark" => Theme::dark(), "light" => Theme::light() }; read by hand);
 
 /// Reads a base theme's name, or options merged over the base's serialized form group by group: an
 /// omitted option keeps the base's value, and `null` clears an optional color.
@@ -467,7 +453,7 @@ fn with_base(schema: &mut schemars::Schema) {
         let base = serde_json::json!({ "description": "The theme these options change; dark unless set.", "enum": Theme::NAMES });
         properties.insert("base".into(), base);
     }
-    presets::<Theme>(schema);
+    preset_schema::<Theme>(schema);
 }
 
 #[cfg(test)]

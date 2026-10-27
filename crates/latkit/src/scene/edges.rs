@@ -144,20 +144,13 @@ impl Edges {
             theme_width: wgsl::THEME_EDGE_WIDTH,
         };
         self.stroke.compile(c, &words, context.diagram())?;
-        let mut drawing = Drawing::new(MarkKind::Edges, wgsl::EDGE_WORDS);
+        let mut drawing = Drawing::new(MarkKind::Edges);
         drawing.size_px = self.stroke.px();
         drawing.flags = flags;
-        if self.poles {
-            drawing.path = wgsl::PATH_POLES;
-        } else if self.joins.is_some() {
-            // Each net's star follows the route the view computes from its members.
-            drawing.path = wgsl::PATH_GEOMETRY;
+        if self.joins.is_some() || context.diagram() {
+            // A net's star and every wire in a diagram follow the route the view computes.
             drawing.geometry = c.derived_path("route");
-        } else if context.diagram() {
-            // Every wire follows the route its sheet computed.
-            drawing.path = wgsl::PATH_GEOMETRY;
-            drawing.geometry = c.derived_path("route");
-        } else {
+        } else if !self.poles {
             drawing.geometry = self.bends.as_ref().map_or(wgsl::NONE, |bends| c.path(bends));
             drawing.lane = c.derived_bits("lane");
         }

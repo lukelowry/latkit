@@ -1,5 +1,6 @@
 //! Output destinations: an output written whole or not at all, and the video sinks besides the
-//! library's MP4: image files, raw RGBA, and YUV4MPEG2.
+//! library's MP4: image files, raw RGBA, and YUV4MPEG2. An output's errors name it in their message,
+//! whoever writes it, since they reach the command through the library's video.
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -10,14 +11,20 @@ use std::path::{Path, PathBuf};
 use latkit::host::{Host, Job, Native};
 use latkit::{Encoding, Error, Image, ImageFormat, Mp4, Pending, Pixels, Sink};
 
-use crate::Failure;
 use crate::args::{is_stdio, pattern};
 
 /// The most image files encoding at once on the host's workers.
 const ENCODING: usize = 4;
 
-fn written(error: &io::Error, path: &Path) -> Error {
-    Error::Io(format!("{}: {error}", path.display()).into())
+/// `error`, its message naming the output `path`: a file, or stdout for `-`.
+fn named(error: &io::Error, path: &Path) -> io::Error {
+    let name = if is_stdio(path) { "stdout".to_owned() } else { path.display().to_string() };
+    io::Error::new(error.kind(), format!("{name}: {error}"))
+}
+
+/// The library's I/O error for failing to write the output `path`.
+pub(crate) fn written(error: &io::Error, path: &Path) -> Error {
+    Error::Io(named(error, path).to_string().into())
 }
 
 /// Bytes to stdout, or to a temporary file that replaces `path` only once every byte is written.
@@ -28,25 +35,24 @@ pub(crate) enum Output {
 
 impl Output {
     /// An output to `path`, or stdout for `-`.
-    pub(crate) fn create(path: &Path) -> Result<Output, Failure> {
+    pub(crate) fn create(path: &Path) -> latkit::Result<Output> {
         if is_stdio(path) {
             return Ok(Output::Stdout(BufWriter::new(io::stdout())));
         }
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let suffix = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-        let temporary =
-            tempfile::Builder::new().suffix(&suffix).tempfile_in(parent).map_err(|e| Failure::io(&e, path))?;
+        let temporary = tempfile::Builder::new().suffix(&suffix).tempfile_in(parent).map_err(|e| written(&e, path))?;
         let (file, temporary) = temporary.into_parts();
         Ok(Output::File { path: path.to_path_buf(), file: BufWriter::new(file), temporary })
     }
 
     /// Flushes the remaining bytes and, for a file, moves it into place at its destination.
-    pub(crate) fn commit(self) -> Result<(), Failure> {
+    pub(crate) fn commit(self) -> latkit::Result<()> {
         match self {
-            Output::Stdout(mut out) => out.flush().map_err(|e| Failure::io(&e, Path::new("-"))),
+            Output::Stdout(mut out) => out.flush().map_err(|e| written(&e, Path::new("-"))),
             Output::File { path, file, temporary } => {
-                drop(file.into_inner().map_err(|e| Failure::io(e.error(), &path))?);
-                temporary.persist(&path).map_err(|e| Failure::io(&e.error, &path))
+                drop(file.into_inner().map_err(|e| written(e.error(), &path))?);
+                temporary.persist(&path).map_err(|e| written(&e.error, &path))
             }
         }
     }
@@ -58,35 +64,54 @@ impl Output {
         }
     }
 
-    /// Writes `bytes`. Errors name the destination.
-    fn put(&mut self, bytes: &[u8]) -> latkit::Result<()> {
-        self.write_all(bytes).map_err(|e| written(&e, self.path()))
+    /// Writes `bytes`.
+    pub(crate) fn put(&mut self, bytes: &[u8]) -> latkit::Result<()> {
+        self.write_all(bytes).map_err(|e| Error::Io(e.to_string().into()))
+    }
+
+    /// Writes `value` as JSON, indented if `pretty`, and a newline.
+    pub(crate) fn json(&mut self, value: &impl serde::Serialize, pretty: bool) -> latkit::Result<()> {
+        let wrote = if pretty {
+            serde_json::to_writer_pretty(&mut *self, value)
+        } else {
+            serde_json::to_writer(&mut *self, value)
+        };
+        wrote.map_err(|e| Error::Io(e.to_string().into()))?;
+        self.put(b"\n")
+    }
+
+    /// Flushes the bytes written so far.
+    fn flushed(&mut self) -> latkit::Result<()> {
+        self.flush().map_err(|e| Error::Io(e.to_string().into()))
     }
 }
 
+/// Writes whose errors name the output.
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        match self {
+        let wrote = match self {
             Output::Stdout(out) => out.write(bytes),
             Output::File { file, .. } => file.write(bytes),
-        }
+        };
+        wrote.map_err(|e| named(&e, self.path()))
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        match self {
+        let flushed = match self {
             Output::Stdout(out) => out.flush(),
             Output::File { file, .. } => file.flush(),
-        }
+        };
+        flushed.map_err(|e| named(&e, self.path()))
     }
 }
 
 /// Finalizes a sink's output once its video is finished, leaving it written and in place.
 pub(crate) trait Commit {
-    fn commit(self) -> Result<(), Failure>;
+    fn commit(self) -> latkit::Result<()>;
 }
 
 impl Commit for Mp4<Output> {
-    fn commit(self) -> Result<(), Failure> {
+    fn commit(self) -> latkit::Result<()> {
         self.into_inner().commit()
     }
 }
@@ -144,10 +169,9 @@ impl Images {
         }
         match &mut self.to {
             To::Numbered(names) => {
-                let path = Images::path(names, index);
-                let mut out = Output::create(&path).map_err(|f| f.error)?;
+                let mut out = Output::create(&Images::path(names, index))?;
                 out.put(&self.last)?;
-                out.commit().map_err(|f| f.error)
+                out.commit()
             }
             To::One(out) => out.put(&self.last),
         }
@@ -189,7 +213,7 @@ impl Sink for Images {
 }
 
 impl Commit for Images {
-    fn commit(self) -> Result<(), Failure> {
+    fn commit(self) -> latkit::Result<()> {
         match self.to {
             To::Numbered(_) => Ok(()),
             To::One(out) => out.commit(),
@@ -220,12 +244,12 @@ impl Sink for Raw {
     }
 
     fn finish(&mut self, _: u64) -> impl Future<Output = latkit::Result<()>> {
-        ready(self.out.flush().map_err(|e| written(&e, self.out.path())))
+        ready(self.out.flushed())
     }
 }
 
 impl Commit for Raw {
-    fn commit(self) -> Result<(), Failure> {
+    fn commit(self) -> latkit::Result<()> {
         self.out.commit()
     }
 }
@@ -270,12 +294,12 @@ impl Sink for Y4m {
     }
 
     fn finish(&mut self, _: u64) -> impl Future<Output = latkit::Result<()>> {
-        ready(self.out.flush().map_err(|e| written(&e, self.out.path())))
+        ready(self.out.flushed())
     }
 }
 
 impl Commit for Y4m {
-    fn commit(self) -> Result<(), Failure> {
+    fn commit(self) -> latkit::Result<()> {
         self.out.commit()
     }
 }

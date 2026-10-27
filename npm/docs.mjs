@@ -1,11 +1,12 @@
 /**
- * Writes the reference pages in `docs/reference` from the package's TypeScript: the JavaScript API
- * from the shipped declarations, and the scene and result types from the types the schema writes.
- * Each entry has a heading, its declaration, and its documentation, then its members or a union's
- * forms: each a signature and its definition, with an anchor of its own. Types in signatures, and
- * code spans in the documentation that name an entry or a member, link to it. With `--check`,
- * asserts that the checked-in pages are current instead. The pages are checked in so Read the Docs
- * can build them with Python alone.
+ * Writes the reference pages in `docs/reference`: the JavaScript API from the package's shipped
+ * declarations, the scene and result types from the types the schema writes, and the command
+ * reference from the command tree the CLI's test writes to `cli.json`. Each entry has a heading,
+ * its declaration, and its documentation, then its members or a union's forms: each a signature
+ * and its definition, with an anchor of its own. Types in signatures, and code spans in the
+ * documentation that name an entry or a member, link to it. With `--check`, asserts that the
+ * checked-in pages are current instead. The pages are checked in so Read the Docs can build them
+ * with Python alone.
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -92,9 +93,20 @@ function read(file) {
       : '';
 
   /**
+   * The fields of a function's options: the members of each parameter typed as an object type, or
+   * as an intersection with one, such as `{ radius?: number } & Wait`.
+   */
+  const optionsOf = (node) =>
+    node.parameters.flatMap((p) => {
+      const types = p.type && ts.isIntersectionTypeNode(p.type) ? p.type.types : [p.type];
+      return types.filter((t) => t && ts.isTypeLiteralNode(t)).flatMap((t) => members(t));
+    });
+
+  /**
    * The members of a class, an interface, or an object type, in order. A getter and its setter are
    * one property, and a method's overloads one method. A property of an object type lists that
-   * type's members as its `fields`.
+   * type's members as its `fields`, and a method its options' members. `Symbol.dispose` is left to
+   * `Handle`'s documentation.
    */
   const members = (node) => {
     const out = [];
@@ -102,15 +114,11 @@ function read(file) {
     for (const m of node.members) {
       if (has(m, ts.SyntaxKind.PrivateKeyword) || has(m, ts.SyntaxKind.ProtectedKeyword)) continue;
       if (m.name && ts.isPrivateIdentifier(m.name)) continue;
+      if (m.name && ts.isComputedPropertyName(m.name)) continue;
       const about = doc(m);
       if (/^@internal\b/.test(about)) continue;
       const isStatic = has(m, ts.SyntaxKind.StaticKeyword);
-      let name = 'new';
-      if (m.name) {
-        name = ts.isComputedPropertyName(m.name)
-          ? `[${m.name.expression.getText(source)}]`
-          : m.name.getText(source);
-      }
+      const name = m.name ? m.name.getText(source) : 'new';
       if (ts.isGetAccessor(m) || ts.isSetAccessor(m)) {
         let entry = byName.get(name);
         if (!entry) {
@@ -140,7 +148,7 @@ function read(file) {
         ts.isMethodDeclaration(m) ||
         ts.isMethodSignature(m)
       ) {
-        const overload = { code: text(m), doc: about };
+        const overload = { code: text(m), doc: about, options: optionsOf(m) };
         const known = byName.get(`${name}()`);
         if (known) {
           known.overloads.push(overload);
@@ -177,7 +185,8 @@ function read(file) {
     const about = doc(node);
     if (ts.isFunctionDeclaration(node)) {
       const name = node.name.getText(source);
-      const overload = { code: text(node).replace(/^export (declare )?/, ''), doc: about };
+      const code = text(node).replace(/^export (declare )?/, '');
+      const overload = { code, doc: about, options: optionsOf(node) };
       const known = found.get(name);
       if (known) {
         known.overloads.push(overload);
@@ -202,6 +211,7 @@ function read(file) {
       const name = node.name.getText(source);
       found.set(name, {
         kind: ts.isClassDeclaration(node) ? 'class' : 'interface',
+        abstract: has(node, ts.SyntaxKind.AbstractKeyword),
         name,
         generics: generics(node),
         parameters: generics(node, true),
@@ -293,9 +303,6 @@ const undocumented = [];
 
 /** Notes `what` as undocumented unless `doc` says something. */
 const documented = (doc, what) => doc || undocumented.push(what);
-
-/** The first sentence of `doc`, on one line. */
-const summary = (doc) => (doc.match(/^[\s\S]*?\.(?=\s|$)/)?.[0] ?? doc).replace(/\s+/g, ' ');
 
 // Signatures
 
@@ -437,8 +444,17 @@ async function memberItems(owner, member, path = []) {
       name = [0, `new ${owner}`.length];
     }
     const term = signature(code, owner, name);
-    items.push(item(i === 0 ? id : undefined, term, linked(overload.doc || member.doc, self)));
+    const options = await optionItems(owner, [...path, member.name], overload.options);
+    const about = linked(overload.doc || member.doc, self);
+    items.push(item(i === 0 ? id : undefined, term, [about, ...options].join('\n\n')));
   }
+  return items;
+}
+
+/** The items of a function's or a method's options, at `path` below entry `owner`. */
+async function optionItems(owner, path, options = []) {
+  const items = [];
+  for (const option of options) items.push(...(await memberItems(owner, option, path)));
   return items;
 }
 
@@ -473,10 +489,11 @@ function eventKey(entry) {
 }
 
 /**
- * The items of a union's branches: each documented value; each named type, with its summary; and
- * each form. An event, `{ type: 'name'; detail: … }`, or a tagged form, `{ key: options }`, is one
- * item, its fields in its definition; any other form lists its keys, after its doc when the union
- * has several such forms.
+ * The items of a union's branches: each documented value or named type, and each form. A named
+ * type without a doc of its own needs no item: the declaration links it. An event,
+ * `{ type: 'name'; detail: … }`, is one item named by its tag, its detail's fields in its
+ * definition. A tagged form, `{ key: options }`, is one item, its fields in its definition. Any
+ * other form lists its keys, after its doc when the union has several such forms.
  */
 async function branchesOf(entry) {
   const owner = entry.name;
@@ -487,12 +504,9 @@ async function branchesOf(entry) {
     if (branch.kind === 'literal' && branch.doc) {
       const term = signature(branch.text, owner, [0, branch.text.length]);
       out.push(item(anchor(owner, branch.text), term, linked(branch.doc, owner)));
-    } else if (branch.kind === 'named' && targets.has(branch.name)) {
-      const about = branch.doc || summary(targets.get(branch.name).doc);
-      documented(about, `${owner} ${branch.name} has no documentation`);
-      out.push(item(anchor(owner, branch.name), link(branch.name), linked(about, owner)));
+    } else if (branch.kind === 'named' && branch.doc && targets.has(branch.name)) {
+      out.push(item(anchor(owner, branch.name), link(branch.name), linked(branch.doc, owner)));
     } else if (branch.kind === 'object' && (key || branch.members.length === 1)) {
-      const code = await oneLine(branch.text, 'type');
       const tag = key ? branch.members.find((m) => m.name === key).type : branch.members[0].name;
       const payload = key ? branch.members.find((m) => m.name !== key) : branch.members[0];
       const name = key ? tag.slice(1, -1) : tag;
@@ -501,8 +515,16 @@ async function branchesOf(entry) {
       const fields = [];
       for (const field of payload?.fields ?? [])
         fields.push(...(await memberItems(owner, field, [name])));
-      const at = code.indexOf(tag);
-      const term = signature(code, owner, [at, at + tag.length]);
+      let term;
+      if (key) {
+        // An event reads as its tag, and the type of a detail that has no fields of its own.
+        const detail = payload && !payload.fields?.length ? `: ${payload.type}` : '';
+        term = `**${codeSpan(tag)}**${detail && linkedCode(detail, owner)}`;
+      } else {
+        const code = await oneLine(branch.text, 'type');
+        const at = code.indexOf(tag);
+        term = signature(code, owner, [at, at + tag.length]);
+      }
       out.push(item(anchor(owner, name), term, [linked(about, owner), ...fields].join('\n\n')));
     } else if (branch.kind === 'object') {
       if (forms.length > 1) {
@@ -529,7 +551,8 @@ async function declaration(entry) {
     if (entry.branches.length > 1) return [await unionDeclaration(entry)];
     return [await oneLine(`type ${entry.name}${entry.generics} = ${entry.type}`)];
   }
-  return [[`${entry.kind} ${entry.name}${entry.generics}`, ...entry.heritage].join(' ')];
+  const kind = `${entry.abstract ? 'abstract ' : ''}${entry.kind}`;
+  return [[`${kind} ${entry.name}${entry.generics}`, ...entry.heritage].join(' ')];
 }
 
 /** An entry, as its page shows it. */
@@ -543,6 +566,8 @@ async function render(entry) {
     ...lines.map((line) => `{.signature}\n${line}`),
     linked(entry.doc, entry.name),
   ];
+  const options = (entry.overloads ?? []).find((o) => o.options?.length)?.options;
+  parts.push(...(await optionItems(entry.name, [], options)));
   if (entry.members) parts.push(...(await membersOf(entry)));
   if (entry.branches && entry.branches.length > 1) parts.push(...(await branchesOf(entry)));
   return parts.join('\n\n');
@@ -557,6 +582,95 @@ async function page(head, entries, sections) {
   for (const [title, about, names] of sections) {
     out.push(`## ${title}`, linked(about));
     for (const name of names) out.push(await render(entries.get(name)));
+  }
+  return `${out.join('\n\n')}\n`;
+}
+
+// The command reference
+
+/**
+ * The command reference, from the command tree the CLI's test writes to `cli.json`: each command's
+ * usage and description, then its arguments and options, each a term over its definition with an
+ * anchor of its own. Code spans that name a command or an option link to it. A command that takes
+ * `render`'s arguments says so instead of listing them again.
+ */
+function cliPage() {
+  const commands = JSON.parse(fs.readFileSync(path.join(root, 'docs/reference/cli.json'), 'utf8'));
+  const anchorOf = (command) => `cli-${command.name.split(' ')[1] ?? 'latkit'}`;
+  const idOf = (command, arg) => `${anchorOf(command)}-${arg.long ?? arg.id}`;
+  // What code spans link to: each command, and each option, first in its own command.
+  const links = new Map(commands.map((command) => [command.name, anchorOf(command)]));
+  for (const command of commands)
+    for (const arg of command.args)
+      if (arg.long && !links.has(`--${arg.long}`)) links.set(`--${arg.long}`, idOf(command, arg));
+  const sentence = (help) => {
+    const text = help.trim();
+    return !text || text.endsWith('.') ? text : `${text}.`;
+  };
+  const term = (arg) => {
+    if (arg.positional) {
+      const value = arg.required ? `<${arg.value}>` : `[${arg.value}]`;
+      return `**\`${value}${arg.many ? '...' : ''}\`**`;
+    }
+    const short = arg.short ? `\`-${arg.short},\` ` : '';
+    return `${short}**\`--${arg.long}\`**${arg.value ? ` \`<${arg.value}>\`` : ''}`;
+  };
+  const render = commands.find((command) => command.name === 'latkit render');
+  const out = [
+    '# Command reference',
+    "Every command and option of the `latkit` command line, written from its help. The [command-line guide](../cli.md) shows them at work. `--help` prints a command's help in the terminal, and `latkit --version` prints the version.",
+  ];
+  for (const command of commands) {
+    const top = command.name === 'latkit';
+    const anchor = anchorOf(command);
+    anchors.push(anchor);
+    const local = new Map(links);
+    for (const arg of command.args) if (arg.long) local.set(`--${arg.long}`, idOf(command, arg));
+    const linked = (text) =>
+      text.replace(/`([^`\n]+)`/g, (span, code) =>
+        local.has(code) ? `[${span}](#${local.get(code)})` : span,
+      );
+    out.push(
+      `(${anchor})=`,
+      `## \`${command.name}\``,
+      `{.signature}\n\`${command.usage}\``,
+      linked(sentence(command.about)),
+    );
+    if (top) {
+      out.push('```{rubric} Commands\n```');
+      for (const sub of commands.slice(1))
+        out.push(
+          item(undefined, `[\`${sub.name}\`](#${anchorOf(sub)})`, linked(sentence(sub.about))),
+        );
+    }
+    if (
+      !top &&
+      command !== render &&
+      JSON.stringify(command.args) === JSON.stringify(render.args)
+    ) {
+      out.push(`Takes ${linked('`latkit render`')}'s arguments and options.`);
+      continue;
+    }
+    for (const [title, positional] of [
+      ['Arguments', true],
+      ['Options', false],
+    ]) {
+      const args = command.args.filter((arg) => arg.positional === positional);
+      if (!args.length) continue;
+      out.push(`\`\`\`{rubric} ${title}\n\`\`\``);
+      for (const arg of args) {
+        const id = idOf(command, arg);
+        let about = sentence(arg.help);
+        if (arg.defaults.length)
+          about += ` Defaults to ${arg.defaults.map((v) => `\`${v}\``).join(', ')}.`;
+        if (top && arg.global) about += ' Every command takes it.';
+        const values = arg.values.map((value) => {
+          assert(value.help, `${command.name} ${id}: value ${value.name} has no help`);
+          return item(`${id}-${value.name}`, `**\`${value.name}\`**`, linked(sentence(value.help)));
+        });
+        out.push(item(id, term(arg), [linked(about), ...values].join('\n\n')));
+      }
+    }
   }
   return `${out.join('\n\n')}\n`;
 }
@@ -580,30 +694,30 @@ const TYPES = ['inputs', 'outputs'];
 const sections = {
   'api.md': [
     [
-      'Loading and waiting',
-      'Load the WebAssembly once per page. Every wait ends when its signal aborts, after 30 seconds by default.',
-      ['load', 'LoadOptions', 'Wait', 'LatkitError'],
+      'Loading, errors, and lifetimes',
+      'What every part of the package shares.',
+      ['load', 'LatkitError', 'Wait', 'Handle'],
     ],
     [
       'Data and patches',
       'Datasets of named tables, the patches that change them, written without WebAssembly, and the sources views draw.',
       [
+        'Dataset',
         'Data',
         'Snapshot',
         'Tiles',
         'Source',
-        'DataSource',
         'QueryResult',
         'Envelope',
         'Patch',
-        'PatchSource',
+        'ByteSource',
+        'ReadableBytes',
         'RowIds',
         'Values',
         'Geometry',
         'Reference',
         'reference',
         'Fields',
-        'ReadableBytes',
       ],
     ],
     [
@@ -628,7 +742,6 @@ const sections = {
         'InputOf',
         'px',
         'units',
-        'Within',
         'selected',
         'hovered',
         'pointer',
@@ -636,25 +749,14 @@ const sections = {
         'elapsed',
         'icon',
         'RgbaImage',
+        'colormaps',
         'colormapCss',
       ],
     ],
     [
       'Views',
       'A GPU makes views, and canvases that show them.',
-      [
-        'Gpu',
-        'View',
-        'ViewOptions',
-        'ViewEvents',
-        'Insets',
-        'Point',
-        'Position',
-        'Canvas',
-        'CanvasOptions',
-        'Panel',
-        'Rect',
-      ],
+      ['Gpu', 'View', 'ViewEvents', 'Insets', 'Point', 'Position', 'Canvas', 'Panel', 'Rect'],
     ],
     [
       'Pictures and video',
@@ -713,6 +815,8 @@ const sections = {
       'The marks that draw the tables of a scene.',
       [
         'Mark',
+        'MarkOptions',
+        'StrokeOptions',
         'Vertices',
         'Edges',
         'Lines',
@@ -792,9 +896,19 @@ const sections = {
 const heads = {
   'api.md': `# JavaScript API
 
-Every class, function, and type the \`latkit\` package exports. \`load()\` loads the WebAssembly
-that datasets, views, and pictures need; scenes, expressions, and patches need none. Scenes and
-their options take the [scene and result types](types.md).`,
+Every class, function, and type the \`latkit\` package exports. Scenes and their options take the
+[scene and result types](types.md). Four rules hold throughout, so the entries below leave them
+out:
+
+- **Loading.** Scenes, expressions, and patches are plain data. Datasets, views, pictures, and the
+  colormap functions need latkit's WebAssembly: until \`load()\` finishes, they throw an
+  \`unloaded\` error. \`Gpu.create()\`, \`Data.read()\`, and \`Patch.read()\` of JSON load it
+  themselves.
+- **Errors.** Everything latkit throws or rejects with is a \`LatkitError\`. Input it cannot use
+  fails with an \`invalid\` error whose \`path\` names the part, such as
+  \`marks[2].vertices.color\`, and changes nothing.
+- **Waits.** Every promise waits within its \`Wait\`: until its \`signal\` aborts, or 30 seconds.
+- **Lifetimes.** A \`Handle\` holds memory until \`destroy()\`, or a \`using\` declaration, frees it.`,
   'types.md': `# Scene and result types
 
 The types of the scenes latkit draws and of what it reports, written from the same schema as the
@@ -862,6 +976,8 @@ for (const name of Object.keys(entries)) {
   assert(!content.includes('{@link'), `${file}: a link left unresolved`);
   written.set(file, content);
 }
+written.set(path.join(root, 'docs/reference/cli.md'), cliPage());
+
 // Anchors are labels for the whole site, so each must be unique, and none may be a heading's slug.
 const slugs = [
   ...Object.values(heads),

@@ -67,6 +67,16 @@ pub(crate) struct Holding {
     pub(crate) drawing: Option<Arc<Drawing>>,
 }
 
+impl Holding {
+    /// The table row at held row `h`, if it holds one there.
+    pub(crate) fn source_row(&self, h: u32) -> Option<u32> {
+        match &self.drawing {
+            Some(drawing) => drawing.source(h),
+            None => (h < self.table.len() as u32).then_some(h),
+        }
+    }
+}
+
 pub(crate) struct Shown {
     pub(crate) mark: Mark,
     pub(crate) key: Key,
@@ -126,9 +136,10 @@ pub(crate) struct Shown {
     pub(crate) offsets: Offsets,
     pub(crate) packed: bool,
     pub(crate) written: Vec<u32>,
-    /// A transition waiting to freeze. `transition` is the running one, `remap` where its remap
-    /// words start, and `carry` whether this frame froze rows at new places, so their comets'
-    /// travel follows them.
+    /// A transition waiting to start. `transition` is the running one, and `remap` where its remap
+    /// words start in the frame it starts, which the compute pass freezes it from (`NONE` in other
+    /// frames). `carry` is whether this frame froze rows at new places, so their comets' travel
+    /// follows them.
     pub(crate) begin: Option<Begin>,
     pub(crate) transition: Option<Transition>,
     pub(crate) remap: u32,
@@ -190,7 +201,7 @@ impl Shown {
             written: Vec::new(),
             begin: None,
             transition: None,
-            remap: 0,
+            remap: wgsl::NONE,
             carry: false,
             query: wgsl::NONE,
             segments: super::lists::Segments::default(),
@@ -220,10 +231,7 @@ impl Shown {
 
     /// The table row at held row `h`.
     pub(crate) fn source_row(&self, h: u32) -> Option<u32> {
-        match self.drawing() {
-            Some(drawing) => drawing.source(h),
-            None => (h < self.rows).then_some(h),
-        }
+        self.holding.as_ref()?.source_row(h)
     }
 
     /// The held row of table row `r`, if the mark holds it.
@@ -283,21 +291,12 @@ impl Shown {
     /// Whether its state pages have the current row width and cover every held row.
     pub(crate) fn pages_held(&self) -> bool {
         let state = self.words.pages(Kept::State);
-        state.width == self.stride() + self.extras()
-            && state.blocks.len() as u32 >= self.held().div_ceil(wgsl::PAGE_ROWS)
+        state.width == self.width() && state.blocks.len() as u32 >= self.held().div_ceil(wgsl::PAGE_ROWS)
     }
 
-    /// The row count of each page of held rows: a full page per slot of a paged table, since slots
-    /// evaluate whole, or an unpaged table's rows split into pages. Exits follow in either case.
+    /// The row count of each page of its held rows, as [`page_rows`] lays them out.
     pub(crate) fn page_rows(&self) -> Vec<u32> {
-        let (live, held) = (self.live(), self.held());
-        let full = |start: u32| self.drawing().is_some() && start < live;
-        (0..held.div_ceil(wgsl::PAGE_ROWS))
-            .map(|p| {
-                let start = p * wgsl::PAGE_ROWS;
-                if full(start) { wgsl::PAGE_ROWS } else { held.min(start + wgsl::PAGE_ROWS) - start }
-            })
-            .collect()
+        page_rows(self.live(), self.held(), self.drawing().is_some())
     }
 
     /// Releases its tables and pages on the GPU, as when the mark is removed.
@@ -308,7 +307,7 @@ impl Shown {
 
     /// Kind words per row.
     pub(crate) fn stride(&self) -> u32 {
-        self.compiled.as_ref().map_or_else(|| kind_stride(self.kind()), |c| c.drawing.stride)
+        self.kind().stride()
     }
 
     /// Extra words per row.
@@ -316,11 +315,29 @@ impl Shown {
         self.compiled.as_ref().map_or(0, |c| c.drawing.extras)
     }
 
+    /// Words per row: the kind's, then the extras.
+    pub(crate) fn width(&self) -> u32 {
+        self.stride() + self.extras()
+    }
+
+    /// Words per row in each kind of word page its held rows take, 0 for a kind it keeps none of:
+    /// its state, its focus word, its label candidates when labeled, and when faces are `summing`
+    /// their normals at its rows, those.
+    pub(crate) fn kept_widths(&self, summing: bool) -> [(Kept, u32); 4] {
+        let labeled = self.compiled.as_ref().is_some_and(|c| c.drawing.label.is_some());
+        [
+            (Kept::State, self.width()),
+            (Kept::Focus, 1),
+            (Kept::Candidates, if labeled { wgsl::CANDIDATE_WORDS } else { 0 }),
+            (Kept::Normals, if summing { wgsl::NORMAL_WORDS } else { 0 }),
+        ]
+    }
+
     /// What its channels and fitted domains read besides its own table's static fields, which picks
     /// their pipeline variant. Before it compiles, neither joins, samples, nor the view.
     pub(crate) fn reads(&self) -> crate::gpu::pipelines::Reads {
         let Some(program) = self.compiled.as_ref().map(|c| &c.program) else {
-            return crate::gpu::pipelines::Reads { joined: false, timed: false, viewed: false };
+            return crate::gpu::pipelines::Reads::NONE;
         };
         let viewing = [wgsl::OP_SELECTED, wgsl::OP_HOVERED, wgsl::OP_POINTER, wgsl::OP_ZOOM];
         crate::gpu::pipelines::Reads {
@@ -330,13 +347,9 @@ impl Shown {
         }
     }
 
-    /// The `PATH_` code its pipelines are built for: the path its strokes follow, or where its
-    /// triangles' corners come from.
+    /// The `PATH_` code its pipelines are built for, as [`Mark::path`](crate::Mark) decides it.
     pub(crate) fn path(&self) -> u32 {
-        match &self.compiled {
-            Some(c) if c.drawing.primitive != Primitive::Points => c.drawing.path,
-            _ => wgsl::PATH_ENDS,
-        }
+        self.compiled.as_ref().map_or(wgsl::PATH_ENDS, |c| c.drawing.path)
     }
 
     /// Whether a list numbers its instances: strokes whose rows have different segment counts
@@ -344,7 +357,7 @@ impl Shown {
     /// have different triangle counts.
     pub(crate) fn listed(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
-        match compiled.drawing.primitive {
+        match self.kind().primitive() {
             Primitive::Strokes => compiled.drawing.geometry != wgsl::NONE || self.curved(),
             Primitive::Triangles => self.path() == wgsl::PATH_GEOMETRY,
             Primitive::Points => false,
@@ -370,7 +383,7 @@ impl Shown {
         let rows = (self.rows + self.exits) as usize;
         let Some(compiled) = &self.compiled else { return 1 };
         let points = self.tables.points(compiled.drawing.geometry) as usize;
-        if compiled.drawing.primitive == Primitive::Triangles {
+        if self.kind().primitive() == Primitive::Triangles {
             return (points / 3 + rows).max(1) as u32;
         }
         let pieces = if !self.curved() {
@@ -381,14 +394,6 @@ impl Shown {
             rows * wgsl::BOW_PIECES as usize
         };
         (points + rows + pieces).max(1) as u32
-    }
-
-    /// Vertices per instance: 4 for the quad of a point or segment, 3 for a triangle.
-    pub(crate) fn corners(&self) -> u32 {
-        match self.compiled.as_ref().map(|c| c.drawing.primitive) {
-            Some(Primitive::Triangles) => 3,
-            _ => 4,
-        }
     }
 
     /// A bit mask of the channels label placement reads: row position, size, and visibility, and
@@ -581,7 +586,7 @@ impl Shown {
     /// numbers and colors interpolate, a position's high words move by their offset, and other
     /// stored words snap to the new value. A word no channel stores keeps its value.
     fn blends(&self) -> Vec<u32> {
-        let mut blends = vec![wgsl::BLEND_KEEP; (self.stride() + self.extras()) as usize];
+        let mut blends = vec![wgsl::BLEND_KEEP; self.width() as usize];
         let mut set = |word: u32, blend: u32| {
             if let Some(b) = blends.get_mut(word as usize) {
                 *b = blend;
@@ -682,15 +687,16 @@ impl Blocks {
     }
 }
 
-/// Kind words per row of a mark of `kind`.
-pub(crate) fn kind_stride(kind: MarkKind) -> u32 {
-    match kind {
-        MarkKind::Vertices => wgsl::VERTEX_WORDS,
-        MarkKind::Edges => wgsl::EDGE_WORDS,
-        MarkKind::Faces => wgsl::FACE_WORDS,
-        MarkKind::Lines => wgsl::LINE_WORDS,
-        MarkKind::Areas => wgsl::AREA_WORDS,
-    }
+/// The row count of each page of `held` rows, the first `live` of them not exits: a full page per
+/// slot of a `paged` table, since slots evaluate whole, or an unpaged table's rows split into
+/// pages. Exits follow in either case.
+pub(crate) fn page_rows(live: u32, held: u32, paged: bool) -> Vec<u32> {
+    (0..held.div_ceil(wgsl::PAGE_ROWS))
+        .map(|p| {
+            let start = p * wgsl::PAGE_ROWS;
+            if paged && start < live { wgsl::PAGE_ROWS } else { held.min(start + wgsl::PAGE_ROWS) - start }
+        })
+        .collect()
 }
 
 fn shape_code(shape: Shape) -> u32 {

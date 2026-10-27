@@ -5,7 +5,7 @@
  *   Natural Earth's repository;
  * - OpenStreetMap's planet as OpenFreeMap's vector tiles.
  *
- * GeoJSON downloads as bytes and is read in a worker. Tiles are fetched as the camera needs them.
+ * GeoJSON, plain or gzip-compressed, is read in a worker. Tiles are fetched as the camera needs them.
  */
 import { Data, Tiles, field, type ColormapName, type Mark, type Source } from 'latkit';
 import { download, megabytes } from './cases.js';
@@ -63,13 +63,9 @@ const borders: MapChoice = {
     const started = performance.now();
     const files = ['coastline', 'countries', 'provinces'] as const;
     const sets = await Promise.all(
-      files.map(async (name) => {
-        const { bytes } = await download(
-          `${import.meta.env.BASE_URL}maps/${name}.geojson.gz`,
-          signal,
-        );
-        return Data.read(bytes, { name, signal });
-      }),
+      files.map((name) =>
+        Data.read(`${import.meta.env.BASE_URL}maps/${name}.geojson.gz`, { name, signal }),
+      ),
     );
     return {
       sources: sets,
@@ -93,7 +89,7 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
     attribution: NATURAL_EARTH,
     async load(signal, progress) {
       const started = performance.now();
-      const { bytes, received } = await download(
+      const bytes = await download(
         `${NE}ne_${scale}_admin_1_states_provinces.geojson`,
         signal,
         (got, total) => progress(`downloading ${megabytes(got, total)}`),
@@ -103,7 +99,7 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
       return {
         sources: [data],
         states: data,
-        summary: `${(received / 1e6).toFixed(1)} MB in ${seconds(started)}, read in ${seconds(fetched)}`,
+        summary: `${(bytes.length / 1e6).toFixed(1)} MB in ${seconds(started)}, read in ${seconds(fetched)}`,
         marks: ({ labels, states }) => [
           {
             // Each state carries the grid's statistics, which hovering it shows in the inspector.

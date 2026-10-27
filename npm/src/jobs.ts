@@ -3,6 +3,8 @@
  * module once and has its own WebAssembly memory.
  */
 
+import { thrown, type LatkitError } from './internal.js';
+
 /** A worker's message: that it is ready, a job's bytes, or why it failed. */
 interface Answer {
   ready?: boolean;
@@ -13,7 +15,7 @@ interface Answer {
 interface Job {
   bytes: Uint8Array;
   resolve(bytes: Uint8Array): void;
-  reject(error: Error): void;
+  reject(error: LatkitError): void;
 }
 
 interface Slot {
@@ -23,9 +25,11 @@ interface Slot {
   timer?: ReturnType<typeof setTimeout>;
 }
 
-/** The error for a job that ran too long, with the `timeout` code latkit keeps. */
-function timedOut(): Error {
-  return Object.assign(new Error('a worker job timed out'), { code: 'timeout' });
+/** The error for a failed job: `cause` itself if it is one, else an `io` error saying it. */
+function failure(cause: unknown): LatkitError {
+  if (cause instanceof Error && 'code' in cause) return cause as LatkitError;
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return thrown({ code: 'io', message, cause: cause instanceof Error ? cause : undefined });
 }
 
 /**
@@ -53,7 +57,7 @@ export function jobs(
   const fail = (slot: Slot, cause: unknown): void => {
     const job = slot.job;
     retire(slot);
-    job?.reject(cause instanceof Error ? cause : new Error(String(cause)));
+    job?.reject(failure(cause));
   };
 
   const send = (slot: Slot): void => {
@@ -105,11 +109,12 @@ export function jobs(
         clearTimeout(slot.timer);
         slot.job = job;
         const active = slot;
+        const timedOut = () => thrown({ code: 'timeout', message: 'a worker job timed out' });
         slot.timer = setTimeout(() => fail(active, timedOut()), 60_000);
         send(slot);
       } catch (error) {
         if (slot) retire(slot);
-        reject(error instanceof Error ? error : new Error(String(error)));
+        reject(failure(error));
       }
     });
 }

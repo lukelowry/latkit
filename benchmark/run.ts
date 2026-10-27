@@ -22,8 +22,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { createServer } from 'vite';
-import { STEP, deadline, launch, type Chrome } from '../npm/examples/gate/browser.ts';
+import {
+  STEP,
+  deadline,
+  errorsOf,
+  launch,
+  serve,
+  type Chrome,
+} from '../npm/examples/gate/browser.ts';
 import { judge, times, work, type TimeBaseline, type WorkBaseline } from './judge.ts';
 import { report } from './report.ts';
 import type { Listed, Run } from './page/main.ts';
@@ -95,16 +101,7 @@ function outgrown(
   return undefined;
 }
 
-const server = await createServer({
-  root: here,
-  configFile: path.join(here, 'vite.config.ts'),
-  logLevel: 'error',
-  server: { port: 5230, strictPort: false },
-});
-await deadline(server.listen(), STEP, 'serve the bench');
-const address = server.resolvedUrls?.local[0];
-if (!address) throw new Error('the bench has no address');
-const url = address;
+const { url, close } = await serve(here, 5230, 'the bench');
 const runs: Run[] = [];
 const failures: string[] = [];
 const notes: string[] = [];
@@ -126,11 +123,9 @@ async function measure(warm: Chrome, scenario: Listed, size: number): Promise<Ru
  * cannot report whether it was. */
 async function visit(chrome: Chrome, scenario: Listed, size: number): Promise<Run> {
   const page = await deadline(chrome.browser.newPage(PAGE), STEP, 'open a page');
-  const errors: string[] = [];
+  const errors = errorsOf(page);
   let [phase, heard] = ['opening', performance.now()];
-  page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => {
-    if (m.type() === 'error') errors.push(m.text());
     if (m.type() === 'debug' && m.text().startsWith('phase '))
       [phase, heard] = [m.text().slice(6), performance.now()];
   });
@@ -220,7 +215,7 @@ try {
   }
 } finally {
   await warm.close();
-  await server.close();
+  await close();
 }
 
 const read = <T>(file: string): T | undefined =>

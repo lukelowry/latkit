@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde_json::{Map, Value as Json};
 
-use crate::data::{Ids, Name, Patch, Snapshot, Table, Values};
+use crate::data::{Ids, Name, Patch, Snapshot, Table, Value, Values};
 use crate::{Error, Result};
 
 type Point = [f64; 2];
@@ -25,7 +25,7 @@ type Point = [f64; 2];
 /// GeoJSON.
 pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Snapshot> {
     let bytes = super::gunzipped(bytes)?;
-    let top: Top = serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("not GeoJSON: {e}")))?;
+    let top: Top = crate::json::from_bytes(&bytes).map_err(|e| Error::invalid(format!("not GeoJSON: {e}")))?;
     let mut tables = [Rows::default(), Rows::default(), Rows::default()];
     let mut add = |feature: Feature| {
         if let Some(geometry) = feature.geometry {
@@ -202,26 +202,21 @@ fn ids(ids: &[Option<Json>]) -> Option<Ids> {
     None
 }
 
-/// Converts a property's values into a field: numbers if every present value is a number, booleans
-/// if every one is a boolean, and text otherwise, with non-string values written as JSON.
+/// Converts a property's values into a field, typed as [`Values::infer`] types them, with arrays
+/// and objects written as JSON text.
 fn property(values: &[Option<&Json>]) -> Values {
-    let present = || values.iter().flatten();
-    if present().all(|v| v.is_number()) {
-        return values.iter().map(|v| v.and_then(Json::as_f64)).collect::<Vec<_>>().into();
-    }
-    if present().all(|v| v.is_boolean()) {
-        return values.iter().map(|v| v.and_then(Json::as_bool)).collect::<Vec<_>>().into();
-    }
-    let texts: Vec<Option<String>> = values
+    let values: Vec<Option<Value>> = values
         .iter()
         .map(|v| {
             v.map(|v| match v {
-                Json::String(text) => text.clone(),
-                other => other.to_string(),
+                Json::Number(n) => Value::Number(n.as_f64().unwrap_or(f64::NAN)),
+                Json::Bool(b) => Value::Bool(*b),
+                Json::String(text) => Value::Text(text.as_str().into()),
+                other => Value::Text(other.to_string().into()),
             })
         })
         .collect();
-    texts.into()
+    Values::infer(&values)
 }
 
 /// Coordinates of any nesting depth: a position, a list of positions, a list of those, or a list of

@@ -1,14 +1,15 @@
 //! A frame's GPU passes.
 //!
-//! The compute pass expands paged marks' drawn rows from their runs, evaluates dirty channels over
-//! the changed row blocks (reducing fitted domains first), resolves endpoints, eases marks in
-//! transition, moves comets, numbers segments, sums face normals when their corners moved, and
-//! measures extents when asked. The render pass draws the backdrop, then every mark's primitive and
+//! The compute pass freezes what rows showed for transitions starting this frame, expands paged
+//! marks' drawn rows from their runs, evaluates dirty channels over the changed row blocks
+//! (reducing fitted domains first), resolves endpoints, eases marks in transition, moves comets,
+//! numbers segments, sums face normals when their corners moved, and measures extents when asked. The render pass draws the backdrop, then every mark's primitive and
 //! ports in scene order with depth, then the labels and the overlay. A pending probe then reads
 //! what the frame drew, through the same geometry.
 
 use super::resources::MARK_STRIDE;
-use super::sync::{Source, table_of};
+use super::sync::Source;
+use super::variants::{CARRY, EASE, EXPAND_RUNS, GATHER, MarkVariants, NORMALS, TRAVEL};
 use super::words::Kept;
 use super::{Frame, View};
 use crate::Space;
@@ -17,7 +18,7 @@ use crate::derive::stamp_of;
 use crate::expr::compile::{Deps, Reads};
 use crate::expr::cpu::Rows;
 use crate::gpu::Inner;
-use crate::gpu::pipelines::Variant;
+use crate::gpu::pipelines::{Asked, Variant};
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::work::Count;
@@ -120,29 +121,19 @@ impl Marks<'_> {
         shown: &super::marks::Shown,
         lit: bool,
     ) {
-        let Some(compiled) = &shown.compiled else { return };
-        let custom = compiled.drawing.markers.custom.is_some();
-        let areas = shown.path() == wgsl::PATH_GEOMETRY;
-        let (shader, corners) = match (compiled.drawing.primitive, lit) {
-            (Primitive::Points, false) if custom => (Shader::PointsCustom, 4),
-            (Primitive::Points, false) => (Shader::Points, 4),
-            (Primitive::Points, true) if custom => (Shader::PointsCustomFocus, 4),
-            (Primitive::Points, true) => (Shader::PointsFocus, 4),
-            (Primitive::Strokes, false) => (Shader::Strokes, 4),
-            (Primitive::Strokes, true) => (Shader::StrokesFocus, 4),
-            (Primitive::Triangles, false) if areas => (Shader::Areas, 3),
-            (Primitive::Triangles, false) => (Shader::Triangles, 3),
-            (Primitive::Triangles, true) if areas => (Shader::AreasFocus, 3),
-            // A face shows focus by its color alone, so it has no lit draw.
-            (Primitive::Triangles, true) => return,
+        if shown.compiled.is_none() {
+            return;
+        }
+        let variants = MarkVariants::shown(shown);
+        let (Some(shader), Some(asked)) = (variants.shader(lit), variants.draw(lit, self.format, self.samples)) else {
+            return;
         };
-        let pipeline = if let Some(source) = &compiled.drawing.markers.custom {
-            inner.pipelines.custom(self.device, source, shader, self.format, self.samples)
-        } else {
-            let variant = Variant::draw(shader, self.format, self.samples).path(shown.path());
-            Some(inner.pipelines.render_pipeline(self.device, variant))
+        let pipeline = match asked {
+            Asked::Shader(variant) => Some(inner.pipelines.render(self.device, variant)),
+            Asked::Custom(source, variant) => inner.pipelines.custom(self.device, &source, variant),
         };
         let Some(pipeline) = pipeline else { return };
+        let corners = shown.kind().primitive().corners();
         let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         pass.set_bind_group(1, &self.groups.mark, &[offset(i)]);
         let clip = self.clip.filter(|_| shown.kind() == MarkKind::Lines);
@@ -172,12 +163,13 @@ impl Marks<'_> {
         shown: &super::marks::Shown,
     ) {
         let ports = shown.port_count();
-        if ports == 0 || !shown.compiled.as_ref().is_some_and(|c| c.drawing.primitive == Primitive::Points) {
+        if ports == 0 || shown.compiled.is_none() || shown.kind() != MarkKind::Vertices {
             return;
         }
         let group = &self.passes.iter().find(|(s, _)| *s == Shader::PointsPorts).expect("listed").1;
         pass.set_bind_group(1, &self.groups.mark, &[offset(i)]);
-        pass.set_pipeline(&inner.pipelines.render(self.device, Shader::PointsPorts, self.format, self.samples));
+        let variant = Variant::draw(Shader::PointsPorts, self.format, self.samples);
+        pass.set_pipeline(&inner.pipelines.render(self.device, variant));
         pass.set_bind_group(2, group, &[]);
         drawn.draw(pass, 4, (shown.rows + shown.exits) * ports);
     }
@@ -185,6 +177,8 @@ impl Marks<'_> {
 
 /// The marks each step of a frame's compute pass covers.
 struct Work {
+    /// Marks whose transitions start this frame, freezing what their rows showed.
+    frozen: Vec<usize>,
     evaluated: Vec<usize>,
     /// Marks whose rows resolve changed endpoints.
     resolved: Vec<usize>,
@@ -247,20 +241,17 @@ pub(super) fn offset(index: usize) -> u32 {
 }
 
 /// The least and greatest finite value of `input` over `rows`, encoded as `lib/reduce.wesl` keeps
-/// them: the complement of the least's order-preserving bits, then the greatest's bits. `[0, 0]`
-/// when no row has a finite value.
+/// them: the complement of the least's key, then the greatest's. `[0, 0]` when no row has a finite
+/// value.
 fn fit(rows: &Rows<'_>, input: &crate::Expr) -> [u32; 2] {
-    let ordered = |x: f32| {
-        let b = x.to_bits();
-        if b & 0x8000_0000 != 0 { !b } else { b | 0x8000_0000 }
-    };
+    use crate::order::number32;
     let (mut least, mut most) = (f32::INFINITY, f32::NEG_INFINITY);
     for x in rows.numbers(input, |v| v as f32) {
         if x.is_finite() {
             (least, most) = (least.min(x), most.max(x));
         }
     }
-    if least > most { [0, 0] } else { [!ordered(least), ordered(most)] }
+    if least > most { [0, 0] } else { [!number32(least), number32(most)] }
 }
 
 impl super::marks::Shown {
@@ -301,7 +292,7 @@ impl super::marks::Shown {
             return list.kept;
         }
         let rows = self.rows + self.exits;
-        match self.compiled.as_ref().map(|c| c.drawing.primitive) {
+        match self.compiled.as_ref().map(|_| self.kind().primitive()) {
             Some(Primitive::Strokes) => rows * self.segments_per_row(),
             Some(_) => rows,
             None => 0,
@@ -313,17 +304,12 @@ impl super::marks::Shown {
         if let Some(list) = &self.segments.list {
             return list.kept;
         }
-        match self.compiled.as_ref().map(|c| c.drawing.primitive) {
+        match self.compiled.as_ref().map(|_| self.kind().primitive()) {
             Some(Primitive::Strokes) => self.rows * self.segments_per_row(),
             Some(Primitive::Points) => self.rows * (1 + self.port_count()),
             Some(_) => self.rows,
             None => 0,
         }
-    }
-
-    /// The code of the primitive it draws.
-    pub(crate) fn primitive(&self) -> u32 {
-        self.compiled.as_ref().map_or(0, |c| c.drawing.primitive.code())
     }
 
     /// Records the draw of its instances, indirect from its segment list when it has one.
@@ -364,7 +350,7 @@ impl View {
         for &i in work {
             let shown = &mut self.marks[i];
             let into = state;
-            pass.set_pipeline(&inner.pipelines.compute_pipeline(device, Variant::channels(shown.reads())));
+            pass.set_pipeline(&inner.pipelines.compute(device, Variant::channels(shown.reads())));
             pass.set_bind_group(1, group, &[offset(i)]);
             let rows = shown.live();
             // A changed domain dirties every block, so the reductions run over the listed blocks. A
@@ -387,9 +373,10 @@ impl View {
         pass.set_bind_group(2, state, &[step(wgsl::STEP_CHANNELS)]);
     }
 
-    /// Records the frame's compute pass: evaluates dirty channels, and sums face normals when their
-    /// inputs changed. With `measure`, it also measures the extents of every measured mark and
-    /// returns their readback. With `travel`, comets move by the frame's step.
+    /// Records the frame's compute pass: freezes starting transitions, evaluates dirty channels, and
+    /// sums face normals when their inputs changed. With `measure`, it also measures the extents of
+    /// every measured mark and returns their readback. With `travel`, comets move by the frame's
+    /// step.
     pub(super) fn compute(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -399,9 +386,9 @@ impl View {
     ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let Work { evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded } =
+        let Work { frozen, evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded } =
             self.work(measure, travel);
-        let all = [&work, &resolved, &eased, &segments, &faces, &measured, &carried, &travelled, &expanded];
+        let all = [&frozen, &work, &resolved, &eased, &segments, &faces, &measured, &carried, &travelled, &expanded];
         if all.iter().all(|marks| marks.is_empty()) {
             return None;
         }
@@ -422,6 +409,7 @@ impl View {
             }
         }
         let groups = resources.groups(&gpu.0, inner);
+        let freeze_group = (!frozen.is_empty()).then(|| resources.pass(device, inner, Shader::Freeze));
         let evaluate_group = resources.pass(device, inner, Shader::Evaluate);
         let normals_group = (!faces.is_empty()).then(|| resources.pass(device, inner, Shader::Normals));
         let bounds_group = (!measured.is_empty()).then(|| resources.pass(device, inner, Shader::Bounds));
@@ -432,7 +420,7 @@ impl View {
             gpu.0.queue.write_buffer(
                 resources.lists(),
                 u64::from(list.header) * 4,
-                bytemuck::cast_slice(&list.header_words(self.marks[i].corners())),
+                bytemuck::cast_slice(&list.header_words(self.marks[i].kind().primitive().corners())),
             );
         }
         {
@@ -441,42 +429,40 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[]);
-            // Each drawn row's word first: every later pass reads it.
+            let held = super::marks::Shown::held;
+            // Starting transitions freeze what their rows showed as the frame began, before any
+            // pass writes it, and after packing placed their page tables.
+            if let Some(group) = &freeze_group {
+                pass.set_bind_group(2, group, &[]);
+                self.over_marks(&mut pass, inner, &groups.mark, GATHER, &frozen, held);
+            }
+            // Each drawn row's word first, exits included: every later pass reads it.
             if let Some(group) = &lists_group {
                 pass.set_bind_group(2, group, &[]);
-                self.expand_runs(&mut pass, inner, &groups.mark, &expanded);
+                self.over_marks(&mut pass, inner, &groups.mark, EXPAND_RUNS, &expanded, |s| s.rows + s.exits);
             }
             pass.set_bind_group(2, &evaluate_group, &[super::resources::step(wgsl::STEP_CHANNELS)]);
-            self.every_row(&mut pass, inner, &groups.mark, "carry", &carried);
+            self.over_marks(&mut pass, inner, &groups.mark, CARRY, &carried, held);
             self.evaluate(&mut pass, inner, &groups.mark, &evaluate_group, &work);
             // Before anything that reads where rows' endpoints are held.
             self.resolve_ends(&mut pass, inner, &groups.mark, &evaluate_group, &resolved);
             // After evaluating, so marks ease toward this frame's values.
-            self.every_row(&mut pass, inner, &groups.mark, "ease", &eased);
+            self.over_marks(&mut pass, inner, &groups.mark, EASE, &eased, held);
             // After evaluating, so comets travel at this frame's flow.
-            self.every_row(&mut pass, inner, &groups.mark, "travel", &travelled);
+            self.over_marks(&mut pass, inner, &groups.mark, TRAVEL, &travelled, held);
             if let Some(group) = &lists_group {
                 pass.set_bind_group(2, group, &[]);
                 self.count_segments(&mut pass, inner, &groups.mark, &segments);
             }
             if let Some(group) = &normals_group {
-                pass.set_pipeline(&inner.pipelines.compute(device, Shader::Normals, "accumulate"));
                 pass.set_bind_group(2, group, &[]);
-                for &i in &faces {
-                    pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-                    dispatch(&mut pass, self.marks[i].rows);
-                }
+                self.over_marks(&mut pass, inner, &groups.mark, NORMALS, &faces, |s| s.rows);
             }
             if let Some(group) = &bounds_group {
                 pass.set_bind_group(2, group, &[]);
                 for &i in &measured {
-                    let entry = match self.marks[i].kind() {
-                        MarkKind::Vertices => "points",
-                        MarkKind::Areas => "areas",
-                        _ => "strokes",
-                    };
-                    let variant = Variant::compute(Shader::Bounds, entry).path(self.marks[i].path());
-                    pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
+                    let Some(bounds) = MarkVariants::shown(&self.marks[i]).bounds() else { continue };
+                    pass.set_pipeline(&inner.pipelines.compute(device, bounds));
                     pass.set_bind_group(1, &groups.mark, &[offset(i)]);
                     dispatch(&mut pass, self.marks[i].live_instances());
                 }
@@ -511,10 +497,11 @@ impl View {
         }
     }
 
-    /// Chooses the marks each compute step covers this frame: evaluation, endpoint resolution,
-    /// easing, segment counting, face normals, measuring, comet carry, run expansion, and with
-    /// `travel`, comet travel.
+    /// Chooses the marks each compute step covers this frame: freezing, evaluation, endpoint
+    /// resolution, easing, segment counting, face normals, measuring, comet carry, run expansion,
+    /// and with `travel`, comet travel.
     fn work(&mut self, measure: bool, travel: bool) -> Work {
+        let frozen = (0..self.marks.len()).filter(|&i| self.marks[i].remap != wgsl::NONE).collect();
         for shown in &mut self.marks {
             // A mark without rows has nothing to evaluate and no endpoints to resolve.
             if shown.held() == 0 && shown.tables.synced() {
@@ -559,7 +546,7 @@ impl View {
         let carried = (0..self.marks.len()).filter(|i| self.marks[*i].carry && flowing(i)).collect();
         let travelled = (0..self.marks.len()).filter(|i| travel && flowing(i)).collect();
         let expanded = self.drawn_rows_due();
-        Work { evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded }
+        Work { frozen, evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded }
     }
 
     /// Writes the blocks buffer, which each mark's uniform points into. For each mark, it lists the
@@ -583,41 +570,23 @@ impl View {
         resources.write_blocks(&gpu.0.device, &gpu.0.queue, &words);
     }
 
-    /// Writes the word of each drawn row of `marks`, exits included, from their runs.
-    fn expand_runs(
+    /// Runs `variant` over each of `marks`, one invocation per item `items` counts for the mark.
+    fn over_marks(
         &self,
         pass: &mut wgpu::ComputePass<'_>,
         inner: &mut Inner,
         mark: &wgpu::BindGroup,
+        variant: Variant,
         marks: &[usize],
+        items: impl Fn(&super::marks::Shown) -> u32,
     ) {
         if marks.is_empty() {
             return;
         }
-        pass.set_pipeline(&inner.pipelines.compute(&self.gpu.0.device, Shader::Lists, "expand_runs"));
+        pass.set_pipeline(&inner.pipelines.compute(&self.gpu.0.device, variant));
         for &i in marks {
             pass.set_bind_group(1, mark, &[offset(i)]);
-            dispatch(pass, self.marks[i].rows + self.marks[i].exits);
-        }
-    }
-
-    /// Runs the expression machine's entry point `entry` over every held row of `marks`, exits
-    /// included.
-    fn every_row(
-        &self,
-        pass: &mut wgpu::ComputePass<'_>,
-        inner: &mut Inner,
-        mark: &wgpu::BindGroup,
-        entry: &'static str,
-        marks: &[usize],
-    ) {
-        if marks.is_empty() {
-            return;
-        }
-        pass.set_pipeline(&inner.pipelines.compute(&self.gpu.0.device, Shader::Evaluate, entry));
-        for &i in marks {
-            pass.set_bind_group(1, mark, &[offset(i)]);
-            dispatch(pass, self.marks[i].held());
+            dispatch(pass, items(&self.marks[i]));
         }
     }
 
@@ -632,14 +601,12 @@ impl View {
         let device = &self.gpu.0.device;
         for &i in marks {
             let items = self.marks[i].rows + self.marks[i].exits;
-            let path = self.marks[i].path();
+            let [count, write] = MarkVariants::shown(&self.marks[i]).segments();
             pass.set_bind_group(1, mark, &[offset(i)]);
-            let count = Variant::compute(Shader::Lists, "count_segments").path(path);
-            pass.set_pipeline(&inner.pipelines.compute_pipeline(device, count));
+            pass.set_pipeline(&inner.pipelines.compute(device, count));
             dispatch(pass, items);
             super::lists::scan(pass, &mut inner.pipelines, device, items);
-            let write = Variant::compute(Shader::Lists, "write_segments").path(path);
-            pass.set_pipeline(&inner.pipelines.compute_pipeline(device, write));
+            pass.set_pipeline(&inner.pipelines.compute(device, write));
             dispatch(pass, items);
         }
     }
@@ -652,10 +619,10 @@ impl View {
         let shown = &self.marks[i];
         let Some(compiled) = &shown.compiled else { return Vec::new() };
         let program = &compiled.program;
-        let style = shown.mark.style();
-        let table = self.snapshot(&style.data).and_then(|d| Some((d, d.table(&style.table)?)));
-        let Some((data, table)) = table else { return vec![0; 2 * program.domains.len()] };
-        let source = Source { data, table, derived: self.derived.beside(&style.data, &style.table), paged: Vec::new() };
+        let Some(source) = Source::of(shown.mark.style(), &self.snapshots, &self.derived) else {
+            return vec![0; 2 * program.domains.len()];
+        };
+        let table = source.table;
         let rows = Rows::new(table, &self.snapshots).at(self.at);
         let mut fitted = Vec::with_capacity(program.domains.len());
         for (d, (reads, input)) in program.domains.iter().zip(&program.fitted).enumerate() {
@@ -663,7 +630,7 @@ impl View {
                 .filter(|&c| reads.columns & Reads::column(c) != 0)
                 .map(|c| {
                     let column = &program.columns[c];
-                    table_of(column, &source, &self.snapshots)?.1.field_named(&column.name).map(Field::version)
+                    source.table_of(column, &self.snapshots)?.1.field_named(&column.name).map(Field::version)
                 })
                 .collect();
             let sampled = reads.deps.intersects(Deps::SAMPLES).then_some(self.at.to_bits());
@@ -760,7 +727,7 @@ impl View {
         let mut pass = main_pass(encoder, view, resolve, &depth, background, probing);
         pass.set_bind_group(0, &groups.view, &[]);
         pass.set_bind_group(1, &groups.mark, &[0]);
-        pass.set_pipeline(&inner.pipelines.render(device, Shader::Backdrop, frame.format, samples));
+        pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Backdrop, frame.format, samples)));
         pass.set_bind_group(2, group(Shader::Backdrop), &[]);
         drawn.draw(&mut pass, 3, 1);
         let marks = Marks {
@@ -791,10 +758,10 @@ impl View {
         if !texts {
             return;
         }
-        let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(|shader| (shader, group(shader)));
+        let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(group);
         self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, glyphs);
         if sprites > 0 {
-            pass.set_pipeline(&inner.pipelines.render(device, Shader::Overlay, frame.format, samples));
+            pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Overlay, frame.format, samples)));
             pass.set_bind_group(2, group(Shader::Overlay), &[]);
             drawn.draw(&mut pass, 4, sprites);
         }
@@ -803,69 +770,54 @@ impl View {
     /// Records the probe pass: finds the drawn row nearest the probe point and the nearest depth
     /// drawn there, and returns their readback.
     pub(super) fn probe(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> Readback {
-        let gpu = self.gpu.clone();
-        let device = &gpu.0.device;
         let probed: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].probed()).collect();
         // Any drawn mark's probe program can read the depth under the probe; the first one does.
-        let under = self.marks.iter().position(super::marks::Shown::drawable);
-        let resources = self.resources.as_mut().expect("created before passes");
-        let shader = crate::gpu::pipelines::probe(resources.samples());
+        let under: Vec<usize> = self.marks.iter().position(super::marks::Shown::drawable).into_iter().collect();
         let mut reset = [0_u32; wgsl::PROBE_WORDS as usize];
         reset[wgsl::PROBE_KEY as usize] = wgsl::NONE;
-        gpu.0.queue.write_buffer(resources.probe(), 0, bytemuck::cast_slice(&reset));
-        let groups = resources.groups(&gpu.0, inner);
-        let group = resources.pass(device, inner, shader);
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("latkit probe"),
-                timestamp_writes: None,
-            });
-            pass.set_bind_group(0, &groups.view, &[]);
-            // Each step runs over every mark before the next: the nearest key, then its topmost
-            // instance, then where that lies.
-            for step in [wgsl::STEP_NEAREST, wgsl::STEP_TOPMOST, wgsl::STEP_DESCRIBE] {
-                pass.set_bind_group(2, &group, &[super::resources::step(step)]);
-                for &i in &probed {
-                    self.probe_step(&mut pass, inner, shader, &groups.mark, i, step);
-                }
-            }
-            if let Some(i) = under {
-                pass.set_bind_group(2, &group, &[super::resources::step(wgsl::STEP_UNDER)]);
-                self.probe_step(&mut pass, inner, shader, &groups.mark, i, wgsl::STEP_UNDER);
-            }
-        }
+        let probe = self.resources.as_ref().expect("created before passes").probe();
+        self.gpu.0.queue.write_buffer(probe, 0, bytemuck::cast_slice(&reset));
+        // Each step runs over every mark before the next: the nearest key, then its topmost
+        // instance, then where that lies.
+        let steps = [wgsl::STEP_NEAREST, wgsl::STEP_TOPMOST, wgsl::STEP_DESCRIBE].map(|step| (step, &probed[..]));
+        self.probe_pass(encoder, inner, "latkit probe", &[&steps[..], &[(wgsl::STEP_UNDER, &under[..])]].concat());
         let resources = self.resources.as_ref().expect("created before passes");
-        Readback::new(
-            &inner.readbacks,
-            device,
-            encoder,
-            resources.probe(),
-            0,
-            u64::from(wgsl::PROBE_WORDS) * 4,
-            &self.waker,
-        )
+        let (device, bytes) = (&self.gpu.0.device, u64::from(wgsl::PROBE_WORDS) * 4);
+        Readback::new(&inner.readbacks, device, encoder, resources.probe(), 0, bytes, &self.waker)
     }
 
-    /// Records step `step` of mark `i`'s probe program `shader`, with the step's pass group bound.
-    /// It dispatches over every instance probes cover, or a single workgroup for a step that reads
-    /// one result.
-    pub(super) fn probe_step(
-        &self,
-        pass: &mut wgpu::ComputePass<'_>,
+    /// Records a compute pass named `label` that runs each of `steps` of the probe program in turn:
+    /// a `STEP_` code, over each of the marks listed with it.
+    pub(super) fn probe_pass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
-        shader: Shader,
-        mark: &wgpu::BindGroup,
-        i: usize,
-        step: u32,
+        label: &str,
+        steps: &[(u32, &[usize])],
     ) {
-        let shown = &self.marks[i];
-        let variant = Variant::probe(shader, shown.primitive()).path(shown.path());
-        pass.set_pipeline(&inner.pipelines.compute_pipeline(&self.gpu.0.device, variant));
-        pass.set_bind_group(1, mark, &[offset(i)]);
-        if matches!(step, wgsl::STEP_DESCRIBE | wgsl::STEP_LOCATE | wgsl::STEP_UNDER) {
-            pass.dispatch_workgroups(1, 1, 1);
-        } else {
-            dispatch(pass, shown.live_instances());
+        let gpu = self.gpu.clone();
+        let device = &gpu.0.device;
+        let resources = self.resources.as_mut().expect("created before passes");
+        let shader = crate::gpu::pipelines::probe(resources.samples());
+        let groups = resources.groups(&gpu.0, inner);
+        let group = resources.pass(device, inner, shader);
+        let mut pass =
+            encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(label), timestamp_writes: None });
+        pass.set_bind_group(0, &groups.view, &[]);
+        for &(step, marks) in steps {
+            pass.set_bind_group(2, &group, &[super::resources::step(step)]);
+            for &i in marks {
+                let shown = &self.marks[i];
+                pass.set_pipeline(&inner.pipelines.compute(device, MarkVariants::shown(shown).probe(shader)));
+                pass.set_bind_group(1, &groups.mark, &[offset(i)]);
+                // A step that reads one result runs once; the rest run over every instance probes
+                // cover.
+                if matches!(step, wgsl::STEP_DESCRIBE | wgsl::STEP_LOCATE | wgsl::STEP_UNDER) {
+                    pass.dispatch_workgroups(1, 1, 1);
+                } else {
+                    dispatch(&mut pass, shown.live_instances());
+                }
+            }
         }
     }
 }

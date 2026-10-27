@@ -50,6 +50,7 @@ mod video;
 mod view;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub mod web;
+mod wire;
 
 #[cfg(feature = "gpu")]
 pub use data::Source;

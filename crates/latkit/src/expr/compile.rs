@@ -325,13 +325,7 @@ impl<'a> Compiler<'a> {
             Node::Field(f) if self.fields.kind(f.from.as_ref(), &f.name) == Some(Kind::Sampled) => {
                 Some("a sampled field")
             }
-            Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => self.unstructural(a),
-            Node::Binary(_, a, b) => self.unstructural(a).or_else(|| self.unstructural(b)),
-            Node::When(c, a, b) => {
-                self.unstructural(c).or_else(|| self.unstructural(a)).or_else(|| self.unstructural(b))
-            }
-            Node::Scale { input, .. } | Node::Colormap { input, .. } => self.unstructural(input),
-            _ => None,
+            _ => expr.children().find_map(|child| self.unstructural(child)),
         }
     }
 
@@ -760,14 +754,7 @@ fn binary_name(op: Binary) -> &'static str {
 }
 
 fn mentions_pointer(e: &Expr) -> bool {
-    match &*e.0 {
-        Node::State(State::Pointer) => true,
-        Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => mentions_pointer(a),
-        Node::Binary(_, a, b) => mentions_pointer(a) || mentions_pointer(b),
-        Node::When(c, a, b) => mentions_pointer(c) || mentions_pointer(a) || mentions_pointer(b),
-        Node::Scale { input, .. } | Node::Colormap { input, .. } => mentions_pointer(input),
-        _ => false,
-    }
+    e.any(&|e| matches!(&*e.0, Node::State(State::Pointer)))
 }
 
 fn ty_name(ty: Ty) -> &'static str {

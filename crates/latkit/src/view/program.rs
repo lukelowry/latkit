@@ -49,11 +49,13 @@ impl View {
             let Some(compiled) = &mut shown.compiled else { continue };
             let markers = &mut compiled.drawing.markers;
             if !markers.icons.is_empty() {
-                let layers = inner.icons.layers(&gpu.0.device, &gpu.0.queue, &markers.icons);
-                markers.palette = std::iter::once(layers.len() as u32).chain(layers).collect();
+                match inner.icons.of(&gpu.0.device, &gpu.0.queue, &markers.icons) {
+                    Ok(layers) => markers.palette = std::iter::once(layers.len() as u32).chain(layers).collect(),
+                    Err(error) => self.events.tell(Event::Error(error)),
+                }
             }
             for (at, colormap) in &compiled.program.colormaps {
-                match inner.colormaps.layer(&gpu.0.device, &gpu.0.queue, colormap) {
+                match inner.colormaps.colormap(&gpu.0.device, &gpu.0.queue, colormap) {
                     Ok(layer) => shown.code[*at as usize][1] = layer | colormap.kind().code() << 16,
                     Err(error) => self.events.tell(Event::Error(error)),
                 }

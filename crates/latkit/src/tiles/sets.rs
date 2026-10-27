@@ -221,7 +221,7 @@ impl TileSets {
                 && !set.told
             {
                 set.told = true;
-                self.errors.push(Error::Io(format!("tiles {}: {error}", set.tiles.name).into()));
+                self.errors.push(error.within(&set.tiles.name));
             }
             if std::mem::take(&mut set.changed) {
                 self.changed.retain(|data| data.name() != set.data.name());

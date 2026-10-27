@@ -165,6 +165,52 @@ impl MarkKind {
         }
     }
 
+    /// The code shaders tell it by.
+    pub(crate) fn code(self) -> u32 {
+        match self {
+            MarkKind::Vertices => wgsl::MARK_VERTICES,
+            MarkKind::Edges => wgsl::MARK_EDGES,
+            MarkKind::Faces => wgsl::MARK_FACES,
+            MarkKind::Lines => wgsl::MARK_LINES,
+            MarkKind::Areas => wgsl::MARK_AREAS,
+        }
+    }
+
+    /// Kind words per row.
+    pub(crate) fn stride(self) -> u32 {
+        match self {
+            MarkKind::Vertices => wgsl::VERTEX_WORDS,
+            MarkKind::Edges => wgsl::EDGE_WORDS,
+            MarkKind::Faces => wgsl::FACE_WORDS,
+            MarkKind::Lines => wgsl::LINE_WORDS,
+            MarkKind::Areas => wgsl::AREA_WORDS,
+        }
+    }
+
+    /// The shaders that draw its rows: every row, and the rows its focus lights, which faces lack:
+    /// a face shows focus by its color alone. With `custom`, a vertex mark's custom marker's.
+    pub(crate) fn shaders(self, custom: bool) -> (wgsl::Shader, Option<wgsl::Shader>) {
+        use wgsl::Shader;
+        match self {
+            MarkKind::Vertices if custom => (Shader::PointsCustom, Some(Shader::PointsCustomFocus)),
+            MarkKind::Vertices => (Shader::Points, Some(Shader::PointsFocus)),
+            MarkKind::Edges | MarkKind::Lines => (Shader::Strokes, Some(Shader::StrokesFocus)),
+            MarkKind::Areas => (Shader::Areas, Some(Shader::AreasFocus)),
+            MarkKind::Faces => (Shader::Triangles, None),
+        }
+    }
+
+    /// The bounds shader's entry point that measures its extents for a fit; `None` for edges and
+    /// faces, whose rows lie between the vertices that frame them.
+    pub(crate) fn bounds(self) -> Option<&'static str> {
+        match self {
+            MarkKind::Vertices => Some("points"),
+            MarkKind::Lines => Some("strokes"),
+            MarkKind::Areas => Some("areas"),
+            MarkKind::Edges | MarkKind::Faces => None,
+        }
+    }
+
     /// The key a mark of this kind has in JSON.
     pub(crate) fn name(self) -> &'static str {
         match self {
@@ -200,6 +246,14 @@ impl Primitive {
             Primitive::Points => wgsl::POINTS,
             Primitive::Strokes => wgsl::STROKES,
             Primitive::Triangles => wgsl::TRIANGLES,
+        }
+    }
+
+    /// Vertices per instance: 4 for the quad of a point or segment, 3 for a triangle.
+    pub(crate) fn corners(self) -> u32 {
+        match self {
+            Primitive::Points | Primitive::Strokes => 4,
+            Primitive::Triangles => 3,
         }
     }
 }
@@ -265,13 +319,10 @@ impl Context<'_> {
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Drawing {
     pub(crate) kind: MarkKind,
-    /// The primitive the mark draws its rows with.
-    pub(crate) primitive: Primitive,
     /// The path a stroke's segments follow, or where a triangle's corners come from: one of the
     /// `PATH_*` codes.
     pub(crate) path: u32,
-    /// Kind words per row, then the extra words per row that follow them.
-    pub(crate) stride: u32,
+    /// Extra words per row, after the kind's own.
     pub(crate) extras: u32,
     pub(crate) flags: u32,
     pub(crate) markers: Markers,
@@ -293,18 +344,11 @@ pub(crate) struct Drawing {
 }
 
 impl Drawing {
-    pub(crate) fn new(kind: MarkKind, stride: u32) -> Drawing {
-        let path = match kind {
-            MarkKind::Edges | MarkKind::Faces => wgsl::PATH_ENDS,
-            MarkKind::Lines => wgsl::PATH_TRACE,
-            MarkKind::Areas => wgsl::PATH_GEOMETRY,
-            MarkKind::Vertices => wgsl::NONE,
-        };
+    /// A drawing of a `kind` mark, before its options are compiled. [`Mark::compile`] sets its path.
+    pub(crate) fn new(kind: MarkKind) -> Drawing {
         Drawing {
             kind,
-            primitive: kind.primitive(),
-            path,
-            stride,
+            path: wgsl::PATH_ENDS,
             extras: 0,
             flags: 0,
             markers: Markers::default(),
@@ -387,19 +431,19 @@ impl Mark {
         stroke.flow != Stroke::default().flow
     }
 
-    /// The path a stroke mark's rows follow, or where an area's triangles come from: one of the
-    /// `PATH_` codes, which its pipelines are built for; `None` for vertices and faces. In a
-    /// diagram every wire follows the route its sheet computed. On a plot a line traces its
-    /// samples, and elsewhere it follows its path field.
-    pub(crate) fn path(&self, space: &Space) -> Option<u32> {
+    /// The path a stroke mark's rows follow, or where a triangle's corners come from: one of the
+    /// `PATH_` codes, which its pipelines are built for. A net's star and every wire in a diagram
+    /// follow the route the view computes. On a plot a line traces its samples, and elsewhere it
+    /// follows its path field. Faces take their corners from the vertices they join, and vertices
+    /// have no path, so both read `PATH_ENDS`.
+    pub(crate) fn path(&self, space: &Space) -> u32 {
         match self {
-            Mark::Edges(e) if e.poles => Some(wgsl::PATH_POLES),
-            Mark::Edges(e) if e.joins.is_some() => Some(wgsl::PATH_GEOMETRY),
-            Mark::Edges(_) if matches!(space, Space::Diagram(_)) => Some(wgsl::PATH_GEOMETRY),
-            Mark::Edges(_) => Some(wgsl::PATH_ENDS),
-            Mark::Lines(_) if matches!(space, Space::Plot(_)) => Some(wgsl::PATH_TRACE),
-            Mark::Lines(_) | Mark::Areas(_) => Some(wgsl::PATH_GEOMETRY),
-            Mark::Vertices(_) | Mark::Faces(_) => None,
+            Mark::Edges(e) if e.poles => wgsl::PATH_POLES,
+            Mark::Edges(e) if e.joins.is_some() => wgsl::PATH_GEOMETRY,
+            Mark::Edges(_) if matches!(space, Space::Diagram(_)) => wgsl::PATH_GEOMETRY,
+            Mark::Lines(_) if matches!(space, Space::Plot(_)) => wgsl::PATH_TRACE,
+            Mark::Lines(_) | Mark::Areas(_) => wgsl::PATH_GEOMETRY,
+            Mark::Vertices(_) | Mark::Edges(_) | Mark::Faces(_) => wgsl::PATH_ENDS,
         }
     }
 
@@ -488,6 +532,7 @@ impl Mark {
             Mark::Lines(m) => m.compile(compiler, context),
             Mark::Areas(m) => m.compile(compiler, context),
         }?;
+        drawing.path = self.path(context.space);
         let style = self.style();
         if let Some(priority) = &style.priority {
             compiler.check_data("priority", priority)?;
@@ -510,7 +555,7 @@ fn compile_label(
     drawing: &mut Drawing,
 ) -> Result<()> {
     let extra = drawing.extras;
-    let word = |k: u32| drawing.stride + extra + k;
+    let word = |k: u32| drawing.kind.stride() + extra + k;
     let column = c.text("text", &label.text, word(wgsl::LABEL_CODE))?;
     let priority: Expr = priority.cloned().unwrap_or_else(|| 0.0.into()).scale(0.0..=255.0).into();
     c.channel("priority", &priority, Store::Number { word: word(wgsl::LABEL_PRIORITY), fallback: None })?;
@@ -539,11 +584,69 @@ pub(crate) fn described(lines: &[&str]) -> String {
         lines.iter().map(|line| line.strip_prefix(' ').unwrap_or(line)).take_while(|line| !line.starts_with("```"));
     let paragraphs: Vec<String> =
         prose.collect::<Vec<_>>().split(|line| line.is_empty()).map(|p| p.join(" ")).collect();
-    paragraphs.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(
-        "
+    paragraphs.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n")
+}
 
-",
-    )
+/// The options every mark's JSON form has, and those of the marks drawn as strokes.
+const MARK_OPTIONS: [&str; 10] =
+    ["of", "color", "visible", "priority", "name", "pick", "select", "drag", "label", "legend"];
+const STROKE_OPTIONS: [&str; 3] = ["width", "dash", "flow"];
+
+/// A mark's schema from its form's: the options every mark has, and when `stroked` the stroke
+/// options, moved to the `MarkOptions` and `StrokeOptions` definitions it extends, so each is
+/// described once.
+pub(crate) fn extending(
+    generator: &mut schemars::SchemaGenerator,
+    mut form: schemars::Schema,
+    stroked: bool,
+) -> schemars::Schema {
+    let mut parts = vec![shared(generator, &mut form, "MarkOptions", "The options every mark has.", &MARK_OPTIONS)];
+    if stroked {
+        let about = "The options of marks drawn as strokes: edges and lines.";
+        parts.push(shared(generator, &mut form, "StrokeOptions", about, &STROKE_OPTIONS));
+    }
+    // The whole refuses keys no part has; a part alone cannot, since it lacks the others' keys.
+    form.remove("additionalProperties");
+    parts.push(form.into());
+    schemars::json_schema!({ "allOf": parts, "unevaluatedProperties": false })
+}
+
+/// Moves `keys` from `form`'s properties into definition `name`, described as `about`, which the
+/// first mark to share it defines. Returns a reference to it.
+fn shared(
+    generator: &mut schemars::SchemaGenerator,
+    form: &mut schemars::Schema,
+    name: &str,
+    about: &str,
+    keys: &[&str],
+) -> serde_json::Value {
+    use serde_json::{Value, json};
+    let properties = form.get_mut("properties").and_then(Value::as_object_mut).expect("a mark's form has options");
+    let moved: serde_json::Map<String, Value> = keys
+        .iter()
+        .map(|&key| {
+            (key.to_owned(), properties.shift_remove(key).unwrap_or_else(|| panic!("every mark has option {key}")))
+        })
+        .collect();
+    let required: Vec<Value> = match form.get_mut("required").and_then(Value::as_array_mut) {
+        Some(required) => {
+            let (shared, own) = required.drain(..).partition(|key| key.as_str().is_some_and(|key| keys.contains(&key)));
+            *required = own;
+            shared
+        }
+        None => Vec::new(),
+    };
+    if form.get("required").and_then(Value::as_array).is_some_and(Vec::is_empty) {
+        form.remove("required");
+    }
+    generator.definitions_mut().entry(name).or_insert_with(|| {
+        let mut definition = json!({ "type": "object", "description": about, "properties": moved });
+        if !required.is_empty() {
+            definition["required"] = required.into();
+        }
+        definition
+    });
+    json!({ "$ref": format!("#/$defs/{name}") })
 }
 
 /// Declares a mark type: a struct holding the options every mark has, the stroke options when it
@@ -581,7 +684,9 @@ macro_rules! mark {
             }
 
             fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-                let mut schema = <Form as schemars::JsonSchema>::json_schema(generator);
+                let form = <Form as schemars::JsonSchema>::json_schema(generator);
+                let stroke: &[&str] = &[$(stringify!($stroke)),*];
+                let mut schema = $crate::scene::mark::extending(generator, form, !stroke.is_empty());
                 schema.insert("description".into(), $crate::scene::mark::described(&[$($line),*]).into());
                 schema
             }

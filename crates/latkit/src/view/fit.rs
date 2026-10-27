@@ -10,6 +10,7 @@ use super::View;
 use super::camera::Bounds;
 use super::event::Fit;
 use super::marks::Shown;
+use crate::derive::Working;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
@@ -19,8 +20,8 @@ use crate::{Camera, Space};
 pub(crate) struct Fitting {
     /// A fit waiting for its frame.
     pub(crate) wanted: Option<Fit>,
-    /// The extents readback in flight, and the fit it measures for.
-    reading: Option<(Readback, Option<Fit>)>,
+    /// The extents being read back, and the fit they are measured for.
+    reading: Working<Option<Fit>, Readback>,
     /// Whether a plot's traces changed since they were last measured.
     pub(crate) plot_due: bool,
 }
@@ -28,17 +29,17 @@ pub(crate) struct Fitting {
 impl Fitting {
     /// Whether extents are being read back.
     pub(crate) fn reading(&self) -> bool {
-        self.reading.is_some()
+        self.reading.busy()
     }
 
     /// Whether a fit is waiting to be measured; never while extents are being read back.
     pub(crate) fn due(&self) -> bool {
-        self.wanted.is_some() && self.reading.is_none()
+        self.wanted.is_some() && !self.reading.busy()
     }
 
     /// Whether a fit is about to move the camera: one waiting, or its extents being read back.
     pub(crate) fn framing(&self) -> bool {
-        self.wanted.is_some() || self.reading.as_ref().is_some_and(|(_, fit)| fit.is_some())
+        self.wanted.is_some() || self.reading.context().is_some_and(Option::is_some)
     }
 }
 
@@ -68,11 +69,9 @@ impl View {
             }
             _ => {}
         }
-        let Some((readback, _)) = &self.fitting.reading else { return };
-        let Some(bytes) = readback.take() else { return };
-        let fit = self.fitting.reading.take().and_then(|(_, fit)| fit);
+        let Some((_, fit, bytes)) = self.fitting.reading.landed() else { return };
         if let Ok(bytes) = bytes {
-            self.measured(bytemuck::cast_slice(&bytes), fit.as_ref());
+            self.measured(&crate::wire::words(&bytes), fit.as_ref());
         }
         self.fitted();
     }
@@ -87,7 +86,7 @@ impl View {
 
     /// What this frame measures, if anything: a fit whose marks are drawn, or a plot's traces.
     pub(super) fn measuring(&mut self) -> Option<Measure> {
-        if self.fitting.reading.is_some() || self.size[0] <= 0.0 {
+        if self.fitting.reading.busy() || self.size[0] <= 0.0 {
             return None;
         }
         // A plot with traces fits everything to their whole span once their data is available.
@@ -143,7 +142,7 @@ impl View {
     }
 
     pub(super) fn measuring_started(&mut self, readback: Readback, fit: Option<Fit>) {
-        self.fitting.reading = Some((readback, fit));
+        self.fitting.reading.start(0, readback, fit);
     }
 
     /// Frames the extents measured for `fit`, or fits a plot's value range to its traces.
@@ -165,8 +164,8 @@ impl View {
                 continue;
             }
             for k in 0..3 {
-                lo[k] = lo[k].min(f64::from(unordered(!e[k])));
-                hi[k] = hi[k].max(f64::from(unordered(e[3 + k])));
+                lo[k] = lo[k].min(f64::from(crate::order::from_number32(!e[k])));
+                hi[k] = hi[k].max(f64::from(crate::order::from_number32(e[3 + k])));
             }
         }
         self.frame_fit(lo, hi, fit);
@@ -278,35 +277,8 @@ impl View {
 }
 
 impl super::marks::Shown {
-    /// Whether this mark's extents frame a fit: vertices, lines, and areas.
+    /// Whether this mark's extents frame a fit: whether its kind measures them.
     pub(crate) fn measured(&self) -> bool {
-        matches!(self.kind(), MarkKind::Vertices | MarkKind::Lines | MarkKind::Areas)
-    }
-}
-
-/// The `f32` an order-preserving word encodes; `lib/reduce.wesl`'s `unordered`.
-fn unordered(u: u32) -> f32 {
-    f32::from_bits(if u & 0x8000_0000 != 0 { u & 0x7fff_ffff } else { !u })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::unordered;
-
-    /// `lib/reduce.wesl`'s `ordered`, the inverse of `unordered`.
-    fn ordered(x: f32) -> u32 {
-        let b = x.to_bits();
-        if b & 0x8000_0000 != 0 { !b } else { b | 0x8000_0000 }
-    }
-
-    #[test]
-    fn ordered_words_sort_like_their_values() {
-        let values = [-1e9_f32, -2.5, -0.0, 0.0, 1e-9, 3.0, 1e9];
-        for pair in values.windows(2) {
-            assert!(ordered(pair[0]) <= ordered(pair[1]), "{pair:?}");
-        }
-        for v in values {
-            assert_eq!(unordered(ordered(v)), v);
-        }
+        self.kind().bounds().is_some()
     }
 }

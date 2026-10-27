@@ -7,14 +7,16 @@
 //! every unpositioned row again. The result is a table beside each vertex table, holding its rows'
 //! positions, given or laid out, which the vertex marks read.
 
+use std::hash::Hash;
+
 use rustc_hash::FxHashMap;
 
 use super::graph::{key_of, links, marks, position};
-use super::{Derive, Input, Jobs, Tables, answers, beside, kept};
+use super::{Derive, Input, Jobs, Tables, Working, answers, beside, kept, stamp_of, stamp_with};
+use crate::Layout;
 use crate::data::{Name, Row, Value, Values};
 use crate::expr::cpu::Rows;
 use crate::host::{Job, Key, Placement};
-use crate::{Layout, Pending};
 
 #[derive(Default)]
 pub(crate) struct Places {
@@ -29,14 +31,14 @@ pub(crate) struct Places {
     arranging: bool,
     /// The result of the last arrange, until the view takes it.
     arranged: Option<Vec<(Row, [f64; 2])>>,
-    placing: Option<Placing>,
+    /// The layout job, for the stamp of the inputs it lays out.
+    placing: Working<Placing>,
     /// Bumps whenever an answer arrives.
     landed: u64,
 }
 
-/// A pending layout job: the generation it was started in, and the row each answer key names.
+/// A layout job's context: the generation it was started in, and the row each answer key names.
 struct Placing {
-    pending: Pending<Vec<u8>>,
     generation: u64,
     rows: FxHashMap<Key, Row>,
 }
@@ -56,22 +58,24 @@ impl Derive for Places {
         // Repeat so a job the host finishes at once is taken before the frame draws.
         for _ in 0..4 {
             self.settle();
-            let mut hasher = rustc_hash::FxHasher::default();
-            std::hash::Hash::hash(&(input.scene_version, self.landed, self.generation), &mut hasher);
-            input.structure(&mut hasher);
-            let stamp = std::hash::Hasher::finish(&hasher).max(1);
+            let inputs = stamp_with(|hasher| {
+                (input.scene_version, self.generation).hash(hasher);
+                input.structure(hasher);
+            });
+            // An answer changes the tables, but not what a layout would be asked to place.
+            let stamp = stamp_of((inputs, self.landed));
             if stamp == self.stamp {
                 break;
             }
             self.stamp = stamp;
-            self.build(input, jobs);
+            self.build(input, inputs, jobs);
             changed = true;
         }
         changed
     }
 
     fn busy(&self) -> bool {
-        self.placing.is_some()
+        self.placing.busy()
     }
 
     fn tables(&self) -> &Tables {
@@ -90,7 +94,7 @@ impl Places {
     /// Lays out every row without a position again, dropping any pending layout.
     pub(crate) fn arrange(&mut self) {
         self.arranging = true;
-        self.placing = None;
+        self.placing.cancel();
         self.generation += 1;
         self.stamp = 0;
     }
@@ -101,8 +105,7 @@ impl Places {
     }
 
     fn settle(&mut self) {
-        let Some(answer) = self.placing.as_ref().and_then(|p| p.pending.take()) else { return };
-        let placing = self.placing.take().expect("a layout under way");
+        let Some((_, placing, answer)) = self.placing.landed() else { return };
         if placing.generation == self.generation {
             let mut placed = Vec::new();
             for (key, values) in answer.map(|bytes| answers(&bytes, &["x", "y"])).unwrap_or_default() {
@@ -121,8 +124,9 @@ impl Places {
         self.landed += 1;
     }
 
-    /// Writes each vertex table's positions, starting a layout job for rows without one.
-    fn build(&mut self, input: &Input<'_>, jobs: &Jobs<'_>) {
+    /// Writes each vertex table's positions, starting a layout job for rows without one unless a
+    /// job for the same `inputs` already ran.
+    fn build(&mut self, input: &Input<'_>, inputs: u64, jobs: &Jobs<'_>) {
         let (vertex_marks, edge_marks) = marks(input);
         let mut keys = Vec::new();
         let mut pins = Vec::new();
@@ -136,7 +140,7 @@ impl Places {
         }
         let arranging = self.arranging;
         let wanted = |i: usize| pins[i].is_none() && (arranging || !self.laid.contains_key(&keys[i]));
-        if self.placing.is_none() && (0..keys.len()).any(wanted) {
+        if self.placing.may_start(inputs) && (0..keys.len()).any(wanted) {
             let pinned: Vec<Option<[f64; 2]>> = (0..keys.len())
                 .map(|i| pins[i].or_else(|| (!arranging).then(|| self.laid.get(&keys[i]).copied()).flatten()))
                 .collect();
@@ -159,8 +163,8 @@ impl Places {
                 keys: &job_keys,
             };
             let pending = jobs.spawn(Job::layout(&input.scene.layout, &placement));
-            self.placing = Some(Placing { pending, generation: self.generation, rows });
-        } else if self.arranging && self.placing.is_none() {
+            self.placing.start(inputs, pending, Placing { generation: self.generation, rows });
+        } else if self.arranging && !self.placing.busy() {
             // Nothing to lay out: the arrange finishes with no rows.
             self.arranging = false;
             self.arranged = Some(Vec::new());
@@ -179,5 +183,45 @@ impl Places {
             tables.insert(key, beside(vm.table, fields));
         }
         self.tables = tables;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+    use std::task::Waker;
+
+    use super::*;
+    use crate::derive::testing::Failing;
+    use crate::gpu::work::Counters;
+    use crate::{Data, Ids, Plane, Scene, Stress, Table, Vertices};
+
+    #[test]
+    fn a_failed_layout_runs_once_until_its_inputs_change() {
+        let data = Data::new("g");
+        data.apply(Table::new("V", Ids::count(3))).expect("valid");
+        let data = data.snapshot();
+        let scene = Scene::new(Plane::default()).layout(Stress::default()).draw(Vertices::of("g", "V"));
+        let (host, counters, errors) = (Failing::default(), Counters::default(), Arc::new(Mutex::new(Vec::new())));
+        let mut places = Places::default();
+        let frame = |places: &mut Places| {
+            let input = Input {
+                scene: &scene,
+                scene_version: 1,
+                data: std::slice::from_ref(&data),
+                host: Some(&host),
+                dragging: false,
+                paged: None,
+            };
+            places.update(&input, &mut Jobs::new(Some(&host), Waker::noop(), &counters, &errors, u32::MAX));
+        };
+        for _ in 0..5 {
+            frame(&mut places);
+        }
+        assert_eq!(host.jobs(), 1, "one job for these inputs, not one per frame");
+        assert_eq!(errors.lock().expect("unpoisoned").len(), 1, "its failure is reported once");
+        places.arrange();
+        frame(&mut places);
+        assert_eq!(host.jobs(), 2, "laying out again asks again");
     }
 }

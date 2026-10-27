@@ -2,11 +2,11 @@
 //! [`Snapshot`], or [`Tiles`](crate::Tiles) fetched in pieces.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::task::Waker;
 
 use super::name::Name;
 use super::patch::Patch;
 use super::snapshot::Snapshot;
+use crate::pending::Watchers;
 use crate::{Error, Result};
 
 /// A dataset that changes in place: named tables of columns, changed only by patches. Clones share
@@ -34,9 +34,9 @@ pub struct Data(Arc<Shared>);
 struct Shared {
     name: Name,
     current: Mutex<Snapshot>,
-    /// A waker per view drawing the dataset, keyed by view id. Applying a patch wakes each one to
-    /// request a frame.
-    watchers: Mutex<Vec<(u64, Waker)>>,
+    /// A waker per view drawing the dataset, by view id. Applying a patch wakes each one to request
+    /// a frame.
+    watchers: Watchers,
 }
 
 impl Data {
@@ -58,7 +58,7 @@ impl Data {
         let mut current = self.current();
         *current = current.applied(patch.into())?;
         drop(current);
-        self.wake();
+        self.0.watchers.wake_all();
         Ok(())
     }
 
@@ -75,36 +75,18 @@ impl Data {
             return Err(Error::invalid(format!("a snapshot of '{}' restored to '{}'", snapshot.name(), self.name())));
         }
         *self.current() = snapshot.clone();
-        self.wake();
+        self.0.watchers.wake_all();
         Ok(())
     }
 
-    /// Registers `waker` to request a frame from view `view` whenever a patch applies, replacing
-    /// that view's previous waker.
+    /// The views drawing the dataset, which applying a patch wakes to request a frame.
     #[cfg(feature = "gpu")]
-    pub(crate) fn watch(&self, view: u64, waker: Waker) {
-        let mut watchers = self.0.watchers.lock().unwrap_or_else(PoisonError::into_inner);
-        watchers.retain(|(v, _)| *v != view);
-        watchers.push((view, waker));
-    }
-
-    /// Removes view `view`'s waker.
-    #[cfg(feature = "gpu")]
-    pub(crate) fn unwatch(&self, view: u64) {
-        self.0.watchers.lock().unwrap_or_else(PoisonError::into_inner).retain(|(v, _)| *v != view);
+    pub(crate) fn watchers(&self) -> &Watchers {
+        &self.0.watchers
     }
 
     fn current(&self) -> MutexGuard<'_, Snapshot> {
         self.0.current.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Wakes every view drawing the dataset to request a frame.
-    fn wake(&self) {
-        let wakers: Vec<Waker> =
-            self.0.watchers.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|(_, w)| w.clone()).collect();
-        for waker in wakers {
-            waker.wake();
-        }
     }
 }
 
@@ -114,7 +96,7 @@ impl From<Snapshot> for Data {
         Data(Arc::new(Shared {
             name: snapshot.name().clone(),
             current: Mutex::new(snapshot),
-            watchers: Mutex::default(),
+            watchers: Watchers::default(),
         }))
     }
 }

@@ -6,7 +6,16 @@
  */
 
 import type { Id, Ids } from './inputs.js';
-import { bytesOf, thrown, waited, wasm, type Wait } from './internal.js';
+import {
+  bytesOf,
+  chunks,
+  thrown,
+  waited,
+  wasm,
+  type ByteSource,
+  type ReadableBytes,
+  type Wait,
+} from './internal.js';
 import { load } from './load.js';
 
 /**
@@ -53,19 +62,11 @@ export function reference(table: string, ids: RowIds): Reference {
 /** A table's fields by name: values, or a {@link Reference}. */
 export type Fields = Readonly<Record<string, Values | Reference>>;
 
-/** A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Uint8Array`. */
-export interface ReadableBytes {
-  /** A reader of the stream's chunks, which latkit reads to the end, or cancels. */
-  getReader(): {
-    read(): Promise<{ done: boolean; value?: Uint8Array }>;
-    cancel(reason?: unknown): Promise<void>;
-    releaseLock(): void;
-  };
-}
-
 const MAGIC = [0x4c, 0x41, 0x54, 0x4b]; // LATK
 /** Header bytes: the magic and the frame's length. */
 const HEADER = 12;
+/** The longest frame read by default, in bytes: 256 MiB. */
+const LIMIT = 1 << 28;
 const OP = { axis: 0, replace: 1, set: 2, remove: 3, append: 4, forget: 5, frames: 6 } as const;
 /** The highest level of detail; level 0 is frames. */
 const LEVELS = 21;
@@ -76,21 +77,13 @@ const STORE = { f64: 0, f32: 1, i32: 2, u32: 3, u64: 4, bool: 5, text: 6, geomet
 const SAFE = Number.MAX_SAFE_INTEGER;
 const utf8 = new TextEncoder();
 
-/**
- * What {@link Patch.read} accepts: bytes, a `Blob`, a `Response`, a byte stream, a URL to fetch as a
- * string, or a parsed JSON value. The content is latkit's bytes or a patch's JSON.
- */
-export type PatchSource =
-  Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | string | object;
-
 /** @internal Returns `patch`'s frame without copying it. Read it before the patch changes again. */
 export let framed: (patch: Patch) => Uint8Array;
 
 /**
- * A list of changes to a dataset, which `Data.apply` applies in order, all or none. The patch is
- * encoded as latkit's bytes as it is built, without WebAssembly. Each method adds a change and
- * returns the patch. For values it cannot encode, a method throws an `invalid` error with a `path`
- * such as `Bus.kv`, and leaves the patch unchanged.
+ * A list of changes to a dataset, which `Data.apply` applies in order, all or none. It is written
+ * as latkit's bytes as it is built, without WebAssembly; each method adds a change and returns the
+ * patch.
  *
  * ```ts
  * const patch = new Patch('grid')
@@ -138,16 +131,17 @@ export class Patch {
    * any language can write without latkit. The JSON is a list of changes. Each change is keyed by
    * its method name and holds the method's parameters by name, such as
    * `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`. A field may be a slice of a
-   * binary file, `{file, dtype, offset, count}`. Slices are fetched at once, relative to
-   * `options.base`, which defaults to the URL the JSON was fetched from.
-   *
-   * Bytes are read without WebAssembly; JSON calls `load()` first. Rejects with a `limit` error for
-   * a frame longer than `options.limit` bytes (256 MiB by default), with an `invalid` error for
-   * malformed input, and with an `io` error when a fetch fails or answers an error status.
+   * binary file, `{file, dtype, offset, count}`, fetched at once. Bytes are read without
+   * WebAssembly.
    */
   static async read(
-    source: PatchSource,
-    options: { base?: string; limit?: number } & Wait = {},
+    source: ByteSource | object,
+    options: {
+      /** The URL the JSON's file slices are relative to; by default, the one it came from. */
+      base?: string;
+      /** The longest frame in bytes, 256 MiB by default; a longer one fails with a `limit` error. */
+      limit?: number;
+    } & Wait = {},
   ): Promise<Patch> {
     const { bytes, base } = await bytesOf(source, options);
     if (MAGIC.every((byte, i) => bytes[i] === byte))
@@ -161,7 +155,7 @@ export class Patch {
    * Wraps frame `bytes` as a patch without copying them. Throws unless they are exactly one valid
    * frame of at most `limit` bytes.
    */
-  static #owning(bytes: Uint8Array, limit = 1 << 28): Patch {
+  static #owning(bytes: Uint8Array, limit = LIMIT): Patch {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const length = frameLength(bytes, limit);
     if (length === undefined || length !== bytes.length) throw malformed('not one whole frame');
@@ -186,12 +180,9 @@ export class Patch {
 
   /**
    * Yields each patch in `stream` as soon as its last byte arrives. The stream carries frames back
-   * to back, such as a response body, a file, or a socket's messages. Each frame states its length
-   * up front, so a frame longer than `options.limit` bytes (256 MiB by default) throws a `limit`
-   * error before its body is allocated. Besides the current chunk and the patches the caller keeps,
-   * at most one frame is buffered. Breaking out of the loop cancels the stream. Throws an `invalid`
-   * error for a `limit` that is not a whole number of at least 12 bytes, for bytes that are not
-   * latkit's, or for a stream that ends inside a frame.
+   * to back, such as a response body, a file, or a socket's messages. Besides the current chunk
+   * and the patches the caller keeps, at most one frame is buffered. Breaking out of the loop
+   * cancels the stream. Throws an `invalid` error for a stream that ends inside a frame.
    *
    * ```ts
    * for await (const patch of Patch.stream((await fetch('/feed')).body!)) data.apply(patch);
@@ -199,8 +190,15 @@ export class Patch {
    */
   static async *stream(
     stream: ReadableBytes | AsyncIterable<Uint8Array>,
-    { limit = 1 << 28 }: { limit?: number } = {},
+    options: {
+      /**
+       * The longest frame in bytes, at least 12; 256 MiB by default. Each frame states its length
+       * up front, so a longer one fails with a `limit` error before its body is allocated.
+       */
+      limit?: number;
+    } = {},
   ): AsyncGenerator<Patch> {
+    const { limit = LIMIT } = options;
     if (!Number.isSafeInteger(limit) || limit < HEADER)
       throw invalid('limit', `a whole number of at least ${HEADER} bytes, not ${limit}`);
     let buffer = new Uint8Array(HEADER);
@@ -265,18 +263,20 @@ export class Patch {
 
   /**
    * Records a frame of `table` at each axis coordinate in `at`. Each field gives a value per row
-   * per frame, frame by frame: every row of the first frame, then of the next. Frames cover every
-   * row, or only rows `options.ids`; other rows keep their last values. A field's first frame makes
-   * it a sampled field. Consecutive appends of `Float32Array` or `Float64Array` values to the same
-   * fields of every row are written as one change, so one frame per call costs no more than one
-   * call with every frame.
+   * per frame, frame by frame. A field's first frame makes it a sampled field. Consecutive appends
+   * of typed float arrays to the same fields of every row write as one change, so a frame per call
+   * costs no more than one call with every frame.
    */
   append(
     table: string,
     at: number | readonly number[],
     fields: Readonly<Record<string, Values>>,
-    { ids }: { ids?: RowIds } = {},
+    options: {
+      /** The rows the frames cover, every row by default; other rows keep their last values. */
+      ids?: RowIds;
+    } = {},
   ): this {
+    const { ids } = options;
     const frames = typeof at === 'number' ? [at] : at;
     const entries = Object.entries(fields);
     const floats =
@@ -314,33 +314,29 @@ export class Patch {
   }
 
   /**
-   * Stores a run of entries of sampled field `field` of `table`, at level of detail `level` (0 by
-   * default), numbered from `first`. This is what a time tile holds, as `latkit tile` writes it.
-   *
-   * At level 0 each entry is a frame: a coordinate in `at`, and a value per row in `values`, entry
-   * by entry. At level `k` each entry is a bucket of `8^k` frames: its first and last frames'
-   * coordinates in `at`. `values` then holds every bucket's per-row minimums, entry by entry,
-   * followed by every bucket's per-row maximums. NaN marks a missing value.
-   *
-   * None of the entries may be stored already. Entries past the field's last frame extend it.
-   * Throws an `invalid` error for a level outside 0 to 21, lengths of `at` and `values` that do not
-   * divide into whole entries and rows, or frame numbers that are not safe nonnegative integers.
+   * Stores a run of entries of sampled field `field` of `table`, at one level of detail. This is
+   * what a time tile holds, as `latkit tile` writes it. At level 0 each entry is a frame; at level
+   * `k`, a bucket of `8^k` frames. None of the entries may be stored already. Entries past the
+   * field's last frame extend it.
    */
   frames(
     table: string,
     field: string,
-    {
-      level = 0,
-      first,
-      at,
-      values,
-    }: {
+    run: {
+      /** The level of detail, from 0 to 21; 0 by default. */
       level?: number;
+      /** The first entry's number: a safe nonnegative integer. */
       first: number;
+      /** Each frame's coordinate, or each bucket's first and last frames' coordinates. */
       at: Float64Array | readonly number[];
+      /**
+       * A value per row, entry by entry; at a bucket level, every bucket's per-row minimums, then
+       * every bucket's per-row maximums. NaN marks a missing value.
+       */
       values: Float32Array | readonly number[];
     },
   ): this {
+    const { level = 0, first, at, values } = run;
     const path = `${table}.${field}`;
     if (!Number.isInteger(level) || level < 0 || level > LEVELS)
       throw invalid(path, `the level must be a whole number from 0 to ${LEVELS}`);
@@ -809,34 +805,5 @@ class Writer {
     const bytes = utf8.encode(s);
     this.u32(bytes.length);
     this.bytes(bytes);
-  }
-}
-
-/**
- * Yields the chunks of `stream`, through `getReader()` when it has one, else by async iteration.
- * Stopping early cancels the reader.
- */
-async function* chunks(
-  stream: ReadableBytes | AsyncIterable<Uint8Array>,
-): AsyncGenerator<Uint8Array> {
-  if (!('getReader' in stream)) {
-    yield* stream;
-    return;
-  }
-  const reader = stream.getReader();
-  let completed = false;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        completed = true;
-        return;
-      }
-      if (!value) throw malformed('a stream chunk is missing');
-      yield value;
-    }
-  } finally {
-    if (!completed) await reader.cancel().catch(() => {});
-    reader.releaseLock();
   }
 }

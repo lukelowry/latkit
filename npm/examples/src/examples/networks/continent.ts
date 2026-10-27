@@ -8,7 +8,8 @@ import { random } from '../../random.js';
  * same grid, in time linear in its size.
  */
 import { Data, Patch, reference } from 'latkit';
-import { levelOf, type Case } from './cases.js';
+import type { Case } from './cases.js';
+import { levelOf } from './format.js';
 
 /** Metro areas: name, longitude, latitude, and millions of people. */
 const CITIES: readonly (readonly [string, number, number, number])[] = [

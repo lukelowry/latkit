@@ -14,7 +14,7 @@ use rustc_hash::FxHashSet;
 use super::View;
 use super::event::{Hit, Trigger};
 use super::probe::Drew;
-use super::resources::step;
+use crate::derive::Working;
 use crate::gpu::Inner;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
@@ -97,11 +97,11 @@ struct Running {
     words: u32,
 }
 
-/// A query whose answer the GPU is copying back, and what its frame drew.
+/// What reading a query's answer needs: the query, where each mark's results are, and what its
+/// frame drew.
 struct Reading {
     ask: Ask,
     found: Vec<Found>,
-    readback: Readback,
     drew: Drew,
 }
 
@@ -109,7 +109,8 @@ struct Reading {
 pub(crate) struct Queries {
     waiting: VecDeque<Ask>,
     running: Option<Running>,
-    reading: Option<Reading>,
+    /// The query whose answer the GPU is copying back.
+    reading: Working<Reading, Readback>,
 }
 
 impl Queries {
@@ -165,7 +166,7 @@ impl View {
     /// room for its results after the probe's words, and returns its query words and whether it
     /// reads depth.
     pub(super) fn next_query(&mut self) -> Option<([f32; 4], bool)> {
-        if self.queries.running.is_some() || self.queries.reading.is_some() {
+        if self.queries.running.is_some() || self.queries.reading.busy() {
             return None;
         }
         let ask = std::iter::from_fn(|| self.queries.waiting.pop_front()).find(|ask| !ask.cancelled())?;
@@ -204,8 +205,7 @@ impl View {
         let Some(Running { ask, found, words }) = self.queries.running.take() else { return };
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        let resources = self.resources.as_mut().expect("created before queries");
-        let probe = resources.probe().clone();
+        let probe = self.resources.as_ref().expect("created before queries").probe().clone();
         let start = u64::from(wgsl::PROBE_WORDS) * 4;
         // Results start empty: for hits, a zero count and each mark's capacity; for a box, no rows.
         match &ask {
@@ -217,35 +217,22 @@ impl View {
             Ask::Boxed { .. } if words > 0 => encoder.clear_buffer(&probe, start, Some(u64::from(words) * 4)),
             Ask::Boxed { .. } | Ask::Locate { .. } => {}
         }
-        let shader = crate::gpu::pipelines::probe(resources.samples());
-        let groups = resources.groups(&gpu.0, inner);
-        let group = resources.pass(device, inner, shader);
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("latkit query"),
-                timestamp_writes: None,
-            });
-            pass.set_bind_group(0, &groups.view, &[]);
-            pass.set_bind_group(2, &group, &[step(ask.step())]);
-            for f in &found {
-                self.probe_step(&mut pass, inner, shader, &groups.mark, f.mark, ask.step());
-            }
-        }
+        let marks: Vec<usize> = found.iter().map(|f| f.mark).collect();
+        self.probe_pass(encoder, inner, "latkit query", &[(ask.step(), &marks)]);
         let (at, bytes) = match &ask {
             Ask::Locate { .. } => (u64::from(wgsl::PROBE_LOCATE_X) * 4, 16),
             _ => (start, u64::from(words.max(1)) * 4),
         };
         let readback = Readback::new(&inner.readbacks, device, encoder, &probe, at, bytes, &self.waker);
-        self.queries.reading = Some(Reading { ask, found, readback, drew: self.drew() });
+        let drew = self.drew();
+        self.queries.reading.start(0, readback, Reading { ask, found, drew });
     }
 
     /// Answers a query whose readback has arrived.
     pub(super) fn settle_query(&mut self) {
-        let Some(reading) = &self.queries.reading else { return };
-        let Some(bytes) = reading.readback.take() else { return };
-        let Reading { ask, found, drew, .. } = self.queries.reading.take().expect("reading");
-        let words: Vec<u32> = match bytes {
-            Ok(bytes) => bytemuck::cast_slice(&bytes).to_vec(),
+        let Some((_, Reading { ask, found, drew }, bytes)) = self.queries.reading.landed() else { return };
+        let words = match bytes {
+            Ok(bytes) => crate::wire::words(&bytes),
             Err(error) => {
                 match ask {
                     Ask::Hits { reply, .. } => reply.resolve(Err(error)),
@@ -316,19 +303,8 @@ fn hits(found: &[Found], words: &[u32], drew: &Drew) -> Vec<Hit> {
         if !seen.insert((i, entry[0])) {
             continue;
         }
-        let Some((row, at)) = drew.row(i, entry[0]) else { continue };
         let point = [f32::from_bits(entry[3]), f32::from_bits(entry[4])];
-        let depth = f64::from(f32::from_bits(entry[5]));
-        hits.push(Hit {
-            row,
-            mark: drew.name(i),
-            index: i,
-            point,
-            position: drew.position(point, depth),
-            distance: entry[1] as f32 / 64.0,
-            port: drew.port(i, entry[2]),
-            sample: drew.sample(i, at, entry[2]),
-        });
+        hits.extend(drew.hit(i, entry[0], point, f32::from_bits(entry[5]), entry[1], entry[2]));
     }
     hits
 }

@@ -52,7 +52,7 @@ impl Areas {
             None => c.theme("color", wgsl::THEME_AREA, color)?,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::AREA_FLAGS, bit: wgsl::VISIBLE })?;
-        let mut drawing = Drawing::new(MarkKind::Areas, wgsl::AREA_WORDS);
+        let mut drawing = Drawing::new(MarkKind::Areas);
         drawing.geometry = c.derived_path(&triangles_of(&field));
         Ok(drawing)
     }

@@ -118,7 +118,7 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
 {#cli-render-size .member}
 **`--size`** `<SIZE>` [¶](#cli-render-size){.headerlink}
-: The picture's width and height in pixels, such as `1920x1080`. Defaults to `1600x900`.
+: The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down to a multiple of 4 and its height to an even number. Defaults to `1600x900`.
 
 {#cli-render-scale .member}
 **`--scale`** `<SCALE>` [¶](#cli-render-scale){.headerlink}
@@ -141,8 +141,8 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 : A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts.
 
 {#cli-render-camera .member}
-**`--camera`** `<FILE>` [¶](#cli-render-camera){.headerlink}
-: A camera JSON file per scene, in scene order. Views without one use [`--fit`](#cli-render-fit).
+**`--camera`** `<CAMERA>` [¶](#cli-render-camera){.headerlink}
+: A camera per scene, in scene order: JSON, or a file of it (`-` reads stdin). Views without one use [`--fit`](#cli-render-fit).
 
 {#cli-render-fit .member}
 **`--fit`** `<FIT>` [¶](#cli-render-fit){.headerlink}
@@ -181,115 +181,7 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
 Check every input render reads, including frames, without a GPU.
 
-```{rubric} Arguments
-```
-
-{#cli-validate-scenes .member}
-**`<SCENE>...`** [¶](#cli-validate-scenes){.headerlink}
-: Scene JSON files, one per panel (`-` reads stdin).
-
-```{rubric} Options
-```
-
-{#cli-validate-data .member}
-`-d,` **`--data`** `<[NAME=]FILE>` [¶](#cli-validate-data){.headerlink}
-: A dataset file: a JSON document, latkit bytes, or GeoJSON. `NAME=` sets its name, which GeoJSON requires.
-
-{#cli-validate-tiles .member}
-**`--tiles`** `<NAME=FILE>` [¶](#cli-validate-tiles){.headerlink}
-: Tiles every view fetches as dataset `NAME`: a time tiles `frames.json`, or a vector tiles PMTiles file, TileJSON, or `{z}/{x}/{y}` template.
-
-{#cli-validate-output .member}
-`-o,` **`--output`** `<FILE>` [¶](#cli-validate-output){.headerlink}
-: Output file, `%d` pattern for an image sequence, or `-` for stdout.
-
-{#cli-validate-format .member}
-**`--format`** `<FORMAT>` [¶](#cli-validate-format){.headerlink}
-: Output format. Defaults to the one the output's extension names, else PNG.
-
-  {#cli-validate-format-png .member}
-  **`png`** [¶](#cli-validate-format-png){.headerlink}
-  : PNG, lossless with alpha. One picture, or one per frame with a `%d` output pattern.
-
-  {#cli-validate-format-jpeg .member}
-  **`jpeg`** [¶](#cli-validate-format-jpeg){.headerlink}
-  : JPEG at [`--quality`](#cli-validate-quality), without alpha. One picture, or one per frame.
-
-  {#cli-validate-format-webp .member}
-  **`webp`** [¶](#cli-validate-format-webp){.headerlink}
-  : Lossless WebP with alpha. One picture, or one per frame.
-
-  {#cli-validate-format-rgba .member}
-  **`rgba`** [¶](#cli-validate-format-rgba){.headerlink}
-  : Raw RGBA with straight alpha, frames back to back.
-
-  {#cli-validate-format-y4m .member}
-  **`y4m`** [¶](#cli-validate-format-y4m){.headerlink}
-  : YUV4MPEG2 (4:2:0, BT.709 limited range), which any encoder reads.
-
-  {#cli-validate-format-mp4 .member}
-  **`mp4`** [¶](#cli-validate-format-mp4){.headerlink}
-  : H.264 in fragmented MP4, from the platform's encoder.
-
-{#cli-validate-quality .member}
-**`--quality`** `<QUALITY>` [¶](#cli-validate-quality){.headerlink}
-: JPEG quality, from 1 (smallest) to 100 (sharpest). Defaults to `90`.
-
-{#cli-validate-size .member}
-**`--size`** `<SIZE>` [¶](#cli-validate-size){.headerlink}
-: The picture's width and height in pixels, such as `1920x1080`. Defaults to `1600x900`.
-
-{#cli-validate-scale .member}
-**`--scale`** `<SCALE>` [¶](#cli-validate-scale){.headerlink}
-: Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp. Defaults to `1`.
-
-{#cli-validate-panel .member}
-**`--panel`** `<X,Y,W,H>` [¶](#cli-validate-panel){.headerlink}
-: A scene's panel of the picture: its x, y, width, and height, as fractions. Give one per scene, in order.
-
-{#cli-validate-transparent .member}
-**`--transparent`** [¶](#cli-validate-transparent){.headerlink}
-: Keep alpha where the themes' backgrounds would be.
-
-{#cli-validate-deadline .member}
-**`--deadline`** `<DEADLINE>` [¶](#cli-validate-deadline){.headerlink}
-: The longest a picture or video frame may take, in seconds. Defaults to `30`.
-
-{#cli-validate-font .member}
-**`--font`** `<FILE>` [¶](#cli-validate-font){.headerlink}
-: A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts.
-
-{#cli-validate-camera .member}
-**`--camera`** `<FILE>` [¶](#cli-validate-camera){.headerlink}
-: A camera JSON file per scene, in scene order. Views without one use [`--fit`](#cli-validate-fit).
-
-{#cli-validate-fit .member}
-**`--fit`** `<FIT>` [¶](#cli-validate-fit){.headerlink}
-: What views without a camera frame: `all`, or a fit as JSON. Defaults to `all`.
-
-{#cli-validate-insets .member}
-**`--insets`** `<T,R,B,L>` [¶](#cli-validate-insets){.headerlink}
-: CSS pixels to keep clear at the top, right, bottom, and left.
-
-{#cli-validate-at .member}
-**`--at`** `<AT>` [¶](#cli-validate-at){.headerlink}
-: The axis coordinate to show. Sampled fields show their last frame at or before it.
-
-{#cli-validate-elapsed .member}
-**`--elapsed`** `<ELAPSED>` [¶](#cli-validate-elapsed){.headerlink}
-: A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets.
-
-{#cli-validate-frames .member}
-**`--frames`** `<FILE>` [¶](#cli-validate-frames){.headerlink}
-: Frames as JSON Lines, one line per output frame (`-` reads stdin).
-
-{#cli-validate-fps .member}
-**`--fps`** `<FPS>` [¶](#cli-validate-fps){.headerlink}
-: Output frames per second. Defaults to `60`.
-
-{#cli-validate-bitrate .member}
-**`--bitrate`** `<BITRATE>` [¶](#cli-validate-bitrate){.headerlink}
-: MP4 bitrate in bits per second. Defaults to about 0.15 bits per pixel per frame.
+Takes [`latkit render`](#cli-render)'s arguments and options.
 
 (cli-inspect)=
 
@@ -376,7 +268,7 @@ Print the rows a query selects, sorted and paged, as JSON Lines with one object 
 
 {#cli-query-query .member}
 **`<QUERY>`** [¶](#cli-query-query){.headerlink}
-: The query as JSON, such as `{"of":"Branch","filter":{"op":"gt","args":["loading",90]}}`, or a file containing it (`-` reads stdin).
+: The query: JSON, such as `{"of":"Branch","filter":{"op":"gt","args":["loading",90]}}`, or a file of it (`-` reads stdin).
 
 ```{rubric} Options
 ```

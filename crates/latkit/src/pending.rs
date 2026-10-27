@@ -140,6 +140,52 @@ impl<T> Future for Pending<T> {
     }
 }
 
+/// The wakers of whatever watches something, by the watcher's id, each the watcher's latest. Waking
+/// wakes every watcher.
+#[derive(Default)]
+pub(crate) struct Watchers(Mutex<Vec<(u64, Waker)>>);
+
+impl Watchers {
+    /// Registers `waker` for watcher `id`, replacing its previous one.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn watch(&self, id: u64, waker: &Waker) {
+        let mut watchers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match watchers.iter_mut().find(|(watcher, _)| *watcher == id) {
+            Some((_, kept)) => kept.clone_from(waker),
+            None => watchers.push((id, waker.clone())),
+        }
+    }
+
+    /// Removes watcher `id`'s waker. Returns how many watchers are left.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn unwatch(&self, id: u64) -> usize {
+        let mut watchers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        watchers.retain(|(watcher, _)| *watcher != id);
+        watchers.len()
+    }
+
+    /// Wakes every watcher.
+    pub(crate) fn wake_all(&self) {
+        let wakers: Vec<Waker> =
+            self.0.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|(_, waker)| waker.clone()).collect();
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
+/// A waker that wakes every watcher.
+#[cfg(feature = "gpu")]
+impl std::task::Wake for Watchers {
+    fn wake(self: Arc<Self>) {
+        self.wake_all();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake_all();
+    }
+}
+
 impl<T> std::fmt::Debug for Pending<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Pending")

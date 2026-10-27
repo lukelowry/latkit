@@ -1,8 +1,10 @@
 name: CI
 
 # What a release depends on: the crates build, pass their tests, document, and package on every
-# platform they ship to; the npm tarball works in a consumer; the docs build. Frame budgets and the
-# benchmark need a GPU, which runners lack: run `cargo xtask check` and `cargo xtask bench` locally.
+# platform they ship to; the npm tarball works in a consumer; the docs build. The jobs that build
+# Rust run their steps as `cargo xtask ci <job>`, and `cargo xtask check` runs every job's steps.
+# Frame budgets and the benchmark need a GPU, which runners lack: run `cargo xtask check` and
+# `cargo xtask bench` locally.
 on:
   pull_request:
   push:
@@ -89,29 +91,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt --all --check
-      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - run: cargo clippy --locked -p latkit --no-default-features --all-targets -- -D warnings
-      - run: cargo clippy --locked -p latkit-js --target wasm32-unknown-unknown -- -D warnings
       # Lavapipe, Vulkan on the CPU, runs the GPU tests instead of skipping; text tests need fonts.
       - name: Install a software Vulkan driver and fonts for the GPU tests
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers fonts-dejavu-core
-      - run: cargo test --locked --workspace
-        env:
-          LATKIT_REQUIRE_GPU: 1
-      - run: cargo test --locked -p latkit --no-default-features
-        env:
-          LATKIT_REQUIRE_GPU: 1
-      - name: Document the library
-        run: cargo doc --locked -p latkit --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
-      - name: Verify the native package
-        run: cargo package --locked -p latkit
-      - name: Verify the browser-target package
-        run: cargo package --locked -p latkit --target wasm32-unknown-unknown --features web
-      - name: Keep native font code out of browser builds
-        run: cargo check --locked -p latkit --target wasm32-unknown-unknown --features native,web
+      - run: cargo xtask ci rust
 
   # The CLI's native code on the other platforms it installs on; Linux runs in `rust`.
   native-cli:
@@ -129,8 +112,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --locked --package latkit --features native --lib --test validation
-      - run: cargo test --locked --package latkit-cli
+      - run: cargo xtask ci native-cli
 
   # The npm package: built from the crate, checked, tested, every pipeline compiled in Chrome on
   # SwiftShader, and the packed tarball installed and drawn in a consumer.
@@ -156,7 +138,8 @@ jobs:
       - name: Read the WASM bindings generator's version
         id: bindgen
         run: |
-          echo "version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')" >> "$GITHUB_OUTPUT"
+          version=$(cargo xtask bindgen-version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         id: bindgen-cache
         with:
@@ -166,14 +149,7 @@ jobs:
         if: steps.bindgen-cache.outputs.cache-hit != 'true'
         run: cargo install wasm-bindgen-cli --version "${{ steps.bindgen.outputs.version }}" --locked
       - run: pnpm --dir npm/examples exec playwright-core install --with-deps chromium
-      - run: cargo xtask wasm --dev
-      - run: pnpm lint
-      - run: node npm/docs.mjs --check
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: cargo xtask browser
-      - run: cargo xtask package
-      - run: cargo xtask package-test
+      - run: cargo xtask ci npm
 
   # The docs as Read the Docs builds them, from the locked environment: a warning fails.
   docs:

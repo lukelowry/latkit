@@ -909,18 +909,95 @@ One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: o
 `{` **`areas`**`:` [`Areas`](#areas) `}` [¶](#mark-areas){.headerlink}
 : Rows drawn as the areas their polygons cover.
 
+(markoptions)=
+
+### `MarkOptions`
+
+{.signature}
+`interface MarkOptions`
+
+The options every mark has.
+
+{#markoptions-of .member}
+**`of`**`: [data: string, table: string]` [¶](#markoptions-of){.headerlink}
+: The dataset and table drawn.
+
+{#markoptions-color .member}
+**`color`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#markoptions-color){.headerlink}
+: Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
+  corners' colors.
+
+{#markoptions-visible .member}
+**`visible`**`?:` [`ExprInput`](#exprinput) [¶](#markoptions-visible){.headerlink}
+: Whether each row is drawn and can be picked. Default `true`.
+
+{#markoptions-priority .member}
+**`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#markoptions-priority){.headerlink}
+: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
+  the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
+  labeled first.
+
+{#markoptions-name .member}
+**`name`**`?: string | null` [¶](#markoptions-name){.headerlink}
+: Distinguishes two marks of the same table across scenes, and names the mark in hits.
+
+{#markoptions-pick .member}
+**`pick`**`?: boolean | null` [¶](#markoptions-pick){.headerlink}
+: Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
+  do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
+
+{#markoptions-select .member}
+**`select`**`?: boolean` [¶](#markoptions-select){.headerlink}
+: Whether clicking a row selects it. Default `true`.
+
+{#markoptions-drag .member}
+**`drag`**`?: boolean` [¶](#markoptions-drag){.headerlink}
+: Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
+  camera. Default `false`.
+
+{#markoptions-label .member}
+**`label`**`?:` [`Label`](#label) `| null` [¶](#markoptions-label){.headerlink}
+: Each row's label: a text field, or label options.
+
+{#markoptions-legend .member}
+**`legend`**`?: string | null` [¶](#markoptions-legend){.headerlink}
+: A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
+  across its domain, a cell for each category, or a swatch beside each name of a map's
+  `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
+  conditional, `otherwise` is searched before the cases.
+
+(strokeoptions)=
+
+### `StrokeOptions`
+
+{.signature}
+`interface StrokeOptions`
+
+The options of marks drawn as strokes: edges and lines.
+
+{#strokeoptions-width .member}
+**`width`**`?:` [`Size`](#size) `| null` [¶](#strokeoptions-width){.headerlink}
+: Each row's width, in the space's unit (units in a diagram, CSS pixels elsewhere) unless given
+  with `px` or `units`. The theme's width unless set.
+
+{#strokeoptions-dash .member}
+**`dash`**`?:` [`ExprInput`](#exprinput) [¶](#strokeoptions-dash){.headerlink}
+: Whether each row is dashed, with the theme's `dash` period. Default `false`.
+
+{#strokeoptions-flow .member}
+**`flow`**`?:` [`ExprInput`](#exprinput) [¶](#strokeoptions-flow){.headerlink}
+: The speed of comets flowing along each row, per second, in the unit of the theme's `flow`
+  lengths. Negative speeds flow backward; 0, the default, draws no comets. When the speed changes,
+  comets continue from where they are.
+
 (vertices)=
 
 ### `Vertices`
 
 {.signature}
-`interface Vertices`
+`interface Vertices extends` [`MarkOptions`](#markoptions)
 
 Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
-
-{#vertices-of .member}
-**`of`**`: [data: string, table: string]` [¶](#vertices-of){.headerlink}
-: The dataset and table drawn.
 
 {#vertices-position .member}
 **`position`**`?: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] | null` [¶](#vertices-position){.headerlink}
@@ -971,64 +1048,16 @@ Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
 : Whether each block or group casts a shadow on the sheet, styled by the theme's `diagram.shadow`.
   Default `false`. Diagrams only.
 
-{#vertices-color .member}
-**`color`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#vertices-color){.headerlink}
-: Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-  corners' colors.
-
-{#vertices-visible .member}
-**`visible`**`?:` [`ExprInput`](#exprinput) [¶](#vertices-visible){.headerlink}
-: Whether each row is drawn and can be picked. Default `true`.
-
-{#vertices-priority .member}
-**`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#vertices-priority){.headerlink}
-: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-  the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-  labeled first.
-
-{#vertices-name .member}
-**`name`**`?: string | null` [¶](#vertices-name){.headerlink}
-: Distinguishes two marks of the same table across scenes, and names the mark in hits.
-
-{#vertices-pick .member}
-**`pick`**`?: boolean | null` [¶](#vertices-pick){.headerlink}
-: Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-  do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-
-{#vertices-select .member}
-**`select`**`?: boolean` [¶](#vertices-select){.headerlink}
-: Whether clicking a row selects it. Default `true`.
-
-{#vertices-drag .member}
-**`drag`**`?: boolean` [¶](#vertices-drag){.headerlink}
-: Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-  camera. Default `false`.
-
-{#vertices-label .member}
-**`label`**`?:` [`Label`](#label) `| null` [¶](#vertices-label){.headerlink}
-: Each row's label: a text field, or label options.
-
-{#vertices-legend .member}
-**`legend`**`?: string | null` [¶](#vertices-legend){.headerlink}
-: A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-  across its domain, a cell for each category, or a swatch beside each name of a map's
-  `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-  conditional, `otherwise` is searched before the cases.
-
 (edges)=
 
 ### `Edges`
 
 {.signature}
-`interface Edges`
+`interface Edges extends` [`MarkOptions`](#markoptions)`,` [`StrokeOptions`](#strokeoptions)
 
 Rows drawn as strokes between the vertices named by two reference fields: branches, links,
 wires. In a diagram, a row without ends is a net, joining every vertex port whose reference
 field names it.
-
-{#edges-of .member}
-**`of`**`: [data: string, table: string]` [¶](#edges-of){.headerlink}
-: The dataset and table drawn.
 
 {#edges-ends .member}
 **`ends`**`?: [from: string, to: string] | null` [¶](#edges-ends){.headerlink}
@@ -1058,80 +1087,17 @@ field names it.
 : Draws each row as a net on a plane or the earth, joining the vertex rows of `table` whose
   `reference` field names it: a star from their center to each member.
 
-{#edges-width .member}
-**`width`**`?:` [`Size`](#size) `| null` [¶](#edges-width){.headerlink}
-: Each row's width, in the space's unit (units in a diagram, CSS pixels elsewhere) unless given
-  with `px` or `units`. The theme's width unless set.
-
-{#edges-dash .member}
-**`dash`**`?:` [`ExprInput`](#exprinput) [¶](#edges-dash){.headerlink}
-: Whether each row is dashed, with the theme's `dash` period. Default `false`.
-
-{#edges-flow .member}
-**`flow`**`?:` [`ExprInput`](#exprinput) [¶](#edges-flow){.headerlink}
-: The speed of comets flowing along each row, per second, in the unit of the theme's `flow`
-  lengths. Negative speeds flow backward; 0, the default, draws no comets. When the speed changes,
-  comets continue from where they are.
-
-{#edges-color .member}
-**`color`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#edges-color){.headerlink}
-: Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-  corners' colors.
-
-{#edges-visible .member}
-**`visible`**`?:` [`ExprInput`](#exprinput) [¶](#edges-visible){.headerlink}
-: Whether each row is drawn and can be picked. Default `true`.
-
-{#edges-priority .member}
-**`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#edges-priority){.headerlink}
-: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-  the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-  labeled first.
-
-{#edges-name .member}
-**`name`**`?: string | null` [¶](#edges-name){.headerlink}
-: Distinguishes two marks of the same table across scenes, and names the mark in hits.
-
-{#edges-pick .member}
-**`pick`**`?: boolean | null` [¶](#edges-pick){.headerlink}
-: Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-  do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-
-{#edges-select .member}
-**`select`**`?: boolean` [¶](#edges-select){.headerlink}
-: Whether clicking a row selects it. Default `true`.
-
-{#edges-drag .member}
-**`drag`**`?: boolean` [¶](#edges-drag){.headerlink}
-: Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-  camera. Default `false`.
-
-{#edges-label .member}
-**`label`**`?:` [`Label`](#label) `| null` [¶](#edges-label){.headerlink}
-: Each row's label: a text field, or label options.
-
-{#edges-legend .member}
-**`legend`**`?: string | null` [¶](#edges-legend){.headerlink}
-: A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-  across its domain, a cell for each category, or a swatch beside each name of a map's
-  `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-  conditional, `otherwise` is searched before the cases.
-
 (lines)=
 
 ### `Lines`
 
 {.signature}
-`interface Lines`
+`interface Lines extends` [`MarkOptions`](#markoptions)`,` [`StrokeOptions`](#strokeoptions)
 
 Rows drawn as lines along a path field (roads, rivers, borders) or a polygon field's rings (area
 outlines). On a plot, each row instead traces a sampled field's history across the data's axis,
 as a monitor does. On the earth, paths follow the globe's curve and stay whole across the
 antimeridian.
-
-{#lines-of .member}
-**`of`**`: [data: string, table: string]` [¶](#lines-of){.headerlink}
-: The dataset and table drawn.
 
 {#lines-geometry .member}
 **`geometry`**`?: string | null` [¶](#lines-geometry){.headerlink}
@@ -1147,193 +1113,38 @@ antimeridian.
 **`interpolation`**`?:` [`Interpolation`](#interpolation) [¶](#lines-interpolation){.headerlink}
 : How each row runs between its samples on a plot; `linear` by default.
 
-{#lines-width .member}
-**`width`**`?:` [`Size`](#size) `| null` [¶](#lines-width){.headerlink}
-: Each row's width, in the space's unit (units in a diagram, CSS pixels elsewhere) unless given
-  with `px` or `units`. The theme's width unless set.
-
-{#lines-dash .member}
-**`dash`**`?:` [`ExprInput`](#exprinput) [¶](#lines-dash){.headerlink}
-: Whether each row is dashed, with the theme's `dash` period. Default `false`.
-
-{#lines-flow .member}
-**`flow`**`?:` [`ExprInput`](#exprinput) [¶](#lines-flow){.headerlink}
-: The speed of comets flowing along each row, per second, in the unit of the theme's `flow`
-  lengths. Negative speeds flow backward; 0, the default, draws no comets. When the speed changes,
-  comets continue from where they are.
-
-{#lines-color .member}
-**`color`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#lines-color){.headerlink}
-: Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-  corners' colors.
-
-{#lines-visible .member}
-**`visible`**`?:` [`ExprInput`](#exprinput) [¶](#lines-visible){.headerlink}
-: Whether each row is drawn and can be picked. Default `true`.
-
-{#lines-priority .member}
-**`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#lines-priority){.headerlink}
-: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-  the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-  labeled first.
-
-{#lines-name .member}
-**`name`**`?: string | null` [¶](#lines-name){.headerlink}
-: Distinguishes two marks of the same table across scenes, and names the mark in hits.
-
-{#lines-pick .member}
-**`pick`**`?: boolean | null` [¶](#lines-pick){.headerlink}
-: Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-  do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-
-{#lines-select .member}
-**`select`**`?: boolean` [¶](#lines-select){.headerlink}
-: Whether clicking a row selects it. Default `true`.
-
-{#lines-drag .member}
-**`drag`**`?: boolean` [¶](#lines-drag){.headerlink}
-: Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-  camera. Default `false`.
-
-{#lines-label .member}
-**`label`**`?:` [`Label`](#label) `| null` [¶](#lines-label){.headerlink}
-: Each row's label: a text field, or label options.
-
-{#lines-legend .member}
-**`legend`**`?: string | null` [¶](#lines-legend){.headerlink}
-: A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-  across its domain, a cell for each category, or a swatch beside each name of a map's
-  `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-  conditional, `otherwise` is searched before the cases.
-
 (areas)=
 
 ### `Areas`
 
 {.signature}
-`interface Areas`
+`interface Areas extends` [`MarkOptions`](#markoptions)
 
 Rows drawn as the areas of a polygon field: parcels, states, lakes, the land and water of a map.
 The view triangulates each row's polygons once, in the background when they are large. On the
 earth, areas follow the globe's curve and stay whole across the antimeridian. To outline areas,
 add a [`Lines`](#lines) mark of the same table, which draws their rings.
 
-{#areas-of .member}
-**`of`**`: [data: string, table: string]` [¶](#areas-of){.headerlink}
-: The dataset and table drawn.
-
 {#areas-geometry .member}
 **`geometry`**`?: string | null` [¶](#areas-geometry){.headerlink}
 : The polygon field each row fills, holding one polygon's rings or several polygons; the field
   named `geometry` by default.
-
-{#areas-color .member}
-**`color`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#areas-color){.headerlink}
-: Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-  corners' colors.
-
-{#areas-visible .member}
-**`visible`**`?:` [`ExprInput`](#exprinput) [¶](#areas-visible){.headerlink}
-: Whether each row is drawn and can be picked. Default `true`.
-
-{#areas-priority .member}
-**`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#areas-priority){.headerlink}
-: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-  the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-  labeled first.
-
-{#areas-name .member}
-**`name`**`?: string | null` [¶](#areas-name){.headerlink}
-: Distinguishes two marks of the same table across scenes, and names the mark in hits.
-
-{#areas-pick .member}
-**`pick`**`?: boolean | null` [¶](#areas-pick){.headerlink}
-: Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-  do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-
-{#areas-select .member}
-**`select`**`?: boolean` [¶](#areas-select){.headerlink}
-: Whether clicking a row selects it. Default `true`.
-
-{#areas-drag .member}
-**`drag`**`?: boolean` [¶](#areas-drag){.headerlink}
-: Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-  camera. Default `false`.
-
-{#areas-label .member}
-**`label`**`?:` [`Label`](#label) `| null` [¶](#areas-label){.headerlink}
-: Each row's label: a text field, or label options.
-
-{#areas-legend .member}
-**`legend`**`?: string | null` [¶](#areas-legend){.headerlink}
-: A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-  across its domain, a cell for each category, or a swatch beside each name of a map's
-  `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-  conditional, `otherwise` is searched before the cases.
 
 (faces)=
 
 ### `Faces`
 
 {.signature}
-`interface Faces`
+`interface Faces extends` [`MarkOptions`](#markoptions)
 
 Rows drawn as triangles between the vertices named by three reference fields: meshes, surfaces,
 and fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen
 from above shows its exact colors.
 
-{#faces-of .member}
-**`of`**`: [data: string, table: string]` [¶](#faces-of){.headerlink}
-: The dataset and table drawn.
-
 {#faces-corners .member}
 **`corners`**`?: [a: string, b: string, c: string] | null` [¶](#faces-corners){.headerlink}
 : The reference fields naming each row's three vertices; required. Without a color, a face blends
   the colors of its corners.
-
-{#faces-color .member}
-**`color`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#faces-color){.headerlink}
-: Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-  corners' colors.
-
-{#faces-visible .member}
-**`visible`**`?:` [`ExprInput`](#exprinput) [¶](#faces-visible){.headerlink}
-: Whether each row is drawn and can be picked. Default `true`.
-
-{#faces-priority .member}
-**`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#faces-priority){.headerlink}
-: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-  the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-  labeled first.
-
-{#faces-name .member}
-**`name`**`?: string | null` [¶](#faces-name){.headerlink}
-: Distinguishes two marks of the same table across scenes, and names the mark in hits.
-
-{#faces-pick .member}
-**`pick`**`?: boolean | null` [¶](#faces-pick){.headerlink}
-: Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and plot traces
-  do, and geometry (areas, and lines along paths such as coasts, borders, and roads) does not.
-
-{#faces-select .member}
-**`select`**`?: boolean` [¶](#faces-select){.headerlink}
-: Whether clicking a row selects it. Default `true`.
-
-{#faces-drag .member}
-**`drag`**`?: boolean` [¶](#faces-drag){.headerlink}
-: Whether pressing and moving a row drags it, reported as a `'drag'` event, instead of panning the
-  camera. Default `false`.
-
-{#faces-label .member}
-**`label`**`?:` [`Label`](#label) `| null` [¶](#faces-label){.headerlink}
-: Each row's label: a text field, or label options.
-
-{#faces-legend .member}
-**`legend`**`?: string | null` [¶](#faces-legend){.headerlink}
-: A legend of the mark's colors at the view's bottom right, under this title: a ticked colormap
-  across its domain, a cell for each category, or a swatch beside each name of a map's
-  `categories`. `color` must map through a colormap with a fixed domain or named categories; in a
-  conditional, `otherwise` is searched before the cases.
 
 (marker)=
 
@@ -1566,10 +1377,6 @@ a text field, or options. Where labels would overlap, the higher priority shows;
 labels already shown stay. In a diagram a label is part of the drawing: it scales with the zoom,
 fades out when too small to read, and shows wherever it fits its vertex.
 
-{#label-exprinput .member}
-[`ExprInput`](#exprinput) [¶](#label-exprinput){.headerlink}
-: A value option: an [`Expr`](#expr), or its JSON form, in which a string is a field name.
-
 {#label-text .member}
 **`text`**`:` [`ExprInput`](#exprinput) [¶](#label-text){.headerlink}
 : The text field to show.
@@ -1610,18 +1417,6 @@ fades out when too small to read, and shows wherever it fits its vertex.
 A size: a value in the space's unit (units in a diagram, CSS pixels elsewhere), `{ px }` in CSS
 pixels, or `{ units }` in position units (degrees on the earth), which grow on screen as the
 view zooms in.
-
-{#size-exprinput .member}
-[`ExprInput`](#exprinput) [¶](#size-exprinput){.headerlink}
-: A value option: an [`Expr`](#expr), or its JSON form, in which a string is a field name.
-
-{#size-px .member}
-[`Px`](#px) [¶](#size-px){.headerlink}
-: A size in CSS pixels, regardless of the space's unit.
-
-{#size-units .member}
-[`Units`](#units) [¶](#size-units){.headerlink}
-: A size in position units (degrees on the earth), regardless of the space's unit, so it scales as the view zooms.
 
 (px)=
 
@@ -1671,50 +1466,6 @@ Expressions as JSON: a constant, a field, or one of these nodes. Colors take CSS
 
 A value for each row: a number, a boolean, a field's name, or a node that computes one.
 
-{#exprnode-fieldnode .member}
-[`FieldNode`](#fieldnode) [¶](#exprnode-fieldnode){.headerlink}
-: A field's value in each row: from the mark's own table, or with `from`, from another dataset's table joined by row id.
-
-{#exprnode-colornode .member}
-[`ColorNode`](#colornode) [¶](#exprnode-colornode){.headerlink}
-: A constant color.
-
-{#exprnode-statenode .member}
-[`StateNode`](#statenode) [¶](#exprnode-statenode){.headerlink}
-: View state of each row, such as whether it is selected.
-
-{#exprnode-missingnode .member}
-[`MissingNode`](#missingnode) [¶](#exprnode-missingnode){.headerlink}
-: A missing value.
-
-{#exprnode-unarynode .member}
-[`UnaryNode`](#unarynode) [¶](#exprnode-unarynode){.headerlink}
-: A one-argument operation, such as `{ "op": "abs", "args": ["x"] }`.
-
-{#exprnode-binarynode .member}
-[`BinaryNode`](#binarynode) [¶](#exprnode-binarynode){.headerlink}
-: A two-argument operation, such as `{ "op": "add", "args": ["a", 1] }`.
-
-{#exprnode-whennode .member}
-[`WhenNode`](#whennode) [¶](#exprnode-whennode){.headerlink}
-: The value of the first case whose condition holds, else `otherwise`.
-
-{#exprnode-isnode .member}
-[`IsNode`](#isnode) [¶](#exprnode-isnode){.headerlink}
-: Whether a text field equals a text exactly.
-
-{#exprnode-containsnode .member}
-[`ContainsNode`](#containsnode) [¶](#exprnode-containsnode){.headerlink}
-: Whether a text field contains a text, ignoring case.
-
-{#exprnode-scalenode .member}
-[`ScaleNode`](#scalenode) [¶](#exprnode-scalenode){.headerlink}
-: A value mapped linearly onto a range, clamped to the range.
-
-{#exprnode-colormapnode .member}
-[`ColormapNode`](#colormapnode) [¶](#exprnode-colormapnode){.headerlink}
-: A value mapped through a colormap.
-
 (paintnode)=
 
 ### `PaintNode`
@@ -1728,22 +1479,6 @@ colors.
 {#paintnode-color .member}
 [`Color`](#color) [¶](#paintnode-color){.headerlink}
 : A CSS color, such as `#ffb000` or `rebeccapurple`.
-
-{#paintnode-colornode .member}
-[`ColorNode`](#colornode) [¶](#paintnode-colornode){.headerlink}
-: A constant color.
-
-{#paintnode-colormapnode .member}
-[`ColormapNode`](#colormapnode) [¶](#paintnode-colormapnode){.headerlink}
-: A value mapped through a colormap.
-
-{#paintnode-whenpaintnode .member}
-[`WhenPaintNode`](#whenpaintnode) [¶](#paintnode-whenpaintnode){.headerlink}
-: A conditional color: the color of the first case whose condition holds, else `otherwise`.
-
-{#paintnode-missingnode .member}
-[`MissingNode`](#missingnode) [¶](#paintnode-missingnode){.headerlink}
-: A missing value.
 
 (fieldnode)=
 
@@ -1983,14 +1718,6 @@ pointer), `elapsed` (seconds since the view was created), or `zoom` (the camera'
 `type Colormap =` [`ColormapName`](#colormapname) `|` [`CustomColormap`](#customcolormap)
 
 Colors for a range of values: a catalog name, or your own colors.
-
-{#colormap-colormapname .member}
-[`ColormapName`](#colormapname) [¶](#colormap-colormapname){.headerlink}
-: A colormap of the catalog.
-
-{#colormap-customcolormap .member}
-[`CustomColormap`](#customcolormap) [¶](#colormap-customcolormap){.headerlink}
-: A custom colormap: its kind, its colors, and for a categorical map, its category names.
 
 (colormapname)=
 
@@ -2285,7 +2012,7 @@ View events and hits, dataset descriptions and values, and frame statistics.
 Something that happened in a view, as [`view.on`](#view-on) reports it.
 
 {#viewevent-click .member}
-`{ type:` **`'click'`**`; detail: { hit:` [`Hit`](#hit)`; trigger:` [`Trigger`](#trigger) `} }` [¶](#viewevent-click){.headerlink}
+**`'click'`** [¶](#viewevent-click){.headerlink}
 : A row was clicked.
 
   {#viewevent-click-hit .member}
@@ -2297,7 +2024,7 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : How the user clicked it.
 
 {#viewevent-open .member}
-`{ type:` **`'open'`**`; detail: { hit:` [`Hit`](#hit)`; trigger:` [`Trigger`](#trigger) `} }` [¶](#viewevent-open){.headerlink}
+**`'open'`** [¶](#viewevent-open){.headerlink}
 : A row was double-clicked, or Enter was pressed on the row the keyboard points at.
 
   {#viewevent-open-hit .member}
@@ -2309,7 +2036,7 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : How the user opened it.
 
 {#viewevent-menu .member}
-`{ type:` **`'menu'`**`; detail: { hits:` [`Hit`](#hit)`[]; trigger:` [`Trigger`](#trigger) `} }` [¶](#viewevent-menu){.headerlink}
+**`'menu'`** [¶](#viewevent-menu){.headerlink}
 : A context menu was requested: by a secondary click, the menu key, or a touch or pen held still.
   Lists the rows under the trigger's point, for a menu of actions on them.
 
@@ -2322,7 +2049,7 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : How the user asked.
 
 {#viewevent-drag .member}
-`{ type:` **`'drag'`**`; detail: { phase:` [`Phase`](#phase)`; hit:` [`Hit`](#hit)`; position: [number, number, number]; trigger:` [`Trigger`](#trigger) `} }` [¶](#viewevent-drag){.headerlink}
+**`'drag'`** [¶](#viewevent-drag){.headerlink}
 : A row of a draggable mark is dragged. The drag starts once the pointer moves more than 4 CSS
   pixels from where it pressed the row.
 
@@ -2345,7 +2072,7 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : The pointer.
 
 {#viewevent-connect .member}
-`{ type:` **`'connect'`**`; detail: { from:` [`End`](#end)`; to:` [`End`](#end) `| null; edge:` [`Row`](#row) `| null; trigger:` [`Trigger`](#trigger) `} }` [¶](#viewevent-connect){.headerlink}
+**`'connect'`** [¶](#viewevent-connect){.headerlink}
 : A connection was drawn with [`controls.connect`](#controls-connect) on: from a port, from a vertex with Alt held, or
   by dragging an edge's end off it.
 
@@ -2366,7 +2093,7 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : Where it was released.
 
 {#viewevent-delete .member}
-`{ type:` **`'delete'`**`; detail: { rows:` [`Rows`](#rows)`[]; trigger:` [`Trigger`](#trigger) `} }` [¶](#viewevent-delete){.headerlink}
+**`'delete'`** [¶](#viewevent-delete){.headerlink}
 : Delete or Backspace was pressed with rows selected and [`controls.delete`](#controls-delete) on.
 
   {#viewevent-delete-rows .member}
@@ -2378,7 +2105,7 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : The key.
 
 {#viewevent-hovered .member}
-`{ type:` **`'hovered'`**`; detail: { hit:` [`Hit`](#hit) `| null; trigger:` [`Trigger`](#trigger) `} }` [¶](#viewevent-hovered){.headerlink}
+**`'hovered'`** [¶](#viewevent-hovered){.headerlink}
 : The hovered row changed: [`view.hovered`](#view-hovered).
 
   {#viewevent-hovered-hit .member}
@@ -2390,7 +2117,7 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : The pointer, or the keys.
 
 {#viewevent-selection .member}
-`{ type:` **`'selection'`**`; detail: { rows:` [`Rows`](#rows)`[]; trigger:` [`Trigger`](#trigger) `| null } }` [¶](#viewevent-selection){.headerlink}
+**`'selection'`** [¶](#viewevent-selection){.headerlink}
 : The selection changed: [`view.selection`](#view-selection).
 
   {#viewevent-selection-rows .member}
@@ -2402,15 +2129,15 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : How the user changed it; `null` when the data dropped rows from it.
 
 {#viewevent-camera .member}
-`{ type:` **`'camera'`**`; detail:` [`Camera`](#camera) `}` [¶](#viewevent-camera){.headerlink}
+**`'camera'`**`:` [`Camera`](#camera) [¶](#viewevent-camera){.headerlink}
 : The camera moved by a gesture, fit, flight, coast, or orbit: [`view.camera`](#view-camera).
 
 {#viewevent-waiting .member}
-`{ type:` **`'waiting'`**`; detail:` [`Waiting`](#waiting) `}` [¶](#viewevent-waiting){.headerlink}
+**`'waiting'`**`:` [`Waiting`](#waiting) [¶](#viewevent-waiting){.headerlink}
 : The work the last frame waited on changed; empty once frames are complete: [`view.waiting`](#view-waiting).
 
 {#viewevent-error .member}
-`{ type:` **`'error'`**`; detail:` [`Failure`](#failure) `}` [¶](#viewevent-error){.headerlink}
+**`'error'`**`:` [`Failure`](#failure) [¶](#viewevent-error){.headerlink}
 : Something failed; reported once. A mark that no longer fits its data is also listed in
   [`view.failures`](#view-failures).
 

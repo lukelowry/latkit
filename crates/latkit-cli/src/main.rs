@@ -8,7 +8,7 @@ mod report;
 mod sinks;
 
 use std::future::Future;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 
 use args::{Cli, Command, Input, Source};
 use report::Report;
+use sinks::{Output, written};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -45,7 +46,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// A command's failure: the library's error, and the file it came from, if any.
+/// A command's failure: the library's error, and the input file at fault, if any. An output that
+/// fails to be written is named in the error's message instead.
 #[derive(Debug)]
 pub(crate) struct Failure {
     pub(crate) error: Error,
@@ -53,12 +55,12 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
-    /// `error`, caused by the file at `path`.
+    /// `error`, caused by the input file at `path`.
     pub(crate) fn at(error: Error, path: &Path) -> Failure {
         Failure { error, source: Some(path.to_string_lossy().into_owned()) }
     }
 
-    /// An I/O `error` with the file at `path`.
+    /// An I/O `error` reading the input file at `path`.
     pub(crate) fn io(error: &io::Error, path: &Path) -> Failure {
         Failure::at(Error::Io(error.to_string().into()), path)
     }
@@ -70,6 +72,13 @@ impl From<Error> for Failure {
     }
 }
 
+/// Prints `value` to stdout as indented JSON.
+fn print_json(value: &impl serde::Serialize) -> Result<(), Failure> {
+    let mut out = Output::create(Path::new("-"))?;
+    out.json(value, true)?;
+    Ok(out.commit()?)
+}
+
 /// Prints every dataset's description as JSON to stdout: its name, axis and span, and each table's
 /// rows and fields.
 fn inspect(sources: &[Source], deadline: Duration) -> Result<(), Failure> {
@@ -78,9 +87,7 @@ fn inspect(sources: &[Source], deadline: Duration) -> Result<(), Failure> {
     for source in sources {
         all.push(inputs::dataset(source, &host, deadline)?.snapshot().describe());
     }
-    let mut out = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut out, &all).map_err(|e| Failure::from(Error::Io(e.to_string().into())))?;
-    writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))
+    print_json(&all)
 }
 
 /// Prints the JSON Schema of every input to stdout. With `input`, the root `$ref` points to that
@@ -107,22 +114,17 @@ fn schema(input: Option<Input>) -> Result<(), Failure> {
         };
         schemas["$ref"] = json!(format!("#/$defs/{name}"));
     }
-    let mut out = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut out, &schemas).map_err(|e| Failure::from(Error::Io(e.to_string().into())))?;
-    writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))
+    print_json(&schemas)
 }
 
 /// Prints the rows `query` selects from the dataset as JSON Lines to stdout. Each line has `id`,
 /// then each field. A reference prints as its target's id, and a missing value as `null`.
 fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure> {
-    let text =
-        if query.trim_start().starts_with('{') { query.as_bytes().to_vec() } else { inputs::read(Path::new(query))? };
-    let text = std::str::from_utf8(&text).map_err(|_| Failure::from(Error::invalid("not UTF-8 text").at("query")))?;
-    let query: Query = latkit::from_json(text).map_err(|e| Failure::from(e.at("query")))?;
+    let query: Query = inputs::json(query, "query")?;
     let rows = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.snapshot().query(&query)?.table;
     let columns: Vec<(String, Values)> =
         rows.fields().map(|(name, _)| (name.to_string(), rows.values(name).expect("the field exists"))).collect();
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = Output::create(Path::new("-"))?;
     for (row, id) in rows.ids().enumerate() {
         let mut line = serde_json::Map::with_capacity(columns.len() + 1);
         line.insert("id".into(), json!(id));
@@ -133,30 +135,21 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
             };
             line.insert(name.clone(), value);
         }
-        serde_json::to_writer(&mut out, &line).map_err(|e| Failure::from(Error::Io(e.to_string().into())))?;
-        writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))?;
+        out.json(&line, false)?;
     }
-    out.flush().map_err(|e| Failure::io(&e, Path::new("-")))
+    Ok(out.commit()?)
 }
 
 /// Writes the dataset as time tiles in directory `output`: the manifest, the dataset without its
 /// sampled fields' histories, and those histories in spans of `chunk` entries.
 fn tile(source: &Source, output: &Path, chunk: u32, deadline: Duration) -> Result<(), Failure> {
     let data = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.snapshot();
-    let mut failure = None;
-    let written = data.to_tiles(chunk, |path, bytes| {
+    let tiled = data.to_tiles(chunk, |path, bytes| {
         let file = output.join(path);
         let wrote = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&file, bytes));
-        wrote.map_err(|e| {
-            failure = Some(Failure::io(&e, &file));
-            Error::Io(e.to_string().into())
-        })
+        wrote.map_err(|e| written(&e, &file))
     });
-    match (written, failure) {
-        (Ok(()), _) => Ok(()),
-        (Err(_), Some(failure)) => Err(failure),
-        (Err(error), None) => Err(Failure::from(error)),
-    }
+    Ok(tiled?)
 }
 
 /// Drives `future` on this thread and returns its result, or [`Error::Timeout`] at `deadline`.

@@ -3,19 +3,25 @@
  * latkit: columnar data drawn with WebGPU.
  *
  * Scenes, expressions, and patches are plain data and need no WebAssembly. Datasets, views,
- * pictures, and `colormapCss` need it, so `await load()` first. Every class with `destroy()` also
- * works with `using`; the reference above makes `Symbol.dispose` typecheck whatever a project's
- * `lib` setting.
+ * pictures, and the colormap functions need it, so `await load()` first. Every `Handle` also works
+ * with `using`; the reference above makes `Symbol.dispose` typecheck whatever a project's `lib`
+ * setting.
  */
 export type * from './inputs.js';
 export type * from './outputs.js';
-export { load, type LoadOptions } from './load.js';
-export type { LatkitError, Wait } from './internal.js';
+export { load } from './load.js';
+export {
+  Handle,
+  type ByteSource,
+  type LatkitError,
+  type ReadableBytes,
+  type Wait,
+} from './internal.js';
 export {
   Data,
+  Dataset,
   Snapshot,
   Tiles,
-  type DataSource,
   type Envelope,
   type QueryResult,
   type Source,
@@ -25,22 +31,13 @@ export {
   reference,
   type Fields,
   type Geometry,
-  type PatchSource,
-  type ReadableBytes,
   type Reference,
   type RowIds,
   type Values,
 } from './patch.js';
 export * from './scene.js';
-export { colormapCss } from './colormap.js';
+export { colormapCss, colormaps } from './colormap.js';
 export { Gpu } from './gpu.js';
-export {
-  View,
-  type Insets,
-  type Point,
-  type Position,
-  type ViewEvents,
-  type ViewOptions,
-} from './view.js';
-export { Canvas, type CanvasOptions, type Panel, type Rect } from './canvas.js';
+export { View, type Insets, type Point, type Position, type ViewEvents } from './view.js';
+export { Canvas, type Panel, type Rect } from './canvas.js';
 export { Image, Shot, Video, type ImageFormat, type ShotOptions } from './shot.js';

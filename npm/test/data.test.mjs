@@ -270,6 +270,42 @@ test('failed fetches are io errors, and aborting one rejects as cancelled', asyn
   await assert.rejects(reading, { code: 'cancelled' });
 });
 
+test('blobs and streams read within their signal, fail as io, and cancel when stopped', async () => {
+  const bytes = new Patch().axis('t', 's').toBytes();
+  const length = async (source) => (await Patch.read(source)).toBytes().length;
+  assert.equal(await length(new Blob([bytes])), bytes.length);
+  assert.equal(
+    await length(
+      (async function* () {
+        yield bytes;
+      })(),
+    ),
+    bytes.length,
+  );
+  const stopped = AbortSignal.abort('stop');
+  await assert.rejects(Patch.read(new Blob([bytes]), { signal: stopped }), { code: 'cancelled' });
+  const failing = () =>
+    new ReadableStream({
+      pull() {
+        throw new Error('the socket closed');
+      },
+    });
+  const closed = (error) => error.code === 'io' && error.cause.message === 'the socket closed';
+  await assert.rejects(Patch.read(failing()), closed);
+  await assert.rejects(async () => {
+    for await (const patch of Patch.stream(failing())) void patch;
+  }, closed);
+  const cancelled = [];
+  const stalled = () =>
+    new ReadableStream({ pull: () => new Promise(() => {}), cancel: (why) => cancelled.push(why) });
+  const controller = new AbortController();
+  const reading = Patch.read(stalled(), { signal: controller.signal });
+  controller.abort('stop');
+  await assert.rejects(reading, { code: 'cancelled', cause: 'stop' });
+  await assert.rejects(Data.read(stalled(), { signal: stopped }), { code: 'cancelled' });
+  assert.deepEqual(cancelled, ['stop', 'stop'], 'a stream stopped mid-read or before is cancelled');
+});
+
 test('Data.read detects JSON, latkit bytes, and GeoJSON by their first bytes', async () => {
   const document = {
     name: 'grid',

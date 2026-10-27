@@ -37,8 +37,9 @@ import { h } from '../../ui/dom.js';
 import { each } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
-import { LEVELS, loadCase, megabytes, type Case } from './cases.js';
+import { extent, loadCase, megabytes, type Case } from './cases.js';
 import { continent } from './continent.js';
+import { LEVELS } from './format.js';
 import { lattice } from './lattice.js';
 import { LOOK, MAPS, type Loaded, type MapChoice } from './maps.js';
 import { STATE_FIELDS, joinStates, type Joined, type StateField } from './states.js';
@@ -110,19 +111,6 @@ interface Grid {
   readonly bounds?: Fit;
   /** Whether its buses are grouped into zones by the map square they lie in. */
   readonly zoned: boolean;
-}
-
-/** The bounding box of a case's buses. */
-function extent(positions: Float32Array): Fit {
-  const min: [number, number, number] = [Infinity, Infinity, 0];
-  const max: [number, number, number] = [-Infinity, -Infinity, 0];
-  for (let i = 0; i < positions.length; i += 2) {
-    min[0] = Math.min(min[0], positions[i]!);
-    min[1] = Math.min(min[1], positions[i + 1]!);
-    max[0] = Math.max(max[0], positions[i]!);
-    max[1] = Math.max(max[1], positions[i + 1]!);
-  }
-  return { bounds: { min, max } };
 }
 
 /** Groups a case's buses into zones by the `ZONE`-degree square each lies in. The patch adds a
@@ -957,6 +945,7 @@ export default async function page(stage: Stage): Promise<void> {
       const zoned = found.named;
       if (zoned) found.data.apply(zones(found));
       const peak = (values: Float32Array) => values.reduce((top, v) => Math.max(top, v), 0);
+      const [west, south, east, north] = extent(found.positions);
       next = {
         id,
         label,
@@ -964,7 +953,7 @@ export default async function page(stage: Stage): Promise<void> {
         buses: found.buses,
         lines: found.lines,
         case: found,
-        bounds: extent(found.positions),
+        bounds: { bounds: { min: [west, south, 0], max: [east, north, 0] } },
         peaks: {
           load: peak(found.load),
           generation: peak(found.generation),

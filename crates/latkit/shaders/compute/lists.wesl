@@ -11,6 +11,7 @@ import package::lib::types::{
     DISPATCH_ROWS, RUN_WORDS, FADE_IN, FADE_OUT, DRAWN_ENTERING, DRAWN_LEAVING, item,
 };
 import package::lib::lists::{lists, list_start};
+import package::lib::read::last_at_most;
 import package::lib::path::{row_segments, path_point, path_length, PATH};
 import package::lib::drawn::held_row;
 
@@ -104,17 +105,7 @@ fn expand_runs(@builtin(global_invocation_id) id: vec3u) {
     if i >= mark.rows + mark.exits {
         return;
     }
-    var lo = 0u;
-    var hi = max(program[mark.row_runs], 1u);
-    while hi - lo > 1u {
-        let mid = (lo + hi) / 2u;
-        if program[mark.row_runs + 1u + mid * RUN_WORDS] <= i {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let run = mark.row_runs + 1u + lo * RUN_WORDS;
+    let run = last_at_most(mark.row_runs + 1u, max(program[mark.row_runs], 1u), RUN_WORDS, 0u, i);
     let fade = program[run + 2u];
     let entering = select(0u, DRAWN_ENTERING, (fade & FADE_IN) != 0u);
     let leaving = select(0u, DRAWN_LEAVING, (fade & FADE_OUT) != 0u);

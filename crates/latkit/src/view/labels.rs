@@ -21,16 +21,19 @@ use web_time::Instant;
 
 use super::View;
 use super::passes::{dispatch, offset};
-use super::sync::{Source, table_of};
+use super::sync::Source;
+use super::variants::{CELLS, MarkVariants, PLACING, SELECT};
 use super::words::Kept;
 use crate::Space;
 use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
 use crate::gpu::atlas::{self, Glyphs};
+use crate::gpu::dictionary::Dictionary;
 use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::host::TextRun;
+use crate::scene::mark::Labeling;
 
 /// Rounds of claim and decide each placement runs.
 const ROUNDS: u32 = 6;
@@ -107,33 +110,30 @@ impl Labels {
 }
 
 impl View {
-    /// The text run for code `code` of mark `i`'s label text, at the base size regardless of the
-    /// size it shows at, as a diagram's sheet measures it.
-    fn run_of(&self, i: usize, code: u32, inner: &mut Inner) -> Option<TextRun> {
+    /// Mark `i`'s labeling and the dictionary of its label text's codes, wherever the text is: in
+    /// the mark's table, a joined one, or a table the view derives beside it. `None` while the
+    /// mark has no label, or the table holding its text is missing.
+    fn label_texts<'g>(&self, i: usize, inner: &'g mut Inner) -> Option<(&Labeling, &'g mut Dictionary)> {
         let shown = &self.marks[i];
         let compiled = shown.compiled.as_ref()?;
         let labeling = compiled.drawing.label.as_ref()?;
         let column = &compiled.program.columns[labeling.column as usize];
-        let style = shown.mark.style();
-        let data = self.snapshot(&style.data)?;
-        let source = Source { data, table: data.table(&style.table)?, derived: [None; 3], paged: Vec::new() };
-        let (d, t) = table_of(column, &source, &self.snapshots)?;
-        let text = inner.dictionaries.field(d, &t.name, &column.name).text(code)?.clone();
+        let source = Source::of(shown.mark.style(), &self.snapshots, &self.derived)?;
+        let (data, table) = source.table_of(column, &self.snapshots)?;
+        Some((labeling, inner.dictionaries.field(data, &table.name, &column.name)))
+    }
+
+    /// The text run for code `code` of mark `i`'s label text, at the base size regardless of the
+    /// size it shows at, as a diagram's sheet measures it.
+    fn run_of(&self, i: usize, code: u32, inner: &mut Inner) -> Option<TextRun> {
+        let (labeling, dictionary) = self.label_texts(i, inner)?;
+        let text = dictionary.text(code)?.clone();
         Some(atlas::run(text, labeling.font.clone(), labeling.size, labeling.max_width))
     }
 
     /// Codes mark `i`'s label text has so far.
     fn codes_of(&self, i: usize, inner: &mut Inner) -> u32 {
-        let shown = &self.marks[i];
-        let Some(compiled) = &shown.compiled else { return 0 };
-        let Some(labeling) = &compiled.drawing.label else { return 0 };
-        let column = &compiled.program.columns[labeling.column as usize];
-        let style = shown.mark.style();
-        let Some(data) = self.snapshot(&style.data) else { return 0 };
-        let Some(table) = data.table(&style.table) else { return 0 };
-        let source = Source { data, table, derived: [None; 3], paged: Vec::new() };
-        let Some((d, t)) = table_of(column, &source, &self.snapshots) else { return 0 };
-        inner.dictionaries.field(d, &t.name, &column.name).len() as u32
+        self.label_texts(i, inner).map_or(0, |(_, dictionary)| dictionary.len() as u32)
     }
 
     /// Sets the texts the last placement requested, within the frame's budget. The next placement
@@ -141,7 +141,7 @@ impl View {
     pub(super) fn settle_labels(&mut self, inner: &mut Inner) {
         let Some((_, bytes)) = self.labels.placed.landed() else { return };
         let asked = std::mem::take(&mut self.labels.asked);
-        let words: &[u32] = bytemuck::cast_slice(&bytes);
+        let words = crate::wire::words(&bytes);
         let started = Instant::now();
         let (mut set, mut left) = (0, false);
         'marks: for (i, slots) in asked {
@@ -287,21 +287,10 @@ impl View {
     /// The run table words for mark `i`'s `codes`: where the atlas holds each text already set, and
     /// the measured size of the rest.
     fn run_words(&self, i: usize, codes: Range<u32>, inner: &mut Inner) -> Vec<u32> {
-        let shown = &self.marks[i];
         let written = self.labels.written.get(&i);
-        let texts = 'texts: {
-            let Some(compiled) = &shown.compiled else { break 'texts None };
-            let Some(labeling) = &compiled.drawing.label else { break 'texts None };
-            let column = &compiled.program.columns[labeling.column as usize];
-            let style = shown.mark.style();
-            let Some(data) = self.snapshot(&style.data) else { break 'texts None };
-            let Some(table) = data.table(&style.table) else { break 'texts None };
-            let source = Source { data, table, derived: [None; 3], paged: Vec::new() };
-            let Some((d, t)) = table_of(column, &source, &self.snapshots) else { break 'texts None };
-            let dictionary = inner.dictionaries.field(d, &t.name, &column.name);
-            Some(codes.clone().map(|code| dictionary.text(code).cloned()).collect::<Vec<_>>())
-                .map(|texts| (texts, labeling))
-        };
+        let texts = self.label_texts(i, inner).map(|(labeling, dictionary)| {
+            (codes.clone().map(|code| dictionary.text(code).cloned()).collect::<Vec<_>>(), labeling)
+        });
         let host = inner.host.clone();
         let mut words = Vec::with_capacity(2 * codes.len());
         for (k, code) in codes.enumerate() {
@@ -414,39 +403,33 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[]);
-            let marks: Vec<(usize, u32, u32)> =
-                labeled.iter().map(|&(i, _)| (i, self.marks[i].rows, self.marks[i].path())).collect();
+            let marks: Vec<(usize, u32, MarkVariants<'_>)> =
+                labeled.iter().map(|&(i, _)| (i, self.marks[i].rows, MarkVariants::shown(&self.marks[i]))).collect();
             // Measure candidates at their anchors, with a pipeline for each mark's primitive;
             // placement reads the result.
             if due {
                 pass.set_bind_group(2, &measuring, &[]);
-                for &(i, rows, path) in &marks {
-                    let primitive = self.marks[i].primitive();
-                    let variant = Variant::compute(Shader::Candidates, "candidates").path(path).primitive(primitive);
-                    pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
+                for &(i, rows, variants) in &marks {
+                    pass.set_pipeline(&inner.pipelines.compute(device, variants.candidates()));
                     pass.set_bind_group(1, &groups.mark, &[offset(i)]);
                     dispatch(&mut pass, rows);
                 }
             }
             pass.set_bind_group(2, &group, &[]);
             // A diagram's labels claim no cells.
-            let cleared = (!diagram).then(|| {
-                ["clear_cells", "reset_cells"].map(|entry| inner.pipelines.compute(device, Shader::Labels, entry))
-            });
+            let cleared = (!diagram).then(|| CELLS.map(|variant| inner.pipelines.compute(device, variant)));
             let capped: Vec<(usize, u32)> =
                 labeled.iter().filter(|(_, s)| s.select != wgsl::NONE).map(|&(i, _)| (i, self.marks[i].rows)).collect();
-            let selecting = (!capped.is_empty() && !diagram).then(|| {
-                ["select_start", "select_count", "select_find", "select_cut"]
-                    .map(|entry| inner.pipelines.compute(device, Shader::Labels, entry))
-            });
+            let selecting = (!capped.is_empty() && !diagram)
+                .then(|| SELECT.map(|variant| inner.pipelines.compute(device, variant)));
             let mut each = |pass: &mut wgpu::ComputePass<'_>, entry: &'static str| {
-                for &(i, rows, path) in &marks {
-                    let variant = Variant::compute(Shader::Labels, entry).path(path);
-                    pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
+                for &(i, rows, variants) in &marks {
+                    pass.set_pipeline(&inner.pipelines.compute(device, variants.placing(entry)));
                     pass.set_bind_group(1, &groups.mark, &[offset(i)]);
                     dispatch(pass, rows);
                 }
             };
+            let [claim, decide, occupy, ask, fade] = PLACING;
             let cells = |pass: &mut wgpu::ComputePass<'_>, pipeline: &wgpu::ComputePipeline| {
                 pass.set_bind_group(1, &groups.mark, &[offset(labeled[0].0)]);
                 pass.set_pipeline(pipeline);
@@ -459,15 +442,15 @@ impl View {
                 }
                 cells(&mut pass, clear);
                 for _ in 0..ROUNDS {
-                    each(&mut pass, "claim");
-                    each(&mut pass, "decide");
-                    each(&mut pass, "occupy");
+                    each(&mut pass, claim);
+                    each(&mut pass, decide);
+                    each(&mut pass, occupy);
                     cells(&mut pass, reset);
                 }
-                each(&mut pass, "ask");
+                each(&mut pass, ask);
             }
             if !diagram {
-                each(&mut pass, "fade");
+                each(&mut pass, fade);
             }
         }
         if due {
@@ -531,7 +514,7 @@ fn select(
 
 impl View {
     /// Draws every labeled mark's labels, then every vertex mark's port labels. `glyphs` holds the
-    /// shader and pass bind group for labels, then for port labels.
+    /// pass bind groups of their glyph shaders.
     #[allow(clippy::too_many_arguments, reason = "the main pass's draw state")]
     pub(super) fn draw_labels(
         &self,
@@ -541,17 +524,15 @@ impl View {
         format: wgpu::TextureFormat,
         samples: u32,
         groups: &super::resources::Groups,
-        glyphs: [(Shader, &wgpu::BindGroup); 2],
+        [labels_group, ports_group]: [&wgpu::BindGroup; 2],
     ) {
         let device = &self.gpu.0.device;
-        let [(labels, labels_group), (ports, ports_group)] = glyphs;
         for (i, slots) in self.labels.slots.iter().enumerate() {
             let shown = &self.marks[i];
             if slots.is_none() || shown.rows == 0 {
                 continue;
             }
-            let variant = Variant::draw(labels, format, samples).path(shown.path()).primitive(shown.primitive());
-            pass.set_pipeline(&inner.pipelines.render_pipeline(device, variant));
+            pass.set_pipeline(&inner.pipelines.render(device, MarkVariants::shown(shown).glyphs(format, samples)));
             pass.set_bind_group(2, labels_group, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
             drawn.draw(pass, 4, shown.rows);
@@ -562,7 +543,7 @@ impl View {
             if !labeled || !shown.drawable() || shown.rows == 0 {
                 continue;
             }
-            pass.set_pipeline(&inner.pipelines.render(device, ports, format, samples));
+            pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::GlyphsPorts, format, samples)));
             pass.set_bind_group(2, ports_group, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
             drawn.draw(pass, 4, shown.rows * shown.port_count());

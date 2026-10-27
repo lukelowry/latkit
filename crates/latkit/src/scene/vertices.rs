@@ -189,7 +189,7 @@ impl Vertices {
             let column = c.bits(reference).map_err(|e| e.at(reference).at("port"))?;
             ports.push((reference.clone(), port.clone(), column));
         }
-        let mut drawing = Drawing::new(MarkKind::Vertices, wgsl::VERTEX_WORDS);
+        let mut drawing = Drawing::new(MarkKind::Vertices);
         // The marker's half-size stays within its size's pixel bounds; a `size` bounds the whole
         // width, so its bounds are halved.
         drawing.size_px = match (&self.size, &self.radius) {

@@ -25,17 +25,18 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::drawing::{Drawing, Holds};
-use crate::data::{Column, Field, FramePage, GeometryBuilder, PageId, Run, Samples, Values, Version, detail};
-use crate::derive::Beside;
+use crate::data::{Column, Field, FramePage, PageId, Run, Samples, Values, Version, detail};
 use crate::derive::order::Order;
 use crate::derive::shapes::PagedShapes;
 use crate::derive::stamp_of;
+use crate::derive::{Beside, Derivations};
 use crate::expr::compile::{ColumnUse, Program, Reads, Words};
 use crate::gpu::Inner;
 use crate::gpu::arena::{Ask, Content, PageKey, PathPage, path_pieces};
 use crate::gpu::packed::{self, Packing};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Count;
+use crate::scene::mark::Style;
 use crate::{Name, Snapshot, Table};
 
 const WORDS: usize = wgsl::COLUMN_WORDS as usize;
@@ -318,9 +319,35 @@ pub(crate) struct Source<'a> {
 }
 
 impl<'a> Source<'a> {
+    /// The source of a mark drawing `style`'s table: its dataset among `all`, and the tables
+    /// `derived` holds beside it, without paged shapes, which only syncing reads. `None` until the
+    /// dataset has the table.
+    pub(crate) fn of(style: &Style, all: &'a [Snapshot], derived: &'a Derivations) -> Option<Source<'a>> {
+        let data = all.iter().find(|d| *d.name() == style.data)?;
+        let table = data.table(&style.table)?;
+        Some(Source { data, table, derived: derived.beside(&style.data, &style.table), paged: Vec::new() })
+    }
+
     /// The shapes written as field `name`, made one page of the drawn order at a time.
     fn paged(&self, name: &Name) -> Option<&'a PagedShapes> {
         self.paged.iter().find(|(field, _)| field == name).map(|&(_, shapes)| shapes)
+    }
+
+    /// The dataset and table `column` reads: the mark's own, another one among `all` joined by id,
+    /// or the derived table beside the mark's own that holds the field.
+    pub(crate) fn table_of(&self, column: &ColumnUse, all: &'a [Snapshot]) -> Option<(&'a Name, &'a Table)> {
+        if column.derived {
+            let mut beside = self.derived.iter().flatten();
+            let table = beside.find(|t| t.field_named(&column.name).is_some()).copied().or(self.derived[0])?;
+            return Some((self.data.name(), table));
+        }
+        match &column.from {
+            None => Some((self.data.name(), self.table)),
+            Some((data, table)) => {
+                let data = all.iter().find(|d| d.name() == data)?;
+                Some((data.name(), data.table(table)?))
+            }
+        }
     }
 }
 
@@ -607,27 +634,6 @@ fn columns_from(program: &Program, from: &(Name, Name)) -> u64 {
         .fold(0, |bits, (i, _)| bits | Reads::column(i))
 }
 
-/// The dataset and table a column reads: the mark's own, another one joined by id, or the derived
-/// table beside the mark's own that holds the field.
-pub(crate) fn table_of<'a>(
-    column: &ColumnUse,
-    source: &Source<'a>,
-    all: &'a [Snapshot],
-) -> Option<(&'a Name, &'a Table)> {
-    if column.derived {
-        let mut beside = source.derived.iter().flatten();
-        let table = beside.find(|t| t.field_named(&column.name).is_some()).copied().or(source.derived[0])?;
-        return Some((source.data.name(), table));
-    }
-    match &column.from {
-        None => Some((source.data.name(), source.table)),
-        Some((data, table)) => {
-            let data = all.iter().find(|d| d.name() == data)?;
-            Some((data.name(), data.table(table)?))
-        }
-    }
-}
-
 /// The table a join reads.
 fn joined<'a>((data, table): &(Name, Name), all: &'a [Snapshot]) -> Option<&'a Table> {
     all.iter().find(|d| d.name() == data)?.table(table)
@@ -657,17 +663,46 @@ fn plan(samples: &Samples, window: Window) -> Plan {
     Plan { level, runs, points: point, steps: window.steps }
 }
 
+/// Where sampled `column` reads `samples` at axis coordinate `at`: the frame shown there, and how
+/// far toward the next one it is; 0 for a column that steps.
+fn shown_frame(samples: &Samples, column: &ColumnUse, at: f64) -> (Option<u64>, f32) {
+    let frame = samples.frame_at(at);
+    let t = if column.step { 0.0 } else { frame.map_or(0.0, |f| samples.t(f, at)) };
+    (frame, t)
+}
+
+/// A column descriptor with `flags`, reading no low parts and no join.
+fn descriptor(flags: u32) -> [u32; WORDS] {
+    let mut d = [0; WORDS];
+    d[wgsl::COLUMN_FLAGS as usize] = flags;
+    d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
+    d[wgsl::COLUMN_JOIN as usize] = wgsl::NONE;
+    d
+}
+
+/// The cache key of a column of `table` packed in `drawing`'s order: field `field` as `words`.
+fn packing(drawing: &Drawing, source: &Source<'_>, table: &Name, field: Name, words: Words) -> Packing {
+    Packing {
+        order: drawing.order.id(),
+        origin: source.data.origin(),
+        table: table.clone(),
+        field,
+        words,
+        low: false,
+        reads: 0,
+    }
+}
+
 fn stamp(column: &ColumnUse, source: &Source<'_>, inputs: &Inputs<'_>) -> Stamp {
     if let Some(shapes) = source.paged(&column.name).filter(|_| column.derived) {
         return Stamp::Field(shapes.version, shapes.order);
     }
-    let Some((_, table)) = table_of(column, source, inputs.all) else { return Stamp::Missing };
+    let Some((_, table)) = source.table_of(column, inputs.all) else { return Stamp::Missing };
     match table.field_named(&column.name) {
         None => Stamp::Missing,
         Some(Field::Sampled(samples, version)) if column.trace => Stamp::Trace(*version, plan(samples, inputs.window)),
         Some(Field::Sampled(samples, version)) => {
-            let frame = samples.frame_at(inputs.at);
-            let t = if column.step { 0.0 } else { frame.map_or(0.0, |f| samples.t(f, inputs.at)) };
+            let (frame, t) = shown_frame(samples, column, inputs.at);
             Stamp::Sampled(*version, frame, t.to_bits())
         }
         Some(Field::Reference(reference)) => {
@@ -723,28 +758,16 @@ impl<'g> Builder<'g> {
     }
 
     fn column(&mut self, column: &ColumnUse, source: &Source<'_>, rows: Rows<'_>, inputs: &Inputs<'_>) -> [u32; WORDS] {
-        let mut d = [0; WORDS];
-        d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
-        if column.words == Words::Bits {
-            d[wgsl::COLUMN_FLAGS as usize] = wgsl::BITS;
-        }
+        let mut d = descriptor(if column.words == Words::Bits { wgsl::BITS } else { 0 });
         if let Rows::Held(drawing) = rows
             && let Some(shapes) = source.paged(&column.name).filter(|_| column.derived)
         {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
-            let packing = Packing {
-                order: drawing.order.id(),
-                origin: source.data.origin(),
-                table: source.table.name.clone(),
-                field: column.name.clone(),
-                words: Words::Path,
-                low: false,
-                reads: 0,
-            };
+            let packing = packing(drawing, source, &source.table.name, column.name.clone(), Words::Path);
             self.shaped(shapes, drawing, &packing);
             return d;
         }
-        let Some((data, table)) = table_of(column, source, inputs.all) else {
+        let Some((data, table)) = source.table_of(column, inputs.all) else {
             self.pages = None;
             return d;
         };
@@ -752,15 +775,7 @@ impl<'g> Builder<'g> {
         let field = table.field_named(&column.name);
         if let Rows::Held(drawing) = rows {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
-            let packing = Packing {
-                order: drawing.order.id(),
-                origin: source.data.origin(),
-                table: table.name.clone(),
-                field: column.name.clone(),
-                words: column.words,
-                low: false,
-                reads: 0,
-            };
+            let packing = packing(drawing, source, &table.name, column.name.clone(), column.words);
             self.held(column, data, field, drawing, packing, inputs, &mut d);
             return d;
         }
@@ -800,23 +815,27 @@ impl<'g> Builder<'g> {
                 }
             }
             Some(Field::Sampled(samples, _)) if column.trace => {
-                self.pages = None;
-                d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED;
                 let blocks: Vec<(Samples, usize)> =
                     (0..table.len().div_ceil(wgsl::PAGE_ROWS as usize)).map(|b| (samples.clone(), b)).collect();
-                self.trace(samples, &blocks, plan(samples, inputs.window));
+                self.trace(&mut d, samples, &blocks, inputs.window);
             }
             Some(Field::Sampled(samples, _)) => {
-                self.pages = None;
-                d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED | if column.step { wgsl::STEP } else { 0 };
-                let frame = samples.frame_at(inputs.at);
-                let t = if column.step { 0.0 } else { frame.map_or(0.0, |f| samples.t(f, inputs.at)) };
-                d[wgsl::COLUMN_T as usize] = t.to_bits();
+                let frame = self.sampled(&mut d, column, samples, inputs.at);
                 self.cursors(samples, frame, table.len());
             }
             None => self.pages = None,
         }
         d
+    }
+
+    /// Sets descriptor `d` to read sampled `column` at axis coordinate `at`, through a cursor per
+    /// page of rows. Returns the frame shown there.
+    fn sampled(&mut self, d: &mut [u32; WORDS], column: &ColumnUse, samples: &Samples, at: f64) -> Option<u64> {
+        self.pages = None;
+        d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED | if column.step { wgsl::STEP } else { 0 };
+        let (frame, t) = shown_frame(samples, column, at);
+        d[wgsl::COLUMN_T as usize] = t.to_bits();
+        frame
     }
 
     /// A paged table's column: one page packed in the table's order per slot, cached under
@@ -863,8 +882,6 @@ impl<'g> Builder<'g> {
                 });
             }
             Some(Field::Sampled(samples, version)) if column.trace => {
-                self.pages = None;
-                d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED;
                 let packing = Packing { reads: stamp_of(version), ..packing };
                 let blocks: Vec<(Samples, usize)> = (0..slots)
                     .map(|s| match slot_key(&packing, drawing, s) {
@@ -874,18 +891,13 @@ impl<'g> Builder<'g> {
                         }
                     })
                     .collect();
-                self.trace(samples, &blocks, plan(samples, inputs.window));
+                self.trace(d, samples, &blocks, inputs.window);
             }
             Some(Field::Sampled(samples, version)) => {
-                self.pages = None;
-                d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED | if column.step { wgsl::STEP } else { 0 };
-                let frame = samples.frame_at(inputs.at);
-                let t = if column.step { 0.0 } else { frame.map_or(0.0, |f| samples.t(f, inputs.at)) };
-                d[wgsl::COLUMN_T as usize] = t.to_bits();
-                // Six words per slot, laid out as `cursors` writes them.
+                let frame = self.sampled(d, column, samples, inputs.at);
+                // A cursor per slot, reading the frame packed in the slot's rows.
                 for s in 0..slots {
-                    let at = self.words.len();
-                    self.words.extend([wgsl::NONE, 0, wgsl::NONE, 0, 0, 0]);
+                    let at = self.cursor_words();
                     let Some((base, page)) = slot_key(&packing, drawing, s) else { continue };
                     for (k, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
                         let Some(f) = f.filter(|&f| samples.held(0, f)) else { continue };
@@ -898,8 +910,7 @@ impl<'g> Builder<'g> {
                             counters.add(Count::Packed, rows.len() as u64);
                             Content::Computed(packed::frame(samples, &rows, Some(f)))
                         };
-                        self.place(at + 2 * k, key, wgsl::PAGE_ROWS, content);
-                        self.words[at + 4 + k] = wgsl::PAGE_ROWS;
+                        self.cursor(at, k, key, 0, wgsl::PAGE_ROWS, content);
                     }
                 }
             }
@@ -960,22 +971,15 @@ impl<'g> Builder<'g> {
         all: &[Snapshot],
     ) -> [u32; WORDS] {
         self.pages = None;
-        let mut d = [0; WORDS];
-        d[wgsl::COLUMN_FLAGS as usize] = wgsl::BITS;
+        let mut d = descriptor(wgsl::BITS);
         d[wgsl::COLUMN_ROWS as usize] = source.table.len() as u32;
-        d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
-        d[wgsl::COLUMN_JOIN as usize] = wgsl::NONE;
         if let Rows::Held(drawing) = rows {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
             let Some(other) = joined(from, all) else { return d };
+            let field = format!("{}/{}", from.0, from.1).into();
             let packing = Packing {
-                order: drawing.order.id(),
-                origin: source.data.origin(),
-                table: source.table.name.clone(),
-                field: format!("{}/{}", from.0, from.1).into(),
-                words: Words::Bits,
-                low: false,
                 reads: stamp_of((source.table.structure, other.structure, other.order)),
+                ..packing(drawing, source, &source.table.name, field, Words::Bits)
             };
             self.held_pages(drawing, &packing, None, |_, rows| packed::joined(source.table, rows, other));
             return d;
@@ -1009,12 +1013,10 @@ impl<'g> Builder<'g> {
 
     /// A paged table's geometry column: one page of points per slot, cached under `packing`.
     fn held_path(&mut self, column: &Column, drawing: &Drawing, packing: &Packing) {
-        let per = wgsl::PATH_PAGE_WORDS as usize;
-        self.words.resize(per * drawing.slot_count(), 0);
+        self.words.resize(wgsl::PATH_PAGE_WORDS as usize * drawing.slot_count(), 0);
         for s in 0..drawing.slot_count() {
             let Some(id) = slot_page(&mut self.gpu.packed, packing, drawing, Some(column), s) else {
-                self.words[per * s..per * (s + 1)].copy_from_slice(&[wgsl::NONE, 0, 0, 0]);
-                self.list(None);
+                self.no_path_page(s);
                 continue;
             };
             self.list(Some(id));
@@ -1032,8 +1034,7 @@ impl<'g> Builder<'g> {
     /// page, and of its kept rows individually, in pages cached under `packing` by their contents.
     /// A page draws nothing until its shapes are made.
     fn shaped(&mut self, shapes: &PagedShapes, drawing: &Drawing, packing: &Packing) {
-        let per = wgsl::PATH_PAGE_WORDS as usize;
-        self.words.resize(per * drawing.slot_count(), 0);
+        self.words.resize(wgsl::PATH_PAGE_WORDS as usize * drawing.slot_count(), 0);
         let alike = shapes.order == drawing.order.id();
         for s in 0..drawing.slot_count() {
             let page: Option<(PageId, std::borrow::Cow<'_, Values>)> = match drawing.holds(s) {
@@ -1042,23 +1043,17 @@ impl<'g> Builder<'g> {
                 }
                 Holds::Kept(_) if alike => {
                     let places = drawing.places(s);
-                    let mut kept = GeometryBuilder::new(shapes.depth);
-                    for d in &places {
-                        match shapes.kept.get(d).and_then(Values::geometry) {
-                            Some(shape) => kept.push_from(shape, 0),
-                            None => kept.push_empty(),
-                        }
-                    }
+                    let kept = places.iter().map(|d| Some((shapes.kept.get(d).and_then(Values::geometry)?, 0)));
+                    let kept = Values::of_rows(shapes.depth, kept);
                     let packing =
                         Packing { order: stamp_of((packing.order, places, shapes.version)), ..packing.clone() };
                     let id = self.gpu.packed.page(&packing, &drawing.order, None, 0);
-                    Some((id, std::borrow::Cow::Owned(Values::of_geometry(kept.finish()))))
+                    Some((id, std::borrow::Cow::Owned(kept)))
                 }
                 _ => None,
             };
             let Some((id, shaped)) = page else {
-                self.words[per * s..per * (s + 1)].copy_from_slice(&[wgsl::NONE, 0, 0, 0]);
-                self.list(None);
+                self.no_path_page(s);
                 continue;
             };
             self.list(Some(id));
@@ -1070,6 +1065,13 @@ impl<'g> Builder<'g> {
             };
             self.path_page(s, id, rows, || shaped.points(), pieces);
         }
+    }
+
+    /// Page `p` of a geometry column's table, holding no rows: no row table and no points.
+    fn no_path_page(&mut self, p: usize) {
+        let per = wgsl::PATH_PAGE_WORDS as usize;
+        self.words[per * p..per * (p + 1)].copy_from_slice(&[wgsl::NONE, 0, 0, 0]);
+        self.list(None);
     }
 
     /// Page `p` (`id`, with `rows` rows) of a geometry column's table: its row table, then its
@@ -1122,8 +1124,11 @@ impl<'g> Builder<'g> {
     ///   entry, words per entry).
     ///
     /// Offsets within the table are relative to it. `blocks` gives each page of rows the samples it
-    /// reads and its block among them.
-    fn trace(&mut self, axis: &Samples, blocks: &[(Samples, usize)], plan: Plan) {
+    /// reads and its block among them. Descriptor `d` reads it as sampled, across `window`.
+    fn trace(&mut self, d: &mut [u32; WORDS], axis: &Samples, blocks: &[(Samples, usize)], window: Window) {
+        self.pages = None;
+        d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED;
+        let plan = plan(axis, window);
         // Each run has its own origin, so runs billions of frames apart still get 32-bit GPU
         // offsets. CPU plans keep absolute 64-bit indexes.
         self.words.extend([plan.runs.len() as u32, blocks.len() as u32, plan.runs.len() as u32, plan.points]);
@@ -1174,21 +1179,33 @@ impl<'g> Builder<'g> {
         }
     }
 
-    /// Six words per page of rows: this frame's block and word, the next frame's, and their row
-    /// counts.
+    /// A cursor per page of `rows` rows, at `frame` and the frame after it.
     fn cursors(&mut self, samples: &Samples, frame: Option<u64>, rows: usize) {
         for block in 0..rows.div_ceil(wgsl::PAGE_ROWS as usize) {
-            let at = self.words.len();
-            self.words.extend([wgsl::NONE, 0, wgsl::NONE, 0, 0, 0]);
-            for (i, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
+            let at = self.cursor_words();
+            for (k, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
                 let Some((page, base)) = f.and_then(|f| samples.cursor(block, f)) else { continue };
                 let key = PageKey::of(page.id, Words::Values, false);
-                let rows_in_page = page.per;
-                self.place(at + 2 * i, key, base + rows_in_page, || Content::Frames(page.clone()));
-                self.words[at + 2 * i + 1] = base;
-                self.words[at + 4 + i] = rows_in_page;
+                self.cursor(at, k, key, base, page.per, || Content::Frames(page.clone()));
             }
         }
+    }
+
+    /// Appends a cursor's six words, as `lib/read.wesl` reads them: the block and word of the
+    /// frame shown, the same for the next frame, and both frames' row counts. Each frame reads
+    /// nothing until [`cursor`](Builder::cursor) sets it. Returns where the words start.
+    fn cursor_words(&mut self) -> usize {
+        let at = self.words.len();
+        self.words.extend([wgsl::NONE, 0, wgsl::NONE, 0, 0, 0]);
+        at
+    }
+
+    /// Sets frame `k` (0 the frame shown, 1 the next) of the cursor at `at` to `rows` rows from word
+    /// `base` of page `key`, built by `content` when the arena lacks it.
+    fn cursor(&mut self, at: usize, k: usize, key: PageKey, base: u32, rows: u32, content: impl FnOnce() -> Content) {
+        self.place(at + 2 * k, key, base + rows, content);
+        self.words[at + 2 * k + 1] = base;
+        self.words[at + 4 + k] = rows;
     }
 }
 

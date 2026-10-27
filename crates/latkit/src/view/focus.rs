@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap;
 
 use super::View;
 use super::event::{Event, Hit};
-use super::sync::{Source, table_of};
+use super::sync::Source;
 use super::words::Kept;
 use crate::data::{Field, PAGE_ROWS, Reference};
 use crate::expr::compile::Deps;
@@ -190,8 +190,10 @@ impl View {
     /// row's instances draw nothing; none for faces.
     fn pieces(&self, i: usize, lit: &[u32]) -> u32 {
         let shown = &self.marks[i];
-        let Some(compiled) = &shown.compiled else { return 0 };
-        match compiled.drawing.primitive {
+        if shown.compiled.is_none() {
+            return 0;
+        }
+        match shown.kind().primitive() {
             Primitive::Points => 1,
             Primitive::Strokes if !shown.listed() => shown.segments_per_row().max(1),
             Primitive::Strokes if shown.path() == wgsl::PATH_ENDS => (self.longest(i, lit) + 1).max(wgsl::MAX_PIECES),
@@ -207,11 +209,8 @@ impl View {
         let shown = &self.marks[i];
         let Some(compiled) = &shown.compiled else { return 0 };
         let Some(column) = compiled.program.columns.get(compiled.drawing.geometry as usize) else { return 0 };
-        let style = shown.mark.style();
-        let Some(data) = self.snapshot(&style.data) else { return 0 };
-        let Some(table) = data.table(&style.table) else { return 0 };
-        let source = Source { data, table, derived: self.derived.beside(&style.data, &style.table), paged: Vec::new() };
-        let Some((_, table)) = table_of(column, &source, &self.snapshots) else { return 0 };
+        let Some(source) = Source::of(shown.mark.style(), &self.snapshots, &self.derived) else { return 0 };
+        let Some((_, table)) = source.table_of(column, &self.snapshots) else { return 0 };
         let Some(Field::Values(values, _)) = table.field_named(&column.name) else { return 0 };
         let pages = values.pages();
         lit.iter()

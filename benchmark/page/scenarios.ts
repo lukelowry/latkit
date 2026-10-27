@@ -23,7 +23,7 @@ import {
   type Space,
 } from 'latkit';
 import * as make from './data.ts';
-import { deadline, type Cost, type Stage, type Write } from './stage.ts';
+import type { Cost, Stage, Write } from './stage.ts';
 
 export interface Scenario {
   /** What the scenario stresses. */
@@ -264,10 +264,8 @@ const hover = (): Phase => ({
   name: 'hover',
   order: { time: 0, bytes: 0 },
   run: async (s) => {
-    const [hit] = await deadline(
-      s.until(s.view.pick(s.middle, { radius: 40 })),
-      10_000,
-      'a row to hover',
+    const [hit] = await s.until(
+      s.view.pick(s.middle, { radius: 40, signal: AbortSignal.timeout(10_000) }),
     );
     if (!hit) {
       const seen = { middle: s.middle, camera: s.view.camera, stats: s.view.stats };

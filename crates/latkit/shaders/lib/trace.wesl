@@ -17,7 +17,7 @@
 
 import package::lib::types::{NONE, MISSING, COLUMN_TABLE};
 import package::lib::bind::{program, mark, word};
-import package::lib::read::{column_word, page_of};
+import package::lib::read::{column_word, page_of, last_at_most};
 
 const HEADER: u32 = 4u;
 const TRACE_RUN_WORDS: u32 = 4u;
@@ -25,22 +25,6 @@ const LEVEL_WORDS: u32 = 4u;
 
 fn trace_table() -> u32 {
     return column_word(mark.trace, COLUMN_TABLE);
-}
-
-// Binary search: where the last of `count` items of `stride` words at `at` whose word `key` is at
-// most `value` starts.
-fn last_at_most(at: u32, count: u32, stride: u32, key: u32, value: u32) -> u32 {
-    var lo = 0u;
-    var hi = count;
-    while hi - lo > 1u {
-        let mid = (lo + hi) / 2u;
-        if program[at + mid * stride + key] <= value {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    return at + lo * stride;
 }
 
 // A run of the trace: its level's index, its first entry, its entry count, and its first point.

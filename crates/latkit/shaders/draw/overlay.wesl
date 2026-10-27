@@ -5,6 +5,7 @@
 import package::lib::types::{Sprite, SPRITE_TEXT, SPRITE_BOX, SPRITE_FILL, TEXT_SPREAD};
 import package::lib::bind::{eye, ramp};
 import package::lib::mark::coverage;
+import package::lib::project::to_clip;
 import package::lib::color::output;
 
 @group(2) @binding(7) var<storage, read> sprites: array<Sprite>;
@@ -31,8 +32,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) sprite: u
         let along = mix(s.a - dir * reach, s.b + dir * reach, quad.x);
         p = along + vec2f(-dir.y, dir.x) * (quad.y * 2.0 - 1.0) * reach;
     }
-    let ndc = p / eye.size * 2.0 - 1.0;
-    return Varyings(vec4f(ndc.x, -ndc.y, 0.0, 1.0), p, sprite);
+    return Varyings(to_clip(p, vec4f(0.0, 0.0, 0.0, 1.0)), p, sprite);
 }
 
 @fragment

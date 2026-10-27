@@ -2,6 +2,7 @@
  * A model of the grid a control room watches. Plants dispatch to meet demand, a DC power flow sets
  * every branch's flow, protection trips overloaded branches, and each island balances on its own.
  */
+import { BASE, angles, flows, islands, type Network } from '../../../../../docs/gallery/flow.js';
 import texas from './texas.json';
 
 /** The kinds of substation, in color index order. `fuels` lists the categories of each kind. */
@@ -46,7 +47,6 @@ export class Grid {
   readonly load = Uint8Array.from(texas.substations, (s) => (s.category === 'Load' ? 1 : 0));
   readonly kind = Float32Array.from(texas.substations, kindOf);
   readonly rating = Float64Array.from(texas.branches, (b) => b.pmax);
-  readonly #x: Float64Array;
   /** Each plant's output as a share of its capacity, or each load's share of demand served.
    * `injection` holds the MW each substation injects. */
   readonly fill = new Float32Array(this.n);
@@ -62,6 +62,8 @@ export class Grid {
   readonly #reclose = new Float64Array(this.m);
   /** For each plant, the time until which it is out of service. */
   readonly #plantOut = new Float64Array(this.n);
+  /** The branches as the power flow sees them, with the out of service ones in `out`. */
+  readonly #net: Network;
   /** Demand as a share of the loads' size, and the simulated time in seconds. */
   demand = 0.78;
   t = 0;
@@ -71,12 +73,18 @@ export class Grid {
 
   constructor() {
     const s = texas.substations;
-    this.#x = Float64Array.from(texas.branches, (b) => {
-      const [a, c] = [s[b.from]!, s[b.to]!];
-      const km =
-        Math.hypot((a.lon - c.lon) * Math.cos((a.lat * Math.PI) / 180), a.lat - c.lat) * 111;
-      return Math.max(0.002, REACTANCE * km);
-    });
+    this.#net = {
+      buses: this.n,
+      from: Uint32Array.from(texas.branches, (b) => b.from),
+      to: Uint32Array.from(texas.branches, (b) => b.to),
+      reactance: Float64Array.from(texas.branches, (b) => {
+        const [a, c] = [s[b.from]!, s[b.to]!];
+        const km =
+          Math.hypot((a.lon - c.lon) * Math.cos((a.lat * Math.PI) / 180), a.lat - c.lat) * 111;
+        return Math.max(0.002, REACTANCE * km);
+      }),
+      out: this.out,
+    };
     this.step(0);
   }
 
@@ -132,9 +140,15 @@ export class Grid {
     }
     // Split the grid into islands joined by branches in service, and balance each on its own
     // plants.
-    const island = this.#islands();
+    const island = islands(this.#net);
+    const groups = new Map<number, number[]>();
+    for (let i = 0; i < n; i++) {
+      const members = groups.get(island[i]!);
+      if (members) members.push(i);
+      else groups.set(island[i]!, [i]);
+    }
     this.dark = 0;
-    for (const members of island) {
+    for (const members of groups.values()) {
       const asked = members.reduce((sum, i) => sum + want[i]!, 0);
       const able = members.reduce((sum, i) => sum + can[i]!, 0);
       const served = able > 0 ? Math.min(1, able / Math.max(asked, 1e-9)) : 0;
@@ -149,8 +163,10 @@ export class Grid {
           this.injection[i] = can[i]! * dispatch;
         }
       }
-      this.#solve(members);
     }
+    // The flows follow from the bus angles, which the injections in per unit set.
+    const perUnit = Float64Array.from(this.injection, (mw) => mw / BASE);
+    this.flow.set(flows(this.#net, angles(this.#net, perUnit)));
     // Protection trips a branch that stays over its trip setting. Now and then a plant trips too.
     for (let j = 0; j < m; j++) {
       this.loading[j] = this.out[j] ? 0 : Math.abs(this.flow[j]!) / this.rating[j]!;
@@ -167,78 +183,5 @@ export class Grid {
   /** Whether plant `i` is out of service. */
   tripped(i: number): boolean {
     return !this.load[i] && this.t < this.#plantOut[i]!;
-  }
-
-  /** Groups the substations into islands joined by branches in service. */
-  #islands(): number[][] {
-    const seen = new Uint8Array(this.n);
-    const near: number[][] = Array.from({ length: this.n }, () => []);
-    texas.branches.forEach((b, j) => {
-      if (!this.out[j]) {
-        near[b.from]!.push(b.to);
-        near[b.to]!.push(b.from);
-      }
-    });
-    const islands: number[][] = [];
-    for (let start = 0; start < this.n; start++) {
-      if (seen[start]) continue;
-      const members = [start];
-      seen[start] = 1;
-      for (let k = 0; k < members.length; k++)
-        for (const next of near[members[k]!]!) {
-          if (seen[next]) continue;
-          seen[next] = 1;
-          members.push(next);
-        }
-      islands.push(members);
-    }
-    return islands;
-  }
-
-  /** Solves the DC power flow of one island. Bus angles come from the injections (per unit on a
-   * 100 MVA base), with the first member as the reference bus. Branch flows follow from the
-   * angles. */
-  #solve(members: number[]): void {
-    const size = members.length - 1;
-    const at = new Map(members.slice(1).map((bus, k) => [bus, k]));
-    const b = Array.from({ length: size }, () => new Float64Array(size + 1));
-    texas.branches.forEach((branch, j) => {
-      if (this.out[j] || !(at.has(branch.from) || branch.from === members[0])) return;
-      if (!(at.has(branch.to) || branch.to === members[0])) return;
-      const y = 1 / this.#x[j]!;
-      const [p, q] = [at.get(branch.from), at.get(branch.to)];
-      if (p !== undefined) b[p]![p]! += y;
-      if (q !== undefined) b[q]![q]! += y;
-      if (p !== undefined && q !== undefined) {
-        b[p]![q]! -= y;
-        b[q]![p]! -= y;
-      }
-    });
-    members.slice(1).forEach((bus, k) => (b[k]![size] = this.injection[bus]! / 100));
-    // Gaussian elimination with partial pivoting, which is fast enough for an island this small.
-    for (let c = 0; c < size; c++) {
-      let pivot = c;
-      for (let r = c + 1; r < size; r++)
-        if (Math.abs(b[r]![c]!) > Math.abs(b[pivot]![c]!)) pivot = r;
-      [b[c], b[pivot]] = [b[pivot]!, b[c]!];
-      const d = b[c]![c]! || 1e-12;
-      for (let r = c + 1; r < size; r++) {
-        const f = b[r]![c]! / d;
-        if (f) for (let k = c; k <= size; k++) b[r]![k]! -= f * b[c]![k]!;
-      }
-    }
-    const theta = new Float64Array(size);
-    for (let r = size - 1; r >= 0; r--) {
-      let sum = b[r]![size]!;
-      for (let k = r + 1; k < size; k++) sum -= b[r]![k]! * theta[k]!;
-      theta[r] = sum / (b[r]![r]! || 1e-12);
-    }
-    const angle = (bus: number) => (bus === members[0] ? 0 : theta[at.get(bus)!]!);
-    texas.branches.forEach((branch, j) => {
-      if (at.has(branch.from) || branch.from === members[0])
-        this.flow[j] = this.out[j]
-          ? 0
-          : ((angle(branch.from) - angle(branch.to)) * 100) / this.#x[j]!;
-    });
   }
 }

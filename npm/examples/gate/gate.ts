@@ -20,8 +20,8 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import type { Page } from 'playwright-core';
-import { createServer } from 'vite';
-import { STEP, deadline, launch, type Chrome } from './browser.ts';
+import { STEP, deadline, errorsOf, launch, serve, type Chrome } from './browser.ts';
+import { quantile } from './quantile.ts';
 
 /** Maximum milliseconds Chrome may take to compile one pipeline cold. The slowest takes about
  * 0.35 s. A view opens no sooner than its slowest pipeline; the others compile in parallel. */
@@ -276,21 +276,18 @@ async function visit(url: string, id: string): Promise<string[]> {
  * the pointer and keys (hovering a grid of points, zooming, dragging, clicking, right-clicking, and
  * stepping with Tab and the arrows) and exports a picture. */
 async function open(url: string, id: string): Promise<Opened> {
-  const opened: Opened = { wrong: [], slow: [] };
-  const { wrong, slow } = opened;
   const chrome = await cold();
   try {
-    const context = await chrome.browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      deviceScaleFactor: 1,
-    });
-    const page = await context.newPage();
-    page.on('console', (message) => {
-      if (message.type() === 'error') wrong.push(`console: ${message.text().slice(0, 300)}`);
-    });
-    page.on('pageerror', (error) => wrong.push(`page: ${error.message.slice(0, 300)}`));
-    // Tracks the longest gap between animation frames since the last reset, the display's frame
-    // interval (the median of the last 120 gaps), and each gap longer than `LONG` with what the
+    const context = await deadline(
+      chrome.browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 }),
+      STEP,
+      'a browser context',
+    );
+    const page = await deadline(context.newPage(), STEP, 'a page');
+    const opened: Opened = { wrong: errorsOf(page), slow: [] };
+    const { wrong, slow } = opened;
+    // Tracks the longest gap between animation frames since the last reset, the last 120 gaps,
+    // whose median is the display's frame interval, and each gap longer than `LONG` with what the
     // views were doing.
     await page.addInitScript((long: number) => {
       interface Stage {
@@ -299,22 +296,22 @@ async function open(url: string, id: string): Promise<Opened> {
       }
       const w = window as unknown as {
         gap: number;
+        gaps: number[];
         long: Long[];
         resetGap(): void;
-        interval(): number;
         stage?: Stage;
       };
       let last = 0;
       let work: Record<string, number> = {};
       const gaps: number[] = [];
       w.gap = 0;
+      w.gaps = gaps;
       w.long = [];
       w.resetGap = () => {
         w.gap = 0;
         w.long = [];
         last = 0;
       };
-      w.interval = () => [...gaps].sort((a, b) => a - b)[gaps.length >> 1] ?? 1000 / 60;
       const tick = (now: number) => {
         const stage = w.stage;
         const done = stage?.gpu.work ?? {};
@@ -446,13 +443,14 @@ async function open(url: string, id: string): Promise<Opened> {
       wrong.push(`no picture exported: ${said}`);
     }
     const { gap, step } = longest;
-    const { interval, late } = await page.evaluate(() => {
+    const { gaps, late } = await page.evaluate(() => {
       const w = window as unknown as {
-        interval(): number;
+        gaps: number[];
         stage?: { gpu: { work: { late: number } } };
       };
-      return { interval: w.interval(), late: w.stage?.gpu.work.late ?? 0 };
+      return { gaps: w.gaps, late: w.stage?.gpu.work.late ?? 0 };
     });
+    const interval = gaps.length ? quantile(gaps, 0.5) : 1000 / 60;
     // A gap of n intervals missed n - 1 frames, so a gap over MISSED + 1.5 intervals missed more
     // than MISSED.
     const budget = (MISSED + 1.5) * interval;
@@ -467,10 +465,10 @@ async function open(url: string, id: string): Promise<Opened> {
       slow.push(`missed ${missed(gap)} frames in a row on ${step} (${gap.toFixed(0)} ms)`);
     if (late > 0)
       wrong.push(`${late} pipelines compiled at first use, delaying the frames that use them`);
+    return opened;
   } finally {
     await chrome.close();
   }
-  return opened;
 }
 
 /** Formats a frame longer than `LONG` for the log: each view's last CPU and GPU times and `waiting`
@@ -488,20 +486,12 @@ function describe({ gap, cpuMs, gpuMs, waiting, work }: Long): string {
 /** Serves the suite and visits the pages named in `only`, or, if it is empty, every page in the
  * example picker. */
 async function suite(only: string[]): Promise<string[]> {
-  const server = await createServer({
-    root: examples,
-    configFile: path.join(examples, 'vite.config.ts'),
-    server: { port: 5210, strictPort: false },
-    logLevel: 'error',
-  });
-  await deadline(server.listen(), STEP, 'serve the suite');
+  const { url, close } = await serve(examples, 5210, 'the suite');
   try {
-    const url = server.resolvedUrls?.local[0];
-    if (!url) throw new Error('the suite has no address');
     const chrome = await cold();
     let ids: string[];
     try {
-      const page = await chrome.browser.newPage();
+      const page = await deadline(chrome.browser.newPage(), STEP, 'a page');
       await deadline(page.goto(url), STEP, 'open the suite');
       const picker = page.getByRole('combobox', { name: 'Example', exact: true });
       await deadline(picker.waitFor(), STEP, 'the example picker');
@@ -517,7 +507,7 @@ async function suite(only: string[]): Promise<string[]> {
     }
     return failures;
   } finally {
-    await server.close();
+    await close();
   }
 }
 

@@ -12,14 +12,12 @@ use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use super::ids::Ids;
-use super::name::Id;
+use super::name::{Id, Name};
+use super::ordered::Ordered;
 use super::patch::{Op, Patch};
 use super::table::Table;
 use super::values::{Value, Values};
 use crate::{Error, Result};
-
-/// The largest float accepted as a numeric id, 2^53 − 1. Larger floats may already be rounded.
-const SAFE: f64 = 9_007_199_254_740_991.0;
 
 const NUMERIC_ID: &str = "a numeric id must be a whole number from 0 to 2^53 - 1";
 
@@ -257,39 +255,41 @@ impl<'de> Deserialize<'de> for Id {
 
 impl OpForm {
     /// The field columns of a replace, set, or append; empty for other changes.
-    pub(crate) fn columns(&mut self) -> &mut [(String, Column)] {
+    pub(crate) fn columns(&mut self) -> &mut [(Name, Column)] {
         match self {
             OpForm::Replace(TableForm { fields, .. })
             | OpForm::Set(TableForm { fields, .. })
-            | OpForm::Append { fields, .. } => &mut fields.0,
+            | OpForm::Append { fields, .. } => fields.columns(),
             _ => &mut [],
         }
     }
 }
 
-/// Builds the patch for `ops`. Every slice of a file must already be replaced by its values.
+/// Builds the patch for `ops`. Every slice of a file must already be replaced by its values. Errors
+/// name the part as JSON reading does, such as `[2].set.fields.x`.
 pub(crate) fn patch(ops: Vec<OpForm>) -> Result<Patch> {
     let mut patch = Patch::new();
     for (i, op) in ops.into_iter().enumerate() {
         let op = match op {
             OpForm::Axis { name, unit } => Op::Axis { name: name.into(), unit: unit.into() },
-            OpForm::Replace(form) => Op::Replace(form.table().map_err(|e| e.at(i))?),
-            OpForm::Set(form) => Op::Set(form.table().map_err(|e| e.at(i))?),
+            OpForm::Replace(form) => Op::Replace(form.table().map_err(|e| e.at("replace").at(i))?),
+            OpForm::Set(form) => Op::Set(form.table().map_err(|e| e.at("set").at(i))?),
             OpForm::Remove { table, ids } => Op::Remove { table: table.into(), ids: ids.0 },
             OpForm::Append { at, table, ids, fields } => {
                 let at = match at {
                     At::One(at) => vec![at],
                     At::Many(at) => at,
                 };
-                let mut columns = Vec::with_capacity(fields.0.len());
-                for (name, column) in fields.0 {
+                let fields = fields.into_columns();
+                let mut columns = Vec::with_capacity(fields.len());
+                for (name, column) in fields {
                     let values = match column {
                         Column::Reference { .. } => Err(Error::invalid("append records values, not references")),
                         column => column.values(),
                     };
                     columns.push((
                         name.as_str().into(),
-                        values.map_err(|e| e.at(name.as_str()).at(table.as_str()).at(i))?,
+                        values.map_err(|e| e.at(name.as_str()).at("fields").at("append").at(i))?,
                     ));
                 }
                 Op::Append { table: table.into(), at, ids: ids.map(|ids| ids.0), fields: columns }
@@ -309,11 +309,11 @@ impl TableForm {
     fn table(self) -> Result<Table> {
         let name = self.table;
         let mut table = Table::new(name.as_str(), self.ids.0);
-        for (field, column) in self.fields.0 {
+        for (field, column) in self.fields.into_columns() {
             table = match column {
                 Column::Reference { to, ids } => table.reference(field, to, ids),
                 column => {
-                    let values = column.values().map_err(|e| e.at(field.as_str()).at(name.as_str()))?;
+                    let values = column.values().map_err(|e| e.at(field.as_str()).at("fields"))?;
                     table.field(field, values)
                 }
             };
@@ -417,50 +417,34 @@ impl Column {
     }
 }
 
-/// A table's fields in the order written.
-#[derive(Default)]
-pub(crate) struct Fields(pub(crate) Vec<(String, Column)>);
+/// A table's fields in the order written, each name once.
+#[derive(Default, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Fields(Ordered<Column>);
 
-impl<'de> Deserialize<'de> for Fields {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Fields, D::Error> {
-        struct Map;
-        impl<'de> Visitor<'de> for Map {
-            type Value = Fields;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("an object of fields")
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Fields, A::Error> {
-                let mut fields = Vec::new();
-                while let Some(name) = map.next_key::<String>()? {
-                    if fields.iter().any(|(n, _)| *n == name) {
-                        return Err(de::Error::custom(format!("field {name} appears twice")));
-                    }
-                    let column = map.next_value_seed(ColumnSeed(&name))?;
-                    fields.push((name, column));
-                }
-                Ok(Fields(fields))
-            }
-        }
-        deserializer.deserialize_map(Map)
+impl Fields {
+    pub(crate) fn columns(&mut self) -> &mut [(Name, Column)] {
+        &mut self.0.0
+    }
+
+    fn into_columns(self) -> Vec<(Name, Column)> {
+        self.0.0
     }
 }
 
-/// Deserializes a column, naming its field in errors.
-struct ColumnSeed<'a>(&'a str);
-
-impl<'de> DeserializeSeed<'de> for ColumnSeed<'_> {
-    type Value = Column;
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> std::result::Result<Column, D::Error> {
-        deserializer.deserialize_any(ColumnVisitor(self.0))
+/// Reads a column. Errors name only what is wrong; reading names the field in the error's path.
+impl<'de> Deserialize<'de> for Column {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Column, D::Error> {
+        deserializer.deserialize_any(ColumnVisitor)
     }
 }
 
-struct ColumnVisitor<'a>(&'a str);
+struct ColumnVisitor;
 
-impl<'de> Visitor<'de> for ColumnVisitor<'_> {
+impl<'de> Visitor<'de> for ColumnVisitor {
     type Value = Column;
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "field {}: an array of values, a reference, or a slice of a file", self.0)
+        f.write_str("an array of values, a reference, or a slice of a file")
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Column, A::Error> {
@@ -470,7 +454,7 @@ impl<'de> Visitor<'de> for ColumnVisitor<'_> {
         }
         Values::try_from(values).map(Column::Values).map_err(|e| {
             let reason = if let Error::Invalid { reason, .. } = e { reason } else { e.to_string().into() };
-            de::Error::custom(format!("field {}: {reason}", self.0))
+            de::Error::custom(reason)
         })
     }
 
@@ -486,11 +470,11 @@ impl<'de> Visitor<'de> for ColumnVisitor<'_> {
                 "count" => count = Some(map.next_value::<u64>()?),
                 other => {
                     map.next_value::<IgnoredAny>()?;
-                    return Err(de::Error::custom(format!("field {}: unknown key {other}", self.0)));
+                    return Err(de::Error::custom(format!("unknown key {other}")));
                 }
             }
         }
-        let missing = |what: &str| de::Error::custom(format!("field {}: {what}", self.0));
+        let missing = |what: &str| de::Error::custom(what);
         match (reference, file) {
             (Some(to), None) if dtype.is_none() && offset.is_none() && count.is_none() => {
                 Ok(Column::Reference { to, ids: ids.ok_or_else(|| missing("a reference needs ids"))? })
@@ -719,11 +703,7 @@ impl<'de> Deserialize<'de> for Key {
                 Ok(Key(Some(Id::Number(n))))
             }
             fn visit_f64<E: de::Error>(self, v: f64) -> std::result::Result<Key, E> {
-                if v.fract() == 0.0 && (0.0..=SAFE).contains(&v) {
-                    Ok(Key(Some(Id::Number(v as u64))))
-                } else {
-                    Err(E::custom(NUMERIC_ID))
-                }
+                Id::from_number(v).map(|id| Key(Some(id))).ok_or_else(|| E::custom(NUMERIC_ID))
             }
             fn visit_str<E>(self, v: &str) -> std::result::Result<Key, E> {
                 Ok(Key(Some(Id::from(v))))

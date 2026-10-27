@@ -1,0 +1,836 @@
+[
+  {
+    "name": "latkit",
+    "usage": "latkit [OPTIONS] <COMMAND>",
+    "about": "Render scenes of JSON or binary data to images and videos",
+    "args": [
+      {
+        "id": "diagnostics",
+        "long": "diagnostics",
+        "short": null,
+        "value": "DIAGNOSTICS",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": true,
+        "help": "Format of errors and render progress on stderr",
+        "defaults": [
+          "human"
+        ],
+        "values": [
+          {
+            "name": "human",
+            "help": "Lines of text, for people"
+          },
+          {
+            "name": "json",
+            "help": "One JSON object per line, for programs"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "latkit render",
+    "usage": "latkit render [OPTIONS] <SCENE>...",
+    "about": "Draw scenes of datasets into an image, image sequence, raw frames, or a video",
+    "args": [
+      {
+        "id": "scenes",
+        "long": null,
+        "short": null,
+        "value": "SCENE",
+        "positional": true,
+        "required": true,
+        "many": true,
+        "global": false,
+        "help": "Scene JSON files, one per panel (`-` reads stdin)",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "data",
+        "long": "data",
+        "short": "d",
+        "value": "[NAME=]FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A dataset file: a JSON document, latkit bytes, or GeoJSON. `NAME=` sets its name, which GeoJSON requires",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "tiles",
+        "long": "tiles",
+        "short": null,
+        "value": "NAME=FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Tiles every view fetches as dataset `NAME`: a time tiles `frames.json`, or a vector tiles PMTiles file, TileJSON, or `{z}/{x}/{y}` template",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "output",
+        "long": "output",
+        "short": "o",
+        "value": "FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Output file, `%d` pattern for an image sequence, or `-` for stdout",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "format",
+        "long": "format",
+        "short": null,
+        "value": "FORMAT",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Output format. Defaults to the one the output's extension names, else PNG",
+        "defaults": [],
+        "values": [
+          {
+            "name": "png",
+            "help": "PNG, lossless with alpha. One picture, or one per frame with a `%d` output pattern"
+          },
+          {
+            "name": "jpeg",
+            "help": "JPEG at `--quality`, without alpha. One picture, or one per frame"
+          },
+          {
+            "name": "webp",
+            "help": "Lossless WebP with alpha. One picture, or one per frame"
+          },
+          {
+            "name": "rgba",
+            "help": "Raw RGBA with straight alpha, frames back to back"
+          },
+          {
+            "name": "y4m",
+            "help": "YUV4MPEG2 (4:2:0, BT.709 limited range), which any encoder reads"
+          },
+          {
+            "name": "mp4",
+            "help": "H.264 in fragmented MP4, from the platform's encoder"
+          }
+        ]
+      },
+      {
+        "id": "quality",
+        "long": "quality",
+        "short": null,
+        "value": "QUALITY",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "JPEG quality, from 1 (smallest) to 100 (sharpest)",
+        "defaults": [
+          "90"
+        ],
+        "values": []
+      },
+      {
+        "id": "size",
+        "long": "size",
+        "short": null,
+        "value": "SIZE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down to a multiple of 4 and its height to an even number",
+        "defaults": [
+          "1600x900"
+        ],
+        "values": []
+      },
+      {
+        "id": "scale",
+        "long": "scale",
+        "short": null,
+        "value": "SCALE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp",
+        "defaults": [
+          "1"
+        ],
+        "values": []
+      },
+      {
+        "id": "panel",
+        "long": "panel",
+        "short": null,
+        "value": "X,Y,W,H",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A scene's panel of the picture: its x, y, width, and height, as fractions. Give one per scene, in order",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "transparent",
+        "long": "transparent",
+        "short": null,
+        "value": null,
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Keep alpha where the themes' backgrounds would be",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "deadline",
+        "long": "deadline",
+        "short": null,
+        "value": "DEADLINE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The longest a picture or video frame may take, in seconds",
+        "defaults": [
+          "30"
+        ],
+        "values": []
+      },
+      {
+        "id": "font",
+        "long": "font",
+        "short": null,
+        "value": "FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "camera",
+        "long": "camera",
+        "short": null,
+        "value": "CAMERA",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A camera per scene, in scene order: JSON, or a file of it (`-` reads stdin). Views without one use `--fit`",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "fit",
+        "long": "fit",
+        "short": null,
+        "value": "FIT",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "What views without a camera frame: `all`, or a fit as JSON",
+        "defaults": [
+          "all"
+        ],
+        "values": []
+      },
+      {
+        "id": "insets",
+        "long": "insets",
+        "short": null,
+        "value": "T,R,B,L",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "CSS pixels to keep clear at the top, right, bottom, and left",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "at",
+        "long": "at",
+        "short": null,
+        "value": "AT",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The axis coordinate to show. Sampled fields show their last frame at or before it",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "elapsed",
+        "long": "elapsed",
+        "short": null,
+        "value": "ELAPSED",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "frames",
+        "long": "frames",
+        "short": null,
+        "value": "FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Frames as JSON Lines, one line per output frame (`-` reads stdin)",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "fps",
+        "long": "fps",
+        "short": null,
+        "value": "FPS",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Output frames per second",
+        "defaults": [
+          "60"
+        ],
+        "values": []
+      },
+      {
+        "id": "bitrate",
+        "long": "bitrate",
+        "short": null,
+        "value": "BITRATE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "MP4 bitrate in bits per second. Defaults to about 0.15 bits per pixel per frame",
+        "defaults": [],
+        "values": []
+      }
+    ]
+  },
+  {
+    "name": "latkit validate",
+    "usage": "latkit validate [OPTIONS] <SCENE>...",
+    "about": "Check every input render reads, including frames, without a GPU",
+    "args": [
+      {
+        "id": "scenes",
+        "long": null,
+        "short": null,
+        "value": "SCENE",
+        "positional": true,
+        "required": true,
+        "many": true,
+        "global": false,
+        "help": "Scene JSON files, one per panel (`-` reads stdin)",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "data",
+        "long": "data",
+        "short": "d",
+        "value": "[NAME=]FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A dataset file: a JSON document, latkit bytes, or GeoJSON. `NAME=` sets its name, which GeoJSON requires",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "tiles",
+        "long": "tiles",
+        "short": null,
+        "value": "NAME=FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Tiles every view fetches as dataset `NAME`: a time tiles `frames.json`, or a vector tiles PMTiles file, TileJSON, or `{z}/{x}/{y}` template",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "output",
+        "long": "output",
+        "short": "o",
+        "value": "FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Output file, `%d` pattern for an image sequence, or `-` for stdout",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "format",
+        "long": "format",
+        "short": null,
+        "value": "FORMAT",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Output format. Defaults to the one the output's extension names, else PNG",
+        "defaults": [],
+        "values": [
+          {
+            "name": "png",
+            "help": "PNG, lossless with alpha. One picture, or one per frame with a `%d` output pattern"
+          },
+          {
+            "name": "jpeg",
+            "help": "JPEG at `--quality`, without alpha. One picture, or one per frame"
+          },
+          {
+            "name": "webp",
+            "help": "Lossless WebP with alpha. One picture, or one per frame"
+          },
+          {
+            "name": "rgba",
+            "help": "Raw RGBA with straight alpha, frames back to back"
+          },
+          {
+            "name": "y4m",
+            "help": "YUV4MPEG2 (4:2:0, BT.709 limited range), which any encoder reads"
+          },
+          {
+            "name": "mp4",
+            "help": "H.264 in fragmented MP4, from the platform's encoder"
+          }
+        ]
+      },
+      {
+        "id": "quality",
+        "long": "quality",
+        "short": null,
+        "value": "QUALITY",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "JPEG quality, from 1 (smallest) to 100 (sharpest)",
+        "defaults": [
+          "90"
+        ],
+        "values": []
+      },
+      {
+        "id": "size",
+        "long": "size",
+        "short": null,
+        "value": "SIZE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down to a multiple of 4 and its height to an even number",
+        "defaults": [
+          "1600x900"
+        ],
+        "values": []
+      },
+      {
+        "id": "scale",
+        "long": "scale",
+        "short": null,
+        "value": "SCALE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp",
+        "defaults": [
+          "1"
+        ],
+        "values": []
+      },
+      {
+        "id": "panel",
+        "long": "panel",
+        "short": null,
+        "value": "X,Y,W,H",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A scene's panel of the picture: its x, y, width, and height, as fractions. Give one per scene, in order",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "transparent",
+        "long": "transparent",
+        "short": null,
+        "value": null,
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Keep alpha where the themes' backgrounds would be",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "deadline",
+        "long": "deadline",
+        "short": null,
+        "value": "DEADLINE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The longest a picture or video frame may take, in seconds",
+        "defaults": [
+          "30"
+        ],
+        "values": []
+      },
+      {
+        "id": "font",
+        "long": "font",
+        "short": null,
+        "value": "FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "camera",
+        "long": "camera",
+        "short": null,
+        "value": "CAMERA",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A camera per scene, in scene order: JSON, or a file of it (`-` reads stdin). Views without one use `--fit`",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "fit",
+        "long": "fit",
+        "short": null,
+        "value": "FIT",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "What views without a camera frame: `all`, or a fit as JSON",
+        "defaults": [
+          "all"
+        ],
+        "values": []
+      },
+      {
+        "id": "insets",
+        "long": "insets",
+        "short": null,
+        "value": "T,R,B,L",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "CSS pixels to keep clear at the top, right, bottom, and left",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "at",
+        "long": "at",
+        "short": null,
+        "value": "AT",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The axis coordinate to show. Sampled fields show their last frame at or before it",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "elapsed",
+        "long": "elapsed",
+        "short": null,
+        "value": "ELAPSED",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "frames",
+        "long": "frames",
+        "short": null,
+        "value": "FILE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Frames as JSON Lines, one line per output frame (`-` reads stdin)",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "fps",
+        "long": "fps",
+        "short": null,
+        "value": "FPS",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Output frames per second",
+        "defaults": [
+          "60"
+        ],
+        "values": []
+      },
+      {
+        "id": "bitrate",
+        "long": "bitrate",
+        "short": null,
+        "value": "BITRATE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "MP4 bitrate in bits per second. Defaults to about 0.15 bits per pixel per frame",
+        "defaults": [],
+        "values": []
+      }
+    ]
+  },
+  {
+    "name": "latkit inspect",
+    "usage": "latkit inspect [OPTIONS] <[NAME=]FILE>...",
+    "about": "Describe datasets as JSON: tables, row counts, fields with kinds, and the axis and its span",
+    "args": [
+      {
+        "id": "data",
+        "long": null,
+        "short": null,
+        "value": "[NAME=]FILE",
+        "positional": true,
+        "required": true,
+        "many": true,
+        "global": false,
+        "help": "Dataset files, each `[NAME=]FILE` (`-` reads stdin)",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "deadline",
+        "long": "deadline",
+        "short": null,
+        "value": "DEADLINE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The longest a dataset may take to load, in seconds",
+        "defaults": [
+          "30"
+        ],
+        "values": []
+      }
+    ]
+  },
+  {
+    "name": "latkit schema",
+    "usage": "latkit schema [OPTIONS] [INPUT]",
+    "about": "Print the JSON Schema of every input latkit reads, or of one input",
+    "args": [
+      {
+        "id": "input",
+        "long": null,
+        "short": null,
+        "value": "INPUT",
+        "positional": true,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Print only this input's schema",
+        "defaults": [],
+        "values": [
+          {
+            "name": "scene",
+            "help": "A scene"
+          },
+          {
+            "name": "data",
+            "help": "A dataset's JSON document"
+          },
+          {
+            "name": "patch",
+            "help": "A patch"
+          },
+          {
+            "name": "query",
+            "help": "A query for `latkit query`"
+          },
+          {
+            "name": "camera",
+            "help": "A camera for `--camera`"
+          },
+          {
+            "name": "fit",
+            "help": "A fit for `--fit`"
+          },
+          {
+            "name": "frames",
+            "help": "One line of a `--frames` file"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "latkit query",
+    "usage": "latkit query [OPTIONS] <[NAME=]FILE> <QUERY>",
+    "about": "Print the rows a query selects, sorted and paged, as JSON Lines with one object per row",
+    "args": [
+      {
+        "id": "data",
+        "long": null,
+        "short": null,
+        "value": "[NAME=]FILE",
+        "positional": true,
+        "required": true,
+        "many": false,
+        "global": false,
+        "help": "The dataset, `[NAME=]FILE` (`-` reads stdin)",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "query",
+        "long": null,
+        "short": null,
+        "value": "QUERY",
+        "positional": true,
+        "required": true,
+        "many": false,
+        "global": false,
+        "help": "The query: JSON, such as `{\"of\":\"Branch\",\"filter\":{\"op\":\"gt\",\"args\":[\"loading\",90]}}`, or a file of it (`-` reads stdin)",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "deadline",
+        "long": "deadline",
+        "short": null,
+        "value": "DEADLINE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The longest the dataset may take to load, in seconds",
+        "defaults": [
+          "30"
+        ],
+        "values": []
+      }
+    ]
+  },
+  {
+    "name": "latkit tile",
+    "usage": "latkit tile [OPTIONS] --output <DIR> <[NAME=]FILE>",
+    "about": "Write a dataset as time tiles: `frames.json` (which `--tiles` opens), the dataset without its sampled fields' histories, and those histories in spans at every level of detail",
+    "args": [
+      {
+        "id": "data",
+        "long": null,
+        "short": null,
+        "value": "[NAME=]FILE",
+        "positional": true,
+        "required": true,
+        "many": false,
+        "global": false,
+        "help": "The dataset, `[NAME=]FILE` (`-` reads stdin)",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "output",
+        "long": "output",
+        "short": "o",
+        "value": "DIR",
+        "positional": false,
+        "required": true,
+        "many": false,
+        "global": false,
+        "help": "Directory to write the tiles to",
+        "defaults": [],
+        "values": []
+      },
+      {
+        "id": "chunk",
+        "long": "chunk",
+        "short": null,
+        "value": "CHUNK",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "Entries per span: frames at full detail, buckets at coarser levels. A multiple of 8",
+        "defaults": [
+          "256"
+        ],
+        "values": []
+      },
+      {
+        "id": "deadline",
+        "long": "deadline",
+        "short": null,
+        "value": "DEADLINE",
+        "positional": false,
+        "required": false,
+        "many": false,
+        "global": false,
+        "help": "The longest the dataset may take to load, in seconds",
+        "defaults": [
+          "30"
+        ],
+        "values": []
+      }
+    ]
+  }
+]

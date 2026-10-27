@@ -5,7 +5,9 @@ pub(crate) mod arena;
 pub(crate) mod atlas;
 pub(crate) mod colormaps;
 pub(crate) mod dictionary;
+pub(crate) mod grown;
 pub(crate) mod icons;
+mod layers;
 pub(crate) mod packed;
 pub(crate) mod pipelines;
 pub(crate) mod readback;
@@ -324,12 +326,12 @@ impl Gpu {
                 arena: Arena::new(&device, budget.bytes),
                 pieces: arena::Pieces::default(),
                 pipelines: Pipelines::new(&device, counters.clone(), gpu.clone()),
-                colormaps: Colormaps::new(&device),
+                colormaps: Colormaps::colormaps(&device),
                 dictionaries: Dictionaries::default(),
                 packed: Packed::new(counters.clone()),
                 tiles: crate::tiles::Cache::default(),
                 atlas: Atlas::new(&device, counters.clone()),
-                icons: Icons::new(&device),
+                icons: Icons::icons(&device),
                 readbacks: Readbacks::counted(counters.clone()),
                 host: None,
                 budget,

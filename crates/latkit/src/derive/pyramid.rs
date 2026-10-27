@@ -278,11 +278,8 @@ fn tie(row: u32) -> u32 {
 fn ranks(priority: &[f32], n: usize) -> Vec<u64> {
     (0..n)
         .map(|r| {
-            let p = priority.get(r).copied().filter(|p| !p.is_nan()).map_or(0, |p| {
-                let bits = p.to_bits();
-                if bits >> 31 == 1 { !bits } else { bits | 0x8000_0000 }
-            });
-            u64::from(p) << 32 | u64::from(tie(r as u32))
+            let p = priority.get(r).copied().filter(|p| !p.is_nan()).map_or(0, crate::order::number32);
+            crate::order::pair(p, tie(r as u32))
         })
         .collect()
 }
@@ -700,7 +697,7 @@ impl Pyramid {
     /// Decodes the pyramids a job answered, as [`encode`] wrote them, each with its table's index
     /// among those asked. Stops at the first incomplete record.
     pub(crate) fn read(bytes: &[u8]) -> Vec<(u32, Pyramid)> {
-        let words: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|&w| u32::from_le_bytes(w)).collect();
+        let words = crate::wire::words(bytes);
         let mut words = words.as_slice();
         let mut take = |n: usize| -> Option<&[u32]> {
             let (head, rest) = words.split_at_checked(n)?;

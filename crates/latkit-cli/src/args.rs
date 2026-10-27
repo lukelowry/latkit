@@ -51,8 +51,8 @@ pub(crate) enum Command {
         /// The dataset, `[NAME=]FILE` (`-` reads stdin)
         #[arg(value_name = "[NAME=]FILE")]
         data: Source,
-        /// The query as JSON, such as `{"of":"Branch","filter":{"op":"gt","args":["loading",90]}}`,
-        /// or a file containing it (`-` reads stdin)
+        /// The query: JSON, such as `{"of":"Branch","filter":{"op":"gt","args":["loading",90]}}`, or
+        /// a file of it (`-` reads stdin)
         #[arg(value_name = "QUERY")]
         query: String,
         /// The longest the dataset may take to load, in seconds
@@ -100,7 +100,8 @@ pub(crate) struct Job {
     /// JPEG quality, from 1 (smallest) to 100 (sharpest)
     #[arg(long, default_value = "90", value_parser = clap::value_parser!(u8).range(1..=100))]
     pub(crate) quality: u8,
-    /// The picture's width and height in pixels, such as `1920x1080`
+    /// The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down
+    /// to a multiple of 4 and its height to an even number
     #[arg(long, default_value = "1600x900", value_parser = size)]
     pub(crate) size: [u32; 2],
     /// Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp
@@ -119,9 +120,10 @@ pub(crate) struct Job {
     /// A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts
     #[arg(long, value_name = "FILE")]
     pub(crate) font: Vec<PathBuf>,
-    /// A camera JSON file per scene, in scene order. Views without one use `--fit`
-    #[arg(long, value_name = "FILE")]
-    pub(crate) camera: Vec<PathBuf>,
+    /// A camera per scene, in scene order: JSON, or a file of it (`-` reads stdin). Views without
+    /// one use `--fit`
+    #[arg(long, value_name = "CAMERA")]
+    pub(crate) camera: Vec<String>,
     /// What views without a camera frame: `all`, or a fit as JSON
     #[arg(long, default_value = "all", value_name = "FIT")]
     pub(crate) fit: String,
@@ -285,8 +287,8 @@ impl Cli {
                 return Ok(());
             }
         };
-        let stdin = job.scenes.iter().chain(job.data.iter().map(|s| &s.path)).chain(&job.frames).chain(&job.camera);
-        if stdin.filter(|path| is_stdio(path)).count() > 1 {
+        let files = job.scenes.iter().chain(job.data.iter().map(|s| &s.path)).chain(&job.frames).map(PathBuf::as_path);
+        if files.chain(job.camera.iter().map(Path::new)).filter(|path| is_stdio(path)).count() > 1 {
             return Err(Self::command().error(ErrorKind::ArgumentConflict, "only one input can read stdin"));
         }
         if job.tiles.iter().any(|t| t.name.is_none()) {
@@ -373,161 +375,66 @@ fn insets(value: &str) -> Result<[f32; 4], String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::fmt::Write as _;
-
     use clap::ArgAction;
+    use serde_json::{Value, json};
 
     use super::*;
 
-    /// The command reference, `docs/reference/cli.md`, in the form of the JavaScript reference:
-    /// each command's usage and description, then its arguments and options, each a term over its
-    /// definition with an anchor of its own. Code spans that name a command or an option link to it.
-    fn reference() -> String {
+    /// The command tree as JSON, which `npm/docs.mjs` renders as the command reference: each
+    /// command's name, usage, and description, then its arguments and options. Clap's own `help`
+    /// command and its help and version flags are left out, and a command's copies of global
+    /// options too.
+    fn commands() -> Value {
         let mut cli = Cli::command();
         cli.build();
-        // Each command, with its name and anchor. Clap's `help` command and arguments are left out.
-        let mut commands = vec![("latkit".to_owned(), "cli-latkit".to_owned(), cli.clone())];
-        for command in cli.get_subcommands().filter(|c| c.get_name() != "help") {
-            let name = command.get_name();
-            commands.push((
-                format!("latkit {name}"),
-                format!("cli-{name}"),
-                command.clone().bin_name(format!("latkit {name}")),
-            ));
-        }
-        let shown = |top: bool, arg: &clap::Arg| {
-            let clap = matches!(
-                arg.get_action(),
-                ArgAction::Help | ArgAction::HelpShort | ArgAction::HelpLong | ArgAction::Version
-            );
-            !clap && !arg.is_hide_set() && (top || !arg.is_global_set())
-        };
-        let id =
-            |anchor: &str, arg: &clap::Arg| format!("{anchor}-{}", arg.get_long().unwrap_or(arg.get_id().as_str()));
-        // What code spans link to: each command, and each option, first in its own command.
-        let mut links = HashMap::new();
-        for (name, anchor, command) in &commands {
-            links.insert(name.clone(), anchor.clone());
-            for arg in command.get_arguments().filter(|a| shown(anchor == "cli-latkit", a)) {
-                if let Some(long) = arg.get_long() {
-                    links.entry(format!("--{long}")).or_insert_with(|| id(anchor, arg));
-                }
-            }
-        }
-        let mut text = String::from(
-            "# Command reference\n\nEvery command and option of the `latkit` command line, written from its help. The \
-             [command-line guide](../cli.md) shows them at work. `--help` prints a command's help in the terminal, and \
-             `latkit --version` prints the version.\n",
-        );
-        for (name, anchor, command) in &mut commands {
-            let top = anchor.as_str() == "cli-latkit";
-            let own = |arg: &clap::Arg| arg.get_long().map(|long| (format!("--{long}"), id(anchor, arg)));
-            let mut local = links.clone();
-            local.extend(command.get_arguments().filter(|a| shown(top, a)).filter_map(own));
-            let usage = command.render_usage().to_string();
-            let usage = usage.strip_prefix("Usage: ").expect("clap's usage");
+        let command = |command: &clap::Command, name: String, top: bool| {
+            let shown = |arg: &&clap::Arg| {
+                let clap = matches!(
+                    arg.get_action(),
+                    ArgAction::Help | ArgAction::HelpShort | ArgAction::HelpLong | ArgAction::Version
+                );
+                !clap && !arg.is_hide_set() && (top || !arg.is_global_set())
+            };
+            let usage = command.clone().bin_name(&name).render_usage().to_string();
+            let usage = usage.strip_prefix("Usage: ").expect("clap's usage").to_owned();
             assert!(!usage.contains('\n'), "{name}: one line of usage");
-            let about = command.get_long_about().or(command.get_about()).map(ToString::to_string).unwrap_or_default();
-            write!(
-                text,
-                "\n({anchor})=\n\n## `{name}`\n\n{{.signature}}\n`{usage}`\n\n{}\n",
-                linked(&sentence(&about), &local)
-            )
-            .unwrap();
-            if top {
-                text += "\n```{rubric} Commands\n```\n";
-                for sub in command.get_subcommands().filter(|c| c.get_name() != "help") {
-                    let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
-                    let term = format!("[`latkit {0}`](#cli-{0})", sub.get_name());
-                    write!(text, "\n{}\n", item(None, &term, &linked(&sentence(&about), &local))).unwrap();
-                }
-            }
-            for (title, positional) in [("Arguments", true), ("Options", false)] {
-                let args: Vec<&clap::Arg> =
-                    command.get_arguments().filter(|a| shown(top, a) && a.is_positional() == positional).collect();
-                if args.is_empty() {
-                    continue;
-                }
-                write!(text, "\n```{{rubric}} {title}\n```\n").unwrap();
-                for arg in args {
-                    let id = id(anchor, arg);
-                    let mut about =
-                        sentence(&arg.get_long_help().or(arg.get_help()).map(ToString::to_string).unwrap_or_default());
-                    let defaults: Vec<String> =
-                        arg.get_default_values().iter().map(|v| format!("`{}`", v.to_string_lossy())).collect();
-                    if arg.get_action().takes_values() && !defaults.is_empty() {
-                        write!(about, " Defaults to {}.", defaults.join(", ")).unwrap();
-                    }
-                    if top && arg.is_global_set() {
-                        about += " Every command takes it.";
-                    }
-                    let mut definition = linked(&about, &local);
-                    let values = if arg.get_action().takes_values() { arg.get_possible_values() } else { Vec::new() };
-                    for value in values.iter().filter(|v| !v.is_hide_set()) {
-                        let help = value.get_help().map(ToString::to_string).unwrap_or_default();
-                        assert!(!help.is_empty(), "{name} {}: value {} has no help", id, value.get_name());
-                        let term = format!("**`{}`**", value.get_name());
-                        let value_id = format!("{id}-{}", value.get_name());
-                        write!(definition, "\n\n{}", item(Some(&value_id), &term, &linked(&sentence(&help), &local)))
-                            .unwrap();
-                    }
-                    write!(text, "\n{}\n", item(Some(&id), &term(arg), &definition)).unwrap();
-                }
-            }
-        }
-        text
-    }
-
-    /// An argument's or an option's term: `**<SCENE>...**`, or `-d, **--data** <[NAME=]FILE>`.
-    fn term(arg: &clap::Arg) -> String {
-        let value = arg
-            .get_value_names()
-            .and_then(|names| names.first())
-            .map_or_else(|| arg.get_id().as_str().to_uppercase(), ToString::to_string);
-        if arg.is_positional() {
-            let many = if arg.get_num_args().is_some_and(|n| n.max_values() > 1) { "..." } else { "" };
-            let value = if arg.is_required_set() { format!("<{value}>") } else { format!("[{value}]") };
-            return format!("**`{value}{many}`**");
-        }
-        let short = arg.get_short().map(|c| format!("`-{c},` ")).unwrap_or_default();
-        let long = arg.get_long().expect("every option has a long name");
-        let value = if arg.get_action().takes_values() { format!(" `<{value}>`") } else { String::new() };
-        format!("{short}**`--{long}`**{value}")
-    }
-
-    /// One item of a definition list: `term`, its permalink if it has an anchor, and `definition`,
-    /// its lines after the first indented to stay in the definition.
-    fn item(id: Option<&str>, term: &str, definition: &str) -> String {
-        let (attributes, permalink) = match id {
-            Some(id) => (format!("{{#{id} .member}}"), format!(" [¶](#{id}){{.headerlink}}")),
-            None => ("{.member}".to_owned(), String::new()),
+            let text = |s: Option<&clap::builder::StyledStr>| s.map(ToString::to_string).unwrap_or_default();
+            let args: Vec<Value> = command
+                .get_arguments()
+                .filter(shown)
+                .map(|arg| {
+                    let takes = arg.get_action().takes_values();
+                    let values: Vec<Value> = if takes { arg.get_possible_values() } else { Vec::new() }
+                        .iter()
+                        .filter(|v| !v.is_hide_set())
+                        .map(|v| json!({ "name": v.get_name(), "help": text(v.get_help()) }))
+                        .collect();
+                    json!({
+                        "id": arg.get_id().as_str(),
+                        "long": arg.get_long(),
+                        "short": arg.get_short().map(String::from),
+                        "value": takes.then(|| {
+                            let name = arg.get_value_names().and_then(|names| names.first());
+                            name.map_or_else(|| arg.get_id().as_str().to_uppercase(), ToString::to_string)
+                        }),
+                        "positional": arg.is_positional(),
+                        "required": arg.is_required_set(),
+                        "many": arg.get_num_args().is_some_and(|n| n.max_values() > 1),
+                        "global": arg.is_global_set(),
+                        "help": text(arg.get_long_help().or(arg.get_help())),
+                        "defaults": if takes { arg.get_default_values().iter().map(|v| v.to_string_lossy()).collect() } else { Vec::new() },
+                        "values": values,
+                    })
+                })
+                .collect();
+            let about = text(command.get_long_about().or(command.get_about()));
+            json!({ "name": name, "usage": usage, "about": about, "args": args })
         };
-        let mut lines = definition.trim().lines();
-        let first = lines.next().unwrap_or_default();
-        let rest: String = lines.map(|l| if l.is_empty() { "\n".to_owned() } else { format!("\n  {l}") }).collect();
-        format!("{attributes}\n{term}{permalink}\n: {first}{rest}")
-    }
-
-    /// Help text as a sentence: trimmed, and ending in a period.
-    fn sentence(help: &str) -> String {
-        let help = help.trim();
-        if help.is_empty() || help.ends_with('.') { help.to_owned() } else { format!("{help}.") }
-    }
-
-    /// `text` with each code span that `links` names made a link to its anchor.
-    fn linked(text: &str, links: &HashMap<String, String>) -> String {
-        let parts: Vec<&str> = text.split('`').collect();
-        assert!(parts.len() % 2 == 1, "unpaired backtick in {text:?}");
-        parts
-            .iter()
-            .enumerate()
-            .map(|(i, part)| match links.get(*part) {
-                _ if i % 2 == 0 => (*part).to_owned(),
-                Some(anchor) => format!("[`{part}`](#{anchor})"),
-                None => format!("`{part}`"),
-            })
-            .collect()
+        let mut all = vec![command(&cli, "latkit".into(), true)];
+        for sub in cli.get_subcommands().filter(|c| c.get_name() != "help") {
+            all.push(command(sub, format!("latkit {}", sub.get_name()), false));
+        }
+        Value::Array(all)
     }
 
     #[test]
@@ -537,13 +444,13 @@ mod tests {
         if !root.join(".readthedocs.yaml").exists() {
             return;
         }
-        let text = reference();
-        let path = root.join("docs/reference/cli.md");
+        let text = format!("{}\n", serde_json::to_string_pretty(&commands()).unwrap());
+        let path = root.join("docs/reference/cli.json");
         if std::env::var_os("LATKIT_BLESS").is_some() {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, &text).unwrap();
         }
-        assert_eq!(std::fs::read_to_string(path).unwrap().replace("\r\n", "\n"), text);
+        let message = "run with LATKIT_BLESS=1, then node npm/docs.mjs";
+        assert_eq!(std::fs::read_to_string(path).unwrap().replace("\r\n", "\n"), text, "{message}");
     }
 
     #[test]

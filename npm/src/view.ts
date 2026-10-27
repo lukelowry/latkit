@@ -5,9 +5,9 @@
  */
 
 import type * as bindings from '../pkg/latkit.js';
-import { snapshotOf, sourceOf, type Snapshot, type Source } from './data.js';
+import { Snapshot, sourceOf, type Source } from './data.js';
 import type { Camera, Fit, Row, Rows, Scene } from './inputs.js';
-import { hold, inner, release, thrown, waited, type LatkitError, type Wait } from './internal.js';
+import { Handle, inner, thrown, waited, type LatkitError, type Wait } from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
 import { Patch } from './patch.js';
 
@@ -21,12 +21,6 @@ import { Patch } from './patch.js';
 export type ViewEvents = {
   [E in ViewEvent as E['type']]: E extends { type: 'error' } ? LatkitError : E['detail'];
 };
-
-/** Options for `Gpu.view()`. */
-export interface ViewOptions {
-  /** The datasets the scene draws; see {@link View.sources}. */
-  sources?: readonly Source[];
-}
 
 /** CSS pixels kept clear at the top, right, bottom, and left. */
 export type Insets = [top: number, right: number, bottom: number, left: number];
@@ -42,19 +36,23 @@ export type Position = [x: number, y: number, elevation: number];
 
 /**
  * A scene drawn from its sources; created by `Gpu.view()`. A canvas shows it and passes it input,
- * and a `Shot` draws it into pictures.
+ * and a `Shot` draws it into pictures. Destroying it rejects its unanswered queries; a canvas
+ * showing it keeps its last frame.
  */
-export class View {
+export class View extends Handle {
   #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
   #scene: Scene;
   #sources: readonly Source[] = [];
   #released: () => void;
 
   private constructor(device: bindings.Gpu, scene: Scene, released: () => void) {
-    hold(
-      this,
-      device.view(JSON.stringify(scene), (json: string) => this.#tell(json)),
-    );
+    // The view sends events once it exists, so the callback finds it through `told`.
+    const told: { view?: View } = {};
+    const tell = (json: string) => {
+      if (told.view) told.view.#tell(json);
+    };
+    super(device.view(JSON.stringify(scene), tell), 'View');
+    told.view = this;
     this.#scene = scene;
     this.#released = released;
   }
@@ -66,8 +64,7 @@ export class View {
 
   /**
    * The scene drawn. Marks that match a mark of the previous scene by kind, dataset, table, and
-   * name keep their state and ease to their new options. Setting an invalid scene throws an
-   * `invalid` error and keeps the current one.
+   * name keep their state and ease to their new options. An invalid scene leaves the current one.
    */
   get scene(): Scene {
     return this.#scene;
@@ -79,11 +76,10 @@ export class View {
   }
 
   /**
-   * The datasets the view draws, matched to marks by dataset name. The view draws a `Data` at its
-   * latest version, from the frame after each patch; a `Snapshot` unchanged; and `Tiles` as the
-   * pieces it needs. A mark whose dataset no longer fits it draws nothing; it is listed in
-   * `failures`, and the next frame emits an `error` event. Setting two sources with the same name
-   * throws an `invalid` error.
+   * The datasets the view draws, matched to marks by dataset name, which must be unique. The view
+   * draws a `Data` at its latest version, from the frame after each patch; a `Snapshot` unchanged;
+   * and `Tiles` as the pieces it needs. A mark whose dataset no longer fits it draws nothing; it is
+   * listed in `failures`, and the next frame emits an `error` event.
    */
   get sources(): readonly Source[] {
     return this.#sources;
@@ -231,10 +227,16 @@ export class View {
   }
 
   /**
-   * Resolves, once a frame draws the view, to every row of a pickable mark within `options.radius`
-   * CSS pixels (0 by default) of `point`, nearest first.
+   * Resolves, once a frame draws the view, to every row of a pickable mark near `point`, nearest
+   * first.
    */
-  async pick(point: Point, options: { radius?: number } & Wait = {}): Promise<Hit[]> {
+  async pick(
+    point: Point,
+    options: {
+      /** How near, in CSS pixels; 0 by default. */
+      radius?: number;
+    } & Wait = {},
+  ): Promise<Hit[]> {
     const hits = view(this).pick(Float32Array.from(point), options.radius ?? 0);
     return JSON.parse(await waited<string>(hits, options, 'picking')) as Hit[];
   }
@@ -248,11 +250,9 @@ export class View {
   }
 
   /**
-   * Runs the scene's layout again for every vertex row without a position: a diagram's blocks, or
-   * points on a plane or the earth. Otherwise a layout keeps the places it gave, so rows added
-   * later are placed around the rest. Resolves, once the layout finishes, to one patch per dataset
-   * that writes each laid-out row's place into its mark's position fields. Applying the patches
-   * makes the places part of the data. Marks whose position is not read from fields are left out.
+   * Lays out every vertex row without a position again, and resolves to one patch per dataset that
+   * writes each row's place into its mark's position fields; applied, the places become part of
+   * the data. Marks whose position is not read from fields are left out.
    *
    * ```ts
    * for (const patch of await view.arrange()) if (patch.data === grid.name) grid.apply(patch);
@@ -270,7 +270,7 @@ export class View {
    */
   snapshot(name: string): Snapshot | undefined {
     const snapshot = view(this).snapshot(name);
-    return snapshot ? snapshotOf(snapshot) : undefined;
+    return snapshot ? Snapshot.made(snapshot) : undefined;
   }
 
   /**
@@ -296,27 +296,16 @@ export class View {
     }
   }
 
-  /**
-   * Frees the view and rejects its unanswered queries. A canvas showing it keeps its last frame.
-   * Calling it again does nothing; other methods throw afterwards.
-   */
-  destroy(): void {
-    const freed = release<bindings.View>(this);
-    if (!freed) return;
+  /** @internal Drops the listeners and tells the GPU the view is gone. */
+  protected override freeing(): void {
     for (const listeners of this.#listeners.values()) listeners.clear();
     this.#listeners.clear();
-    freed.free();
     this.#released();
-  }
-
-  /** Calls {@link View.destroy}, so a `using` declaration destroys it when its block ends. */
-  [Symbol.dispose](): void {
-    this.destroy();
   }
 }
 
 function view(owner: View): bindings.View {
-  return inner<bindings.View>(owner, 'View');
+  return inner<bindings.View>(owner);
 }
 
 /** @internal Returns a new bindings handle to the view, for a canvas to show or a shot to draw. */

@@ -4,8 +4,8 @@
 //! all of them.
 
 use std::collections::hash_map::Entry;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::task::{Wake, Waker};
+use std::sync::Arc;
+use std::task::Waker;
 
 use rustc_hash::FxHashMap;
 
@@ -13,6 +13,7 @@ use super::{frames, vector};
 use crate::data::Manifest;
 use crate::derive::Jobs;
 use crate::host::Request;
+use crate::pending::Watchers;
 use crate::{Error, Pending};
 
 /// Bytes first read from an archive source (a URL ending in `.pmtiles`): its header, and in most
@@ -25,10 +26,11 @@ pub(crate) struct Cache {
     sources: FxHashMap<Arc<str>, Fetched>,
 }
 
-/// One tile source: its open state, and the waker for the sets drawing it.
+/// One tile source: its open state, the sets drawing it, and the waker that wakes them all, which
+/// its work wakes as it finishes.
 pub(crate) struct Fetched {
     pub(crate) state: State,
-    sets: Arc<Sets>,
+    sets: Arc<Watchers>,
     waker: Waker,
 }
 
@@ -47,24 +49,6 @@ pub(crate) enum Holds {
     Vector(Box<vector::Fetched>),
 }
 
-/// The sets drawing a source, each with its waker. Work finishing for the source wakes them all.
-#[derive(Default)]
-struct Sets(Mutex<Vec<(u64, Waker)>>);
-
-impl Wake for Sets {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        let wakers: Vec<Waker> =
-            self.0.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|(_, w)| w.clone()).collect();
-        for waker in wakers {
-            waker.wake();
-        }
-    }
-}
-
 impl Cache {
     /// The source at `url`, registering set `set` as drawing it, to be woken by `jobs`'s waker as
     /// the source's work finishes. Starts opening the source if no set drew it before, and opens it
@@ -73,18 +57,13 @@ impl Cache {
         let fetched = match self.sources.entry(url.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let sets = Arc::new(Sets::default());
+                let sets = Arc::new(Watchers::default());
                 let waker = Waker::from(sets.clone());
                 let state = start(url, &jobs.waking(&waker));
                 entry.insert(Fetched { state, sets, waker })
             }
         };
-        {
-            let mut sets = fetched.sets.0.lock().unwrap_or_else(PoisonError::into_inner);
-            if !sets.iter().any(|(s, _)| *s == set) {
-                sets.push((set, jobs.waker().clone()));
-            }
-        }
+        fetched.sets.watch(set, jobs.waker());
         fetched.settle(url, jobs);
         fetched
     }
@@ -103,12 +82,7 @@ impl Cache {
     /// it.
     pub(crate) fn release(&mut self, url: &str, set: u64) {
         let Some(fetched) = self.sources.get_mut(url) else { return };
-        let left = {
-            let mut sets = fetched.sets.0.lock().unwrap_or_else(PoisonError::into_inner);
-            sets.retain(|(s, _)| *s != set);
-            sets.len()
-        };
-        if left == 0 {
+        if fetched.sets.unwatch(set) == 0 {
             self.sources.remove(url);
             return;
         }
@@ -140,7 +114,8 @@ impl Fetched {
                 Some(Err(error)) => State::Failed(error),
                 None => match vector::Fetched::open(url, &bytes, &jobs) {
                     Ok(vector) => State::Open(Holds::Vector(Box::new(vector))),
-                    Err(reason) => State::Failed(Error::Io(reason.into())),
+                    // The bytes arrived, but they are not a tile index.
+                    Err(reason) => State::Failed(Error::invalid(reason)),
                 },
             },
         };

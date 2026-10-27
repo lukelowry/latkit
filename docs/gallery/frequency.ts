@@ -2,13 +2,13 @@
 import { THEME, type Piece } from './look.ts';
 import { readCase } from './grids.ts';
 
-export default function frequency(): Piece {
-  const c = readCase('activsg10k');
+export default async function frequency(): Promise<Piece> {
+  const c = await readCase('activsg10k');
   const fault = c.header.fault!;
-  const [fx, fy] = [c.positions[2 * fault.bus]!, c.positions[2 * fault.bus + 1]!];
+  const [fx, fy] = [c.lon[fault.bus]!, c.lat[fault.bus]!];
   // Each machine's distance from the fault in degrees. The disturbance reaches near machines first.
   const distance = Float32Array.from(c.machineBus, (b) =>
-    Math.hypot(c.positions[2 * b]! - fx, c.positions[2 * b + 1]! - fy),
+    Math.hypot(c.lon[b]! - fx, c.lat[b]! - fy),
   );
   c.patch.set('Machine', { count: c.header.machines }, { distance });
   const machines = c.header.machines.toLocaleString('en-US');
@@ -17,7 +17,7 @@ export default function frequency(): Piece {
     alt: `The speed of ${machines} machines over ten seconds after a fault, near ones bright and swinging hardest, far ones dark`,
     data: [c.patch],
     // x spans the whole recording. With `y` null, the speed range fits what is in view.
-    camera: { x: [0, (c.header.frames! - 1) * c.header.dt!], y: null },
+    camera: { x: [0, c.simulation!.duration], y: null },
     scene: {
       space: { plot: { x: { label: 'Time (s)' }, y: { label: 'Speed (mHz from 60 Hz)' } } },
       ease: 0,

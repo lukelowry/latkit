@@ -113,7 +113,7 @@ impl TileKey {
     /// West, south, east, and north, in degrees.
     pub(crate) fn bounds(self) -> [f64; 4] {
         let n = f64::from(1_u32 << self.z);
-        let latitude = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t)).sinh().atan().to_degrees();
+        let latitude = crate::geo::mercator::latitude_down;
         let (x, y) = (f64::from(self.x), f64::from(self.y));
         [x / n * 360.0 - 180.0, latitude((y + 1.0) / n), (x + 1.0) / n * 360.0 - 180.0, latitude(y / n)]
     }

@@ -63,7 +63,7 @@ impl<'a> Rows<'a> {
                     let pages = column.pages().iter().map(|p| &p.values);
                     match (column.kind(), f.component) {
                         (Kind::Number | Kind::Bool, None) => {
-                            pages.for_each(|v| v.each_number(|x| out.push(make(x.unwrap_or(f64::NAN)))));
+                            pages.for_each(|v| v.extend_numbers(&mut out, |x| make(x.unwrap_or(f64::NAN))));
                             return out;
                         }
                         (Kind::Point, Some(k)) => {

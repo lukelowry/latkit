@@ -1,7 +1,9 @@
 //! Mapbox vector tile decoding. Feature geometry is converted to longitude and latitude and clipped
 //! to the tile, so neighboring tiles never overlap.
 
+use crate::Value;
 use crate::tiles::TileKey;
+use crate::wire::In;
 
 type Point = [f64; 2];
 
@@ -13,13 +15,7 @@ pub(crate) enum Kind {
     Polygons,
 }
 
-/// A property value as stored in a tile.
-#[derive(Clone, PartialEq, Debug)]
-pub(crate) enum Property {
-    Text(String),
-    Number(f64),
-    Bool(bool),
-}
+crate::wire::codes!(Kind { Points = 0, Lines = 1, Polygons = 2 });
 
 /// A feature's geometry, in degrees of longitude and latitude.
 #[derive(Clone, PartialEq, Debug)]
@@ -39,11 +35,12 @@ impl Shape {
     }
 }
 
-/// One feature: its shape, and its properties as pairs of key index and value.
+/// One feature: its shape, and its properties as pairs of key index and value: a text, number, or
+/// boolean.
 #[derive(Clone, Debug)]
 pub(crate) struct Feature {
     pub(crate) shape: Shape,
-    pub(crate) properties: Vec<(u32, Property)>,
+    pub(crate) properties: Vec<(u32, Value)>,
 }
 
 /// One layer: its name, its property keys, and its features.
@@ -92,19 +89,19 @@ fn layer(bytes: &[u8], key: TileKey) -> Option<Layer> {
     Some(out)
 }
 
-fn value(bytes: &[u8]) -> Option<Property> {
+fn value(bytes: &[u8]) -> Option<Value> {
     let mut reader = Reader::new(bytes);
-    let mut out = Property::Bool(false);
+    let mut out = Value::Bool(false);
     while !reader.done() {
         let (field, wire) = reader.tag()?;
         out = match (field, wire) {
-            (1, LENGTH) => Property::Text(String::from_utf8_lossy(reader.bytes()?).into_owned()),
-            (2, FIXED32) => Property::Number(f64::from(f32::from_le_bytes(reader.take()?))),
-            (3, FIXED64) => Property::Number(f64::from_le_bytes(reader.take()?)),
-            (4, VARINT) => Property::Number(reader.varint()? as i64 as f64),
-            (5, VARINT) => Property::Number(reader.varint()? as f64),
-            (6, VARINT) => Property::Number(zigzag(reader.varint()?) as f64),
-            (7, VARINT) => Property::Bool(reader.varint()? != 0),
+            (1, LENGTH) => Value::Text(String::from_utf8_lossy(reader.bytes()?).into()),
+            (2, FIXED32) => Value::Number(f64::from(f32::from_le_bytes(reader.take()?))),
+            (3, FIXED64) => Value::Number(f64::from_le_bytes(reader.take()?)),
+            (4, VARINT) => Value::Number(reader.varint()? as i64 as f64),
+            (5, VARINT) => Value::Number(reader.varint()? as f64),
+            (6, VARINT) => Value::Number(zigzag(reader.varint()?) as f64),
+            (7, VARINT) => Value::Bool(reader.varint()? != 0),
             _ => {
                 reader.skip(wire)?;
                 continue;
@@ -116,7 +113,7 @@ fn value(bytes: &[u8]) -> Option<Property> {
 
 /// Decodes one feature. `None`, which drops only this feature, if it lies wholly outside the tile
 /// or is malformed.
-fn feature(bytes: &[u8], values: &[Property], frame: &Frame) -> Option<Feature> {
+fn feature(bytes: &[u8], values: &[Value], frame: &Frame) -> Option<Feature> {
     let mut reader = Reader::new(bytes);
     let (mut tags, mut geometry, mut kind) = (Vec::new(), Vec::new(), 0);
     while !reader.done() {
@@ -162,8 +159,7 @@ impl Frame {
         let n = f64::from(1_u32 << self.key.z.min(31));
         let x = (f64::from(self.key.x) + p[0] / self.extent) / n;
         let y = (f64::from(self.key.y) + p[1] / self.extent) / n;
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
-        [x * 360.0 - 180.0, lat]
+        [x * 360.0 - 180.0, super::mercator::latitude_down(y)]
     }
 
     /// Decodes points, dropping those outside the tile.
@@ -509,30 +505,19 @@ const LENGTH: u8 = 2;
 const FIXED32: u8 = 5;
 
 /// Reads protocol buffer fields in order. Reads return `None` past the end or on a malformed field.
-struct Reader<'a> {
-    bytes: &'a [u8],
-}
+struct Reader<'a>(In<'a>);
 
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader { bytes }
+        Reader(In::new(bytes))
     }
 
     fn done(&self) -> bool {
-        self.bytes.is_empty()
+        self.0.is_empty()
     }
 
     fn varint(&mut self) -> Option<u64> {
-        let mut value = 0_u64;
-        for shift in (0..64).step_by(7) {
-            let (&byte, rest) = self.bytes.split_first()?;
-            self.bytes = rest;
-            value |= u64::from(byte & 0x7f) << shift;
-            if byte < 0x80 {
-                return Some(value);
-            }
-        }
-        None
+        self.0.varint()
     }
 
     /// The next field's number and wire type.
@@ -541,17 +526,14 @@ impl<'a> Reader<'a> {
         Some(((tag >> 3) as u32, (tag & 7) as u8))
     }
 
+    /// A length-delimited field's bytes.
     fn bytes(&mut self) -> Option<&'a [u8]> {
         let len = usize::try_from(self.varint()?).ok()?;
-        let (head, rest) = self.bytes.split_at_checked(len)?;
-        self.bytes = rest;
-        Some(head)
+        self.0.bytes(len)
     }
 
     fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
-        let (head, rest) = self.bytes.split_first_chunk::<N>()?;
-        self.bytes = rest;
-        Some(*head)
+        self.0.take()
     }
 
     fn skip(&mut self, wire: u8) -> Option<()> {
@@ -646,7 +628,7 @@ pub(crate) mod tests {
         assert_eq!(ring.len(), 5, "closed");
         assert!((ring[0][0] + 90.0).abs() < 1e-9, "a quarter in: {:?}", ring[0]);
         assert!(ring[0][1] > 60.0 && ring[0][1] < 70.0, "mercator latitude: {:?}", ring[0]);
-        assert_eq!(feature.properties, vec![(0, Property::Text("lake".into()))]);
+        assert_eq!(feature.properties, vec![(0, Value::Text("lake".into()))]);
     }
 
     #[test]

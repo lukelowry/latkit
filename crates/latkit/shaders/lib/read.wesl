@@ -28,6 +28,22 @@ fn column_word(column: u32, word: u32) -> u32 {
     return program[mark.columns + column * COLUMN_WORDS + word];
 }
 
+// Binary search: where the last of `count` items of `stride` words at `at` in `program` whose word
+// `key` is at most `value` starts; the first item when none is.
+fn last_at_most(at: u32, count: u32, stride: u32, key: u32, value: u32) -> u32 {
+    var lo = 0u;
+    var hi = count;
+    while hi - lo > 1u {
+        let mid = (lo + hi) / 2u;
+        if program[at + mid * stride + key] <= value {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return at + lo * stride;
+}
+
 fn page_word(block: u32, offset: u32, fallback: u32) -> u32 {
     if block == NONE {
         return fallback;

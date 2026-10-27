@@ -319,7 +319,7 @@ impl View {
                 if let Some(mut before) = before.and_then(Option::take) {
                     before.tables.release(&mut inner);
                     shown.inherit(&mut before);
-                    if easing && shown.compiled.as_ref().map(|c| c.drawing.stride) == Some(before.stride()) {
+                    if easing && shown.compiled.is_some() {
                         shown.begin(None);
                     }
                 }
@@ -394,13 +394,13 @@ impl View {
         }
         for old in &self.sources {
             if let Source::Data(data) = old {
-                data.unwatch(self.id);
+                data.watchers().unwatch(self.id);
             }
         }
         for source in &sources {
             match source {
                 Source::Data(data) => {
-                    data.watch(self.id, self.waker.clone());
+                    data.watchers().watch(self.id, &self.waker);
                     self.take_newer(data.snapshot(), &mut inner);
                 }
                 Source::Snapshot(snapshot) => self.take_newer(snapshot.clone(), &mut inner),
@@ -987,7 +987,7 @@ impl Drop for View {
         drop(inner);
         for source in &self.sources {
             if let Source::Data(data) = source {
-                data.unwatch(self.id);
+                data.watchers().unwatch(self.id);
             }
         }
     }

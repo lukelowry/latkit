@@ -114,6 +114,21 @@ impl View {
     }
 }
 
+/// For each of `marks`, whether faces sum their normals at its rows: whether it is the vertex mark
+/// some face mark's corners attach to.
+pub(super) fn summing(marks: &[Shown]) -> Vec<bool> {
+    let mut summing = vec![false; marks.len()];
+    for shown in marks.iter().filter(|m| m.kind() == MarkKind::Faces) {
+        let Some(compiled) = &shown.compiled else { continue };
+        for end in &compiled.program.ends {
+            if let Some(m) = end_mark(marks, &shown.mark.style().data, &end.table) {
+                summing[m] = true;
+            }
+        }
+    }
+    summing
+}
+
 /// The vertex mark drawing `table` that ends attach to: the unnamed one, else the first.
 pub(super) fn end_mark(marks: &[Shown], data: &Name, table: &Name) -> Option<usize> {
     let drawing = |i: &usize| {

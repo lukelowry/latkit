@@ -31,7 +31,7 @@ fs.readSync(file, bytes, 0, bytes.length, frame * bytes.length);
 fs.closeSync(file);
 const hz = new Float32Array(bytes.buffer, bytes.byteOffset, count);
 
-const c = readCase('activsg70k');
+const c = await readCase('activsg70k');
 const number = c.array('bus.number', Uint32Array);
 const row = new Map(meta.bus_ids.map((id, i) => [id, i]));
 const out = Int16Array.from(number, (id) => {

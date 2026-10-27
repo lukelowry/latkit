@@ -13,7 +13,7 @@ import package::lib::read::missing_bits;
 import package::lib::points::{shown_point, port_at, port_inward};
 import package::lib::marker::theme_port_size;
 import package::lib::label::{anchor, length_px, legibility, text_at, fits, Text};
-import package::lib::project::culled;
+import package::lib::project::{culled, to_clip};
 import package::lib::color::output;
 import package::lib::drawn::drawn_row;
 
@@ -37,8 +37,7 @@ fn quad(t: Text, corner: u32, color: vec4f) -> Varyings {
     if frame.space != SPACE_DIAGRAM {
         p = round(p * eye.pixel_ratio) / eye.pixel_ratio;
     }
-    let ndc = p / eye.size * 2.0 - 1.0;
-    out.clip = vec4f(ndc.x, -ndc.y, 0.0, 1.0);
+    out.clip = to_clip(p, vec4f(0.0, 0.0, 0.0, 1.0));
     out.uv = mix(t.uv_lo, t.uv_hi, q);
     out.color = color;
     out.scale = t.scale;

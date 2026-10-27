@@ -4,6 +4,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::canvas::Handle;
+use crate::convert::fixed;
 use crate::data::{Snapshot, Source};
 use crate::pending::{Task, task};
 use crate::{Error, json, to_json};
@@ -84,15 +85,15 @@ impl View {
     }
 
     /// The screen point of `position` (x, y, elevation), in CSS pixels from the top left.
-    pub fn screen(&self, position: &[f64]) -> Option<Vec<f32>> {
-        let position: [f64; 3] = position.try_into().ok()?;
-        self.view.read(|v| v.screen(position)).map(Vec::from)
+    pub fn screen(&self, position: &[f64]) -> Result<Option<Vec<f32>>, Error> {
+        let position = fixed::<_, 3>(position, "position")?;
+        Ok(self.view.read(|v| v.screen(position)).map(Vec::from))
     }
 
     /// The position on the ground under screen point `point`.
-    pub fn position(&self, point: &[f32]) -> Option<Vec<f64>> {
-        let point: [f32; 2] = point.try_into().ok()?;
-        self.view.read(|v| v.position(point)).map(Vec::from)
+    pub fn position(&self, point: &[f32]) -> Result<Option<Vec<f64>>, Error> {
+        let point = fixed::<_, 2>(point, "point")?;
+        Ok(self.view.read(|v| v.position(point)).map(Vec::from))
     }
 
     #[wasm_bindgen(getter)]
@@ -102,8 +103,7 @@ impl View {
 
     #[wasm_bindgen(setter)]
     pub fn set_insets(&self, insets: &[f32]) -> Result<(), Error> {
-        let insets: [f32; 4] =
-            insets.try_into().map_err(|_| latkit::Error::invalid("expected four numbers").at("insets"))?;
+        let insets = fixed::<_, 4>(insets, "insets")?;
         self.view.with(|v| v.set_insets(insets));
         Ok(())
     }
@@ -170,7 +170,7 @@ impl View {
 
     /// Every row within `radius` CSS pixels of `point`, nearest first, as JSON hits.
     pub fn pick(&self, point: &[f32], radius: f32) -> Result<Task, Error> {
-        let point: [f32; 2] = point.try_into().map_err(|_| latkit::Error::invalid("expected [x, y]").at("point"))?;
+        let point = fixed::<_, 2>(point, "point")?;
         let pending = self.view.with(|v| v.pick(point, radius));
         Ok(task(async move { Ok(JsValue::from_str(&to_json(&pending.await?))) }))
     }

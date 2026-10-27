@@ -1,9 +1,9 @@
 /**
  * Generates npm's types from `schema.json`. The types latkit reads (`$defs`) become `inputs.ts`,
  * and the types it writes (`outputs`) become `outputs.ts`. Each definition reachable from the roots
- * becomes a type, documented with its schema description. An output that an input already declares
- * uses that input's type. A schema's `tsType` names a hand-written type to use instead, such as
- * `ExprInput`.
+ * becomes a type, documented with its schema description; one that extends shared options becomes
+ * an interface extending them. An output that an input already declares uses that input's type. A
+ * schema's `tsType` names a hand-written type to use instead, such as `ExprInput`.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -90,6 +90,7 @@ function declare(defs, prefix, roots, declared) {
     if (name !== undefined) return defs[name]?.tsType ?? name;
     if ('const' in schema) return JSON.stringify(schema.const);
     if (schema.enum) return schema.enum.map((v) => JSON.stringify(v)).join(' | ');
+    if (schema.allOf) return schema.allOf.map(type).join(' & ');
     const union = schema.anyOf ?? schema.oneOf;
     if (union) return members(union);
     if (Array.isArray(schema.type)) {
@@ -173,12 +174,24 @@ function declare(defs, prefix, roots, declared) {
     return `{ ${lines.join('\n')} }`;
   };
 
+  // An object that extends shared options, `allOf` references and its own object, is an interface
+  // extending theirs.
+  const extending = (schema) => {
+    const parts = schema.allOf ?? [];
+    const own = parts.filter((p) => ref(p) === undefined);
+    return own.length === 1 && own[0].type === 'object'
+      ? { bases: parts.map(ref).filter((n) => n !== undefined), own: own[0] }
+      : undefined;
+  };
   const names = [...reached].filter((name) => !declared.has(name) && !defs[name].tsType).sort();
   const source = names
     .map((name) => {
       const schema = defs[name];
-      const body = type({ ...schema, description: undefined, tsType: undefined });
       const comment = schema.description ? doc(schema.description) : '';
+      const extended = extending(schema);
+      if (extended)
+        return `${comment}export interface ${name} extends ${extended.bases.join(', ')} ${object(extended.own)}`;
+      const body = type({ ...schema, description: undefined, tsType: undefined });
       return schema.type === 'object' && schema.properties
         ? `${comment}export interface ${name} ${body}`
         : `${comment}export type ${name} = ${body};`;

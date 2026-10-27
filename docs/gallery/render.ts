@@ -38,8 +38,10 @@ const fonts = ['Inter-Regular.ttf', 'Inter-SemiBold.ttf'].map((f) =>
 );
 
 async function render(name: string): Promise<void> {
-  const { default: make } = (await import(`./${name}.ts`)) as { default: () => Piece };
-  const piece = make();
+  const { default: make } = (await import(`./${name}.ts`)) as {
+    default: () => Piece | Promise<Piece>;
+  };
+  const piece = await make();
   const file = (suffix: string) => path.join(work, `${piece.name}.${suffix}`);
   fs.writeFileSync(file('scene.json'), JSON.stringify(piece.scene));
   const data = piece.data.flatMap((d, i) => {

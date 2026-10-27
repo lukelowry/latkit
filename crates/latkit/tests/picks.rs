@@ -11,8 +11,8 @@ use std::task::{Context, Poll, Waker};
 
 use common::{SIZE, camera, errors, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Axis, Button, Camera, Controls, Data, Device, Edges, Event, Ids, Input, Lines, Modifiers, Patch, Plot, Scene,
-    Table, Vertices, View,
+    Axis, Button, Camera, Controls, Data, Device, Edges, Event, Faces, Ids, Input, Lines, Modifiers, Patch, Plot,
+    Scene, Table, Vertices, View, field,
 };
 
 /// Renders frames until `pending` resolves, within `SETTLE` frames.
@@ -160,6 +160,42 @@ fn locate_finds_a_row_on_screen() {
     assert!((point[0] - (c - 40.0)).abs() < 0.5 && (point[1] - (c - 30.0)).abs() < 0.5, "{point:?}");
     let pending = view.screen_of(&latkit::Row::new("graph", "Node", 99_u64));
     assert_eq!(answer(&gpu, &mut view, pending), None, "no such row");
+}
+
+#[test]
+fn hidden_rows_have_no_screen_position() {
+    let Some(gpu) = gpu() else { return };
+    let data = graph();
+    let links = Table::new("Link", vec![0_u64, 1])
+        .reference("from", "Node", vec![1_u64, 1])
+        .reference("to", "Node", vec![3_u64, 2])
+        .field("on", vec![false, true]);
+    let faces = Table::new("Face", vec![0_u64, 1])
+        .reference("a", "Node", vec![1_u64, 1])
+        .reference("b", "Node", vec![2_u64, 2])
+        .reference("c", "Node", vec![3_u64, 3])
+        .field("on", vec![false, true]);
+    data.apply(Patch::new().replace(links).set(faces)).expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Faces::of("graph", "Face").corners("a", "b", "c").visible(field("on")))
+        .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0).visible(field("on")))
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(&gpu, &mut view);
+    let mut screen_of = |table: &str, id: u64| {
+        let pending = view.screen_of(&latkit::Row::new("graph", table, id));
+        answer(&gpu, &mut view, pending)
+    };
+    let c = SIZE as f32 / 2.0;
+    let link = screen_of("Link", 1).expect("a shown edge");
+    assert!((link[0] - (c + 5.0)).abs() < 1.0 && (link[1] - c).abs() < 1.0, "the edge's middle: {link:?}");
+    assert_eq!(screen_of("Link", 0), None, "a hidden edge");
+    let face = screen_of("Face", 1).expect("a shown face");
+    assert!((face[0] - (c - 10.0)).abs() < 1.0 && (face[1] - (c - 10.0)).abs() < 1.0, "the centroid: {face:?}");
+    assert_eq!(screen_of("Face", 0), None, "a hidden face");
 }
 
 #[test]

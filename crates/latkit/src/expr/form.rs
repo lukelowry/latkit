@@ -116,75 +116,60 @@ impl<'de> Visitor<'de> for Reading {
     }
 }
 
-/// Every key that an expression object, a size, or label options can have; each kind accepts only
-/// its own keys. A conditional's values are read as the caller decides.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Form {
-    field: Option<Name>,
-    color: Option<Written>,
-    state: Option<State>,
-    missing: Option<bool>,
-    op: Option<String>,
-    when: Option<Vec<(Expr, Written)>>,
-    is: Option<(Expr, String)>,
-    contains: Option<(Expr, String)>,
-    scale: Option<[f64; 2]>,
-    colormap: Option<Colormap>,
-    from: Option<(Name, Name)>,
-    step: Option<bool>,
-    args: Option<Vec<Expr>>,
-    otherwise: Option<Written>,
-    value: Option<Expr>,
-    domain: Option<[f64; 2]>,
-    pub(crate) px: Option<Expr>,
-    pub(crate) units: Option<Expr>,
-    pub(crate) at_least: Option<f32>,
-    pub(crate) at_most: Option<f32>,
-    pub(crate) text: Option<Expr>,
-    pub(crate) size: Option<f32>,
-    pub(crate) priority: Option<Expr>,
-    pub(crate) max_width: Option<f32>,
-    pub(crate) font: Option<Arc<str>>,
-    pub(crate) max: Option<u32>,
+/// Declares `Form` and `Form::held` from one list of keys, each with its JSON spelling.
+macro_rules! form {
+    ($($vis:vis $key:ident $json:literal: $ty:ty),+ $(,)?) => {
+        /// Every key that an expression object, a size, or label options can have; each kind
+        /// accepts only its own keys. A conditional's values are read as the caller decides.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub(crate) struct Form {
+            $(#[serde(rename = $json)] $vis $key: Option<$ty>,)+
+        }
+
+        impl Form {
+            /// The keys present, as JSON spells them.
+            fn held(&self) -> Vec<&'static str> {
+                let mut held = Vec::new();
+                $(if self.$key.is_some() {
+                    held.push($json);
+                })+
+                held
+            }
+        }
+    };
+}
+
+form! {
+    field "field": Name,
+    color "color": Written,
+    state "state": State,
+    missing "missing": bool,
+    op "op": String,
+    when "when": Vec<(Expr, Written)>,
+    is "is": (Expr, String),
+    contains "contains": (Expr, String),
+    scale "scale": [f64; 2],
+    colormap "colormap": Colormap,
+    from "from": (Name, Name),
+    step "step": bool,
+    args "args": Vec<Expr>,
+    otherwise "otherwise": Written,
+    value "value": Expr,
+    domain "domain": [f64; 2],
+    pub(crate) px "px": Expr,
+    pub(crate) units "units": Expr,
+    pub(crate) at_least "atLeast": f32,
+    pub(crate) at_most "atMost": f32,
+    pub(crate) text "text": Expr,
+    pub(crate) size "size": f32,
+    pub(crate) priority "priority": Expr,
+    pub(crate) max_width "maxWidth": f32,
+    pub(crate) font "font": Arc<str>,
+    pub(crate) max "max": u32,
 }
 
 impl Form {
-    /// The keys present, as JSON spells them.
-    fn held(&self) -> Vec<&'static str> {
-        [
-            ("field", self.field.is_some()),
-            ("color", self.color.is_some()),
-            ("state", self.state.is_some()),
-            ("missing", self.missing.is_some()),
-            ("op", self.op.is_some()),
-            ("when", self.when.is_some()),
-            ("is", self.is.is_some()),
-            ("contains", self.contains.is_some()),
-            ("scale", self.scale.is_some()),
-            ("colormap", self.colormap.is_some()),
-            ("from", self.from.is_some()),
-            ("step", self.step.is_some()),
-            ("args", self.args.is_some()),
-            ("otherwise", self.otherwise.is_some()),
-            ("value", self.value.is_some()),
-            ("domain", self.domain.is_some()),
-            ("px", self.px.is_some()),
-            ("units", self.units.is_some()),
-            ("atLeast", self.at_least.is_some()),
-            ("atMost", self.at_most.is_some()),
-            ("text", self.text.is_some()),
-            ("size", self.size.is_some()),
-            ("priority", self.priority.is_some()),
-            ("maxWidth", self.max_width.is_some()),
-            ("font", self.font.is_some()),
-            ("max", self.max.is_some()),
-        ]
-        .into_iter()
-        .filter_map(|(key, held)| held.then_some(key))
-        .collect()
-    }
-
     /// Errors unless every key present is one of `keys`, naming `what` and the first other key.
     pub(crate) fn only(&self, what: &str, keys: &[&str]) -> Result<(), String> {
         match self.held().into_iter().find(|key| !keys.contains(key)) {
@@ -647,7 +632,7 @@ impl JsonSchema for Colormap {
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        let names: Vec<&str> = super::colormap::catalog().collect();
+        let names: Vec<&str> = Colormap::catalog().filter_map(|map| map.name()).collect();
         generator.definitions_mut().insert(
             "ColormapName".into(),
             serde_json::json!({ "description": "A colormap of the catalog.", "type": "string", "enum": names }),

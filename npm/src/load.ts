@@ -5,20 +5,6 @@ import { encoder } from './encoder.js';
 import { loaded, thrown } from './internal.js';
 import { jobs } from './jobs.js';
 
-/** Options for {@link load}. Only the first call's options take effect. */
-export interface LoadOptions {
-  /**
-   * The URL of this package version's `latkit/wasm` asset, or that asset already compiled.
-   * Defaults to the bundled asset.
-   */
-  wasm?: string | URL | WebAssembly.Module;
-  /**
-   * Creates a worker that runs the standalone `latkit/worker` bundle. Defaults to the bundled
-   * worker.
-   */
-  worker?: () => Worker;
-}
-
 let configured: { wasm?: string | WebAssembly.Module; worker?: () => Worker } | undefined;
 let loading: Promise<void> | undefined;
 
@@ -26,17 +12,20 @@ let loading: Promise<void> | undefined;
 let first: Promise<bindings.Gpu> | undefined;
 
 /**
- * Loads latkit's WebAssembly, once per page. Datasets, views, and pictures can be created once it
- * resolves. Later and concurrent calls share the first call's load. Options they pass must equal
- * the first call's, or they reject with an `io` error. A failed load rejects with an `io` error and
- * can be retried.
- *
- * Importing the package loads nothing and requests no GPU. `load()` requests a GPU adapter while
- * the WebAssembly compiles, so the browser starts its GPU process early, then requests the first
- * GPU device for `Gpu.create()`. `Gpu.create()` and `Data.read()` call `load()` themselves, as does
- * `Patch.read()` for JSON.
+ * Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
+ * load; options they pass must equal the first call's, or they reject with an `io` error. A failed
+ * load rejects with an `io` error and can be retried. `load()` also requests a GPU adapter while
+ * the WebAssembly compiles, so the browser starts its GPU process early, then the first device for
+ * `Gpu.create()`.
  */
-export function load(options: LoadOptions = {}): Promise<void> {
+export function load(
+  options: {
+    /** The URL of this version's `latkit/wasm` asset, or that asset compiled; bundled by default. */
+    wasm?: string | URL | WebAssembly.Module;
+    /** Creates a worker running the standalone `latkit/worker` bundle; bundled by default. */
+    worker?: () => Worker;
+  } = {},
+): Promise<void> {
   // Store a URL as text, so the caller cannot change the configuration while it loads.
   const wasm = options.wasm instanceof URL ? options.wasm.href : options.wasm;
   if (loading) {
@@ -54,7 +43,7 @@ export function load(options: LoadOptions = {}): Promise<void> {
   loading = initialize(configured).catch((cause: unknown) => {
     configured = undefined;
     loading = undefined;
-    throw Object.assign(thrown({ code: 'io', message: 'could not load latkit' }), { cause });
+    throw thrown({ code: 'io', message: 'could not load latkit', cause });
   });
   return loading;
 }

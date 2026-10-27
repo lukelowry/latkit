@@ -6,13 +6,12 @@
 
 use glam::DVec3;
 
+use crate::geo::mercator;
 use crate::tiles::TileKey;
 use crate::view::Projected;
 
 /// CSS pixels a tile spans when drawn at its own level.
 pub(crate) const TILE_PX: f64 = 512.0;
-/// The latitude Web Mercator reaches, north and south, in degrees.
-const MAX_LATITUDE: f64 = 85.051_128_779_806_59;
 
 /// The square a space's tiles divide: the earth's Web Mercator square, or a square of a plane.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -26,6 +25,23 @@ pub(crate) enum Domain {
 }
 
 impl Domain {
+    /// The words a job writes the square as: zeros for the earth, else 1, its west and south edges,
+    /// and its size.
+    pub(crate) fn words(self) -> [f64; 4] {
+        match self {
+            Domain::Earth => [0.0; 4],
+            Domain::Plane { min, size } => [1.0, min[0], min[1], size],
+        }
+    }
+
+    /// The square written as `words`.
+    pub(crate) fn from_words(words: [f64; 4]) -> Domain {
+        match words {
+            [0.0, ..] => Domain::Earth,
+            [_, x, y, size] => Domain::Plane { min: [x, y], size },
+        }
+    }
+
     /// The plane square containing `bounds` (west, south, east, north), centered on them and 2%
     /// larger so nothing lies on its edge. Inverted bounds give the unit square.
     pub(crate) fn plane(bounds: [f64; 4]) -> Domain {
@@ -39,11 +55,7 @@ impl Domain {
     /// earth, latitude is clamped to Web Mercator's range and longitude wraps.
     pub(crate) fn unit(&self, p: [f64; 2]) -> [f64; 2] {
         match *self {
-            Domain::Earth => {
-                let lat = p[1].clamp(-MAX_LATITUDE, MAX_LATITUDE).to_radians();
-                let y = 0.5 - (std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln() / std::f64::consts::TAU;
-                [((p[0] + 180.0) / 360.0).rem_euclid(1.0), y]
-            }
+            Domain::Earth => [((p[0] + 180.0) / 360.0).rem_euclid(1.0), mercator::down(p[1])],
             Domain::Plane { min, size } => [(p[0] - min[0]) / size, 1.0 - (p[1] - min[1]) / size],
         }
     }
@@ -51,10 +63,7 @@ impl Domain {
     /// The position at `u` in the square; the inverse of `unit`.
     pub(crate) fn position(&self, u: [f64; 2]) -> [f64; 2] {
         match *self {
-            Domain::Earth => {
-                let lat = (std::f64::consts::PI * (1.0 - 2.0 * u[1])).sinh().atan().to_degrees();
-                [u[0] * 360.0 - 180.0, lat]
-            }
+            Domain::Earth => [u[0] * 360.0 - 180.0, mercator::latitude_down(u[1])],
             Domain::Plane { min, size } => [min[0] + u[0] * size, min[1] + (1.0 - u[1]) * size],
         }
     }

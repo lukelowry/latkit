@@ -88,9 +88,7 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
       units.push([expected.time, chunk.type === 'key', bytes]);
     },
     error(error) {
-      failure = Object.assign(thrown({ code: 'io', message: 'the video encoder failed' }), {
-        cause: error,
-      });
+      failure = thrown({ code: 'io', message: 'the video encoder failed', cause: error });
       wake();
     },
   });

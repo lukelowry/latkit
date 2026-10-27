@@ -114,7 +114,7 @@ fn reference<'t>(table: &'t Table, name: &str) -> Option<&'t Reference> {
 /// The lane words in a lanes job's answer, each a little-endian `u32`. `None` for an empty answer,
 /// which means no rows share endpoints.
 fn answered(bytes: &[u8]) -> Option<Vec<u32>> {
-    (!bytes.is_empty()).then(|| bytes.as_chunks::<4>().0.iter().map(|&w| u32::from_le_bytes(w)).collect())
+    (!bytes.is_empty()).then(|| crate::wire::words(bytes))
 }
 
 /// Each row's lane word, as shaders read it, from the rows' endpoints: twice the lane plus `HALF`

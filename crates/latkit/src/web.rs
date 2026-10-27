@@ -574,6 +574,12 @@ impl Canvas {
             Target::Offscreen { .. } => None,
         }
     }
+
+    /// The canvas's size in CSS pixels: its pixels over its pixels per CSS pixel.
+    pub fn css_size(&self) -> [f32; 2] {
+        let (size, ratio) = self.0.borrow().measure();
+        size.map(|side| side as f32 / ratio)
+    }
 }
 
 impl Painted {

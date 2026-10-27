@@ -175,13 +175,7 @@ pub(crate) fn mark(
 ) -> wgsl::Mark {
     let mut mark: wgsl::Mark = bytemuck::Zeroable::zeroed();
     mark.index = index as u32;
-    mark.kind = match shown.kind() {
-        MarkKind::Vertices => wgsl::MARK_VERTICES,
-        MarkKind::Edges => wgsl::MARK_EDGES,
-        MarkKind::Faces => wgsl::MARK_FACES,
-        MarkKind::Lines => wgsl::MARK_LINES,
-        MarkKind::Areas => wgsl::MARK_AREAS,
-    };
+    mark.kind = shown.kind().code();
     mark.rows = shown.rows;
     mark.exits = shown.exits;
     mark.held = shown.held();
@@ -230,7 +224,7 @@ pub(crate) fn mark(
     if let Some(compiled) = &shown.compiled {
         let program = &compiled.program;
         let drawing = &compiled.drawing;
-        mark.primitive = drawing.primitive.code();
+        mark.primitive = shown.kind().primitive().code();
         mark.channels = program.channels.len() as u32;
         mark.reductions = program.domains.len() as u32;
         mark.units = program.units;

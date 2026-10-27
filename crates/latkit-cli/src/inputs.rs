@@ -42,13 +42,18 @@ pub(crate) fn document<T: DeserializeOwned>(path: &Path) -> Result<T, Failure> {
     latkit::from_json(text).map_err(|e| Failure::at(e, path))
 }
 
-/// Reads a scene from its JSON file.
-pub(crate) fn scene(path: &Path) -> Result<Scene, Failure> {
-    document(path)
+/// Reads argument `arg` of the option or argument `name` as a `T`: JSON when it starts with `{`,
+/// else the document in the file it names.
+pub(crate) fn json<T: DeserializeOwned>(arg: &str, name: &str) -> Result<T, Failure> {
+    if arg.trim_start().starts_with('{') {
+        latkit::from_json(arg).map_err(|e| Failure::from(e.at(name)))
+    } else {
+        document(Path::new(arg))
+    }
 }
 
-/// Reads a camera from its JSON file.
-pub(crate) fn camera(path: &Path) -> Result<Camera, Failure> {
+/// Reads a scene from its JSON file.
+pub(crate) fn scene(path: &Path) -> Result<Scene, Failure> {
     document(path)
 }
 

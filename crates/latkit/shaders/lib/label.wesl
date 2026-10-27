@@ -5,15 +5,13 @@
 // text scales with the sheet and fades out once too small to read.
 
 import package::lib::types::{
-    POINTS, STROKES, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, PATH_GEOMETRY, TEXT_BASE, TEXT_SPREAD, HEADER_BAND,
-    SPACE_DIAGRAM,
+    POINTS, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, HEADER_BAND, SPACE_DIAGRAM,
 };
 import package::lib::bind::{frame, eye, mark};
 import package::lib::mark::PRIMITIVE;
-import package::lib::project::{to_screen, clip_of};
 import package::lib::points::point;
-import package::lib::path::{PATH, Segment, segment_screen, path_count};
-import package::lib::triangles::{triangle_corner, area_anchor};
+import package::lib::path::PATH;
+import package::lib::center::{row_center, point_center};
 import package::lib::drawn::held_row;
 
 // A label's anchor point in CSS pixels, its alignment there (0 left or top, 0.5 centered), the room
@@ -30,67 +28,38 @@ fn length_px(size: f32) -> f32 {
     return size * frame.unit;
 }
 
-// The label anchor of drawn row `item`.
+// The label anchor of drawn row `item`: centered on the row's center, except beside a point's
+// marker, inside a block or a sized marker, in a group's header band, and beside a trace's last
+// sample.
 fn anchor(item: u32) -> Anchor {
-    var a: Anchor;
-    let row = held_row(item);
-    switch PRIMITIVE {
-        case POINTS: {
-            let p = point(row);
-            a.shown = p.shown;
-            let center = to_screen(p.clip);
-            let text = length_px(mark.label_size);
-            if (mark.flags & GROUP) != 0u {
-                // A group's title sits in its header band, inset from the left.
-                let header = text * HEADER_BAND;
-                a.at = center + vec2f(-p.half.x + frame.group_padding, -p.half.y + 0.5 * header);
-                a.align = vec2f(0.0, 0.5);
-                a.room = vec2f(2.0 * (p.half.x - frame.group_padding), header);
-            } else if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
-                // A block, or a marker with a width and height, shows its label inside if it fits.
-                a.at = center;
-                a.align = vec2f(0.5);
-                a.room = vec2f(2.0 * p.half.x - text, 2.0 * p.half.y);
-            } else {
-                a.at = center + vec2f(p.half.x + 0.4 * text, 0.0);
-                a.align = vec2f(0.0, 0.5);
-            }
+    var a = Anchor(vec2f(0.0), vec2f(0.5), vec2f(0.0), false);
+    if PRIMITIVE != POINTS {
+        let c = row_center(item);
+        a.at = c.at;
+        a.shown = c.shown;
+        if PATH == PATH_TRACE {
+            a.at.x += 6.0;
+            a.align = vec2f(0.0, 0.5);
         }
-        case STROKES: {
-            let count = path_count(item);
-            // A trace labels its last sample; other paths their middle.
-            let last = PATH == PATH_TRACE;
-            let index = select(count / 2u, max(count, 1u) - 1u, last);
-            let on = segment_screen(Segment(row, item, index, 0.0, 1.0, 1.0, false));
-            a.shown = count > 0u && on.shown;
-            if last {
-                a.at = on.b + vec2f(6.0, 0.0);
-                a.align = vec2f(0.0, 0.5);
-            } else {
-                a.at = 0.5 * (on.a + on.b);
-                a.align = vec2f(0.5);
-            }
-        }
-        default: {
-            a.align = vec2f(0.5);
-            if PATH == PATH_GEOMETRY {
-                // An area's label sits inside its largest polygon, farthest from its edges.
-                let c = area_anchor(row);
-                let clip = clip_of(c.world);
-                a.shown = c.shown && c.ahead && clip.w > 0.0;
-                a.at = to_screen(clip);
-                return a;
-            }
-            var sum = vec2f(0.0);
-            a.shown = true;
-            for (var k = 0u; k < 3u; k++) {
-                let c = triangle_corner(item, k);
-                let clip = clip_of(c.world);
-                a.shown = a.shown && c.shown && c.ahead && clip.w > 0.0;
-                sum += to_screen(clip);
-            }
-            a.at = sum / 3.0;
-        }
+        return a;
+    }
+    let p = point(held_row(item));
+    let c = point_center(p);
+    a.shown = c.shown;
+    let text = length_px(mark.label_size);
+    if (mark.flags & GROUP) != 0u {
+        // A group's title sits in its header band, inset from the left.
+        let header = text * HEADER_BAND;
+        a.at = c.at + vec2f(-p.half.x + frame.group_padding, -p.half.y + 0.5 * header);
+        a.align = vec2f(0.0, 0.5);
+        a.room = vec2f(2.0 * (p.half.x - frame.group_padding), header);
+    } else if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
+        // A block, or a marker with a width and height, shows its label inside if it fits.
+        a.at = c.at;
+        a.room = vec2f(2.0 * p.half.x - text, 2.0 * p.half.y);
+    } else {
+        a.at = c.at + vec2f(p.half.x + 0.4 * text, 0.0);
+        a.align = vec2f(0.0, 0.5);
     }
     return a;
 }

@@ -1,6 +1,7 @@
 //! Areas: polygons filled through triangles the view derives, with holes left open. Areas pick
 //! where they cover, a fit frames them, and lines trace their rings. On the earth they stay whole
-//! across the antimeridian, and polygons too large for one frame are triangulated in a job.
+//! across the antimeridian. Polygons too large for one frame are triangulated in a job, and ease in
+//! with each row's color when it lands.
 
 #![cfg(feature = "gpu")]
 
@@ -67,6 +68,35 @@ fn areas_fill_their_polygons_and_leave_their_holes() {
     assert!(red(at(&pixels, C - 25, C)), "filled: {:?}", at(&pixels, C - 25, C));
     assert!(dark(at(&pixels, C, C)), "the hole is open: {:?}", at(&pixels, C, C));
     assert!(dark(at(&pixels, 4, 4)), "outside is open");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn areas_triangulated_in_a_job_ease_in_with_each_row_s_color() {
+    let Some(gpu) = gpu() else { return };
+    // A page of unit squares, more than one frame triangulates, valued from 0 to 1 row by row.
+    let side = 64_u32;
+    let cells: Vec<Vec<Ring>> =
+        (0..side * side).map(|i| vec![square(f64::from(i % side), f64::from(i / side), 1.0)]).collect();
+    let values: Vec<f64> = (0..side * side).map(|i| f64::from(i) / f64::from(side * side - 1)).collect();
+    let data = Data::new("map");
+    data.apply(Table::new("Zone", Ids::count(side * side)).field("geometry", cells).field("v", values)).expect("valid");
+    let color = latkit::field("v").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
+    let mut view = view(&gpu, Scene::new(plane()).draw(Areas::of("map", "Zone").color(color)), &data);
+    let middle = f64::from(side) / 2.0;
+    view.set_camera(Camera::Map { center: [middle, middle, 0.0], zoom: 0.75, pitch: 0.0, bearing: 0.0 });
+    // The triangles landing start a transition; once it settles, each row shows its own color.
+    let pixels = frame(&gpu, &mut view);
+    let cell = |x: f64, y: f64| {
+        let [px, py] = view.screen([x + 0.5, y + 0.5, 0.0]).expect("in view");
+        at(&pixels, px as u32, py as u32)
+    };
+    // Viridis runs from dark purple through teal to yellow.
+    let far = f64::from(side - 3);
+    let [low, half, high] = [cell(2.0, 2.0), cell(2.0, middle), cell(far, far)];
+    assert!(low[0] < 90 && low[1] < 20 && low[2] > 60, "0 is purple: {low:?}");
+    assert!(half[1] > 120 && half[2] > 120 && half[0] < 60, "0.5 is teal: {half:?}");
+    assert!(high[0] > 200 && high[1] > 200 && high[2] < 80, "1 is yellow: {high:?}");
     assert_eq!(errors(&mut view), Vec::new());
 }
 

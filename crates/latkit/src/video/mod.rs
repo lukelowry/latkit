@@ -36,7 +36,7 @@ pub enum Pixels {
     /// [`Image`](crate::Image).
     Rgba,
     /// NV12: a luma plane, then a plane of interleaved Cb and Cr at half resolution, BT.709 limited
-    /// range. The picture's width must be a multiple of 4 and its height a multiple of 2.
+    /// range, in blocks of 4×2 pixels.
     Nv12,
 }
 
@@ -202,18 +202,20 @@ pub struct Video<S: Sink> {
 }
 
 impl Shot {
-    /// A video of this shot's pictures at `fps` frames per second, each frame passed to `sink`.
-    /// Errors if `fps` is outside 1 to 240, if the shot does not suit the sink's pixel format (see
-    /// [`Shot::check`]), or if the sink cannot begin.
+    /// A video of this shot's pictures at `fps` frames per second, each frame passed to `sink`. The
+    /// size is rounded down to whole blocks of the sink's pixel format: for NV12, a width that is a
+    /// multiple of 4 and an even height. Errors if `fps` is outside 1 to 240, if the shot does not
+    /// suit the sink's pixel format (see [`Shot::check`]), or if the sink cannot begin.
     pub fn video<S: Sink>(&self, gpu: &Gpu, fps: f64, mut sink: S) -> Result<Video<S>> {
         if !(fps.is_finite() && (1.0..=240.0).contains(&fps)) {
             return Err(Error::invalid("must be 1 to 240 frames a second").at("fps"));
         }
         self.check(S::PIXELS)?;
+        let shot = self.rounded(S::PIXELS);
         let host = gpu.0.lock().host.clone();
-        sink.begin(&Encoding::new(self.size(), fps), host.as_deref())?;
+        sink.begin(&Encoding::new(shot.size(), fps), host.as_deref())?;
         Ok(Video {
-            drawing: Drawing::later(self.clone(), S::PIXELS, false),
+            drawing: Drawing::later(shot, S::PIXELS, false),
             sink,
             fps,
             index: 0,

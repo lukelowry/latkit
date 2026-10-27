@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
-use super::form::{Presets, preset_or, presets};
+use super::form::{preset_schema, presets};
 
 /// How the view places vertex rows that have no position: a name, or
 /// `{ stress | layered: options }`. In a diagram it places blocks; on a plane or the earth it
@@ -12,7 +12,7 @@ use super::form::{Presets, preset_or, presets};
 /// [`View::arrange`](crate::View::arrange) lays out every row again.
 #[derive(Clone, Copy, PartialEq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = presets::<Layout>)]
+#[schemars(transform = preset_schema::<Layout>)]
 pub enum Layout {
     /// No layout: vertices without a position are not drawn. The default.
     #[default]
@@ -23,28 +23,11 @@ pub enum Layout {
     Layered(Layered),
 }
 
-impl Presets for Layout {
-    const NAMES: &'static [&'static str] = &["none", "stress", "layered"];
-
-    fn preset(name: &str) -> Option<Layout> {
-        match name {
-            "none" => Some(Layout::None),
-            "stress" => Some(Layout::Stress(Stress::default())),
-            "layered" => Some(Layout::Layered(Layered::default())),
-            _ => None,
-        }
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Layout, D::Error> {
-        Layout::deserialize(deserializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Layout {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Layout, D::Error> {
-        preset_or(deserializer)
-    }
-}
+presets!(Layout {
+    "none" => Layout::None,
+    "stress" => Layout::Stress(Stress::default()),
+    "layered" => Layout::Layered(Layered::default()),
+});
 
 /// Stress majorization: vertices move until drawn distances match graph distances, then overlapping
 /// boxes separate, keeping a quarter of `gap` between them.
@@ -122,6 +105,8 @@ pub enum Direction {
     /// Toward the top.
     Up,
 }
+
+crate::wire::codes!(Direction { Right = 0, Left = 1, Down = 2, Up = 3 });
 
 impl From<Stress> for Layout {
     fn from(stress: Stress) -> Layout {

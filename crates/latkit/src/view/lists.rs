@@ -12,7 +12,7 @@ use super::passes::dispatch;
 use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
 use crate::gpu::readback::Readback;
-use crate::gpu::shaders::{self as wgsl, Shader};
+use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
 
 /// A listed mark's segment list (see `Shown::listed`), used when its rows have different numbers
@@ -97,7 +97,7 @@ impl View {
         let mut at = 0;
         for shown in &mut self.marks {
             if let Some((stamp, bytes)) = shown.segments.found.landed() {
-                let found = bytes.get(..4).map_or(0, |w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+                let found = crate::wire::In::new(&bytes).u32().unwrap_or(0);
                 let kept = shown.segments.list.map_or(0, |l| l.kept);
                 let room = if found > kept { found + found / 4 } else { shown.segments.found.value };
                 shown.segments.found.make(stamp, room);
@@ -215,10 +215,11 @@ pub(super) fn scan(
     device: &wgpu::Device,
     items: u32,
 ) {
-    pass.set_pipeline(&pipelines.compute(device, Shader::Lists, "scan_blocks"));
+    let [blocks, sums, add] = super::variants::SCAN;
+    pass.set_pipeline(&pipelines.compute(device, blocks));
     dispatch(pass, items.max(1));
-    pass.set_pipeline(&pipelines.compute(device, Shader::Lists, "scan_sums"));
+    pass.set_pipeline(&pipelines.compute(device, sums));
     pass.dispatch_workgroups(1, 1, 1);
-    pass.set_pipeline(&pipelines.compute(device, Shader::Lists, "add_sums"));
+    pass.set_pipeline(&pipelines.compute(device, add));
     dispatch(pass, items);
 }

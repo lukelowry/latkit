@@ -129,6 +129,26 @@ impl ImageFormat {
             _ => None,
         }
     }
+
+    /// The code an encoding job writes the format as: 0 for PNG, 1 for WebP, and `0x100` plus the
+    /// quality for JPEG.
+    pub(crate) fn code(self) -> u32 {
+        match self {
+            ImageFormat::Png => 0,
+            ImageFormat::WebP => 1,
+            ImageFormat::Jpeg { quality } => 0x100 | u32::from(quality),
+        }
+    }
+
+    /// The format written as `code`.
+    pub(crate) fn from_code(code: u32) -> Option<ImageFormat> {
+        match code {
+            0 => Some(ImageFormat::Png),
+            1 => Some(ImageFormat::WebP),
+            0x100..=0x1ff => Some(ImageFormat::Jpeg { quality: (code & 0xff) as u8 }),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ImageFormat {

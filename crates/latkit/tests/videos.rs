@@ -143,15 +143,15 @@ fn labeled_marks_easing_between_frames_complete_every_frame() {
 }
 
 #[test]
-fn a_video_needs_an_encoder_and_a_size_in_whole_blocks() {
+fn a_video_needs_an_encoder_and_rounds_its_size_to_whole_blocks() {
     let Some(gpu) = gpu() else { return };
     assert!(Shot::new([SIZE, SIZE]).video(&gpu, 30.0, Mp4::new(Vec::new())).is_err(), "a host without an encoder");
     gpu.set_host(Keeping(Pictures::default()));
     assert!(Shot::new([SIZE, SIZE]).video(&gpu, 0.0, Mp4::new(Vec::new())).is_err(), "a frame rate above zero");
-    assert!(
-        Shot::new([SIZE + 2, SIZE]).video(&gpu, 30.0, Mp4::new(Vec::new())).is_err(),
-        "a width of whole 4-pixel blocks"
-    );
+    // The encoder checks it is given whole 4×2 blocks: SIZE by SIZE.
+    assert!(Shot::new([SIZE + 3, SIZE + 1]).video(&gpu, 30.0, Mp4::new(Vec::new())).is_ok());
+    let error = Shot::new([3, SIZE]).video(&gpu, 30.0, Mp4::new(Vec::new())).map(drop).unwrap_err();
+    assert_eq!(error.to_string(), "size: must be at least 4×2 pixels");
     let mut view = view(&gpu);
     let mut two = Shot::new([SIZE, SIZE]).panels([[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]]);
     let mut video = two.video(&gpu, 30.0, Mp4::new(Vec::new())).expect("made");

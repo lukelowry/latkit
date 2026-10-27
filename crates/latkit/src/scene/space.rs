@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer};
 
-use super::form::{Presets, preset_or, presets};
+use super::form::{preset_schema, presets};
 
 /// The coordinate space of a scene's positions: a name, or
 /// `{ plane | diagram | earth | plot: options }`.
@@ -11,7 +11,7 @@ use super::form::{Presets, preset_or, presets};
 /// orthogonal routes.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = presets::<Space>)]
+#[schemars(transform = preset_schema::<Space>)]
 pub enum Space {
     /// Longitude and latitude in degrees, on a flat map or a globe.
     Earth(Earth),
@@ -23,29 +23,12 @@ pub enum Space {
     Diagram(Diagram),
 }
 
-impl Presets for Space {
-    const NAMES: &'static [&'static str] = &["plane", "diagram", "earth", "plot"];
-
-    fn preset(name: &str) -> Option<Space> {
-        Some(match name {
-            "plane" => Space::Plane(Plane::default()),
-            "diagram" => Space::Diagram(Diagram::default()),
-            "earth" => Space::Earth(Earth::default()),
-            "plot" => Space::Plot(Plot::default()),
-            _ => return None,
-        })
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Space, D::Error> {
-        Space::deserialize(deserializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Space {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Space, D::Error> {
-        preset_or(deserializer)
-    }
-}
+presets!(Space {
+    "plane" => Space::Plane(Plane::default()),
+    "diagram" => Space::Diagram(Diagram::default()),
+    "earth" => Space::Earth(Earth::default()),
+    "plot" => Space::Plot(Plot::default()),
+});
 
 impl Default for Space {
     fn default() -> Space {

@@ -81,11 +81,12 @@ pub(crate) struct Reads {
 
 impl Reads {
     pub(crate) const ALL: Reads = Reads { joined: true, timed: true, viewed: true };
+    pub(crate) const NONE: Reads = Reads { joined: false, timed: false, viewed: false };
 }
 
 impl Variant {
     /// `shader` drawing into `format` with `samples` samples per pixel.
-    pub(crate) fn draw(shader: Shader, format: wgpu::TextureFormat, samples: u32) -> Variant {
+    pub(crate) const fn draw(shader: Shader, format: wgpu::TextureFormat, samples: u32) -> Variant {
         Variant {
             shader,
             entry: "vertex",
@@ -97,7 +98,7 @@ impl Variant {
     }
 
     /// `shader`'s compute entry point `entry`.
-    pub(crate) fn compute(shader: Shader, entry: &'static str) -> Variant {
+    pub(crate) const fn compute(shader: Shader, entry: &'static str) -> Variant {
         Variant { shader, entry, primitive: 0, path: PATH_ENDS, reads: Reads::ALL, target: None }
     }
 
@@ -539,24 +540,22 @@ impl Pipelines {
         })
     }
 
-    /// The pipeline drawing a custom marker of `source` with `shader` (one of the custom variants),
-    /// or `None` once its WGSL failed to compile.
+    /// The pipeline `variant` of a custom marker's shader draws a marker of `source` with, or
+    /// `None` once its WGSL failed to compile.
     pub(crate) fn custom(
         &mut self,
         device: &wgpu::Device,
-        source: &str,
-        shader: Shader,
-        format: wgpu::TextureFormat,
-        samples: u32,
+        source: &Arc<str>,
+        variant: Variant,
     ) -> Option<wgpu::RenderPipeline> {
-        let key = (Arc::<str>::from(source), Variant::draw(shader, format, samples));
+        let key = (source.clone(), variant);
         if let Some(custom) = self.custom.get(&key) {
             return (!custom.failed).then(|| custom.pipeline.clone());
         }
         self.count(&Asked::Custom(key.0.clone(), key.1));
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = custom_module(device, source, shader);
-        let pipeline = self.pipeline(device, key.1, &module);
+        let module = custom_module(device, source, variant.shader);
+        let pipeline = self.pipeline(device, variant, &module);
         let check: Check = Box::pin(scope.pop());
         let custom = Custom { pipeline: pipeline.clone(), check: Some(check), failed: false };
         self.custom.insert(key, custom);
@@ -580,19 +579,8 @@ impl Pipelines {
         errors
     }
 
-    /// The pipeline drawing `shader` into `format` with `samples` per pixel.
-    pub(crate) fn render(
-        &mut self,
-        device: &wgpu::Device,
-        shader: Shader,
-        format: wgpu::TextureFormat,
-        samples: u32,
-    ) -> wgpu::RenderPipeline {
-        self.render_pipeline(device, Variant::draw(shader, format, samples))
-    }
-
     /// The render pipeline `variant` names.
-    pub(crate) fn render_pipeline(&mut self, device: &wgpu::Device, variant: Variant) -> wgpu::RenderPipeline {
+    pub(crate) fn render(&mut self, device: &wgpu::Device, variant: Variant) -> wgpu::RenderPipeline {
         if let Some(pipeline) = self.render.get(&variant) {
             return pipeline.clone();
         }
@@ -642,18 +630,8 @@ impl Pipelines {
         })
     }
 
-    /// The compute pipeline of `shader`'s entry point `entry`.
-    pub(crate) fn compute(
-        &mut self,
-        device: &wgpu::Device,
-        shader: Shader,
-        entry: &'static str,
-    ) -> wgpu::ComputePipeline {
-        self.compute_pipeline(device, Variant::compute(shader, entry))
-    }
-
     /// The compute pipeline `variant` names.
-    pub(crate) fn compute_pipeline(&mut self, device: &wgpu::Device, variant: Variant) -> wgpu::ComputePipeline {
+    pub(crate) fn compute(&mut self, device: &wgpu::Device, variant: Variant) -> wgpu::ComputePipeline {
         if let Some(pipeline) = self.compute.get(&variant) {
             return pipeline.clone();
         }

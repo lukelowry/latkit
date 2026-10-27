@@ -1,7 +1,7 @@
 /** Canvases that show views in a `<canvas>` element or an `OffscreenCanvas`. */
 
 import type * as bindings from '../pkg/latkit.js';
-import { hold, inner, release } from './internal.js';
+import { Handle, inner } from './internal.js';
 import { Shot, type ShotOptions } from './shot.js';
 import { handleOf, type View } from './view.js';
 
@@ -16,49 +16,29 @@ export interface Panel {
   at?: Rect;
 }
 
-/** Options for `Gpu.canvas()`. */
-export interface CanvasOptions {
-  /** The views shown and their regions; later panels draw over earlier ones. None by default. */
-  layout?: readonly Panel[];
-  /**
-   * Pixels per CSS pixel of an `OffscreenCanvas`, 1 by default; it must be positive. A `<canvas>`
-   * element uses the device pixel ratio instead.
-   */
-  pixelRatio?: number;
-}
-
 /** The rect covering a whole canvas or picture. */
 const WHOLE: Rect = [0, 0, 1, 1];
 
 /**
  * Shows views in a `<canvas>` element or an `OffscreenCanvas`, each in its layout panel; created by
  * `Gpu.canvas()`. A frame redraws only the views that need it, or every view after a resize or a
- * layout change.
+ * layout change. Destroying it stops drawing; the views stay usable, and the element keeps its last
+ * frame.
  */
-export class Canvas {
+export class Canvas extends Handle {
   #target: HTMLCanvasElement | OffscreenCanvas;
-  #pixelRatio: number;
-  #layout: readonly Panel[] = [];
+  #layout: readonly Panel[];
   #released: () => void;
 
   private constructor(
     device: bindings.Gpu,
     target: HTMLCanvasElement | OffscreenCanvas,
-    options: CanvasOptions,
+    options: { layout?: readonly Panel[]; pixelRatio?: number },
     released: () => void,
   ) {
     const layout = options.layout ?? [];
-    hold(
-      this,
-      device.canvas(
-        target,
-        layout.map(({ view }) => handleOf(view)),
-        placed(layout),
-        options.pixelRatio,
-      ),
-    );
+    super(device.canvas(target, ...encoded(layout), options.pixelRatio), 'Canvas');
     this.#target = target;
-    this.#pixelRatio = options.pixelRatio ?? 1;
     this.#layout = [...layout];
     this.#released = released;
   }
@@ -67,7 +47,7 @@ export class Canvas {
   static made(
     device: bindings.Gpu,
     target: HTMLCanvasElement | OffscreenCanvas,
-    options: CanvasOptions,
+    options: { layout?: readonly Panel[]; pixelRatio?: number },
     released: () => void,
   ): Canvas {
     return new Canvas(device, target, options, released);
@@ -80,61 +60,43 @@ export class Canvas {
 
   /**
    * The views shown and their regions; later panels draw over earlier ones. Setting it replaces the
-   * shown views. A view can show in only one panel of one canvas at a time. Setting a layout that
-   * breaks this, or that has a panel covering no pixels, throws an `invalid` error.
+   * shown views. A view shows in at most one panel of one canvas at a time.
    */
   get layout(): readonly Panel[] {
     return this.#layout;
   }
 
   set layout(layout: readonly Panel[]) {
-    canvas(this).setLayout(
-      layout.map(({ view }) => handleOf(view)),
-      placed(layout),
-    );
+    inner<bindings.Canvas>(this).setLayout(...encoded(layout));
     this.#layout = [...layout];
   }
 
   /**
-   * Returns a {@link Shot} of exactly what the canvas shows: its views in its layout, at the
-   * canvas's CSS size times `options.scale` (1 by default) in pixels.
+   * A {@link Shot} of exactly what the canvas shows: its views in its layout, at the canvas's CSS
+   * size times `options.scale` in pixels.
    */
   shot(options: ShotOptions = {}): Shot {
     const scale = options.scale ?? 1;
-    const target = this.#target;
-    const [width, height] =
-      'clientWidth' in target
-        ? [target.clientWidth, target.clientHeight]
-        : [target.width / this.#pixelRatio, target.height / this.#pixelRatio];
-    const size = [
-      Math.max(1, Math.round(width * scale)),
-      Math.max(1, Math.round(height * scale)),
-    ] as const;
-    return new Shot(size, { ...options, layout: this.#layout });
+    const css = inner<bindings.Canvas>(this).cssSize;
+    const [width = 1, height = 1] = Array.from(css, (side) =>
+      Math.max(1, Math.round(side * scale)),
+    );
+    return new Shot([width, height], { ...options, layout: this.#layout });
   }
 
-  /**
-   * Stops drawing and frees the canvas. The views stay usable, and the element keeps its last
-   * frame. Calling it again does nothing.
-   */
-  destroy(): void {
-    const freed = release<bindings.Canvas>(this);
-    if (!freed) return;
-    freed.free();
+  /** @internal Tells the GPU the canvas is gone. */
+  protected override freeing(): void {
     this.#released();
   }
-
-  /** Calls {@link Canvas.destroy}, so a `using` declaration destroys it when its block ends. */
-  [Symbol.dispose](): void {
-    this.destroy();
-  }
 }
 
-function canvas(owner: Canvas): bindings.Canvas {
-  return inner<bindings.Canvas>(owner, 'Canvas');
-}
-
-/** @internal Flattens each panel's rect into four floats; the whole target where `at` is unset. */
-export function placed(layout: readonly Panel[]): Float32Array {
-  return Float32Array.from(layout.flatMap(({ at }) => at ?? WHOLE));
+/**
+ * @internal A layout as the bindings take it: each panel's view, and its rect's four fractions in
+ * one array, the whole target where `at` is unset.
+ */
+export function encoded(layout: readonly Panel[]): [bindings.Handle[], Float32Array] {
+  return [
+    layout.map(({ view }) => handleOf(view)),
+    Float32Array.from(layout.flatMap(({ at }) => at ?? WHOLE)),
+  ];
 }

@@ -39,6 +39,9 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 impl Error {
+    /// Every kind's [`code`](Error::code).
+    const CODES: [&'static str; 7] = ["invalid", "unsupported", "limit", "io", "device-lost", "cancelled", "timeout"];
+
     /// An [`Error::Invalid`] at the root of the input.
     pub fn invalid(reason: impl Into<Cow<'static, str>>) -> Error {
         Error::Invalid { path: Path::default(), reason: reason.into() }
@@ -66,6 +69,21 @@ impl Error {
                 path.0.insert(0, step.into());
                 Error::Invalid { path, reason }
             }
+            other => other,
+        }
+    }
+
+    /// This error, of the same kind, naming `source` as where it happened: the first step of an
+    /// invalid input's path, or the start of another error's message.
+    #[cfg(feature = "gpu")]
+    #[must_use]
+    pub(crate) fn within(self, source: &str) -> Error {
+        let named = |message: Cow<'static, str>| Cow::Owned(format!("{source}: {message}"));
+        match self {
+            Error::Invalid { .. } => self.at(source),
+            Error::Unsupported(message) => Error::Unsupported(named(message)),
+            Error::Limit(message) => Error::Limit(named(message)),
+            Error::Io(message) => Error::Io(named(message)),
             other => other,
         }
     }
@@ -98,7 +116,7 @@ impl schemars::JsonSchema for Error {
             "properties": {
                 "code": {
                     "description": "The kind of failure, as `LatkitError.code` describes it.",
-                    "enum": ["invalid", "unsupported", "limit", "io", "device-lost", "cancelled", "timeout"],
+                    "enum": Error::CODES,
                 },
                 "message": { "description": "What failed, in words.", "type": "string" },
                 "path": {
@@ -177,5 +195,19 @@ mod tests {
     #[test]
     fn only_invalid_errors_take_steps() {
         assert_eq!(Error::DeviceLost.at("marks"), Error::DeviceLost);
+    }
+
+    #[test]
+    fn the_schema_lists_every_code() {
+        let every = [
+            Error::invalid(""),
+            Error::Unsupported("".into()),
+            Error::Limit("".into()),
+            Error::Io("".into()),
+            Error::DeviceLost,
+            Error::Cancelled,
+            Error::Timeout,
+        ];
+        assert_eq!(every.map(|e| e.code()), Error::CODES);
     }
 }

@@ -2,7 +2,7 @@
 
 import type * as bindings from '../pkg/latkit.js';
 import type { EnvelopeRequest, Id, Query } from './inputs.js';
-import { bytesOf, hold, inner, release, wasm, waited, wrap, type Wait } from './internal.js';
+import { bytesOf, Handle, inner, wasm, waited, type ByteSource, type Wait } from './internal.js';
 import { load } from './load.js';
 import type { Description, Value } from './outputs.js';
 import { framed, type Patch } from './patch.js';
@@ -27,30 +27,76 @@ export interface QueryResult {
 export interface Envelope {
   /** The span boundaries on the axis: one more than the number of spans. */
   at: Float64Array;
-  /**
-   * Each row's minimum in each span: `spans` values per row, row after row. NaN where a span has
-   * no frame.
-   */
+  /** Each row's minimum in each span, `spans` values per row, row after row; NaN without frames. */
   least: Float32Array;
   /** Each row's maximum in each span, laid out like `least`. */
   greatest: Float32Array;
 }
 
-/**
- * What {@link Data.read} accepts: bytes, a `Blob`, a `Response`, a byte stream, a URL to fetch as
- * a string, or a parsed JSON value. The content is latkit's bytes, GeoJSON, or a dataset document.
- */
-export type DataSource =
-  Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | string | object;
-
 /** A bindings object that reads one version of a dataset: a `Data` or a `Snapshot`. */
 type Reads = bindings.Data | bindings.Snapshot;
 
 /**
- * A dataset that changes in place: named tables of columns, changed only by patches. A patch
- * applies completely or not at all. Views given a `Data` draw its latest version, from the frame
- * after each patch. A {@link Snapshot} keeps one version and shares its pages with the dataset, so
- * keeping earlier versions, as an undo history does, costs only the pages that differ.
+ * Named tables of columns, read the same way from a {@link Data}, which reads its current version,
+ * and a {@link Snapshot}, which reads its own.
+ */
+export abstract class Dataset extends Handle {
+  /** The dataset's name, by which a mark's `data` option draws it. */
+  get name(): string {
+    return inner<Reads>(this).name;
+  }
+
+  /** The tables and their row counts, each field and its kind, and the axis and its span. */
+  describe(): Description {
+    return JSON.parse(inner<Reads>(this).describe()) as Description;
+  }
+
+  /**
+   * Reads `field` of the row with `id` in `table`: for a sampled field, its last frame at or before
+   * `options.at`, or its last frame; for a reference, the referenced row's id. `null` when the
+   * table, row, field, or value is missing.
+   */
+  get(
+    table: string,
+    id: Id,
+    field: string,
+    options: {
+      /** The axis coordinate to read a sampled field at. */
+      at?: number;
+    } = {},
+  ): Value {
+    return JSON.parse(inner<Reads>(this).get(table, id, field, options.at)) as Value;
+  }
+
+  /**
+   * Reads a table's rows, filtered, sorted, and paged, through the same expressions marks use.
+   * Sampled fields are read at `query.at`.
+   */
+  query(query: Query): QueryResult {
+    return inner<Reads>(this).query(JSON.stringify(query)) as QueryResult;
+  }
+
+  /**
+   * Each row's minimum and maximum of a sampled field over equal spans of an axis range, for every
+   * row or the rows `request.ids` lists. Each span reads the coarsest stored levels of detail that
+   * fit in it, so it costs a few reads however many frames it covers. Throws a `limit` error when
+   * rows times spans exceeds 2^26.
+   */
+  envelope(request: EnvelopeRequest): Envelope {
+    return inner<Reads>(this).envelope(JSON.stringify(request)) as Envelope;
+  }
+
+  /** The dataset as latkit's bytes: a patch that builds it from an empty dataset. */
+  toBytes(): Uint8Array {
+    return inner<Reads>(this).toBytes();
+  }
+}
+
+/**
+ * A dataset that changes in place, only by patches, each applied whole or not at all. Views draw
+ * its latest version from the frame after each patch. A {@link Snapshot} keeps one version and
+ * shares its pages with the dataset, so an undo history costs only the pages that differ.
+ * Destroying it leaves views drawing it and its snapshots usable.
  *
  * ```ts
  * const grid = new Data('grid').apply(new Patch().replace('Bus', [1, 2], { kv: [230, 115] }));
@@ -58,195 +104,93 @@ type Reads = bindings.Data | bindings.Snapshot;
  * grid.apply(new Patch().set('Bus', [2], { kv: [69] })); // drawn next frame
  * ```
  */
-export class Data {
-  /** Creates an empty dataset named `name`. Throws an `unloaded` error before `load()` finishes. */
-  constructor(name: string) {
-    hold(this, new (wasm().Data)(name));
+export class Data extends Dataset {
+  /** Creates an empty dataset named `name`. */
+  constructor(name: string);
+  /** @internal Wraps the bindings dataset `bound`. */
+  constructor(bound: bindings.Data);
+  constructor(from: string | bindings.Data) {
+    super(typeof from === 'string' ? new (wasm().Data)(from) : from, 'Data');
   }
 
   /**
-   * Reads a dataset from `source`, calling `load()` first. Its first bytes decide the format:
+   * Reads a dataset from `source`. Its first bytes decide the format:
    *
    * - latkit's bytes, as `toBytes()` writes them.
    * - GeoJSON, plain or gzip-compressed, read in a worker. Points, line strings, and polygons
    *   become rows of tables `points`, `lines`, and `polygons`, with the geometry in field
-   *   `geometry` and each property as a field. GeoJSON requires `options.name`.
+   *   `geometry` and each property as a field.
    * - A dataset document, `{"name": ..., "patch": [...]}`, whose patch is read as
    *   {@link Patch.read} reads one.
-   *
-   * `options.name` names the dataset, replacing the name in latkit's bytes or a document.
-   * `options.base` is the URL that a document's file slices are relative to; it defaults to the URL
-   * the source was fetched from. Rejects with an `invalid` error for bytes that are not a valid
-   * dataset, and with an `io` error when a fetch fails or answers an error status.
    */
   static async read(
-    source: DataSource,
-    options: { name?: string; base?: string } & Wait = {},
+    source: ByteSource | object,
+    options: {
+      /** Names the dataset, replacing the name its bytes or document give; GeoJSON requires it. */
+      name?: string;
+      /** The URL a document's file slices are relative to; by default, the one it came from. */
+      base?: string;
+    } & Wait = {},
   ): Promise<Data> {
     await load();
     const { bytes, base } = await bytesOf(source, options);
     const read = wasm().Data.read(bytes, options.name, options.base ?? base);
-    return wrap(Data, await waited<bindings.Data>(read, options, 'reading a dataset'));
-  }
-
-  /** The dataset's name, by which a mark's `data` option draws it. */
-  get name(): string {
-    return reads(this).name;
+    return new Data(await waited<bindings.Data>(read, options, 'reading a dataset'));
   }
 
   /**
-   * Applies every change in `patch` (a {@link Patch} or its bytes), or none of them when one is
-   * invalid, and returns this dataset. Views draw the new version from their next frame. Throws an
-   * `invalid` error whose `path` names the failing change, such as `patch[1].Bus.kv`, or when the
-   * patch names another dataset.
+   * Applies every change in `patch`, or none when one is invalid, and returns this dataset. An
+   * `invalid` error's `path` names the failing change, such as `patch[1].Bus.kv`.
    */
   apply(patch: Patch | Uint8Array): this {
-    inner<bindings.Data>(this, 'Data').apply(patch instanceof Uint8Array ? patch : framed(patch));
+    inner<bindings.Data>(this).apply(patch instanceof Uint8Array ? patch : framed(patch));
     return this;
   }
 
   /** The current version as a {@link Snapshot}, which later patches leave unchanged. O(1). */
   snapshot(): Snapshot {
-    return wrap(Snapshot, inner<bindings.Data>(this, 'Data').snapshot());
+    return Snapshot.made(inner<bindings.Data>(this).snapshot());
   }
 
-  /**
-   * Makes `snapshot`, a version of this dataset, the current version, as an undo does. Views draw
-   * it from their next frame. Throws an `invalid` error for a snapshot of a dataset with another
-   * name.
-   */
+  /** Makes `snapshot`, a version of this dataset, the current version, as an undo does. */
   restore(snapshot: Snapshot): this {
-    inner<bindings.Data>(this, 'Data').restore(inner<bindings.Snapshot>(snapshot, 'Snapshot'));
+    inner<bindings.Data>(this).restore(inner<bindings.Snapshot>(snapshot));
     return this;
-  }
-
-  /** Describes the current version; see {@link Snapshot.describe}. */
-  describe(): Description {
-    return describe(reads(this));
-  }
-
-  /** Reads one value of the current version; see {@link Snapshot.get}. */
-  get(table: string, id: Id, field: string, options: { at?: number } = {}): Value {
-    return get(reads(this), table, id, field, options);
-  }
-
-  /** Queries the current version; see {@link Snapshot.query}. */
-  query(query: Query): QueryResult {
-    return reads(this).query(JSON.stringify(query)) as QueryResult;
-  }
-
-  /** Per-row minimums and maximums of the current version; see {@link Snapshot.envelope}. */
-  envelope(request: EnvelopeRequest): Envelope {
-    return envelope(reads(this), request);
-  }
-
-  /** The current version as latkit's bytes: a patch that builds it from an empty dataset. */
-  toBytes(): Uint8Array {
-    return reads(this).toBytes();
-  }
-
-  /**
-   * Frees this handle. Views drawing the dataset keep drawing it, and its snapshots stay usable.
-   * Other methods throw afterwards.
-   */
-  destroy(): void {
-    release<bindings.Data>(this)?.free();
-  }
-
-  /** Calls {@link Data.destroy}, so a `using` declaration destroys it when its block ends. */
-  [Symbol.dispose](): void {
-    this.destroy();
   }
 }
 
 /**
  * One immutable version of a dataset, taken in O(1) by {@link Data.snapshot}. A view given a
- * snapshot draws that version unchanged.
+ * snapshot draws that version, and keeps drawing it once the snapshot is destroyed.
  */
-export class Snapshot {
-  private constructor() {}
-
-  /** The name of the dataset this is a version of. */
-  get name(): string {
-    return reads(this).name;
+export class Snapshot extends Dataset {
+  private constructor(bound: bindings.Snapshot) {
+    super(bound, 'Snapshot');
   }
 
-  /**
-   * Describes the dataset: its tables and their row counts, each field and its kind, and the axis
-   * and the span its sampled fields cover.
-   */
-  describe(): Description {
-    return describe(reads(this));
-  }
-
-  /**
-   * Reads `field` of the row with `id` in `table`. A sampled field reads its last frame at or
-   * before `options.at`, or its last frame when `at` is omitted. A reference reads the referenced
-   * row's id. Returns `null` when the table, row, field, or value is missing.
-   */
-  get(table: string, id: Id, field: string, options: { at?: number } = {}): Value {
-    return get(reads(this), table, id, field, options);
-  }
-
-  /**
-   * Runs `query` on the CPU: reads a table's rows, filtered, sorted, and paged, through the same
-   * expressions marks use. Sampled fields are read at `query.at`. Throws an `invalid` error for an
-   * invalid query.
-   */
-  query(query: Query): QueryResult {
-    return reads(this).query(JSON.stringify(query)) as QueryResult;
-  }
-
-  /**
-   * Computes each row's minimum and maximum of a sampled field over equal spans of an axis range,
-   * for every row or the rows `request.ids` lists. Each span reads the coarsest stored levels of
-   * detail that fit in it, so it costs a few reads regardless of how many frames it covers. Throws
-   * an `invalid` error for an unknown table or row, or a field that is not sampled, and a `limit`
-   * error when rows times spans exceeds 2^26.
-   */
-  envelope(request: EnvelopeRequest): Envelope {
-    return envelope(reads(this), request);
-  }
-
-  /** This version as latkit's bytes: a patch that builds it from an empty dataset. */
-  toBytes(): Uint8Array {
-    return reads(this).toBytes();
-  }
-
-  /**
-   * Frees this handle. Views given the snapshot keep drawing it; other methods throw afterwards.
-   */
-  destroy(): void {
-    release<bindings.Snapshot>(this)?.free();
-  }
-
-  /** Calls {@link Snapshot.destroy}, so a `using` declaration destroys it when its block ends. */
-  [Symbol.dispose](): void {
-    this.destroy();
+  /** @internal Wraps the bindings snapshot `bound`. */
+  static made(bound: bindings.Snapshot): Snapshot {
+    return new Snapshot(bound);
   }
 }
 
 /**
- * A dataset fetched in pieces as views need them. A `Tiles` is plain data: a dataset name and a
- * URL. Each view draws the pieces its camera and plot window need as a dataset of its own, and all
- * views of a GPU share the fetched pieces. The first bytes at `url` decide the kind of tiles:
+ * A dataset fetched in pieces as views need them: plain data, a dataset name and a URL. Each view
+ * draws the pieces its camera and plot window need, and the views of a GPU share them. The first
+ * bytes at `url` decide the kind:
  *
- * - Time tiles: a `frames.json` manifest as `latkit tile` writes it, for a dataset whose sampled
- *   fields' histories are fetched in spans. A line tracing a field fetches the level of detail its
- *   plot window shows; other marks fetch the frames around the view's `at`. A span still loading
- *   shows the coarser span that contains it.
- * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template, fetched
- *   as the camera needs them. Each layer becomes a table of features of the kind its marks draw:
- *   polygons for areas, lines for lines, points for vertices. A table named `layer:polygons`,
- *   `layer:lines`, or `layer:points` holds that kind regardless of the marks.
+ * - Time tiles: a `frames.json` manifest as `latkit tile` writes it. A line tracing a sampled field
+ *   fetches the detail its plot window shows; other marks fetch the frames around the view's `at`.
+ *   A span still loading shows the coarser span that contains it.
+ * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
+ *   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
+ *   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
+ *   that kind whatever the marks.
  */
 export class Tiles {
-  /** The name of the dataset the tiles are drawn as, by which a mark's `data` option draws it. */
+  /** The name of the dataset the tiles are drawn as. */
   readonly name: string;
-  /**
-   * Where the tiles are: a `frames.json` manifest, a PMTiles archive, a TileJSON document, or a
-   * `{z}/{x}/{y}` URL template.
-   */
+  /** Where the tiles are. */
   readonly url: string;
 
   /** Tiles at `url`, drawn as the dataset named `name`. */
@@ -262,28 +206,5 @@ export type Source = Data | Snapshot | Tiles;
 /** @internal Converts `source` to a new bindings `Source` on every call. */
 export function sourceOf(source: Source): bindings.Source {
   if (source instanceof Tiles) return wasm().Source.tiles(source.name, source.url);
-  return source instanceof Data
-    ? inner<bindings.Data>(source, 'Data').source()
-    : inner<bindings.Snapshot>(source, 'Snapshot').source();
-}
-
-/** @internal Wraps a bindings snapshot in a public {@link Snapshot}. */
-export function snapshotOf(snapshot: bindings.Snapshot): Snapshot {
-  return wrap(Snapshot, snapshot);
-}
-
-function reads(owner: Data | Snapshot): Reads {
-  return inner<Reads>(owner, owner instanceof Data ? 'Data' : 'Snapshot');
-}
-
-function describe(reads: Reads): Description {
-  return JSON.parse(reads.describe()) as Description;
-}
-
-function get(reads: Reads, table: string, id: Id, field: string, { at }: { at?: number }): Value {
-  return JSON.parse(reads.get(table, id, field, at)) as Value;
-}
-
-function envelope(reads: Reads, request: EnvelopeRequest): Envelope {
-  return reads.envelope(JSON.stringify(request)) as Envelope;
+  return inner<Reads>(source).source();
 }

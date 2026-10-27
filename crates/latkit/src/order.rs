@@ -57,6 +57,20 @@ pub(crate) fn number(x: f64) -> u64 {
     if bits >> 63 == 1 { !bits } else { bits | 1 << 63 }
 }
 
+/// Maps `x` to a key that orders as `f32::total_cmp` does: the words `lib/reduce.wesl` reduces
+/// values to.
+#[cfg(feature = "gpu")]
+pub(crate) fn number32(x: f32) -> u32 {
+    let bits = x.to_bits();
+    if bits >> 31 == 1 { !bits } else { bits | 1 << 31 }
+}
+
+/// The value whose key is `key`; the inverse of [`number32`].
+#[cfg(feature = "gpu")]
+pub(crate) fn from_number32(key: u32) -> f32 {
+    f32::from_bits(if key >> 31 == 1 { key & !(1 << 31) } else { !key })
+}
+
 /// Packs two keys into one that orders by `high`, then `low`.
 pub(crate) fn pair(high: u32, low: u32) -> u64 {
     u64::from(high) << 32 | u64::from(low)
@@ -102,5 +116,18 @@ mod tests {
         let mut names = vec!["b", "a", "c", "a"];
         by_name(&mut names, |n| n);
         assert_eq!(names, ["a", "a", "b", "c"]);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn narrow_keys_order_like_their_values_and_invert() {
+        use super::{from_number32, number32};
+        let values = [-1e9_f32, -2.5, -0.0, 0.0, 1e-9, 3.0, 1e9];
+        for pair in values.windows(2) {
+            assert!(number32(pair[0]) <= number32(pair[1]), "{pair:?}");
+        }
+        for v in values {
+            assert_eq!(from_number32(number32(v)), v);
+        }
     }
 }

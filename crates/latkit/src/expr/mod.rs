@@ -338,28 +338,35 @@ impl Expr {
         }
     }
 
+    /// The expressions this one is made of, in order: an operand or input, a binary operation's
+    /// two sides, or a conditional's condition, value, and alternative.
+    pub(crate) fn children(&self) -> impl Iterator<Item = &Expr> {
+        let (a, b, c) = match &*self.0 {
+            Node::Unary(_, a)
+            | Node::Is(a, _)
+            | Node::Contains(a, _)
+            | Node::Scale { input: a, .. }
+            | Node::Colormap { input: a, .. } => (Some(a), None, None),
+            Node::Binary(_, a, b) => (Some(a), Some(b), None),
+            Node::When(c, a, b) => (Some(c), Some(a), Some(b)),
+            Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::Field(_) | Node::State(_) => {
+                (None, None, None)
+            }
+        };
+        [a, b, c].into_iter().flatten()
+    }
+
+    /// Whether `test` holds for this expression or any expression it is made of.
+    pub(crate) fn any(&self, test: &impl Fn(&Expr) -> bool) -> bool {
+        test(self) || self.children().any(|child| child.any(test))
+    }
+
     /// Calls `f` with each field that a `contains` in the expression tests, and the text it looks
     /// for.
     pub(crate) fn for_each_contains<'e>(&'e self, f: &mut impl FnMut(&'e FieldRef, &'e str)) {
         match &*self.0 {
-            Node::Contains(a, text) => {
-                if let Node::Field(field) = &*a.0 {
-                    f(field, text);
-                }
-            }
-            Node::Unary(_, a) | Node::Is(a, _) | Node::Scale { input: a, .. } | Node::Colormap { input: a, .. } => {
-                a.for_each_contains(f);
-            }
-            Node::Binary(_, a, b) => {
-                a.for_each_contains(f);
-                b.for_each_contains(f);
-            }
-            Node::When(c, a, b) => {
-                c.for_each_contains(f);
-                a.for_each_contains(f);
-                b.for_each_contains(f);
-            }
-            Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::Field(_) | Node::State(_) => {}
+            Node::Contains(a, text) if let Node::Field(field) = &*a.0 => f(field, text),
+            _ => self.children().for_each(|child| child.for_each_contains(f)),
         }
     }
 
@@ -367,38 +374,16 @@ impl Expr {
     pub(crate) fn for_each_field<'e>(&'e self, f: &mut impl FnMut(&'e FieldRef)) {
         match &*self.0 {
             Node::Field(field) => f(field),
-            Node::Unary(_, a)
-            | Node::Is(a, _)
-            | Node::Contains(a, _)
-            | Node::Scale { input: a, .. }
-            | Node::Colormap { input: a, .. } => a.for_each_field(f),
-            Node::Binary(_, a, b) => {
-                a.for_each_field(f);
-                b.for_each_field(f);
-            }
-            Node::When(c, a, b) => {
-                c.for_each_field(f);
-                a.for_each_field(f);
-                b.for_each_field(f);
-            }
-            Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::State(_) => {}
+            _ => self.children().for_each(|child| child.for_each_field(f)),
         }
     }
 
     /// Whether the expression has a fitted domain, which makes each row's value depend on every
     /// row.
     pub(crate) fn fits(&self) -> bool {
-        match &*self.0 {
-            Node::Scale { domain: Domain::Fit, .. } | Node::Colormap { domain: Domain::Fit, .. } => true,
-            Node::Unary(_, a)
-            | Node::Is(a, _)
-            | Node::Contains(a, _)
-            | Node::Scale { input: a, .. }
-            | Node::Colormap { input: a, .. } => a.fits(),
-            Node::Binary(_, a, b) => a.fits() || b.fits(),
-            Node::When(c, a, b) => c.fits() || a.fits() || b.fits(),
-            Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::Field(_) | Node::State(_) => false,
-        }
+        self.any(&|e| {
+            matches!(&*e.0, Node::Scale { domain: Domain::Fit, .. } | Node::Colormap { domain: Domain::Fit, .. })
+        })
     }
 
     /// The field's name, when the expression is a plain field of the mark's own table.

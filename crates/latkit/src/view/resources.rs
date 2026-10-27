@@ -1,6 +1,6 @@
-//! A view's buffers, textures, and bind groups. A buffer that runs out of room is replaced by one
-//! 1.5 times the size needed. Replacing a buffer increments the generation, and bind groups are
-//! rebuilt when a generation they were built from changes.
+//! A view's buffers, textures, and bind groups. A buffer that runs out of room grows
+//! ([`Grown`]). Replacing a buffer increments the generation, and bind groups are rebuilt when a
+//! generation they were built from changes.
 //!
 //! Every shader's pass group (group 2) uses the same bindings: 0 the arena pages (the data, and the
 //! marks' per-row words), 2 extents, 4 domains, 5 probe words and query results, 6 depth,
@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
+use crate::gpu::grown::{self, Grown};
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::work::Queue;
 use crate::gpu::{Inner, Shared};
@@ -43,37 +44,6 @@ fn steps(device: &wgpu::Device) -> wgpu::Buffer {
 /// The labels buffer's usages: storage for the placement atomics, and copy source for reading back
 /// the texts placement requests.
 const LABELS: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_SRC);
-
-/// A buffer that is replaced by one 1.5 times the size needed when it runs out of room.
-struct Grown {
-    buffer: wgpu::Buffer,
-    label: &'static str,
-    usage: wgpu::BufferUsages,
-}
-
-impl Grown {
-    fn new(device: &wgpu::Device, label: &'static str, usage: wgpu::BufferUsages) -> Grown {
-        Grown { buffer: create(device, label, usage, 256), label, usage }
-    }
-
-    /// Makes room for `bytes`; true when the buffer was replaced and its contents lost.
-    fn ensure(&mut self, device: &wgpu::Device, bytes: u64) -> bool {
-        if bytes <= self.buffer.size() {
-            return false;
-        }
-        self.buffer = create(device, self.label, self.usage, (bytes + bytes / 2).next_multiple_of(256));
-        true
-    }
-}
-
-fn create(device: &wgpu::Device, label: &str, usage: wgpu::BufferUsages, bytes: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: bytes.max(256).next_multiple_of(4),
-        usage: usage | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
-}
 
 /// The bind groups every pipeline shares.
 #[derive(Clone)]
@@ -128,8 +98,8 @@ impl Resources {
         let storage = wgpu::BufferUsages::STORAGE;
         let uniform = wgpu::BufferUsages::UNIFORM;
         Resources {
-            frame: create(device, "latkit frame", uniform, size_of::<wgsl::Frame>() as u64),
-            eye: create(device, "latkit eye", uniform, size_of::<wgsl::Eye>() as u64),
+            frame: grown::buffer(device, "latkit frame", uniform, size_of::<wgsl::Frame>() as u64),
+            eye: grown::buffer(device, "latkit eye", uniform, size_of::<wgsl::Eye>() as u64),
             marks: Grown::new(device, "latkit marks", uniform),
             // A copy source, so growing keeps its contents.
             program: Grown::new(device, "latkit program", storage | wgpu::BufferUsages::COPY_SRC),
@@ -146,7 +116,7 @@ impl Resources {
                 "latkit lists",
                 storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
             ),
-            labels: create(device, "latkit labels", LABELS, 256),
+            labels: grown::buffer(device, "latkit labels", LABELS, 256),
             generation: 0,
             lists_generation: 0,
             groups: None,
@@ -236,7 +206,7 @@ impl Resources {
         words: u32,
     ) {
         let size = u64::from(words) * 4;
-        let between = create(device, "latkit program move", wgpu::BufferUsages::COPY_SRC, size);
+        let between = grown::buffer(device, "latkit program move", wgpu::BufferUsages::COPY_SRC, size);
         let program = &self.program.buffer;
         encoder.copy_buffer_to_buffer(program, u64::from(from) * 4, &between, 0, size);
         encoder.copy_buffer_to_buffer(&between, 0, program, u64::from(to) * 4, size);
@@ -267,7 +237,7 @@ impl Resources {
 
     /// Replaces the labels buffer with `words` of zeros.
     pub(crate) fn replace_labels(&mut self, device: &wgpu::Device, words: u64) {
-        self.labels = create(device, "latkit labels", LABELS, (words + 1) * 4);
+        self.labels = grown::buffer(device, "latkit labels", LABELS, (words + 1) * 4);
         self.generation += 1;
     }
 

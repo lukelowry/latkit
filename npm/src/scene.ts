@@ -290,14 +290,6 @@ export const zoom = (): Expr => state('zoom');
 /** A missing value: an option given one uses the theme's value. */
 export const missing = (): Missing => new Missing();
 
-/** On-screen limits, in CSS pixels, for a size given in position units. */
-export interface Within {
-  /** The smallest size in CSS pixels, however far the view zooms out. */
-  atLeast?: number;
-  /** The largest size in CSS pixels, however far the view zooms in. */
-  atMost?: number;
-}
-
 /**
  * A size in CSS pixels regardless of the space's unit, so it stays the same on screen as the view
  * zooms: `px(1)` keeps a diagram's stroke 1 pixel wide at any zoom. Given a number, the result also
@@ -311,14 +303,14 @@ export function px(size: ExprInput): Px {
 
 /**
  * A size in position units (degrees on the earth) regardless of the space's unit, so it scales as
- * the view zooms. `within` limits its on-screen size in CSS pixels: `units('r', { atLeast: 2 })`
+ * the view zooms. `limits` bound its on-screen size in CSS pixels: `units('r', { atLeast: 2 })`
  * grows with the map and never shrinks below 2 pixels. A marker keeps its proportions, with the
  * limits applied to its larger side. Given only a number, the result also works as a theme length.
  */
 export function units(size: number): { units: number };
-export function units(size: ExprInput, within?: Within): Units;
-export function units(size: ExprInput, within: Within = {}): Units {
-  return { units: nodeOf(size), ...within };
+export function units(size: ExprInput, limits?: Omit<Units, 'units'>): Units;
+export function units(size: ExprInput, limits: Omit<Units, 'units'> = {}): Units {
+  return { units: nodeOf(size), ...limits };
 }
 
 /** One case of a conditional: a condition, and the value or color it selects. */

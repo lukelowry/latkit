@@ -69,7 +69,7 @@ impl Lines {
     }
 
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
-        let mut drawing = Drawing::new(MarkKind::Lines, wgsl::LINE_WORDS);
+        let mut drawing = Drawing::new(MarkKind::Lines);
         drawing.size_px = self.stroke.px();
         if matches!(context.space, Space::Plot(_)) {
             if self.geometry.is_some() {
@@ -102,7 +102,6 @@ impl Lines {
                 }
                 None => return Err(Error::invalid("name the path field each row runs along").at("geometry")),
             }
-            drawing.path = wgsl::PATH_GEOMETRY;
             // On the earth, a line follows a derived copy of its path that bends with the globe.
             drawing.geometry = if matches!(context.space, Space::Earth(_)) {
                 c.derived_path(&path_of(&field))

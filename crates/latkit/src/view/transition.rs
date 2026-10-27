@@ -27,8 +27,7 @@ use super::marks::{Holding, Shown};
 use super::words::Kept;
 use crate::data::{RowIds, Table};
 use crate::gpu::Inner;
-use crate::gpu::shaders::PAGE_ROWS;
-use crate::gpu::shaders::{self as wgsl, Shader};
+use crate::gpu::shaders::{self as wgsl, PAGE_ROWS};
 use crate::scene::mark::MarkKind;
 
 /// A running transition: its start on the view's clock and its length in seconds.
@@ -261,9 +260,9 @@ impl Shown {
 }
 
 impl View {
-    /// Freezes every transition starting this frame and advances the running ones. Returns whether
-    /// any is running.
-    pub(super) fn transitions(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
+    /// Starts every transition beginning this frame, which this frame's compute pass freezes, and
+    /// advances the running ones.
+    pub(super) fn transitions(&mut self, inner: &mut Inner) {
         // A drag moves rows at once.
         let seconds = if self.dragging() { 0.0 } else { self.ease().as_secs_f64() };
         let mut starting: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].begin.is_some()).collect();
@@ -281,13 +280,12 @@ impl View {
             });
         }
         if !starting.is_empty() {
-            self.freeze(encoder, inner, &starting);
+            self.write_remap(&starting);
             let start = self.clock.now();
             for &i in &starting {
                 self.marks[i].transition = Some(Transition { start, seconds });
             }
         }
-        let mut running = false;
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(transition) = &shown.transition else { continue };
             // A transition beginning this frame runs through it, as a zero-length one must for its
@@ -302,18 +300,17 @@ impl View {
                     shown.tables.thaw(inner);
                 }
             } else {
-                running = true;
                 // Rows ease only when the clock moves; their channels evaluated once already.
                 shown.easing = self.clock.moved();
             }
         }
-        running
     }
 
-    /// Records each starting mark's shown state into its frozen words. The remap words give, per
-    /// mark: its state pages as the frame began, how many rows showed, each new row's old row when
-    /// rows moved, and where the vertices its endpoints reference moved, if they did.
-    fn freeze(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, starting: &[usize]) {
+    /// Writes the remap words from which the compute pass freezes each starting mark's shown state
+    /// into its frozen words, per mark: its state pages as the frame began, how many rows showed,
+    /// each new row's old row when rows moved, and where the vertices its endpoints reference
+    /// moved, if they did.
+    fn write_remap(&mut self, starting: &[usize]) {
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         let mut words: Vec<u32> = Vec::new();
@@ -340,7 +337,7 @@ impl View {
             let shown = &mut self.marks[i];
             let begin = shown.begin.take().expect("starting");
             let before = shown.words.state_before().clone();
-            let width = shown.stride() + shown.extras();
+            let width = shown.width();
             // If the row width changed, there is nothing to ease from: every row enters, fading in.
             let sources =
                 if before.width == width { begin.sources } else { Some(vec![wgsl::NONE; shown.held() as usize]) };
@@ -378,21 +375,6 @@ impl View {
         }
         let resources = self.resources.as_mut().expect("created before transitions");
         resources.write_remap(device, queue, &words);
-        inner.arena.clear(device, queue);
-        inner.arena.written();
-        let groups = resources.groups(&gpu.0, inner);
-        let group = resources.pass(device, inner, Shader::Freeze);
-        let pipeline = inner.pipelines.compute(device, Shader::Freeze, "gather");
-        // The mark uniforms this frame writes before submitting hold each mark's remap offset.
-        let mut pass = encoder
-            .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("latkit freeze"), timestamp_writes: None });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &groups.view, &[]);
-        pass.set_bind_group(2, &group, &[]);
-        for &i in starting {
-            pass.set_bind_group(1, &groups.mark, &[super::passes::offset(i)]);
-            super::passes::dispatch(&mut pass, self.marks[i].held());
-        }
     }
 
     /// Allocates frozen and settled words for every held row of each mark whose transition starts
@@ -404,12 +386,11 @@ impl View {
         for shown in &mut self.marks {
             let easing = shown.begin.is_some() || shown.transition.is_some();
             let rows = shown.page_rows();
-            let width = if easing { shown.stride() + shown.extras() } else { 0 };
+            let width = if easing { shown.width() } else { 0 };
             let mut fits = true;
             for kept in [Kept::Frozen, Kept::Settled] {
-                let had = shown.words.pages(kept).blocks.len();
                 match shown.words.fit(kept, &rows, width, device, &mut inner.arena) {
-                    Some(new) => shown.packed &= new.is_empty() && had == shown.words.pages(kept).blocks.len(),
+                    Some(fitted) => shown.packed &= !fitted.changed,
                     None => fits = false,
                 }
             }

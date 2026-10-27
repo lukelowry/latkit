@@ -19,11 +19,10 @@ use std::sync::Arc;
 use super::order::{Lifted, Order};
 use super::pyramid::{Leveling, Places, Placing, Pyramid, answer};
 use super::sight::{Domain, Sight};
-use super::{Jobs, stamp_of};
-use crate::Pending;
+use super::{Jobs, Working, stamp_of};
 use crate::data::{Column, Field, Keyed, Name, Named, Reference, Snapshot, Table, UNWIRED, Version};
+use crate::expr::Expr;
 use crate::expr::cpu::Rows;
-use crate::expr::{Expr, Node};
 use crate::gpu::shaders::PAGE_ROWS;
 use crate::host::Job;
 
@@ -128,7 +127,7 @@ impl Tiled {
     /// Whether every paged table draws from its pyramid: no pyramid job is pending and no table
     /// draws its sample.
     pub(crate) fn complete(&self) -> bool {
-        self.sets.iter().all(|s| s.working.is_none() && !s.sampling)
+        self.sets.iter().all(|s| !s.working.busy() && !s.sampling)
     }
 
     /// The bounds of every row of paged table `table` of dataset `data` (west, south, east, north,
@@ -156,10 +155,9 @@ impl Placed {
     }
 }
 
-/// A dataset's pending pyramid job: the tables it answers, each with its index among those asked,
-/// its order version when asked, and its bounds; and the square the pyramids tile.
-struct Working {
-    pending: Pending<Vec<u8>>,
+/// What a dataset's pyramid job answers: the tables, each with its index among those asked, its
+/// order version when asked, and its bounds; and the square the pyramids tile.
+struct Pyramids {
     tables: Vec<(u32, Name, Version, Option<[f64; 4]>)>,
     domain: Domain,
 }
@@ -210,7 +208,8 @@ struct Set {
     stamp: u64,
     /// Each table's latest pyramid.
     placed: Named<Placed>,
-    working: Option<Working>,
+    /// The pyramid job, for the stamp it was asked at.
+    working: Working<Pyramids>,
     /// The inputs of the last pyramid request, by table.
     read: Named<Read>,
     /// Per table: the stamp of its inputs, the rows that sampled edges ending at it end at (lifted
@@ -226,7 +225,7 @@ impl Set {
             name,
             stamp: 0,
             placed: Named::default(),
-            working: None,
+            working: Working::default(),
             read: Named::default(),
             lifted: Named::default(),
             sampling: false,
@@ -342,21 +341,18 @@ impl Set {
                 }
                 let served = planned.as_is() || self.placed.get(&table.name).is_some_and(|p| p.serves(table));
                 let appended = table.len().saturating_sub(read.rows);
-                self.working.is_some() || (served && appended < (read.rows / 8).max(PAGE_ROWS as usize))
+                self.working.busy() || (served && appended < (read.rows / 8).max(PAGE_ROWS as usize))
             })
     }
 
     /// Takes the pyramids of a finished job. Returns true when a job succeeded. A failed job is not
     /// retried until its inputs change.
     fn land(&mut self) -> bool {
-        let Some(working) = &self.working else { return false };
-        let Some(landed) = working.pending.take() else { return false };
-        let working = self.working.take().expect("under way");
-        let Ok(bytes) = landed else { return false };
+        let Some((_, asked, Ok(bytes))) = self.working.landed() else { return false };
         for (index, pyramid) in Pyramid::read(&bytes) {
-            if let Some((_, name, order, bounds)) = working.tables.iter().find(|t| t.0 == index) {
+            if let Some((_, name, order, bounds)) = asked.tables.iter().find(|t| t.0 == index) {
                 let placed =
-                    Placed { order: *order, domain: working.domain, pyramid: Arc::new(pyramid), bounds: *bounds };
+                    Placed { order: *order, domain: asked.domain, pyramid: Arc::new(pyramid), bounds: *bounds };
                 self.placed.insert(name.clone(), placed);
             }
         }
@@ -367,7 +363,7 @@ impl Set {
     /// in one job for the dataset.
     fn level(&mut self, placing: &[(&Table, &Planned)], ask: &Ask<'_>, jobs: &mut Jobs<'_>) {
         // Drop any pending job; its answer would no longer serve.
-        self.working = None;
+        self.working.cancel();
         self.read =
             placing.iter().map(|(table, planned)| (table.name.clone(), Read::new(table, planned, ask.earth))).collect();
         let (leveling, bounds) = leveling(ask, placing);
@@ -393,8 +389,7 @@ impl Set {
             }
             return;
         }
-        let pending = jobs.spawn(Job::pyramid(&leveling));
-        self.working = Some(Working { pending, tables, domain });
+        self.working.start(self.stamp, jobs.spawn(Job::pyramid(&leveling)), Pyramids { tables, domain });
     }
 }
 
@@ -554,21 +549,11 @@ fn column_of<'t>(table: &'t Table, name: &Name) -> Option<&'t Column> {
 
 /// The fields `expr` reads of its mark's own table.
 fn fields_of(expr: &Expr, out: &mut Vec<Name>) {
-    match &*expr.0 {
-        Node::Field(f) if f.from.is_none() => out.push(f.name.clone()),
-        Node::Unary(_, a) | Node::Is(a, _) => fields_of(a, out),
-        Node::Binary(_, a, b) => {
-            fields_of(a, out);
-            fields_of(b, out);
+    expr.for_each_field(&mut |f| {
+        if f.from.is_none() {
+            out.push(f.name.clone());
         }
-        Node::When(c, a, b) => {
-            fields_of(c, out);
-            fields_of(a, out);
-            fields_of(b, out);
-        }
-        Node::Scale { input, .. } | Node::Colormap { input, .. } => fields_of(input, out),
-        _ => {}
-    }
+    });
 }
 
 /// The box (west, south, east, north) around every placed row of `places`; inverted when none is.
@@ -699,5 +684,13 @@ mod tests {
         assert!(order.sampled() <= 300, "lifted rows count toward the sample's 300 rows");
         let again = lift(&drawn, &[1], &[10, 10], 0, 300, Some(&(from, lifted, step)));
         assert_eq!(again.0, from, "computed once while its edges are unchanged");
+    }
+
+    #[test]
+    fn a_pyramid_reads_every_field_its_priority_tests() {
+        let priority = crate::when(crate::field("name").contains("lake")).then(crate::field("size")).otherwise(0.0);
+        let x = [crate::field("x"), crate::field("y")];
+        let planned = Planned { draw: Draw::Tiles { rows: 100 }, priority: Some(priority), place: Place::Points(x) };
+        assert_eq!(fields_read(&planned), ["name", "size", "x", "y"].map(Name::from));
     }
 }

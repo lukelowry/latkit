@@ -1,16 +1,16 @@
 use std::time::Duration;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
-use super::form::{Presets, preset_or, presets, seconds};
+use super::form::{preset_schema, presets, seconds};
 
 /// How a view responds to the pointer and keyboard, and how much it animates on its own: a preset
 /// (`"none"` or `"inspect"`), or options over the defaults. Each mark controls whether its own rows
 /// pick, select, and drag; these options control the view itself.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = presets::<Controls>)]
+#[schemars(transform = preset_schema::<Controls>)]
 pub struct Controls {
     /// Whether dragging the background pans the camera. Default `true`.
     pub pan: bool,
@@ -87,27 +87,7 @@ pub enum Motion {
     Reduced,
 }
 
-impl Presets for Controls {
-    const NAMES: &'static [&'static str] = &["none", "inspect"];
-
-    fn preset(name: &str) -> Option<Controls> {
-        match name {
-            "none" => Some(Controls::none()),
-            "inspect" => Some(Controls::inspect()),
-            _ => None,
-        }
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Controls, D::Error> {
-        Controls::deserialize(deserializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Controls {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Controls, D::Error> {
-        preset_or(deserializer)
-    }
-}
+presets!(Controls { "none" => Controls::none(), "inspect" => Controls::inspect() });
 
 impl Default for Controls {
     fn default() -> Controls {

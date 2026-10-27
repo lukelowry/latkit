@@ -12,10 +12,11 @@ use super::gestures::Gesture;
 use super::marks::{Holding, Shown};
 use super::sync::Plan;
 use super::{Device, View};
+use crate::derive::Working;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
-use crate::{Camera, Name, Row};
+use crate::{Camera, Name, Row, wire};
 
 /// A hit, with its depth (for dragging) and, for an edge, the nearer endpoint: 0 for the first,
 /// 1 for the second.
@@ -61,17 +62,34 @@ impl Drew {
     pub(super) fn row(&self, i: usize, held: u32) -> Option<(Row, usize)> {
         let mark = self.marks.get(i)?;
         let holding = mark.holding.as_ref()?;
-        let r = match &holding.drawing {
-            Some(drawing) => drawing.source(held)?,
-            None => (held < holding.table.len() as u32).then_some(held)?,
-        };
+        let r = holding.source_row(held)?;
         let id = holding.table.ids.id(r as usize)?;
         Some((Row { data: mark.data.clone(), table: mark.table.clone(), id }, r as usize))
     }
 
-    /// The name of mark `i`.
-    pub(super) fn name(&self, i: usize) -> Option<Name> {
-        self.marks.get(i)?.name.clone()
+    /// The hit at held row `held` of mark `i` as the frame drew it: at screen `point` and `depth`,
+    /// `distance` 1/64 CSS pixels from where it was asked, on `part` (a port's number from 1, or a
+    /// segment's index along its path). `None` when the frame held no such row.
+    pub(super) fn hit(
+        &self,
+        i: usize,
+        held: u32,
+        point: [f32; 2],
+        depth: f32,
+        distance: u32,
+        part: u32,
+    ) -> Option<Hit> {
+        let (row, at) = self.row(i, held)?;
+        Some(Hit {
+            row,
+            mark: self.marks.get(i)?.name.clone(),
+            index: i,
+            point,
+            position: self.projected.position(self.projected.unproject(point.map(f64::from), f64::from(depth))),
+            distance: distance as f32 / 64.0,
+            port: self.port(i, part),
+            sample: self.sample(i, at, part),
+        })
     }
 
     /// Whether a box's selection picks mark `i`'s rows.
@@ -80,7 +98,7 @@ impl Drew {
     }
 
     /// The name of port `number` of vertex mark `i`, numbered from 1; `None` for 0, the marker.
-    pub(super) fn port(&self, i: usize, number: u32) -> Option<Name> {
+    fn port(&self, i: usize, number: u32) -> Option<Name> {
         let mark = self.marks.get(i)?;
         if !mark.vertices || number == 0 {
             return None;
@@ -89,7 +107,7 @@ impl Drew {
     }
 
     /// The sample that point `point` of row `row`'s traced path shows, on mark `i` tracing a field.
-    pub(super) fn sample(&self, i: usize, row: usize, point: u32) -> Option<Sample> {
+    fn sample(&self, i: usize, row: usize, point: u32) -> Option<Sample> {
         let mark = self.marks.get(i)?;
         let (field, plan) = mark.traced.as_ref()?;
         let (level, index, side) = plan.entry(point)?;
@@ -101,18 +119,14 @@ impl Drew {
         let value = samples.entry(row, level, side, index)?;
         Some(Sample { frame, at: samples.drawn_at(level, index)?, value })
     }
-
-    /// The position of screen point `point` at `depth`, through the frame's camera.
-    pub(super) fn position(&self, point: [f32; 2], depth: f64) -> [f64; 3] {
-        self.projected.position(self.projected.unproject(point.map(f64::from), depth))
-    }
 }
 
 #[derive(Default)]
 pub(crate) struct Probing {
     /// The next point to probe.
     pub(crate) wanted: Option<[f32; 2]>,
-    reading: Option<([f32; 2], Readback, Drew)>,
+    /// The probe being read back: the point it asked about, and what its frame drew.
+    reading: Working<([f32; 2], Drew), Readback>,
     /// The latest answer and the point it was asked for.
     pub(crate) latest: Option<([f32; 2], Answer)>,
 }
@@ -120,7 +134,7 @@ pub(crate) struct Probing {
 impl Probing {
     /// Whether a point is waiting for a frame to probe it. Never while a probe is being read back.
     pub(crate) fn due(&self) -> bool {
-        self.wanted.is_some() && self.reading.is_none()
+        self.wanted.is_some() && !self.reading.busy()
     }
 
     pub(crate) fn hovered(&self) -> Option<&Probed> {
@@ -131,7 +145,7 @@ impl Probing {
     /// is pending.
     pub(crate) fn at(&self, point: [f32; 2]) -> Option<Answer> {
         let (asked, answer) = self.latest.as_ref()?;
-        (self.wanted.is_none() && self.reading.is_none() && near(*asked, point, 2.0)).then(|| answer.clone())
+        (self.wanted.is_none() && !self.reading.busy() && near(*asked, point, 2.0)).then(|| answer.clone())
     }
 }
 
@@ -151,7 +165,7 @@ impl View {
         {
             self.probing.wanted.get_or_insert(pointer.point);
         }
-        if self.probing.reading.is_some() || !answers {
+        if self.probing.reading.busy() || !answers {
             return None;
         }
         // Where nothing is drawn, there is nothing to probe.
@@ -166,7 +180,8 @@ impl View {
     }
 
     pub(super) fn probing(&mut self, point: [f32; 2], readback: Readback) {
-        self.probing.reading = Some((point, readback, self.drew()));
+        let drew = self.drew();
+        self.probing.reading.start(0, readback, (point, drew));
     }
 
     /// A record of what this frame drew, for decoding answers about it.
@@ -198,11 +213,8 @@ impl View {
 
     /// Hands a finished probe's answer to hover and gestures.
     pub(super) fn settle_probe(&mut self) {
-        let Some((point, readback, _)) = &self.probing.reading else { return };
-        let Some(bytes) = readback.take() else { return };
-        let point = *point;
-        let (_, _, drew) = self.probing.reading.take().expect("reading");
-        let answer = bytes.map_or_else(|_| Answer::default(), |bytes| answer(bytemuck::cast_slice(&bytes), &drew));
+        let Some((_, (point, drew), bytes)) = self.probing.reading.landed() else { return };
+        let answer = bytes.map_or_else(|_| Answer::default(), |bytes| answer(&wire::words(&bytes), &drew));
         self.landed(point, answer);
     }
 
@@ -240,22 +252,11 @@ fn hit(word: &impl Fn(u32) -> u32, drew: &Drew) -> Option<Probed> {
     if key == wgsl::NONE || word(wgsl::PROBE_INSTANCE) == 0 {
         return None;
     }
-    let mark = 255 - (key & 255) as usize;
-    // The probe reports a held row; map it to its table row.
-    let (row, at) = drew.row(mark, word(wgsl::PROBE_ROW))?;
     let depth = f32::from_bits(word(wgsl::PROBE_DEPTH));
     let point = [f32::from_bits(word(wgsl::PROBE_X)), f32::from_bits(word(wgsl::PROBE_Y))];
-    let hit = Hit {
-        row,
-        mark: drew.name(mark),
-        index: mark,
-        point,
-        position: drew.position(point, f64::from(depth)),
-        distance: (key >> 8) as f32 / 64.0,
-        port: drew.port(mark, word(wgsl::PROBE_SEGMENT)),
-        sample: drew.sample(mark, at, word(wgsl::PROBE_SEGMENT)),
-    };
-    Some(Probed { hit, depth, end: word(wgsl::PROBE_SEGMENT) })
+    let part = word(wgsl::PROBE_SEGMENT);
+    let hit = drew.hit(255 - (key & 255) as usize, word(wgsl::PROBE_ROW), point, depth, key >> 8, part)?;
+    Some(Probed { hit, depth, end: part })
 }
 
 impl super::marks::Shown {

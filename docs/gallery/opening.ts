@@ -8,8 +8,8 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { Patch, reference, type ExprInput } from 'latkit';
-import { angles, shifts } from './flow.ts';
-import { levelOf, readCase } from './grids.ts';
+import { BASE, angles, flows, shifts } from './flow.ts';
+import { readCase } from './grids.ts';
 import { THEME, worldMap, type Piece } from './look.ts';
 import { STATES } from './grid.ts';
 
@@ -21,49 +21,41 @@ function frequency(): Float32Array {
   return Float32Array.from(tenMicrohertz, (v) => v * 1e-5);
 }
 
-export default function opening(): Piece {
-  const c = readCase('activsg70k');
+export default async function opening(): Promise<Piece> {
+  const c = await readCase('activsg70k');
   const [n, m] = [c.header.buses, c.header.branches];
-  const ends = c.array('branch.ends', Uint32Array);
-  const kv = c.array('bus.kv', Float32Array);
   const number = c.array('bus.number', Uint32Array);
   const load = c.array('bus.load', Float32Array);
   const generation = c.array('bus.generation', Float32Array);
   const net = {
     buses: n,
-    from: Uint32Array.from({ length: m }, (_, e) => ends[2 * e]!),
-    to: Uint32Array.from({ length: m }, (_, e) => ends[2 * e + 1]!),
+    from: c.from,
+    to: c.to,
     reactance: c.array('branch.reactance', Float32Array),
   };
   const [i, j] = [number.indexOf(59757), number.indexOf(59774)];
   const line = net.from.findIndex(
     (a, e) => (a === i && net.to[e] === j) || (a === j && net.to[e] === i),
   );
-  // Injections on a 100 MVA base, so the angles come out in radians.
+  // Injections in per unit, so the angles come out in radians.
   const theta = angles(
     net,
-    Float64Array.from({ length: n }, (_, b) => (generation[b]! - load[b]!) / 100),
+    Float64Array.from({ length: n }, (_, b) => (generation[b]! - load[b]!) / BASE),
   );
-  const shift = shifts(net, theta, line);
-  const mw = (e: number, angle: Float64Array) =>
-    ((angle[net.from[e]!]! - angle[net.to[e]!]!) * 100) /
-    Math.max(Math.abs(net.reactance[e]!), 1e-4);
+  const moved = flows(net, shifts(net, theta, line));
   // Each branch's change in flow magnitude once the line opens, as asinh(ΔMW / 4), so a change of a
   // few MW still shows.
-  const gain = Float32Array.from({ length: m }, (_, e) => {
-    const before = mw(e, theta);
-    return Math.asinh((Math.abs(before + mw(e, shift)) - Math.abs(before)) / 4);
-  });
-  const level = Float32Array.from({ length: m }, (_, e) =>
-    levelOf(Math.max(kv[net.from[e]!]!, kv[net.to[e]!]!)),
+  const gain = Float32Array.from(flows(net, theta), (before, e) =>
+    Math.asinh((Math.abs(before + moved[e]!) - Math.abs(before)) / 4),
   );
+  const level = c.lineLevel;
   const hz = frequency();
   // A pole to the ground from one bus of 345 kV or more in each 0.75° cell, so the heights are
   // readable without crowding the view with poles.
   const cells = new Set<string>();
   const pole = Float32Array.from({ length: n }, (_, b) => {
-    const cell = `${Math.floor(c.positions[2 * b]! / 0.75)} ${Math.floor(c.positions[2 * b + 1]! / 0.75)}`;
-    if (kv[b]! < 345 || cells.has(cell)) return 0;
+    const cell = `${Math.floor(c.lon[b]! / 0.75)} ${Math.floor(c.lat[b]! / 0.75)}`;
+    if (c.kv[b]! < 345 || cells.has(cell)) return 0;
     cells.add(cell);
     return 1;
   });
@@ -72,9 +64,9 @@ export default function opening(): Piece {
       'Bus',
       { count: n },
       {
-        lon: Float64Array.from({ length: n }, (_, b) => c.positions[2 * b]!),
-        lat: Float64Array.from({ length: n }, (_, b) => c.positions[2 * b + 1]!),
-        kv,
+        lon: c.lon,
+        lat: c.lat,
+        kv: c.kv,
         hz,
         // Height as a fraction of the earth's radius: zero at deviations of -16 mHz and below,
         // rising with frequency, with the highest peaks compressed by asinh.

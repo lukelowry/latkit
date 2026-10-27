@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
-use super::form::{Presets, preset_or, presets};
+use super::form::{preset_schema, presets};
 use super::mark::Markers;
 use crate::gpu::shaders as wgsl;
 use crate::{Color, Expr, Image};
@@ -12,7 +12,7 @@ use crate::{Color, Expr, Image};
 /// `{ shape | block | gauge | pie | icon | wgsl: options }`. An ellipse by default.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = presets::<Marker>)]
+#[schemars(transform = preset_schema::<Marker>)]
 pub enum Marker {
     /// A filled shape.
     Shape(Shape),
@@ -75,30 +75,13 @@ pub enum Shape {
     Diamond,
 }
 
-impl Presets for Marker {
-    const NAMES: &'static [&'static str] = &["ellipse", "rectangle", "rounded", "diamond", "block"];
-
-    fn preset(name: &str) -> Option<Marker> {
-        Some(match name {
-            "ellipse" => Marker::Shape(Shape::Ellipse),
-            "rectangle" => Marker::Shape(Shape::Rectangle),
-            "rounded" => Marker::Shape(Shape::Rounded),
-            "diamond" => Marker::Shape(Shape::Diamond),
-            "block" => Marker::block(),
-            _ => return None,
-        })
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Marker, D::Error> {
-        Marker::deserialize(deserializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Marker {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Marker, D::Error> {
-        preset_or(deserializer)
-    }
-}
+presets!(Marker {
+    "ellipse" => Marker::Shape(Shape::Ellipse),
+    "rectangle" => Marker::Shape(Shape::Rectangle),
+    "rounded" => Marker::Shape(Shape::Rounded),
+    "diamond" => Marker::Shape(Shape::Diamond),
+    "block" => Marker::block(),
+});
 
 impl Default for Marker {
     fn default() -> Marker {

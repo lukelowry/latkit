@@ -45,6 +45,7 @@ use super::samples::{self, MAX_LEVEL, Run, Samples};
 use super::table::{Field, Reference, Table};
 use super::text::Text;
 use super::values::{Array, Values};
+use crate::wire::{In, Out};
 use crate::{Error, Result};
 
 const MAGIC: &[u8; 4] = b"LATK";
@@ -93,86 +94,85 @@ const STORE_TEXT: u8 = 6;
 const STORE_GEOMETRY: u8 = 7;
 
 pub(crate) fn encode(patch: &Patch) -> Vec<u8> {
-    let mut w = Writer(Vec::new());
-    w.0.extend_from_slice(MAGIC);
-    w.0.extend_from_slice(&[0; 8]);
-    w.str(patch.data.as_deref().unwrap_or(""));
-    w.u32(patch.ops.len());
+    let mut w = Writer(Out::default());
+    w.0.0.extend_from_slice(MAGIC);
+    w.0.u64(0);
+    w.0.str(patch.data.as_deref().unwrap_or(""));
+    w.0.len(patch.ops.len());
     for op in &patch.ops {
         match op {
             Op::Axis { name, unit } => {
-                w.u8(OP_AXIS);
-                w.str(name);
-                w.str(unit);
+                w.0.u8(OP_AXIS);
+                w.0.str(name);
+                w.0.str(unit);
             }
             Op::Replace(table) => {
-                w.u8(OP_REPLACE);
+                w.0.u8(OP_REPLACE);
                 w.table(table);
             }
             Op::Set(table) => {
-                w.u8(OP_SET);
+                w.0.u8(OP_SET);
                 w.table(table);
             }
             Op::Remove { table, ids } => {
-                w.u8(OP_REMOVE);
-                w.str(table);
+                w.0.u8(OP_REMOVE);
+                w.0.str(table);
                 w.ids(ids);
             }
             Op::Append { table, at, ids, fields } => {
-                w.u8(OP_APPEND);
-                w.str(table);
+                w.0.u8(OP_APPEND);
+                w.0.str(table);
                 match ids {
                     Some(ids) => {
-                        w.u8(1);
+                        w.0.u8(1);
                         w.ids(ids);
                     }
-                    None => w.u8(0),
+                    None => w.0.u8(0),
                 }
-                w.u32(at.len());
-                for &t in at {
-                    w.f64(t);
-                }
-                w.u32(fields.len());
+                w.0.len(at.len());
+                w.0.pod(at);
+                w.0.len(fields.len());
                 for (name, values) in fields {
-                    w.str(name);
+                    w.0.str(name);
                     w.values(values);
                 }
             }
             Op::Forget { before } => {
-                w.u8(OP_FORGET);
-                w.f64(*before);
+                w.0.u8(OP_FORGET);
+                w.0.f64(*before);
             }
             Op::Frames { table, field, run, at, values } => {
-                w.u8(OP_FRAMES);
-                w.str(table);
-                w.str(field);
+                w.0.u8(OP_FRAMES);
+                w.0.str(table);
+                w.0.str(field);
                 let per_row = run.len() * samples::sides(run.level);
-                w.u32(values.len().checked_div(per_row).unwrap_or(0));
+                w.0.len(values.len().checked_div(per_row).unwrap_or(0));
                 w.run(run, at, values);
             }
         }
     }
-    let length = w.0.len() as u64;
-    w.0[MAGIC.len()..HEADER].copy_from_slice(&length.to_le_bytes());
-    w.0
+    let mut bytes = w.0.0;
+    let length = bytes.len() as u64;
+    bytes[MAGIC.len()..HEADER].copy_from_slice(&length.to_le_bytes());
+    bytes
 }
 
 /// Encodes `values` alone, in the format's `values` layout. Jobs use it to pass columns to and
 /// from the host.
 #[cfg(feature = "gpu")]
 pub(crate) fn values_bytes(values: &Values) -> Vec<u8> {
-    let mut w = Writer(Vec::new());
+    let mut w = Writer(Out::default());
     w.values(values);
-    w.0
+    w.0.0
 }
 
 /// Decodes values written by [`values_bytes`]. Errors if `bytes` are malformed or extend past
 /// the values.
 #[cfg(feature = "gpu")]
 pub(crate) fn read_values(bytes: &[u8]) -> Result<Values> {
-    let mut r = Reader { bytes, at: 0, remaining: DecodeLimits::default().decoded_bytes };
+    let mut r = Reader { input: In::new(bytes), remaining: DecodeLimits::default().decoded_bytes };
     let values = r.values()?;
-    if r.at != bytes.len() {
+    if !r.input.is_empty() {
         return Err(malformed("trailing bytes"));
     }
     Ok(values)
@@ -255,10 +255,10 @@ fn length(bytes: &[u8], limit: usize) -> Result<Option<usize>> {
 /// `bytes` holds only part of the frame.
 fn frame(bytes: &[u8], limits: DecodeLimits) -> Result<Option<(Patch, usize)>> {
     let Some(length) = length(bytes, limits.frame_bytes)? else { return Ok(None) };
-    let Some(frame) = bytes.get(..length) else { return Ok(None) };
-    let mut r = Reader { bytes: frame, at: HEADER, remaining: limits.decoded_bytes };
+    let Some(frame) = bytes.get(HEADER..length) else { return Ok(None) };
+    let mut r = Reader { input: In::new(frame), remaining: limits.decoded_bytes };
     let patch = r.patch()?;
-    if r.at != frame.len() {
+    if !r.input.is_empty() {
         return Err(malformed("a frame longer than its patch"));
     }
     Ok(Some((patch, length)))
@@ -314,70 +314,43 @@ fn too_long(limit: usize) -> Error {
     Error::Limit(format!("a patch longer than {limit} bytes").into())
 }
 
-struct Writer(Vec<u8>);
+/// Writes the format's parts.
+struct Writer(Out);
 
 impl Writer {
-    fn u8(&mut self, v: u8) {
-        self.0.push(v);
-    }
-
-    fn u32(&mut self, v: usize) {
-        self.0.extend_from_slice(&u32::try_from(v).expect("counts fit in u32").to_le_bytes());
-    }
-
-    fn u64(&mut self, v: u64) {
-        self.0.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn f64(&mut self, v: f64) {
-        self.0.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn str(&mut self, s: &str) {
-        self.u32(s.len());
-        self.0.extend_from_slice(s.as_bytes());
-    }
-
-    fn slice<T: bytemuck::Pod>(&mut self, values: &[T]) {
-        #[cfg(target_endian = "little")]
-        self.0.extend_from_slice(bytemuck::cast_slice(values));
-        #[cfg(target_endian = "big")]
-        compile_error!("latkit's byte format requires a little-endian target");
-    }
-
     fn table(&mut self, table: &Table) {
-        self.str(&table.name);
+        self.0.str(&table.name);
         match &table.ids {
             RowIds::Count(n) => {
-                self.u8(0);
-                self.u32(*n as usize);
+                self.0.u8(0);
+                self.0.u32(*n);
             }
             RowIds::Listed(column) => {
-                self.u8(1);
+                self.0.u8(1);
                 self.values(&column.values());
             }
         }
-        self.u32(table.fields.len());
+        self.0.len(table.fields.len());
         for (name, field) in &table.fields {
-            self.str(name);
+            self.0.str(name);
             match field {
                 Field::Values(column, _) => {
-                    self.u8(FIELD_VALUES);
+                    self.0.u8(FIELD_VALUES);
                     self.column(column);
                 }
                 Field::Reference(reference) => {
-                    self.u8(FIELD_REFERENCE);
-                    self.str(&reference.to);
+                    self.0.u8(FIELD_REFERENCE);
+                    self.0.str(&reference.to);
                     self.column(&reference.ids);
                 }
                 Field::Sampled(samples, _) => {
-                    self.u8(FIELD_SAMPLED);
-                    self.u32(table.len());
-                    self.u64(samples.start());
-                    self.u64(samples.end() - samples.start());
-                    self.u8(samples.levels() as u8);
+                    self.0.u8(FIELD_SAMPLED);
+                    self.0.len(table.len());
+                    self.0.u64(samples.start());
+                    self.0.u64(samples.end() - samples.start());
+                    self.0.u8(samples.levels() as u8);
                     let runs = samples.stored_runs();
-                    self.u32(runs.len());
+                    self.0.len(runs.len());
                     let rows: Vec<usize> = (0..table.len()).collect();
                     for run in &runs {
                         let (at, values) = samples.read(run, &rows);
@@ -391,21 +364,21 @@ impl Writer {
     /// Writes `run`: its level, first entry, and entry count, then its coordinates `at` and its
     /// `values`.
     fn run(&mut self, run: &Run, at: &[f64], values: &[f32]) {
-        self.u8(run.level as u8);
-        self.u64(run.entries.start);
-        self.u32(run.len());
-        self.slice(at);
-        self.slice(values);
+        self.0.u8(run.level as u8);
+        self.0.u64(run.entries.start);
+        self.0.len(run.len());
+        self.0.pod(at);
+        self.0.pod(values);
     }
 
     fn ids(&mut self, ids: &Ids) {
         match &ids.0 {
             IdList::Count(n) => {
-                self.u8(0);
-                self.u32(*n as usize);
+                self.0.u8(0);
+                self.0.u32(*n);
             }
             IdList::Listed(values) => {
-                self.u8(1);
+                self.0.u8(1);
                 self.values(values);
             }
         }
@@ -424,51 +397,54 @@ impl Writer {
             Array::U32(v) => self.numbers(STORE_U32, v),
             Array::U64(v) => self.numbers(STORE_U64, v),
             Array::Bool(bits) => {
-                self.u8(STORE_BOOL);
-                self.u32(len);
-                self.slice(&bits.to_words());
+                self.0.u8(STORE_BOOL);
+                self.0.len(len);
+                self.0.pod(&bits.to_words());
             }
             Array::Text(text) => {
-                self.u8(STORE_TEXT);
-                self.u32(len);
+                self.0.u8(STORE_TEXT);
+                self.0.len(len);
                 let (offsets, bytes) = text.compact();
-                self.slice(&offsets);
-                self.str(bytes);
+                self.0.pod(&offsets);
+                self.0.str(bytes);
             }
             Array::Geometry(geometry) => {
-                self.u8(STORE_GEOMETRY);
-                self.u32(len);
-                self.u8(geometry.depth());
+                self.0.u8(STORE_GEOMETRY);
+                self.0.len(len);
+                self.0.u8(geometry.depth());
                 let (levels, coords) = geometry.compact();
                 for level in &levels {
-                    self.u32(level.len());
-                    self.slice(level);
+                    self.0.len(level.len());
+                    self.0.pod(level);
                 }
-                self.u32(coords.len());
-                self.slice(bytemuck::cast_slice::<[f64; 2], f64>(&coords));
+                self.0.len(coords.len());
+                self.0.pod(&coords);
             }
         }
         match &values.valid {
             Some(bits) => {
-                self.u8(1);
-                self.slice(&bits.to_words());
+                self.0.u8(1);
+                self.0.pod(&bits.to_words());
             }
-            None => self.u8(0),
+            None => self.0.u8(0),
         }
     }
 
     fn numbers<T: bytemuck::Pod>(&mut self, store: u8, values: &[T]) {
-        self.u8(store);
-        self.u32(values.len());
-        self.slice(values);
+        self.0.u8(store);
+        self.0.len(values.len());
+        self.0.pod(values);
     }
 }
 
 /// Decodes one frame whose bytes are all present. `remaining` is the decoded-storage budget left.
 struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
+    input: In<'a>,
     remaining: usize,
+}
+
+fn truncated() -> Error {
+    malformed("truncated")
 }
 
 impl Reader<'_> {
@@ -481,44 +457,34 @@ impl Reader<'_> {
         Ok(())
     }
 
-    /// Errors as truncated unless `n` more bytes remain in the frame.
-    fn reach(&self, n: usize) -> Result<()> {
-        if self.at.saturating_add(n) > self.bytes.len() {
-            return Err(malformed("truncated"));
-        }
-        Ok(())
-    }
-
     fn take(&mut self, n: usize) -> Result<&[u8]> {
-        self.reach(n)?;
-        let end = self.at + n;
-        let slice = &self.bytes[self.at..end];
-        self.at = end;
-        Ok(slice)
+        self.input.bytes(n).ok_or_else(truncated)
     }
 
     fn u8(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
+        self.input.u8().ok_or_else(truncated)
     }
 
     fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("four bytes")))
+        self.input.u32().ok_or_else(truncated)
     }
 
     /// Reads a `u32` count of items of at least `size` bytes each. Errors if the remaining bytes
     /// cannot hold that many, so a corrupt count cannot cause a huge allocation.
     fn len(&mut self, size: usize) -> Result<usize> {
         let n = self.u32()? as usize;
-        self.reach(n.saturating_mul(size))?;
+        if !self.input.has(n.saturating_mul(size)) {
+            return Err(truncated());
+        }
         Ok(n)
     }
 
     fn u64(&mut self) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes")))
+        self.input.u64().ok_or_else(truncated)
     }
 
     fn f64(&mut self) -> Result<f64> {
-        Ok(f64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes")))
+        self.input.f64().ok_or_else(truncated)
     }
 
     fn name(&mut self) -> Result<Name> {
@@ -534,10 +500,10 @@ impl Reader<'_> {
         // Charge four times the raw size, to cover conversion into column pages and the sample
         // levels derived from runs.
         self.charge(n, 4 * size_of::<T>())?;
-        let bytes = self.take(n.checked_mul(size_of::<T>()).ok_or_else(|| malformed("too large"))?)?;
-        let mut out = vec![T::zeroed(); n];
-        bytemuck::cast_slice_mut::<T, u8>(&mut out).copy_from_slice(bytes);
-        Ok(out)
+        if n.checked_mul(size_of::<T>()).is_none() {
+            return Err(malformed("too large"));
+        }
+        self.input.pod(n).ok_or_else(truncated)
     }
 
     fn ids(&mut self) -> Result<Ids> {

@@ -39,14 +39,9 @@ impl Inputs {
                 Tiles::new(name.as_deref().unwrap_or_default(), path.to_string_lossy().as_ref())
             })
             .collect();
-        let cameras = job.camera.iter().map(|p| inputs::camera(p)).collect::<Result<Vec<_>, _>>()?;
-        for (i, camera) in cameras.iter().enumerate() {
-            if !camera.fits(scenes[i].1.space()) {
-                return Err(Failure::at(
-                    Error::invalid("the camera does not match the space of its scene"),
-                    &job.camera[i],
-                ));
-            }
+        let cameras: Vec<Camera> = job.camera.iter().map(|c| inputs::json(c, "--camera")).collect::<Result<_, _>>()?;
+        if let Some(i) = cameras.iter().zip(&scenes).position(|(camera, (_, scene))| !camera.fits(scene.space())) {
+            return Err(Error::invalid("the camera does not match the space of its scene").at(i).at("--camera").into());
         }
         let inputs = Inputs { scenes, data, tiles, cameras, fit: inputs::fit(&job.fit)?, host };
         for (path, scene) in &inputs.scenes {
@@ -97,8 +92,8 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
         let image = block(job.deadline, shot.image(&mut views.iter_mut().collect::<Vec<_>>()))?;
         let mut out = Output::create(output)?;
         match job.format().image(job.quality) {
-            Some(format) => image.write(format, &mut out).map_err(|e| Failure::at(e, output))?,
-            None => std::io::Write::write_all(&mut out, &image.rgba).map_err(|e| Failure::io(&e, output))?,
+            Some(format) => image.write(format, &mut out)?,
+            None => out.put(&image.rgba)?,
         }
         out.commit()?;
         report.done(1, &views, &gpu);
@@ -143,8 +138,7 @@ struct Sequence<'a> {
 impl Sequence<'_> {
     fn run<S: Sink + Commit>(&mut self, frames: Ahead, sink: S) -> Result<(), Failure> {
         let (job, path) = (self.job, self.path);
-        let output = job.output.as_deref().unwrap_or(path);
-        let mut video = job.shot().video(self.gpu, job.fps, sink).map_err(|e| Failure::at(e, output))?;
+        let mut video = job.shot().video(self.gpu, job.fps, sink)?;
         let mut any = false;
         for next in frames {
             let (index, frame, patches) = next?;
@@ -152,14 +146,16 @@ impl Sequence<'_> {
             let at = |error: Error| Failure::at(error.at(index).at("frames"), path);
             apply(&self.inputs.data, &self.inputs.scenes, &frame, patches).map_err(at)?;
             steer(self.views, &frame);
-            block(job.deadline, video.frame(&mut self.views.iter_mut().collect::<Vec<_>>())).map_err(at)?;
+            // Only invalid input is the frame's fault; an output that fails names itself.
+            let drawn = block(job.deadline, video.frame(&mut self.views.iter_mut().collect::<Vec<_>>()));
+            drawn.map_err(|error| if let Error::Invalid { .. } = error { at(error) } else { error.into() })?;
             self.report.progress(video.frames(), video.time());
         }
         if !any {
             return Err(Failure::at(Error::invalid("the frames file has no frames"), path));
         }
         let frames = video.frames();
-        block(job.deadline, video.finish()).map_err(|e| Failure::at(e, output))?.commit()?;
+        block(job.deadline, video.finish())?.commit()?;
         self.report.done(frames, self.views, self.gpu);
         Ok(())
     }

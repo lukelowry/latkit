@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Patch } from 'latkit';
+import { random } from '../src/random.ts';
 
 /** The bus count, the area names, the seconds between samples, and the seconds in a day. */
 const BUSES = 64;
@@ -23,16 +24,6 @@ const DISTURBANCES = [
   { at: 13.8 * 3600, area: 4, depth: 0.07 },
   { at: 18.5 * 3600, area: 0, depth: 0.06 },
 ];
-
-/** A seeded random generator of numbers in [0, 1), the same as the examples' `random`. */
-function random(seed: number): () => number {
-  return () => {
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /** The system load at second `t` of the day, between 0 and 1. It is low at night and peaks in the
  * morning and evening. */

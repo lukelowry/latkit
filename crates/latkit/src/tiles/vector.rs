@@ -135,22 +135,24 @@ impl Fetched {
         if let Opened::Root(header, pending) = &self.opened {
             let header = *header;
             if let Some(landed) = pending.take() {
-                let opened = landed
-                    .map_err(|error| error.to_string())
-                    .and_then(|bytes| archive(header, &bytes).ok_or_else(|| corrupt(&self.url)));
-                self.opened = opened.unwrap_or_else(|reason| Opened::Failed(Error::Io(reason.into())));
+                let opened =
+                    landed.and_then(|bytes| archive(header, &bytes).ok_or_else(|| Error::invalid(corrupt(&self.url))));
+                self.opened = opened.unwrap_or_else(Opened::Failed);
             }
         }
         let landed: Vec<_> =
-            self.leaf_fetches.iter().filter_map(|(at, pending)| pending.take().map(|r| (*at, r.ok()))).collect();
+            self.leaf_fetches.iter().filter_map(|(at, pending)| pending.take().map(|r| (*at, r))).collect();
         for (at, bytes) in landed {
             self.leaf_fetches.remove(&at);
             let gzip = matches!(self.opened, Opened::Archive(h, _) if h.gzip_directories);
-            match bytes.and_then(|b| inflate(&b, gzip)).and_then(|b| Directory::decode(&b)) {
-                Some(leaf) => {
+            let leaf = bytes.and_then(|b| {
+                inflate(&b, gzip).and_then(|b| Directory::decode(&b)).ok_or_else(|| Error::invalid(corrupt(&self.url)))
+            });
+            match leaf {
+                Ok(leaf) => {
                     self.leaves.insert(at, leaf);
                 }
-                None => self.tiling.fail(Error::Io("a tile directory could not be read".into())),
+                Err(error) => self.tiling.fail(error),
             }
         }
         match &self.opened {

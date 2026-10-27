@@ -6,8 +6,10 @@
 //! the mark draws like any geometry. They are recomputed only when the data, the scene, or the
 //! layout's places change.
 
+use std::hash::Hash;
+
 use super::graph::{VertexMark, marks, position};
-use super::{Input, Tables, beside, kept};
+use super::{Input, Tables, beside, kept, stamp_with};
 use crate::data::{Field, Name, UNWIRED, Values};
 use crate::expr::cpu::Rows;
 use crate::{Mark, Space};
@@ -30,10 +32,10 @@ impl Stars {
         }
         let field = |t: &crate::Table, name: &str| t.field_named(name).map(Field::version);
         let placed: Vec<_> = places.iter().map(|(key, t)| (key, field(t, "x"), field(t, "y"))).collect();
-        let mut hasher = rustc_hash::FxHasher::default();
-        std::hash::Hash::hash(&(input.scene_version, placed), &mut hasher);
-        input.structure(&mut hasher);
-        let stamp = std::hash::Hasher::finish(&hasher).max(1);
+        let stamp = stamp_with(|hasher| {
+            (input.scene_version, placed).hash(hasher);
+            input.structure(hasher);
+        });
         if stamp == self.stamp {
             return false;
         }

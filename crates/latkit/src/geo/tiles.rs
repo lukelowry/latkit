@@ -1,7 +1,7 @@
 //! Vector tiles as data: tile URL templates, and decoding a tile into table rows with their shapes.
 
-use super::mvt::{self, Kind, Property, Shape};
-use crate::data::{Ids, Name, Patch, Table, Values};
+use super::mvt::{self, Kind, Shape};
+use crate::data::{Ids, Name, Patch, Table, Value, Values};
 use crate::host::Shaping;
 use crate::tiles::TileKey;
 
@@ -40,8 +40,7 @@ impl Template {
             bounds: Option<Vec<f64>>,
             scheme: Option<String>,
         }
-        let text = std::str::from_utf8(bytes).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
-        let json = crate::from_json::<TileJson>(text).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
+        let json = crate::json::from_bytes::<TileJson>(bytes).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
         let template = json.tiles.first().ok_or_else(|| format!("the TileJSON at {base} lists no tile URLs"))?;
         if let Some(format) = json.format.as_deref()
             && ["png", "jpg", "jpeg", "webp", "avif"].contains(&format)
@@ -101,7 +100,7 @@ pub(crate) fn decode(bytes: &[u8], key: TileKey, tables: &[Decoded]) -> Option<P
     for decoded in tables {
         let Some(layer) = layers.iter().find(|l| l.name == decoded.layer) else { continue };
         let mut shapes: Vec<Shape> = Vec::new();
-        let mut properties: Vec<&[(u32, Property)]> = Vec::new();
+        let mut properties: Vec<&[(u32, Value)]> = Vec::new();
         for feature in layer.features.iter().filter(|f| f.shape.kind() == decoded.kind) {
             match &feature.shape {
                 Shape::Points(points) => {
@@ -150,47 +149,17 @@ pub(crate) fn decode(bytes: &[u8], key: TileKey, tables: &[Decoded]) -> Option<P
             if key == GEOMETRY || shapes_field(key) {
                 continue;
             }
-            let values: Vec<Option<&Property>> = properties[..count]
+            let values: Vec<Option<Value>> = properties[..count]
                 .iter()
-                .map(|props| props.iter().find(|(i, _)| *i as usize == k).map(|(_, v)| v))
+                .map(|props| props.iter().find(|(i, _)| *i as usize == k).map(|(_, v)| v.clone()))
                 .collect();
             if values.iter().any(Option::is_some) {
-                table = table.field(key.as_str(), field(&values));
+                table = table.field(key.as_str(), Values::infer(&values));
             }
         }
         patch = patch.set(table);
     }
     Some(patch)
-}
-
-/// Converts a property's values into a field: numbers if every present value is a number, booleans
-/// if every one is a boolean, and text otherwise.
-fn field(values: &[Option<&Property>]) -> Values {
-    let present = || values.iter().flatten();
-    if present().all(|v| matches!(v, Property::Number(_))) {
-        return values
-            .iter()
-            .map(|v| v.and_then(|v| if let Property::Number(n) = v { Some(*n) } else { None }))
-            .collect::<Vec<_>>()
-            .into();
-    }
-    if present().all(|v| matches!(v, Property::Bool(_))) {
-        return values
-            .iter()
-            .map(|v| v.and_then(|v| if let Property::Bool(b) = v { Some(*b) } else { None }))
-            .collect::<Vec<_>>()
-            .into();
-    }
-    values.iter().map(|v| v.map(text)).collect::<Vec<Option<String>>>().into()
-}
-
-/// Formats a property as text.
-pub(crate) fn text(property: &Property) -> String {
-    match property {
-        Property::Text(t) => t.clone(),
-        Property::Number(n) => n.to_string(),
-        Property::Bool(b) => b.to_string(),
-    }
 }
 
 #[cfg(test)]

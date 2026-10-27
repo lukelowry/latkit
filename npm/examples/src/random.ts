@@ -8,3 +8,10 @@ export function random(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+/** Returns a seeded linear congruential generator of numbers in [0, 1): a simpler sequence than
+ * `random`'s, which the soft body's burst and the benchmark's data are drawn from. */
+export function congruential(seed: number): () => number {
+  let s = seed >>> 0 || 1;
+  return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+}

@@ -161,22 +161,29 @@ impl Shot {
     }
 
     /// Checks without a GPU that the shot's pictures can compose into `pixels`. Requires a positive
-    /// scale and panels that cover pixels. NV12 also requires a width that is a multiple of 4, a
-    /// height that is a multiple of 2, and no transparency.
+    /// scale, a size of at least one whole block of `pixels` (4×2 for NV12), and panels that cover
+    /// pixels. NV12 also requires no transparency.
     pub fn check(&self, pixels: Pixels) -> Result<()> {
         if !(self.scale.is_finite() && self.scale > 0.0) {
             return Err(Error::invalid("a shot's scale must be positive").at("scale"));
         }
-        self.panels.rects(self.size, align(pixels))?;
-        let [width, height] = self.size;
-        if pixels == Pixels::Nv12 && (width % 4 != 0 || height % 2 != 0) {
-            let reason = format!("NV12 video needs a width divisible by 4 and an even height, not {width}×{height}");
-            return Err(Error::invalid(reason).at("size"));
+        let size = self.rounded(pixels).size;
+        if size.contains(&0) {
+            let [width, height] = align(pixels);
+            return Err(Error::invalid(format!("must be at least {width}×{height} pixels")).at("size"));
         }
+        self.panels.rects(size, align(pixels))?;
         if pixels == Pixels::Nv12 && self.transparent {
             return Err(Error::invalid("a video has no alpha channel, so it cannot be transparent").at("transparent"));
         }
         Ok(())
+    }
+
+    /// This shot with its size rounded down to whole blocks of `pixels`: for NV12, a width that is
+    /// a multiple of 4 and an even height.
+    pub(crate) fn rounded(&self, pixels: Pixels) -> Shot {
+        let block = align(pixels);
+        Shot { size: [0, 1].map(|i| self.size[i] - self.size[i] % block[i]), ..self.clone() }
     }
 
     /// Takes the picture of `views`, one per panel, once every view is complete as the [`Capture`]
@@ -513,12 +520,13 @@ impl Drawing {
     }
 }
 
-/// The compose entry points for `pixels`: the background fill and the per-panel pass, plus the
-/// pixel block each thread writes.
-fn composing(pixels: Pixels) -> (&'static str, &'static str, [u32; 2]) {
+/// The compose passes for `pixels`: the background fill and the per-panel pass, plus the pixel
+/// block each thread writes.
+fn composing(pixels: Pixels) -> (Variant, Variant, [u32; 2]) {
+    let pass = |entry| Variant::compute(Shader::Compose, entry);
     match pixels {
-        Pixels::Rgba => ("fill_rgba", "rgba", [1, 1]),
-        Pixels::Nv12 => ("fill_nv12", "nv12", [4, 2]),
+        Pixels::Rgba => (pass("fill_rgba"), pass("rgba"), [1, 1]),
+        Pixels::Nv12 => (pass("fill_nv12"), pass("nv12"), [4, 2]),
     }
 }
 
@@ -527,14 +535,7 @@ impl Picture {
     /// together, and `waker` wakes when they finish.
     fn composes(&self, pixels: Pixels, waker: &Waker) -> bool {
         let (fill, each, _) = composing(pixels);
-        let needs: Vec<Asked> = self
-            .fill
-            .as_ref()
-            .map(|_| fill)
-            .into_iter()
-            .chain([each])
-            .map(|entry| Asked::Shader(Variant::compute(Shader::Compose, entry)))
-            .collect();
+        let needs: Vec<Asked> = self.fill.as_ref().map(|_| fill).into_iter().chain([each]).map(Asked::Shader).collect();
         let mut inner = self.gpu.0.lock();
         inner.pipelines.ask(self.gpu.device(), &needs, crate::gpu::pipelines::Urgency::Draw, waker);
         inner.pipelines.ready(&needs)
@@ -552,12 +553,12 @@ impl Picture {
         pass.set_bind_group(0, &inner.pipelines.empty, &[]);
         pass.set_bind_group(1, &inner.pipelines.empty, &[]);
         if let Some(group) = &self.fill {
-            pass.set_pipeline(&inner.pipelines.compute(device, Shader::Compose, fill));
+            pass.set_pipeline(&inner.pipelines.compute(device, fill));
             pass.set_bind_group(2, group, &[]);
             let [x, y] = groups(size);
             pass.dispatch_workgroups(x, y, 1);
         }
-        let pipeline = inner.pipelines.compute(device, Shader::Compose, each);
+        let pipeline = inner.pipelines.compute(device, each);
         pass.set_pipeline(&pipeline);
         for panel in &self.panels {
             pass.set_bind_group(2, &panel.group, &[]);

@@ -18,20 +18,19 @@
 //! are planned within a smaller part of the share until the share changes. That way the current
 //! drawing and its replacement both fit, with room left to keep idle pages.
 
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
-use rustc_hash::{FxHashMap, FxHasher};
+use rustc_hash::FxHashMap;
 
 use super::View;
 use super::marks::Shown;
 use crate::data::{Field, Keyed, Name, Table};
 use crate::derive::tiled::{Draw, Place, Planned, Plans};
-use crate::derive::{Derived, stamp_of};
+use crate::derive::{Derived, stamp_of, stamp_with};
 use crate::expr::compile::Words;
 use crate::gpu::arena::{path_page_bytes, rounded};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::{Ask, Ledger};
-use crate::scene::mark::MarkKind;
 use crate::{Expr, Kind, Mark, Space};
 
 /// Rows past which a table a mark places is paged: more than a screen shows at one row per cell.
@@ -166,17 +165,17 @@ impl View {
     /// A stamp of the costs' inputs: the scene, and for each table a mark draws, its dataset's
     /// schema, its row structure, its geometry's version, and whether it comes from tiles.
     fn costs_stamp(&self) -> u64 {
-        let mut hasher = FxHasher::default();
-        self.scene_version.hash(&mut hasher);
-        for shown in &self.marks {
-            let style = shown.mark.style();
-            let data = self.snapshot(&style.data);
-            let table = data.and_then(|d| d.table(&style.table));
-            let geometry = geometry_of(&shown.mark).and_then(|f| table?.field_named(&f)).map(Field::version);
-            let owned = self.derived.tiles.owns(&style.data);
-            (data.map(crate::Snapshot::schema), table.map(|t| t.structure), geometry, owned).hash(&mut hasher);
-        }
-        hasher.finish().max(1)
+        stamp_with(|hasher| {
+            self.scene_version.hash(hasher);
+            for shown in &self.marks {
+                let style = shown.mark.style();
+                let data = self.snapshot(&style.data);
+                let table = data.and_then(|d| d.table(&style.table));
+                let geometry = geometry_of(&shown.mark).and_then(|f| table?.field_named(&f)).map(Field::version);
+                let owned = self.derived.tiles.owns(&style.data);
+                (data.map(crate::Snapshot::schema), table.map(|t| t.structure), geometry, owned).hash(hasher);
+            }
+        })
     }
 
     /// Plans how each table the scene draws fits in `share` bytes given `costs`, giving paged
@@ -256,14 +255,8 @@ impl View {
         let mut plans = Plans::default();
         let mut costs: Keyed<(Name, Name), Cost> = Keyed::default();
         let mut shared: FxHashMap<u64, (f64, f64)> = FxHashMap::default();
-        // Tables that faces end at keep the normals the faces sum at their rows.
-        let mut summed: Vec<(Name, Name)> = Vec::new();
-        for shown in self.marks.iter().filter(|m| m.kind() == MarkKind::Faces) {
-            let Some(compiled) = &shown.compiled else { continue };
-            let data = &shown.mark.style().data;
-            summed.extend(compiled.program.ends.iter().map(|end| (data.clone(), end.table.clone())));
-        }
-        for shown in &self.marks {
+        let summing = super::graph::summing(&self.marks);
+        for (shown, summing) in self.marks.iter().zip(summing) {
             let style = shown.mark.style();
             let Some(table) = self.snapshot(&style.data).and_then(|d| d.table(&style.table)) else { continue };
             let key = (style.data.clone(), style.table.clone());
@@ -278,10 +271,9 @@ impl View {
             if placing && planned.place == Place::Nowhere {
                 planned.place = place_of(&shown.mark, table);
             }
-            let normals = shown.kind() == MarkKind::Vertices && summed.contains(&key);
             let cost =
                 costs.entry(key).or_insert(Cost { rows: table.len(), per_page: 0.0, geometry: 0.0, traced: 0.0 });
-            cost.per_page += page_bytes(shown, easing, normals);
+            cost.per_page += page_bytes(shown, easing, summing);
             cost.geometry += geometry_bytes(shown, table);
             cost.traced += traced_bytes(shown, table);
             for (piece, bytes) in self.shared_pages(shown, table) {
@@ -370,18 +362,16 @@ fn column_page_bytes(low: bool) -> f64 {
 }
 
 /// Bytes a page of `shown`'s rows takes, as the arena allocates them: a page of each column it
-/// reads, plus each kind of per-row words. Those are its state, focus words, and label candidates;
-/// the `normals` faces sum, at a vertex mark they attach to; and when `easing`, a transition's
-/// frozen and settled words.
-fn page_bytes(shown: &Shown, easing: bool, normals: bool) -> f64 {
+/// reads, plus each kind of word page it keeps (with the normals faces are `summing` at its rows),
+/// and when `easing`, a transition's frozen and settled words.
+fn page_bytes(shown: &Shown, easing: bool, summing: bool) -> f64 {
     let Some(compiled) = &shown.compiled else { return 0.0 };
     let columns: f64 =
         compiled.program.columns.iter().filter(|c| c.words != Words::Path).map(|c| column_page_bytes(c.low)).sum();
-    let state = block_bytes(compiled.drawing.stride + compiled.drawing.extras);
-    let labels = if compiled.drawing.label.is_some() { block_bytes(wgsl::CANDIDATE_WORDS) } else { 0.0 };
-    let normals = if normals { block_bytes(wgsl::NORMAL_WORDS) } else { 0.0 };
-    let eased = if easing { 2.0 * state } else { 0.0 };
-    columns + state + block_bytes(1) + labels + normals + eased
+    let kept: f64 =
+        shown.kept_widths(summing).iter().filter(|&&(_, width)| width > 0).map(|&(_, width)| block_bytes(width)).sum();
+    let eased = if easing { 2.0 * block_bytes(shown.width()) } else { 0.0 };
+    columns + kept + eased
 }
 
 /// Bytes the traces `shown` draws of `table` take per pixel column: `TRACE_COLUMN_BYTES` for each

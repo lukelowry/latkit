@@ -1,19 +1,19 @@
-//! Pictures and videos of views. A shot crosses as JSON, `{ size, scale, panels, transparent,
-//! capture, elapsed }` with times in seconds, along with its panels' views. Canvases showing those
-//! views keep their last frames meanwhile. The page decides how long to wait. An image's pixels
-//! cross once, and its files are encoded in workers. A video returns the bytes each frame produced,
-//! for the page to write.
+//! Pictures and videos of views. A shot crosses as JSON, `{ size, scale, transparent, capture,
+//! elapsed }` with times in seconds, and its layout as a canvas's does: views, and four fractions
+//! per view. Canvases showing those views keep their last frames meanwhile. The page decides how
+//! long to wait. An image's pixels cross once, and its files are encoded in workers. A video returns
+//! the bytes each frame produced, for the page to write.
 
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
-use futures_util::future::{AbortHandle, Abortable};
 use latkit::host::Host as _;
+use latkit::web::PageView;
 use wasm_bindgen::prelude::*;
 
 use crate::Error;
-use crate::canvas::{Handle, views_of};
+use crate::canvas::{Handle, layout};
 use crate::pending::{Task, task};
 
 /// RGBA pixels, straight alpha, rows top to bottom.
@@ -63,18 +63,21 @@ impl Image {
     }
 }
 
-/// Takes `shot`'s (JSON) picture of `views`, one per panel, once they are complete as its capture
-/// says.
+/// Takes `shot`'s (JSON) picture of `views`, each at its four fractions of `at`, once they are
+/// complete as its capture says.
 #[wasm_bindgen]
-pub fn image(shot: &str, views: Vec<Handle>) -> Result<Task, Error> {
-    let shot = shot_of(shot)?;
-    let views = views_of(views);
+pub fn image(shot: &str, views: Vec<Handle>, at: &[f32]) -> Result<Task, Error> {
+    let (shot, views) = shot_of(shot, views, at)?;
     Ok(task(async move { Ok(Image(latkit::web::image(&shot, &views).await?)) }))
 }
 
-/// The shot `json` describes, with no deadline, since the page decides how long to wait.
-fn shot_of(json: &str) -> Result<latkit::Shot, Error> {
-    Ok(crate::json::<latkit::Shot>("shot", json)?.deadline(None))
+/// The shot `json` describes, with its panels from `views` and `at`, and no deadline, since the
+/// page decides how long to wait; and its views.
+fn shot_of(json: &str, views: Vec<Handle>, at: &[f32]) -> Result<(latkit::Shot, Vec<PageView>), Error> {
+    let panels = layout(views, at)?;
+    let shot = crate::json::<latkit::Shot>("shot", json)?.deadline(None);
+    let shot = shot.panels(panels.iter().map(|panel| panel.at).collect::<Vec<_>>());
+    Ok((shot, panels.into_iter().map(|panel| panel.view).collect()))
 }
 
 /// Bytes a video wrote and the page has not yet taken.
@@ -92,26 +95,19 @@ impl Write for Written {
     }
 }
 
-/// A video of a shot's pictures of its views, encoded with WebCodecs as frames are drawn.
+/// A video of a shot's pictures of its views, encoded with WebCodecs as frames are drawn. One
+/// operation runs at a time; cancelling its task drops the video with it.
 #[wasm_bindgen]
 pub struct Video {
     /// The video. `None` while a frame is drawing it, and after it is finished or cancelled.
     inner: Rc<RefCell<Option<latkit::Video<latkit::Mp4<Written>>>>>,
-    views: Vec<latkit::web::PageView>,
+    views: Vec<PageView>,
     written: Written,
-    fps: f64,
     frames: Rc<RefCell<u64>>,
-    active: Rc<RefCell<Option<AbortHandle>>>,
 }
 
 #[wasm_bindgen]
 impl Video {
-    /// The time in seconds at which the next frame shows.
-    #[wasm_bindgen(getter)]
-    pub fn time(&self) -> f64 {
-        *self.frames.borrow() as f64 / self.fps
-    }
-
     /// Frames drawn or held so far.
     #[wasm_bindgen(getter)]
     pub fn frames(&self) -> f64 {
@@ -120,76 +116,50 @@ impl Video {
 
     /// Draws the next frame of its views. Resolves to the file bytes ready to write, once there is
     /// room for another frame.
-    pub fn frame(&self) -> js_sys::Promise {
+    pub fn frame(&self) -> Task {
         let (inner, written, frames) = (self.inner.clone(), self.written.clone(), self.frames.clone());
         let views = self.views.clone();
-        self.cancellable(async move {
+        task(async move {
             let taken = inner.borrow_mut().take();
-            let error = || latkit::Error::invalid("the video is finished or cancelled");
-            let mut video = taken.ok_or_else(|| JsValue::from(Error::from(error())))?;
+            let mut video = taken.ok_or_else(|| latkit::Error::invalid("the video is finished or cancelled"))?;
             let drawn = latkit::web::frame(&mut video, &views).await;
             *frames.borrow_mut() = video.frames();
             *inner.borrow_mut() = Some(video);
-            drawn.map_err(|e| JsValue::from(Error::from(e)))?;
-            Ok(js_sys::Uint8Array::from(&std::mem::take(&mut *written.0.borrow_mut())[..]).into())
+            drawn?;
+            Ok(written.take())
         })
     }
 
-    /// Cancels the operation in progress and ends the video. Its views and encoder are released
-    /// once the cancelled future is dropped.
+    /// Ends the video and releases its views and encoder. A task in progress is cancelled by the
+    /// page.
     pub fn cancel(&self) {
-        if let Some(active) = self.active.borrow_mut().take() {
-            active.abort();
-        }
         self.inner.borrow_mut().take();
     }
 
     /// Encodes the remaining frames and ends the video. Resolves to the file's last bytes.
-    pub fn finish(&self) -> js_sys::Promise {
+    pub fn finish(&self) -> Task {
         let (inner, written) = (self.inner.clone(), self.written.clone());
-        self.cancellable(async move {
-            let taken = inner.borrow_mut().take();
-            let video = taken.ok_or_else(|| JsValue::from(Error::from(latkit::Error::Cancelled)))?;
-            video.finish().await.map_err(|e| JsValue::from(Error::from(e)))?;
-            Ok(js_sys::Uint8Array::from(&std::mem::take(&mut *written.0.borrow_mut())[..]).into())
+        task(async move {
+            let video = inner.borrow_mut().take().ok_or(latkit::Error::Cancelled)?;
+            video.finish().await?;
+            Ok(written.take())
         })
     }
 }
 
-impl Video {
-    fn cancellable(
-        &self,
-        future: impl std::future::Future<Output = Result<JsValue, JsValue>> + 'static,
-    ) -> js_sys::Promise {
-        let mut active = self.active.borrow_mut();
-        if active.is_some() {
-            return js_sys::Promise::reject(&JsValue::from(Error::from(latkit::Error::invalid(
-                "a video runs one operation at a time",
-            ))));
-        }
-        let (abort, registration) = AbortHandle::new_pair();
-        *active = Some(abort);
-        let active = self.active.clone();
-        wasm_bindgen_futures::future_to_promise(async move {
-            let result = Abortable::new(future, registration).await;
-            active.borrow_mut().take();
-            result.unwrap_or_else(|_| Err(JsValue::from(Error::from(latkit::Error::Cancelled))))
-        })
+impl Written {
+    /// The bytes written since the last call.
+    fn take(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(&std::mem::take(&mut *self.0.borrow_mut())[..])
     }
 }
 
-impl Drop for Video {
-    fn drop(&mut self) {
-        self.cancel();
-    }
-}
-
-/// A video of `shot`'s (JSON) pictures of `views`, one per panel, at `fps` frames per second. It
-/// encodes MP4 at `bitrate` bits per second, by default about 0.15 bits per pixel per frame.
+/// A video of `shot`'s (JSON) pictures of `views`, each at its four fractions of `at`, at `fps`
+/// frames per second. It encodes MP4 at `bitrate` bits per second, by default about 0.15 bits per
+/// pixel per frame.
 #[wasm_bindgen]
-pub fn video(shot: &str, views: Vec<Handle>, fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
-    let shot = shot_of(shot)?;
-    let views = views_of(views);
+pub fn video(shot: &str, views: Vec<Handle>, at: &[f32], fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
+    let (shot, views) = shot_of(shot, views, at)?;
     let gpu = views.first().ok_or_else(|| latkit::Error::invalid("expected at least one view").at("layout"))?.gpu();
     let written = Written::default();
     let mut mp4 = latkit::Mp4::new(written.clone());
@@ -197,14 +167,7 @@ pub fn video(shot: &str, views: Vec<Handle>, fps: f64, bitrate: Option<f64>) -> 
         mp4 = mp4.bitrate(bitrate as u32);
     }
     let video = shot.video(&gpu, fps, mp4)?;
-    Ok(Video {
-        inner: Rc::new(RefCell::new(Some(video))),
-        views,
-        written,
-        fps,
-        frames: Rc::default(),
-        active: Rc::default(),
-    })
+    Ok(Video { inner: Rc::new(RefCell::new(Some(video))), views, written, frames: Rc::default() })
 }
 
 /// Sets the factory for video encoders: `create(width, height, fps, bitrate)` returns one. The npm

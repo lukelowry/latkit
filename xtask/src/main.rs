@@ -1,9 +1,15 @@
 //! Repository tasks, run as `cargo xtask <task>`.
 //!
-//! - `check`: CI's checks in CI's order, with GPU tests required. Formats, lints, tests, documents,
-//!   and packages the crates, and checks that `native` stays out of browser builds. Then formats,
-//!   lints, type-checks, and tests the npm workspace over a fresh `wasm --dev`, and runs the
-//!   browser gate.
+//! - `check`: every CI job's steps (`ci <job>`), in CI's order. Locally, the crates package with
+//!   uncommitted work, and the browser gate judges frame budgets on the GPU.
+//! - `ci <job>`: the steps of one job of `.github/workflows/ci.yml`, which runs each job this way:
+//!   - `format`: Prettier over every file. CI's `format` job has no Rust toolchain, so it runs
+//!     `pnpm format:check` itself.
+//!   - `rust`: formats, lints, tests (with GPU tests required), documents, and packages the crates,
+//!     and checks that `native` stays out of browser builds.
+//!   - `native-cli`: tests the CLI's native code, which CI runs on macOS and Windows.
+//!   - `npm`: builds the npm package with `wasm --dev`; lints, documents, type-checks, and tests
+//!     it; runs the browser gate over that build; then `package` and `package-test`.
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`. Checks
 //!   that every shader variant's pipelines compile in Chrome within budget, and that every example
 //!   page draws and responds to the pointer without errors or stalls. On `SwiftShader`, which Linux
@@ -17,6 +23,8 @@
 //! - `wasm [--dev]`: builds `latkit-js`, binds it with the `wasm-bindgen` CLI version in
 //!   `Cargo.lock`, and compiles the npm wrapper. `--dev` builds faster, without link-time
 //!   optimization.
+//! - `bindgen-version`: prints the `wasm-bindgen` version in `Cargo.lock`, which CI installs the
+//!   CLI at.
 //! - `version`: sets the crates' version to the npm package's, as changesets set it.
 //! - `package`: builds an isolated, optimized npm tarball, the one `pnpm release` publishes, and
 //!   reports its sizes and hashes.
@@ -34,6 +42,7 @@ fn main() -> ExitCode {
     let dev = std::env::args().any(|a| a == "--dev");
     let result = match task.as_str() {
         "check" => check(),
+        "ci" => ci(&std::env::args().nth(2).unwrap_or_default()),
         "browser" => browser(),
         "bench" => wasm(false).and_then(|()| {
             let flags: Vec<String> = std::env::args().skip(2).collect();
@@ -42,6 +51,7 @@ fn main() -> ExitCode {
             run("node", &args)
         }),
         "wasm" => wasm(dev),
+        "bindgen-version" => bindgen_version().map(|version| println!("{version}")),
         "version" => version(),
         "package" => package(),
         "package-test" => package_test(),
@@ -55,7 +65,7 @@ fn main() -> ExitCode {
         }),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|browser|bench [flags]|wasm [--dev]|version|package|package-test|release|examples [--open]>"
+                "usage: cargo xtask <check|ci <job>|browser|bench [flags]|wasm [--dev]|bindgen-version|version|package|package-test|release|examples [--open]>"
             );
             return ExitCode::FAILURE;
         }
@@ -95,8 +105,29 @@ fn pnpm(args: &[&str]) -> Result {
     run(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }, args)
 }
 
-/// Runs the checks of `.github/workflows/ci.yml` in its order, then the browser gate.
+/// The jobs of `.github/workflows/ci.yml` that `ci` runs the steps of, in its order.
+const JOBS: [&str; 4] = ["format", "rust", "native-cli", "npm"];
+
+/// Runs every CI job's steps in CI's order.
 fn check() -> Result {
+    for job in JOBS {
+        ci(job)?;
+    }
+    Ok(())
+}
+
+/// Runs the steps of CI job `job`.
+fn ci(job: &str) -> Result {
+    match job {
+        "format" => pnpm(&["format:check"]),
+        "rust" => rust(),
+        "native-cli" => native_cli(),
+        "npm" => npm(),
+        _ => Err(format!("no CI job {job:?}; the jobs are {}", JOBS.join(", "))),
+    }
+}
+
+fn rust() -> Result {
     let gpu = [("LATKIT_REQUIRE_GPU", "1")];
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"])?;
@@ -109,27 +140,35 @@ fn check() -> Result {
         &["doc", "--locked", "-p", "latkit", "--no-deps", "--all-features"],
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
-    // CI's tree is clean. Locally, package uncommitted work as is.
-    cargo(&["package", "--locked", "--allow-dirty", "-p", "latkit"])?;
-    cargo(&[
-        "package",
-        "--locked",
-        "--allow-dirty",
-        "-p",
-        "latkit",
-        "--target",
-        "wasm32-unknown-unknown",
-        "--features",
-        "web",
-    ])?;
-    cargo(&["check", "--locked", "-p", "latkit", "--target", "wasm32-unknown-unknown", "--features", "native,web"])?;
+    let package = |target: &[&str]| {
+        let mut args = vec!["package", "--locked"];
+        // CI's tree is clean. Locally, package uncommitted work as is.
+        if std::env::var_os("CI").is_none() {
+            args.push("--allow-dirty");
+        }
+        args.extend(["-p", "latkit"]);
+        args.extend(target);
+        cargo(&args)
+    };
+    package(&[])?;
+    package(&["--target", "wasm32-unknown-unknown", "--features", "web"])?;
+    cargo(&["check", "--locked", "-p", "latkit", "--target", "wasm32-unknown-unknown", "--features", "native,web"])
+}
+
+fn native_cli() -> Result {
+    cargo(&["test", "--locked", "--package", "latkit", "--features", "native", "--lib", "--test", "validation"])?;
+    cargo(&["test", "--locked", "--package", "latkit-cli"])
+}
+
+fn npm() -> Result {
     wasm(true)?;
-    pnpm(&["format:check"])?;
     pnpm(&["lint"])?;
     run("node", &["npm/docs.mjs", "--check"])?;
     pnpm(&["typecheck"])?;
     pnpm(&["test"])?;
-    browser_gate()
+    browser_gate()?;
+    package()?;
+    package_test()
 }
 
 /// Builds the wasm package, then runs the browser gate over the shaders the build linked.
@@ -174,8 +213,7 @@ fn wasm(dev: bool) -> Result {
 fn build_wasm(dev: bool, output: &str) -> Result {
     let profile = if dev { "wasm-dev" } else { "wasm" };
     cargo(&["build", "--locked", "-p", "latkit-js", "--profile", profile, "--target", "wasm32-unknown-unknown"])?;
-    let lock = std::fs::read_to_string(root().join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
-    let version = locked_version(&lock, "wasm-bindgen").ok_or("wasm-bindgen is not in Cargo.lock")?;
+    let version = bindgen_version()?;
     let installed = Command::new("wasm-bindgen").arg("--version").output().ok();
     let installed = installed.and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
     if installed.split_whitespace().nth(1) != Some(version.as_str()) {
@@ -242,6 +280,12 @@ fn version() -> Result {
     manifest["workspace"]["dependencies"]["latkit"]["version"] = toml_edit::value(version);
     std::fs::write(&path, manifest.to_string()).map_err(|e| format!("Cargo.toml: {e}"))?;
     cargo(&["update", "--workspace", "--offline"])
+}
+
+/// The `wasm-bindgen` version in `Cargo.lock`, which the `wasm-bindgen` CLI must match.
+fn bindgen_version() -> Result<String> {
+    let lock = std::fs::read_to_string(root().join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
+    locked_version(&lock, "wasm-bindgen").ok_or_else(|| "wasm-bindgen is not in Cargo.lock".to_owned())
 }
 
 /// The version of `package` in a `Cargo.lock`.

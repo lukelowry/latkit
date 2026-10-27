@@ -6,7 +6,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { build } from 'vite';
-import { deadline, launch, STEP, type Chrome } from './browser.ts';
+import { deadline, errorsOf, launch, STEP, type Chrome } from './browser.ts';
 
 const root = path.resolve(import.meta.dirname, '../../..');
 const reportPath = path.join(root, 'target/npm/package.json');
@@ -50,6 +50,11 @@ await build({
 const dist = path.join(consumer, 'dist');
 const server = http.createServer((request, response) => {
   const url = new URL(request.url ?? '/', 'http://localhost');
+  // Chrome asks every site for an icon. The consumer has none, and a 404 would log a console error.
+  if (url.pathname === '/favicon.ico') {
+    response.writeHead(204).end();
+    return;
+  }
   const relative = decodeURIComponent(url.pathname).replace(/^\/nested\/app\//, '');
   const file = path.resolve(dist, relative || 'index.html');
   if (
@@ -76,10 +81,9 @@ const timings: unknown[] = [];
 try {
   for (const mode of ['default', 'custom', 'compiled']) {
     chrome = await launch(['--disable-gpu-shader-disk-cache']);
-    const page = await chrome.browser.newPage();
-    const errors: string[] = [];
+    const page = await deadline(chrome.browser.newPage(), STEP, 'open a page');
+    const errors = errorsOf(page);
     const requests: string[] = [];
-    page.on('pageerror', (error) => errors.push(error.message));
     page.on('request', (request) => requests.push(request.url()));
     await page.addInitScript(() => {
       const original = window.requestAnimationFrame.bind(window);
@@ -121,7 +125,7 @@ try {
     );
     assert.deepEqual(errors, []);
     timings.push({ mode, ...(result as object) });
-    await page.close();
+    await deadline(page.close(), 5_000, 'close the page');
     await chrome.close();
   }
   const measurement = {

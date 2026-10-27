@@ -16,21 +16,20 @@
 // view maps to a table row using its record of that frame.
 
 import package::lib::types::{
-    NONE, FADE_OUT, POINTS, STROKES, TRIANGLES, MARK_EDGES, PATH_GEOMETRY, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH,
-    PROBE_X, PROBE_Y, PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED,
-    STEP_NEAREST, STEP_TOPMOST, STEP_DESCRIBE, STEP_HITS, STEP_BOXED, STEP_LOCATE, STEP_UNDER, HIT_WORDS, item,
+    NONE, FADE_OUT, POINTS, STROKES, MARK_EDGES, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH, PROBE_X, PROBE_Y,
+    PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED, STEP_NEAREST, STEP_TOPMOST,
+    STEP_DESCRIBE, STEP_HITS, STEP_BOXED, STEP_LOCATE, STEP_UNDER, HIT_WORDS, item,
 };
 import package::lib::bind::{frame, eye, mark, word};
 import package::lib::state::row_at;
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::{point, port_at};
-import package::lib::path::{
-    PATH, Segment, segment, path_segment, segment_screen, stroke_style, stroke_instances, path_count,
-};
-import package::lib::triangles::{triangle_corner, triangle_item, triangle_instances, area_anchor};
+import package::lib::path::{segment, segment_screen, stroke_style, stroke_instances, path_count};
+import package::lib::triangles::{triangle_corner, triangle_item, triangle_instances};
 import package::lib::marker::outline_distance;
 import package::lib::mark::PRIMITIVE;
-import package::lib::drawn::{drawn_row, held_row};
+import package::lib::drawn::drawn_row;
+import package::lib::center::{row_center, Center};
 
 // Which step a dispatch takes.
 struct Step {
@@ -120,21 +119,15 @@ fn seen_point(instance: u32) -> Seen {
     return s;
 }
 
-// A stroke segment: the instance's, or when locating, the middle segment of drawn row `instance`'s
-// path.
-fn seen_segment(instance: u32, locating: bool) -> Seen {
+// A stroke segment.
+fn seen_segment(instance: u32) -> Seen {
     var s: Seen;
-    var g: Segment;
-    if locating {
-        g = path_segment(instance, path_count(instance) / 2u, 0.0);
-    } else {
-        g = segment(instance);
-    }
+    let g = segment(instance);
     s.item = g.item;
     s.row = g.row;
     s.part = g.index;
     s.kept = answers(g.item, g.row, g.leaving);
-    if !s.kept && !locating {
+    if !s.kept {
         return s;
     }
     let style = stroke_style(g.row);
@@ -147,14 +140,14 @@ fn seen_segment(instance: u32, locating: bool) -> Seen {
     return s;
 }
 
-// A triangle: a face, or one of an area's. When locating, drawn row `instance`'s face.
-fn seen_triangle(instance: u32, locating: bool) -> Seen {
+// A triangle: a face, or one of an area's.
+fn seen_triangle(instance: u32) -> Seen {
     var s: Seen;
-    s.item = select(triangle_item(instance), instance, locating);
+    s.item = triangle_item(instance);
     let d = drawn_row(s.item);
     s.row = d.row;
     s.kept = answers(s.item, s.row, d.leaving);
-    if !s.kept && !locating {
+    if !s.kept {
         return s;
     }
     let ka = triangle_corner(instance, 0u);
@@ -173,12 +166,12 @@ fn seen_triangle(instance: u32, locating: bool) -> Seen {
     return s;
 }
 
-// Instance `instance` of the mark's primitive on screen; when locating, drawn row `instance`.
-fn seen(instance: u32, locating: bool) -> Seen {
+// Instance `instance` of the mark's primitive on screen.
+fn seen(instance: u32) -> Seen {
     switch PRIMITIVE {
         case POINTS: { return seen_point(instance); }
-        case STROKES: { return seen_segment(instance, locating); }
-        default: { return seen_triangle(instance, locating); }
+        case STROKES: { return seen_segment(instance); }
+        default: { return seen_triangle(instance); }
     }
 }
 
@@ -260,23 +253,6 @@ fn boxed(s: Seen) -> bool {
     }
 }
 
-// Where area held row `row` lies on screen (its label anchor), with z 1 where it shows.
-fn anchored(row: u32) -> vec3f {
-    let anchor = area_anchor(row);
-    let clip = clip_of(anchor.world);
-    return vec3f(to_screen(clip), f32(anchor.shown && anchor.ahead && clip.w > 0.0));
-}
-
-// Where the located row lies on screen, with z 1 where it shows: a point's center, the middle of a
-// path's middle segment, or a face's centroid.
-fn located(s: Seen) -> vec3f {
-    switch PRIMITIVE {
-        case POINTS: { return vec3f(s.a.xy, f32(s.shown && s.front.x)); }
-        case STROKES: { return vec3f(0.5 * (s.a.xy + s.b.xy), f32(s.front.x)); }
-        default: { return vec3f((s.a.xy + s.b.xy + s.c.xy) / 3.0, f32(all(s.front))); }
-    }
-}
-
 fn drawn_depth(texel: vec2i) -> f32 {
     return textureLoad(depth, texel, 0);
 }
@@ -328,11 +304,15 @@ fn append(r: Reach) {
     atomicStore(&probe[entry + 5u], bitcast<u32>(r.depth));
 }
 
-// Writes where the located row lies.
-fn locate(at: vec3f) {
-    atomicStore(&probe[PROBE_LOCATE_X], bitcast<u32>(at.x));
-    atomicStore(&probe[PROBE_LOCATE_Y], bitcast<u32>(at.y));
-    atomicStore(&probe[PROBE_LOCATED], u32(at.z));
+// Writes where drawn row `item` lies on screen, and whether it shows there.
+fn locate(item: u32) {
+    var center = Center(vec2f(0.0), false);
+    if item < mark.rows {
+        center = row_center(item);
+    }
+    atomicStore(&probe[PROBE_LOCATE_X], bitcast<u32>(center.at.x));
+    atomicStore(&probe[PROBE_LOCATE_Y], bitcast<u32>(center.at.y));
+    atomicStore(&probe[PROBE_LOCATED], u32(center.shown));
 }
 
 @compute @workgroup_size(256)
@@ -348,23 +328,15 @@ fn answer(@builtin(global_invocation_id) id: vec3u) {
         atomicStore(&probe[PROBE_UNDER], bitcast<u32>(under()));
         return;
     }
-    // Locating reads the drawn row the query names. Describing reads the topmost instance the hover
-    // found, if it belongs to this mark. Every step that reads an instance goes through the single
-    // `seen` call below.
-    let locating = s == STEP_LOCATE;
+    // Locating reads the drawn row the query names.
+    if s == STEP_LOCATE {
+        locate(bitcast<u32>(frame.query.x));
+        return;
+    }
+    // Describing reads the topmost instance the hover found, if it belongs to this mark. Every step
+    // that reads an instance goes through the single `seen` call below.
     var i = item(id);
-    if locating {
-        i = bitcast<u32>(frame.query.x);
-        if i >= mark.rows {
-            locate(vec3f(0.0));
-            return;
-        }
-        // An area is located at its label anchor.
-        if PRIMITIVE == TRIANGLES && PATH == PATH_GEOMETRY {
-            locate(anchored(held_row(i)));
-            return;
-        }
-    } else if s == STEP_DESCRIBE {
+    if s == STEP_DESCRIBE {
         let key = atomicLoad(&probe[PROBE_KEY]);
         let instance = atomicLoad(&probe[PROBE_INSTANCE]);
         if key == NONE || instance == 0u || 255u - (key & 255u) != min(mark.index, 255u) {
@@ -374,11 +346,7 @@ fn answer(@builtin(global_invocation_id) id: vec3u) {
     } else if i >= instances() {
         return;
     }
-    let drawn = seen(i, locating);
-    if locating {
-        locate(located(drawn));
-        return;
-    }
+    let drawn = seen(i);
     if s == STEP_BOXED {
         if boxed(drawn) {
             atomicOr(&probe[mark.query + drawn.row / 32u], 1u << (drawn.row % 32u));

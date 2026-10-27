@@ -199,7 +199,7 @@ impl View {
         for &i in marks {
             let shown = &mut self.marks[i];
             let rows = shown.live();
-            pass.set_pipeline(&inner.pipelines.compute_pipeline(device, Variant::channels(shown.reads())));
+            pass.set_pipeline(&inner.pipelines.compute(device, Variant::channels(shown.reads())));
             pass.set_bind_group(1, mark, &[offset(i)]);
             dispatch_blocks(pass, rows, shown.end_block_count);
             let blocks = shown.unresolved.of(rows);

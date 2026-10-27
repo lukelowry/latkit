@@ -48,9 +48,41 @@ pub(crate) fn preset_or<'de, D: Deserializer<'de>, T: Presets>(deserializer: D) 
     deserializer.deserialize_any(Named(PhantomData))
 }
 
+/// Declares a type's presets, each name once, as `Presets`. The type reads its options with the
+/// `Deserialize` that serde derives as `remote = "Self"`. Unless it ends `; read by hand`, it also
+/// gets a `Deserialize` that takes a preset's name or options.
+macro_rules! presets {
+    ($type:ident { $($name:literal => $value:expr),+ $(,)? }) => {
+        presets!($type { $($name => $value),+ }; read by hand);
+        impl<'de> serde::Deserialize<'de> for $type {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<$type, D::Error> {
+                crate::scene::form::preset_or(deserializer)
+            }
+        }
+    };
+    ($type:ident { $($name:literal => $value:expr),+ $(,)? }; read by hand) => {
+        impl crate::scene::form::Presets for $type {
+            const NAMES: &'static [&'static str] = &[$($name),+];
+
+            fn preset(name: &str) -> Option<$type> {
+                match name {
+                    $($name => Some($value),)+
+                    _ => None,
+                }
+            }
+
+            fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<$type, D::Error> {
+                $type::deserialize(deserializer)
+            }
+        }
+    };
+}
+
+pub(crate) use presets;
+
 /// Rewrites `T`'s derived schema to accept a preset name or the derived form, moving the
 /// description to the whole.
-pub(crate) fn presets<T: Presets>(schema: &mut Schema) {
+pub(crate) fn preset_schema<T: Presets>(schema: &mut Schema) {
     let mut derived = std::mem::replace(schema, json_schema!({}));
     let description = derived.remove("description");
     // Drop unit variants that a preset already names; the preset's name covers them.

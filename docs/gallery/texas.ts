@@ -4,8 +4,8 @@ import { THEME, type Piece } from './look.ts';
 import { readCase } from './grids.ts';
 import { LEVELS, STATES, WIDTHS, states } from './grid.ts';
 
-export default function texas(): Piece {
-  const c = readCase('activsg2000');
+export default async function texas(): Promise<Piece> {
+  const c = await readCase('activsg2000');
   return {
     name: 'texas',
     alt: 'Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines',

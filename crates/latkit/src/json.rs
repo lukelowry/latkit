@@ -26,6 +26,12 @@ pub fn from_json<T: DeserializeOwned>(text: &str) -> Result<T> {
     Ok(value)
 }
 
+/// Deserializes JSON `bytes` as `T`, as [`from_json`] reads text. Bytes that are not UTF-8 are
+/// invalid too.
+pub(crate) fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    from_json(std::str::from_utf8(bytes).map_err(|e| Error::invalid(format!("not UTF-8: {e}")))?)
+}
+
 /// Deserializes `T` from `deserializer`. Errors name the path to the part that could not be read.
 pub(crate) fn read<'de, T: Deserialize<'de>, D: Deserializer<'de>>(deserializer: D) -> Result<T>
 where

@@ -47,6 +47,13 @@ impl Default for Pages {
     }
 }
 
+/// What fitting one kind's pages changed: the pages given new blocks, whose words start over, and
+/// whether its page table changed at all.
+pub(crate) struct Fitted {
+    pub(crate) new: Vec<u32>,
+    pub(crate) changed: bool,
+}
+
 /// A mark's pages of every kind.
 #[derive(Default)]
 pub(crate) struct Words {
@@ -73,8 +80,8 @@ impl Words {
 
     /// Fits `kept`'s pages to hold `rows[p]` rows on page `p`, at `width` words per row; `width` 0
     /// frees them all. A page whose block is too small gets a new block, as does every page when
-    /// the width changes. Blocks no longer used are freed. Returns the pages given new blocks,
-    /// whose words start over, or `None` (with nothing changed) when the arena has no room now.
+    /// the width changes. Blocks no longer used are freed. Returns what changed, or `None` (with
+    /// nothing changed) when the arena has no room now.
     pub(crate) fn fit(
         &mut self,
         kept: Kept,
@@ -82,12 +89,12 @@ impl Words {
         width: u32,
         (device, queue): (&wgpu::Device, &Queue),
         arena: &mut Arena,
-    ) -> Option<Vec<u32>> {
+    ) -> Option<Fitted> {
         let rows = if width == 0 { &[][..] } else { rows };
         let have = &self.pages[kept as usize];
         let holds = |p: usize| have.width == width && have.words.get(p).is_some_and(|&w| w >= rows[p] * width);
         if have.blocks.len() == rows.len() && (0..rows.len()).all(holds) {
-            return Some(Vec::new());
+            return Some(Fitted { new: Vec::new(), changed: false });
         }
         let mut next = Pages { width, blocks: Arc::new([]), words: Vec::with_capacity(rows.len()) };
         let mut blocks = Vec::with_capacity(rows.len());
@@ -120,7 +127,7 @@ impl Words {
         if kept == Kept::State && self.before.is_none() {
             self.before = Some(have);
         }
-        Some(new)
+        Some(Fitted { new, changed: true })
     }
 
     /// Frees every page, as when the mark is removed.

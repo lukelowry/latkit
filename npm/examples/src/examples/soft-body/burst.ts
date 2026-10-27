@@ -1,3 +1,4 @@
+import { congruential } from '../../random.js';
 import type { Frame } from './body.js';
 import { fracture, type Piece, type Vec3 } from './fracture.js';
 import type { Mesh } from './mesh.js';
@@ -96,11 +97,7 @@ export class Burst {
       this.targetBody[i + 2] = this.mesh.positions[i + 2]! * scale + 0.025;
     }
     // Seeded random variation, sampled only at launch. Replay records the resulting positions.
-    let seed = 0x12b9;
-    const random = () => {
-      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-      return seed / 4294967296;
-    };
+    const random = congruential(0x12b9);
     for (const chunk of this.chunks) {
       chunk.position = [0, 0, 0];
       chunk.target = [0, 0, 0];
