@@ -1,9 +1,11 @@
-//! Geography: GeoJSON and vector tiles as data, and what shapes become to draw: an
-//! area's triangles, and lines bent along the globe.
+//! Geography: GeoJSON and vector tiles read as data, polygon triangulation, lines given extra
+//! points so they follow the globe, and Web Mercator.
 
 #[cfg(feature = "gpu")]
 mod earcut;
 mod geojson;
+#[cfg(feature = "gpu")]
+pub(crate) mod mercator;
 #[cfg(feature = "gpu")]
 pub(crate) mod mvt;
 #[cfg(feature = "gpu")]
@@ -20,7 +22,8 @@ pub(crate) use geojson::geojson;
 
 use crate::{Error, Result};
 
-/// `bytes` inflated where they are gzip-compressed, else as they are.
+/// Decompresses `bytes` if they start with the gzip magic number, else returns them unchanged.
+/// Errors if the gzip stream is corrupt.
 pub(crate) fn gunzipped(bytes: &[u8]) -> Result<Cow<'_, [u8]>> {
     if !bytes.starts_with(&[0x1f, 0x8b]) {
         return Ok(Cow::Borrowed(bytes));

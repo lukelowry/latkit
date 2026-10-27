@@ -2,198 +2,386 @@ use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::de::{self, Deserializer};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
-use super::form::{Presets, presets};
+use super::form::{Presets, preset_schema, presets};
 use crate::Color;
 
-/// Colors and sizes marks take where their options read nothing, and the look of focus and motion: a
-/// base theme's name, or options over one (`base`, dark unless set). Lengths are CSS pixels; in a
-/// diagram they are units, except `glow` and `halo`.
+/// Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped
+/// by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
+/// names the base and defaults to `dark`. Each option replaces only the base value it sets.
+///
+/// Lengths are in CSS pixels, or units in a diagram. The text halo and the focus glow are always in
+/// CSS pixels.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = with_base)]
 pub struct Theme {
-    /// Behind everything.
+    /// The background color.
     pub background: Color,
-    /// The earth's ground, and a group's container.
-    pub surface: Color,
-    /// A plane's or a diagram's grid.
+    /// The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule.
     pub grid: Color,
-    /// Vertex color.
-    pub vertex: Color,
-    /// Vertex radius.
-    pub vertex_radius: f32,
-    /// Edge color; `None` blends the colors of each edge's two vertices, and in a diagram takes the
-    /// text color.
-    pub edge: Option<Color>,
-    /// Edge width.
-    pub edge_width: f32,
-    /// Line color.
-    pub line: Color,
-    /// Line width.
-    pub line_width: f32,
-    /// Area color.
-    pub area: Color,
-    /// How much a face turned away from the camera darkens, 0 to 1.
-    pub shading: f32,
-    /// Text: labels, axis ticks, and titles.
-    pub text: Color,
-    /// The CSS font family text is set in.
-    pub font: Arc<str>,
-    /// Text size.
-    pub font_size: f32,
-    /// The line a plot draws at the shown coordinate.
-    pub playhead: Color,
-    /// What a missing color reads as.
+    /// The color a colormap gives a missing value, such as a row with no value in the field.
     pub missing: Color,
-    /// The glow around hovered rows.
-    pub hover: Color,
-    /// The glow around selected rows; `None` glows in each row's own color.
-    pub selected: Option<Color>,
-    /// How far focus glows reach, CSS pixels.
-    pub glow: f32,
-    /// The opacity of rows outside a selection.
-    pub dim: f32,
-    /// How much a hovered vertex sized in CSS pixels grows.
-    pub hover_scale: f32,
-    /// Length of a dash.
+    /// The dash period: one dash and one gap of equal length.
     pub dash: f32,
+    /// How much faces darken as they turn away from the camera, from 0 to 1.
+    pub shading: f32,
+    /// How labels, axis ticks, and titles look.
+    pub text: TextTheme,
+    /// Defaults for vertices.
+    pub vertex: VertexTheme,
+    /// Defaults for edges, and how parallel edges and arrowheads look.
+    pub edge: EdgeTheme,
+    /// Defaults for lines.
+    pub line: LineTheme,
+    /// Defaults for areas.
+    pub area: AreaTheme,
+    /// How hovered and selected rows glow, and how rows outside a selection dim.
+    pub focus: FocusTheme,
     /// How comets flowing along edges and lines look.
-    pub flow: Flow,
-    /// In a diagram, distance between the lanes of edges joining the same two vertices, and between
-    /// parallel orthogonal wires, which keep twice it apart.
-    pub edge_spacing: f32,
-    /// Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction
-    /// of the edge's length at its middle. A bow is part of the drawing, so zooming never moves it.
-    pub lane_bow: f32,
-    /// How far an arrowhead reaches past its edge's width.
-    pub arrow: f32,
-    /// CSS pixels of background around label text.
+    pub flow: FlowTheme,
+    /// How a diagram's blocks, groups, ports, and wires look.
+    pub diagram: DiagramTheme,
+    /// How the earth looks.
+    pub earth: EarthTheme,
+    /// How a plot looks.
+    pub plot: PlotTheme,
+}
+
+/// How labels, axis ticks, and titles look.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct TextTheme {
+    /// The text color.
+    pub color: Color,
+    /// The CSS font family list.
+    pub font: Arc<str>,
+    /// The font size, in the space's unit.
+    pub size: f32,
+    /// Width of the background-colored halo around label text, in CSS pixels.
     pub halo: f32,
-    /// Distance between a group's members and its outline.
-    pub group_padding: f32,
-    /// The border of a diagram's blocks and groups, a unit wide; `None` draws none.
-    pub outline: Option<Color>,
-    /// The radius of a diagram's block and group corners; a block's marker may set its own.
-    pub corner: f32,
-    /// How wide a diagram's ports are.
-    pub port_size: f32,
-    /// The radius of an orthogonal wire's bends.
-    pub bend: f32,
-    /// How marks that cast shadows cast them.
-    pub shadow: Shadow,
-    /// The air glowing around the globe, where the earth has an atmosphere.
-    pub atmosphere: Color,
-    /// How bright the earth's night side stays where it is lit by daylight, 0 to 1.
-    pub night: f32,
 }
 
-/// How comets flowing along edges and lines look: each a round head, brightest at its middle, trailing
-/// a tail that thins and fades.
+/// Defaults for vertices.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
-pub struct Flow {
-    /// A comet's color; its alpha is how strongly a comet covers its stroke.
+pub struct VertexTheme {
+    /// The vertex color.
     pub color: Color,
-    /// Distance between comets.
-    pub spacing: f32,
-    /// How far a comet's tail trails its head.
-    pub length: f32,
-    /// How wide a comet's head is, CSS pixels, or units in a diagram; never narrower than its stroke.
+    /// The vertex radius, in the space's unit.
+    pub radius: f32,
+}
+
+/// Defaults for edges, and how parallel edges and arrowheads look.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct EdgeTheme {
+    /// The edge color. `None` blends the colors of each edge's two vertices. With `None`, a
+    /// diagram's wires and edges without `ends` (nets and poles) use the text color.
+    pub color: Option<Color>,
+    /// The edge width, in the space's unit.
     pub width: f32,
-    /// Whether comets are part of the drawing: their spacing, length, and each row's flow in position
-    /// units, degrees on the earth, so they zoom with the view and stay where they are on their lines.
-    /// Otherwise they keep their size and speed on screen, and slide along their lines as it zooms.
-    pub units: bool,
+    /// In a diagram, the distance between edges joining the same two vertices and between parallel
+    /// orthogonal wires. Wires keep twice this distance from blocks where they can.
+    pub spacing: f32,
+    /// Outside a diagram, how far edges joining the same two vertices bow apart. Each lane bows out
+    /// by this fraction of the edge's length, measured at its middle. Parallel edges spread at most
+    /// eight lanes wide, and more lanes pack closer. Bows scale with the zoom.
+    pub bow: f32,
+    /// How far an arrowhead extends beyond the edge's width. A head's length is this plus the
+    /// width.
+    pub arrow: f32,
 }
 
-/// How marks that cast shadows cast them onto the ground and onto faces.
+/// Defaults for lines.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
-pub struct Shadow {
-    /// What a shadow darkens toward; its alpha is how dark a shadow at contact gets.
+pub struct LineTheme {
+    /// The line color.
     pub color: Color,
-    /// The direction toward the light, fixed in the world: shadows fall away from it.
-    pub light: [f32; 3],
-    /// How much a shadow spreads per unit of a caster's height: the light's size.
-    pub softness: f32,
-    /// CSS pixels flat marks cast from, as if raised; in a diagram, how far a block's or a group's
-    /// shadow falls below it, and as far again it softens.
+    /// The line width, in the space's unit.
+    pub width: f32,
+}
+
+/// Defaults for areas.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct AreaTheme {
+    /// The area color.
+    pub color: Color,
+}
+
+/// How hovered and selected rows glow, and how rows outside a selection dim.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct FocusTheme {
+    /// The glow color around hovered rows.
+    pub hover: Color,
+    /// The glow color around selected rows. `None` uses each row's own color.
+    pub selected: Option<Color>,
+    /// How far the hover and selection glows reach, in CSS pixels.
+    pub glow: f32,
+    /// The opacity of rows outside the selection while any row is selected, from 0 to 1.
+    pub dim: f32,
+    /// The scale factor for a hovered vertex sized in CSS pixels. Vertices sized in units only
+    /// glow.
+    pub grow: f32,
+}
+
+/// How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
+/// tail that thins and fades.
+///
+/// `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
+/// In position units (degrees on the earth), comets scale with the zoom and stay in place along
+/// their lines. In CSS pixels, they keep their size and speed on screen. A plain number is in the
+/// space's unit.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct FlowTheme {
+    /// The comet color. Its alpha sets how strongly a comet covers its stroke. A fully transparent
+    /// color turns comets off.
+    pub color: Color,
+    /// The distance between consecutive comets.
+    pub spacing: Length,
+    /// The length of a comet's tail behind its head.
+    pub length: Length,
+    /// The width of a comet's head, in the space's unit. A head is never narrower than its stroke.
+    pub width: f32,
+}
+
+/// How a diagram's blocks, groups, ports, and wires look.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct DiagramTheme {
+    /// The fill color of group containers.
+    pub group: Color,
+    /// The color of the one-unit border around blocks and groups. `None` draws no border.
+    pub outline: Option<Color>,
+    /// The corner radius of blocks and groups. A block marker can set its own.
+    pub corner: f32,
+    /// The width of ports.
+    pub port_size: f32,
+    /// The bend radius of orthogonal wires.
+    pub bend: f32,
+    /// The space between a group's members and its border.
+    pub group_padding: f32,
+    /// How blocks and groups cast shadows on the sheet.
+    pub shadow: ShadowTheme,
+}
+
+/// How a diagram's blocks and groups cast shadows on the sheet, for vertex marks with `shadow` on.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct ShadowTheme {
+    /// The color a shadow darkens toward. Its alpha sets how dark the shadow is under the block.
+    pub color: Color,
+    /// How far a shadow falls below its block or group. Its edge softens over the same distance.
     pub lift: f32,
 }
 
-impl Theme {
-    /// Light marks on a dark ground.
-    pub fn dark() -> Theme {
-        Theme {
-            background: Color::hex("#0f141a").expect("hex"),
-            surface: Color::hex("#18212b").expect("hex"),
-            grid: Color::hex("#ffffff").expect("hex").alpha(0.07),
-            vertex: Color::hex("#7cc4ff").expect("hex"),
-            vertex_radius: 4.0,
-            edge: None,
-            edge_width: 1.5,
-            line: Color::hex("#7cc4ff").expect("hex"),
-            line_width: 1.5,
-            area: Color::hex("#2b3d50").expect("hex"),
-            shading: 0.6,
-            text: Color::hex("#a8b2c2").expect("hex"),
-            font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),
-            font_size: 11.0,
-            playhead: Color::hex("#ffe5d4").expect("hex").alpha(0.8),
-            missing: Color::hex("#6b7480").expect("hex"),
-            hover: Color::hex("#ffffff").expect("hex").alpha(0.6),
-            selected: Some(Color::hex("#ffb000").expect("hex").alpha(0.9)),
-            glow: 6.0,
-            dim: 0.35,
-            hover_scale: 1.25,
-            dash: 8.0,
-            flow: Flow {
-                color: Color::hex("#ffffff").expect("hex").alpha(0.85),
-                spacing: 64.0,
-                length: 24.0,
-                width: 4.0,
-                units: false,
-            },
-            edge_spacing: 4.0,
-            lane_bow: 0.12,
-            arrow: 7.0,
-            halo: 2.0,
-            group_padding: 16.0,
-            outline: Some(Color::WHITE.alpha(0.12)),
-            corner: 6.0,
-            port_size: 7.0,
-            bend: 6.0,
-            shadow: Shadow { color: Color::BLACK.alpha(0.45), light: [-0.35, 0.45, 1.0], softness: 0.15, lift: 3.0 },
-            atmosphere: Color::hex("#5aa9ff").expect("hex").alpha(0.55),
-            night: 0.3,
+/// How the earth looks.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct EarthTheme {
+    /// The ground color.
+    pub ground: Color,
+    /// The color of the air glowing around the globe, when the earth's `atmosphere` is on.
+    pub atmosphere: Color,
+    /// The brightness of the night side when the earth has `daylight`, from 0 to 1.
+    pub night: f32,
+}
+
+/// How a plot looks.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct PlotTheme {
+    /// The color of the line at the view's current axis coordinate.
+    pub playhead: Color,
+}
+
+/// A theme length: a plain number in the space's unit (CSS pixels, or units in a diagram),
+/// `{ "px": n }` in CSS pixels at any zoom, or `{ "units": n }` in position units (degrees on the
+/// earth), which scale with the zoom.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Length {
+    /// In the space's unit.
+    Space(f32),
+    /// CSS pixels.
+    Px(f32),
+    /// Position units (degrees on the earth).
+    Units(f32),
+}
+
+impl Length {
+    /// The number, in the length's own unit.
+    pub(crate) fn value(self) -> f32 {
+        match self {
+            Length::Space(v) | Length::Px(v) | Length::Units(v) => v,
         }
     }
 
-    /// Dark marks on a light ground.
-    pub fn light() -> Theme {
+    /// Whether `other` is in the same unit.
+    pub(crate) fn alike(self, other: Length) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
+}
+
+/// A length's JSON form: a number, `{ "px": n }`, or `{ "units": n }`, with no other keys.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum LengthForm {
+    Space(f32),
+    Px(PxLength),
+    Units(UnitsLength),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PxLength {
+    px: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnitsLength {
+    units: f32,
+}
+
+impl Serialize for Length {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match *self {
+            Length::Space(v) => LengthForm::Space(v),
+            Length::Px(px) => LengthForm::Px(PxLength { px }),
+            Length::Units(units) => LengthForm::Units(UnitsLength { units }),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Length {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Length, D::Error> {
+        LengthForm::deserialize(deserializer)
+            .map(|form| match form {
+                LengthForm::Space(v) => Length::Space(v),
+                LengthForm::Px(PxLength { px }) => Length::Px(px),
+                LengthForm::Units(UnitsLength { units }) => Length::Units(units),
+            })
+            .map_err(|_| de::Error::custom("a length must be a number, { px: n }, or { units: n }"))
+    }
+}
+
+impl JsonSchema for Length {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Length".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let exactly = |key: &str, description: &str| {
+            serde_json::json!({
+                "type": "object",
+                "properties": { key: { "type": "number", "description": description } },
+                "required": [key],
+                "additionalProperties": false,
+            })
+        };
+        schemars::json_schema!({
+            "description": "A length: a number in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
+            "anyOf": [
+                { "type": "number" },
+                exactly("px", "CSS pixels, the same at any zoom."),
+                exactly("units", "Position units (degrees on the earth), which grow as the view zooms in."),
+            ],
+        })
+    }
+}
+
+impl Theme {
+    /// Light marks on a dark background. The default theme.
+    pub fn dark() -> Theme {
+        let hex = |hex: &str| Color::hex(hex).expect("hex");
         Theme {
-            background: Color::hex("#f7f8fa").expect("hex"),
-            surface: Color::hex("#e8ecf0").expect("hex"),
-            grid: Color::hex("#000000").expect("hex").alpha(0.08),
-            vertex: Color::hex("#1f6feb").expect("hex"),
-            line: Color::hex("#1f6feb").expect("hex"),
-            area: Color::hex("#c5d2df").expect("hex"),
-            text: Color::hex("#4a5361").expect("hex"),
-            playhead: Color::hex("#e36209").expect("hex").alpha(0.8),
-            missing: Color::hex("#9aa3ad").expect("hex"),
-            hover: Color::hex("#000000").expect("hex").alpha(0.35),
-            selected: Some(Color::hex("#e36209").expect("hex").alpha(0.9)),
-            outline: Some(Color::BLACK.alpha(0.14)),
-            flow: Flow { color: Color::hex("#ffffff").expect("hex").alpha(0.9), ..Theme::dark().flow },
-            shadow: Shadow { color: Color::BLACK.alpha(0.22), ..Theme::dark().shadow },
-            atmosphere: Color::hex("#6cb4ff").expect("hex").alpha(0.45),
-            night: 0.55,
-            ..Theme::dark()
+            background: hex("#0f141a"),
+            grid: Color::WHITE.alpha(0.07),
+            missing: hex("#6b7480"),
+            dash: 8.0,
+            shading: 0.6,
+            text: TextTheme {
+                color: hex("#a8b2c2"),
+                font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),
+                size: 11.0,
+                halo: 2.0,
+            },
+            vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0 },
+            edge: EdgeTheme { color: None, width: 1.5, spacing: 4.0, bow: 0.12, arrow: 7.0 },
+            line: LineTheme { color: hex("#7cc4ff"), width: 1.5 },
+            area: AreaTheme { color: hex("#2b3d50") },
+            focus: FocusTheme {
+                hover: Color::WHITE.alpha(0.6),
+                selected: Some(hex("#ffb000").alpha(0.9)),
+                glow: 6.0,
+                dim: 0.35,
+                grow: 1.25,
+            },
+            flow: FlowTheme {
+                color: Color::WHITE.alpha(0.85),
+                spacing: Length::Space(64.0),
+                length: Length::Space(24.0),
+                width: 4.0,
+            },
+            diagram: DiagramTheme {
+                group: hex("#18212b"),
+                outline: Some(Color::WHITE.alpha(0.12)),
+                corner: 6.0,
+                port_size: 7.0,
+                bend: 6.0,
+                group_padding: 16.0,
+                shadow: ShadowTheme { color: Color::BLACK.alpha(0.45), lift: 3.0 },
+            },
+            earth: EarthTheme { ground: hex("#18212b"), atmosphere: hex("#5aa9ff").alpha(0.55), night: 0.3 },
+            plot: PlotTheme { playhead: hex("#ffe5d4").alpha(0.8) },
+        }
+    }
+
+    /// Dark marks on a light background.
+    pub fn light() -> Theme {
+        let hex = |hex: &str| Color::hex(hex).expect("hex");
+        let dark = Theme::dark();
+        Theme {
+            background: hex("#f7f8fa"),
+            grid: Color::BLACK.alpha(0.08),
+            missing: hex("#9aa3ad"),
+            text: TextTheme { color: hex("#4a5361"), ..dark.text },
+            vertex: VertexTheme { color: hex("#1f6feb"), ..dark.vertex },
+            line: LineTheme { color: hex("#1f6feb"), ..dark.line },
+            area: AreaTheme { color: hex("#c5d2df") },
+            focus: FocusTheme {
+                hover: Color::BLACK.alpha(0.35),
+                selected: Some(hex("#e36209").alpha(0.9)),
+                ..dark.focus
+            },
+            flow: FlowTheme { color: Color::WHITE.alpha(0.9), ..dark.flow },
+            diagram: DiagramTheme {
+                group: hex("#e8ecf0"),
+                outline: Some(Color::BLACK.alpha(0.14)),
+                shadow: ShadowTheme { color: Color::BLACK.alpha(0.22), ..dark.diagram.shadow },
+                ..dark.diagram
+            },
+            earth: EarthTheme { ground: hex("#e8ecf0"), atmosphere: hex("#6cb4ff").alpha(0.45), night: 0.55 },
+            plot: PlotTheme { playhead: hex("#e36209").alpha(0.8) },
+            ..dark
         }
     }
 }
@@ -204,38 +392,24 @@ impl Default for Theme {
     }
 }
 
-impl Presets for Theme {
-    const NAMES: &'static [&'static str] = &["dark", "light"];
+presets!(Theme { "dark" => Theme::dark(), "light" => Theme::light() }; read by hand);
 
-    fn preset(name: &str) -> Option<Theme> {
-        match name {
-            "dark" => Some(Theme::dark()),
-            "light" => Some(Theme::light()),
-            _ => None,
-        }
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Theme, D::Error> {
-        Theme::deserialize(deserializer)
-    }
-}
-
-/// A theme reads a base theme's name, or options over one: written over the base as it serializes,
-/// so an option left out keeps the base's and `null` clears a color the base has.
+/// Reads a base theme's name, or options merged group by group over the base's serialized form. An
+/// omitted option keeps the base's value, and `null` clears an optional color.
 impl<'de> Deserialize<'de> for Theme {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Theme, D::Error> {
         let named = |name: &str| {
-            Theme::preset(name).ok_or_else(|| de::Error::custom(format!("no theme {name:?}: dark or light")))
+            Theme::preset(name).ok_or_else(|| de::Error::custom(format!("theme {name:?} is not dark or light")))
         };
         let mut options = match Value::deserialize(deserializer)? {
             Value::String(name) => return named(&name),
             Value::Object(options) => options,
-            _ => return Err(de::Error::custom("a theme: \"dark\", \"light\", or options")),
+            _ => return Err(de::Error::custom("a theme must be \"dark\", \"light\", or options")),
         };
         let base = match options.remove("base") {
             None => Theme::dark(),
             Some(Value::String(name)) => named(&name)?,
-            Some(_) => return Err(de::Error::custom("base names a theme: dark or light")),
+            Some(_) => return Err(de::Error::custom("base must be dark or light")),
         };
         let mut theme = serde_json::to_value(base).map_err(de::Error::custom)?;
         over(&mut theme, Value::Object(options));
@@ -249,10 +423,11 @@ impl Serialize for Theme {
     }
 }
 
-/// Writes `options` over `base`, object by object.
+/// Merges `options` into `base` object by object. A length object replaces the base's value
+/// outright.
 fn over(base: &mut Value, options: Value) {
     match (base, options) {
-        (Value::Object(base), Value::Object(options)) => {
+        (Value::Object(base), Value::Object(options)) if !is_length(&options) => {
             for (key, value) in options {
                 over(base.entry(key).or_insert(Value::Null), value);
             }
@@ -261,16 +436,57 @@ fn over(base: &mut Value, options: Value) {
     }
 }
 
-/// Options a theme merges over its base's, each of them optional.
+/// Whether `options` is a length object, `{ px }` or `{ units }`.
+fn is_length(options: &serde_json::Map<String, Value>) -> bool {
+    options.len() == 1 && (options.contains_key("px") || options.contains_key("units"))
+}
+
+/// Makes every option of a theme group optional in the schema, since each merges over the base.
 fn merged(schema: &mut schemars::Schema) {
     schema.remove("required");
 }
 
-/// A theme's schema: a base's name, or options over the base `base` names.
+/// The theme schema: a base theme's name, or options over the base that `base` names.
 fn with_base(schema: &mut schemars::Schema) {
+    merged(schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        let base = serde_json::json!({ "description": "The theme these options change; dark unless set.", "enum": Theme::NAMES });
+        let base = serde_json::json!({ "description": "The theme these options change. Defaults to `dark`.", "enum": Theme::NAMES });
         properties.insert("base".into(), base);
     }
-    presets::<Theme>(schema);
+    preset_schema::<Theme>(schema);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn theme(json: &str) -> Theme {
+        serde_json::from_str(json).expect("a theme")
+    }
+
+    #[test]
+    fn options_merge_over_their_base_group_by_group() {
+        let theme = theme(
+            r#"{"base": "light", "vertex": {"radius": 3}, "edge": {"color": null}, "focus": {"selected": null}}"#,
+        );
+        let light = Theme::light();
+        assert_eq!(
+            theme.vertex,
+            VertexTheme { radius: 3.0, ..light.vertex },
+            "the group's other options keep the base's values"
+        );
+        assert_eq!((theme.edge.color, theme.focus.selected), (None, None), "null clears a color");
+        assert_eq!(theme.text, light.text);
+    }
+
+    #[test]
+    fn a_length_keeps_its_unit_and_replaces_the_base_value() {
+        let flow = theme(r#"{"flow": {"spacing": {"units": 40}, "length": {"units": 30}}}"#).flow;
+        assert_eq!((flow.spacing, flow.length), (Length::Units(40.0), Length::Units(30.0)));
+        let back: Theme = theme(&serde_json::to_string(&Theme { flow, ..Theme::dark() }).expect("serializes"));
+        assert_eq!(back.flow, flow, "a theme round-trips through JSON");
+        let px = theme(r#"{"flow": {"spacing": {"px": 40}}}"#).flow;
+        assert_eq!(px.spacing, Length::Px(40.0));
+        assert!(serde_json::from_str::<Theme>(r#"{"radius": 3}"#).is_err(), "radius belongs in the vertex group");
+    }
 }

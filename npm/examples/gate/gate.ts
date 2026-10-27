@@ -1,43 +1,67 @@
 /**
- * The browser gate. Times every shader variant's pipelines in Chrome against a budget, then opens
- * every page of the suite in a fresh browser and moves the pointer over it. It fails on a pipeline
- * over budget or failing to compile, a console error, a page that draws no frame in time, a page
- * missing frames in a row while it opens or under the pointer, or a pipeline compiled where first
- * used. Every wait races a deadline.
+ * The browser gate. It times the pipelines of every shader variant in Chrome against a budget, then
+ * opens each page of the suite in a fresh browser and moves the pointer over it.
  *
- * On SwiftShader (`--software`, as Linux always is), the CPU draws, slower than any budget, so the
- * gate only checks that every pipeline compiles: pages and times are judged on a GPU.
+ * A pipeline fails if it does not compile or is over budget. A page fails on a console or page
+ * error, a pipeline compiled at first use, or no exported picture. A page is slow if it draws no
+ * frame in time, or misses frames in a row while it opens or under the pointer. A slow page is
+ * opened again, cold, and fails only if every open is slow: a machine stall slows one open, but a
+ * slow page slows them all. Every wait races a deadline.
  *
- * `node gate/gate.ts <dir holding shaders.json> [--software] [page...]`; `cargo xtask browser` runs
- * it. Naming pages visits only those, without timing the shaders. Chrome is `$LATKIT_CHROME`, or the
- * newest Chromium Playwright installed.
+ * On SwiftShader (`--software`, and always on Linux) the CPU draws, slower than any budget, so the
+ * gate only checks that every pipeline compiles. Pages and times are judged only on a GPU.
+ *
+ * Usage: `node gate/gate.ts <dir holding shaders.json> [--software] [page...]`, which
+ * `cargo xtask browser` runs. Naming pages visits only those and skips timing the shaders. Chrome
+ * is `$LATKIT_CHROME`, or else the newest Chromium that Playwright installed.
  */
 
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import type { Page } from 'playwright-core';
-import { createServer } from 'vite';
-import { STEP, deadline, launch, type Chrome } from './browser.ts';
+import { STEP, deadline, errorsOf, launch, serve, type Chrome } from './browser.ts';
+import { quantile } from './quantile.ts';
 
-/** Milliseconds Chrome may take to compile any one pipeline, cold: the slowest takes about 0.35 s,
- * and a view opens no sooner than the slowest it uses, the rest compiling beside it. */
+/** Maximum milliseconds Chrome may take to compile one pipeline cold. The slowest takes about
+ * 0.35 s. A view opens no sooner than its slowest pipeline. The others compile in parallel. */
 const COMPILE_BUDGET = 800;
-/** Milliseconds from opening a page, cold, to its views' first frames, which draw everything their
- * scenes use: every pipeline compiles side by side, off Chrome's GPU thread. */
+/** Maximum milliseconds from opening a page cold to its views' first frames. A first frame draws
+ * everything its scene uses. Every pipeline compiles in parallel, off Chrome's GPU thread. */
 const FIRST_FRAME_BUDGET = 1000;
-/** Display frames in a row a page may miss while it opens or the pointer moves over it. Frames come
- * at the display's pace, which the machine sets: 60 Hz on a panel, 32 Hz over Remote Desktop, whose
- * vblanks slip one at a time. Nothing compiles on Chrome's GPU thread, so no frame waits on latkit;
- * what it compiles where first used is counted apart, as `work.late`. */
+/** Maximum consecutive display frames a page may miss while it opens or under the pointer. The
+ * machine sets the display rate: 60 Hz on a panel, 32 Hz over Remote Desktop, where single vblanks
+ * slip. Nothing compiles on Chrome's GPU thread, so no frame waits on latkit. Pipelines compiled at
+ * first use are counted separately, as `work.late`. */
 const MISSED = 1;
+/** Milliseconds between display frames beyond which the gate logs what the views were doing. */
+const LONG = 50;
+/** Maximum cold opens per page to draw its first frame in time without missing frames. An error on
+ * any open fails the page at once. */
+const OPENS = 2;
+
+/** The failures of one open of a page: its errors, and the ways it was slow. */
+interface Opened {
+  wrong: string[];
+  slow: string[];
+}
+
+/** A gap between display frames longer than `LONG`. It records each view's last CPU and GPU frame
+ * times and `waiting` list, and the GPU work done since the previous frame. */
+interface Long {
+  gap: number;
+  cpuMs: number[];
+  gpuMs: number[];
+  waiting: string[][];
+  work: Record<string, number>;
+}
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const examples = path.dirname(here);
 const args = process.argv.slice(2);
 const software = args.includes('--software') || process.platform === 'linux';
 
-/** A variant of shaders.json: its file, whether it draws, its compute entries, and its constants. */
+/** A shader variant listed in shaders.json. `append` is source added after the file's own. */
 interface Variant {
   file: string;
   draws: boolean;
@@ -61,12 +85,14 @@ interface Timing {
   error?: string;
 }
 
-/** Chrome compiling cold on every launch, as a first visit does. */
+/** Launches Chrome without its shader disk cache, so every pipeline compiles cold, as on a first
+ * visit. */
 function cold(): Promise<Chrome> {
   return launch(['--disable-gpu-shader-disk-cache'], software);
 }
 
-/** Every pipeline the variants in `dir` make: each compute entry, or the draw, per constants. */
+/** Lists the pipelines of the variants in `dir`: one per compute entry point, or one draw, for each
+ * set of constants. */
 function pipelines(dir: string): Pipeline[] {
   const variants = JSON.parse(fs.readFileSync(path.join(dir, 'shaders.json'), 'utf8')) as Variant[];
   return variants.flatMap((variant) => {
@@ -86,7 +112,8 @@ function pipelines(dir: string): Pipeline[] {
   });
 }
 
-/** In the page: makes each pipeline cold, one at a time, and times it. Runs from its source alone. */
+/** Runs in the page. Creates each pipeline cold, sequentially, and times it. Only its source
+ * reaches the page, so it must be self-contained. */
 async function time({
   pipelines,
   step,
@@ -123,7 +150,7 @@ async function time({
     if (!module)
       modules.set(pipeline.code, (module = device.createShaderModule({ code: pipeline.code })));
     const constants = pipeline.constants;
-    // Draws test against depth, as latkit's do; the backdrop writes it.
+    // Like latkit's draw pipelines, these test against depth, which the backdrop writes.
     const made = pipeline.draws
       ? device.createRenderPipelineAsync({
           layout: 'auto',
@@ -165,7 +192,8 @@ async function time({
   return timings;
 }
 
-/** Times every pipeline against the budget; returns the failures. */
+/** Times every pipeline and returns the failures: compile errors and, on a GPU, pipelines over
+ * `COMPILE_BUDGET`. */
 async function compileBudget(dir: string): Promise<string[]> {
   const blank = http.createServer((_, response) =>
     response.end('<!doctype html><title>gate</title>'),
@@ -206,22 +234,22 @@ function frames(page: Page): Promise<void> {
   return deadline(two, STEP, 'animation frames');
 }
 
-/** Waits, for at most `budget` ms, until every view of `page` has opened: it was complete, or it drew
- * 30 frames waiting on nothing but its fit, as a plot of streaming data measuring its value range
- * again does every frame. A view draws once every pipeline its scene uses compiled, so then nothing
- * is left to compile. */
+/** Waits up to `budget` ms until every view of `page` has opened. A view has opened once nothing is
+ * waiting, or once it has drawn 30 frames waiting only on `fit`, since a plot of streaming data
+ * refits its value range every frame. A view draws only after every pipeline its scene uses has
+ * compiled, so nothing is left to compile by then. */
 async function settled(page: Page, budget: number): Promise<void> {
   await page.waitForFunction(
     () => {
       const w = window as unknown as {
-        stage?: { views: { stats: { frames: number; waiting: string[] } }[] };
+        stage?: { views: { stats: { frames: number }; waiting: string[] }[] };
         opened?: Set<number>;
         refitting?: Map<number, number>;
       };
       const views = w.stage?.views ?? [];
       w.opened ??= new Set();
       w.refitting ??= new Map();
-      views.forEach(({ stats: { frames, waiting } }, i) => {
+      views.forEach(({ stats: { frames }, waiting }, i) => {
         if (!waiting.length) w.opened!.add(i);
         if (waiting.join() !== 'fit') w.refitting!.delete(i);
         else if (!w.refitting!.has(i)) w.refitting!.set(i, frames);
@@ -234,47 +262,91 @@ async function settled(page: Page, budget: number): Promise<void> {
   );
 }
 
-/** Opens page `id` in a fresh browser, waits for its first frames, then moves the pointer over
- * every view: hovering a grid of points, zooming, panning, and clicking. Returns the failures. */
+/** Opens page `id` until an open is in time or has errors, at most `OPENS` times. Returns the
+ * failures of the last open. */
 async function visit(url: string, id: string): Promise<string[]> {
-  const failures: string[] = [];
+  for (let n = 1; ; n++) {
+    const { wrong, slow } = await open(url, id);
+    if (wrong.length || !slow.length || n === OPENS) return [...wrong, ...slow];
+    console.log(`  ${id}: ${slow.join('; ')}; opening it again`);
+  }
+}
+
+/** Opens page `id` in a fresh browser and waits for its first frames. Then it works every view with
+ * the pointer and keys (hovering a grid of points, zooming, dragging, clicking, right-clicking, and
+ * stepping with Tab and the arrows) and exports a picture. */
+async function open(url: string, id: string): Promise<Opened> {
   const chrome = await cold();
   try {
-    const context = await chrome.browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      deviceScaleFactor: 1,
-    });
-    const page = await context.newPage();
-    page.on('console', (message) => {
-      if (message.type() === 'error') failures.push(`console: ${message.text().slice(0, 300)}`);
-    });
-    page.on('pageerror', (error) => failures.push(`page: ${error.message.slice(0, 300)}`));
-    // The longest gap between animation frames since the last reset, and the display's frame
-    // interval: the median of the latest gaps.
-    await page.addInitScript(() => {
-      const w = window as unknown as { gap: number; resetGap(): void; interval(): number };
+    const context = await deadline(
+      chrome.browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 }),
+      STEP,
+      'a browser context',
+    );
+    const page = await deadline(context.newPage(), STEP, 'a page');
+    const opened: Opened = { wrong: errorsOf(page), slow: [] };
+    const { wrong, slow } = opened;
+    // Tracks the longest gap between animation frames since the last reset, the last 120 gaps
+    // (their median is the display's frame interval), and each gap longer than `LONG` with what the
+    // views were doing.
+    await page.addInitScript((long: number) => {
+      interface Stage {
+        views: { stats: { cpuMs: number; gpuMs: number }; waiting: string[] }[];
+        gpu: { work: Record<string, number> };
+      }
+      const w = window as unknown as {
+        gap: number;
+        gaps: number[];
+        long: Long[];
+        resetGap(): void;
+        stage?: Stage;
+      };
       let last = 0;
+      let work: Record<string, number> = {};
       const gaps: number[] = [];
       w.gap = 0;
+      w.gaps = gaps;
+      w.long = [];
       w.resetGap = () => {
         w.gap = 0;
+        w.long = [];
         last = 0;
       };
-      w.interval = () => [...gaps].sort((a, b) => a - b)[gaps.length >> 1] ?? 1000 / 60;
       const tick = (now: number) => {
+        const stage = w.stage;
+        const done = stage?.gpu.work ?? {};
         if (last) {
-          w.gap = Math.max(w.gap, now - last);
-          gaps.push(now - last);
+          const gap = now - last;
+          w.gap = Math.max(w.gap, gap);
+          gaps.push(gap);
           if (gaps.length > 120) gaps.shift();
+          if (gap > long && stage) {
+            const delta = Object.entries(done)
+              .map(([kind, n]) => [kind, n - (work[kind] ?? 0)] as const)
+              .filter(([, n]) => n > 0);
+            w.long.push({
+              gap,
+              cpuMs: stage.views.map((view) => view.stats.cpuMs),
+              gpuMs: stage.views.map((view) => view.stats.gpuMs),
+              waiting: stage.views.map((view) => view.waiting),
+              work: Object.fromEntries(delta),
+            });
+          }
         }
+        work = done;
         last = now;
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
-    });
-    const opened = performance.now();
+    }, LONG);
+    /** Logs each frame longer than `LONG` since the last reset, labeled with `doing`. */
+    const tell = async (doing: string) => {
+      const long = await page.evaluate(() => (window as unknown as { long: Long[] }).long);
+      for (const frame of long) console.log(`  ${id}: ${describe(frame)} ${doing}`);
+    };
+    const started = performance.now();
     await deadline(page.goto(`${url}#${id}`), STEP, `open ${id}`);
-    /** Waits until every view has drawn more than `frames` frames, for at most `budget` ms. */
+    /** Waits up to `budget` ms until every view has drawn more than `frames` frames. */
     const drawn = (frames: number, budget: number) =>
       page.waitForFunction(
         (frames) => {
@@ -293,24 +365,27 @@ async function visit(url: string, id: string): Promise<string[]> {
         `${id}'s first frame`,
       );
     } catch {
-      failures.push(`no frame within ${FIRST_FRAME_BUDGET} ms`);
-      return failures;
+      slow.push(`no frame within ${FIRST_FRAME_BUDGET} ms`);
+      return opened;
     }
-    const first = performance.now() - opened;
-    // What stalls while the views open, from their first frames: what the page did loading before
-    // them shows nothing to stall.
+    const first = performance.now() - started;
+    // Stalls count from the views' first frames, since the page shows nothing that could stall
+    // while it loads.
     await page.evaluate(() => (window as unknown as { resetGap(): void }).resetGap());
     await deadline(settled(page, STEP), STEP + 1000, `${id}'s opening`);
     await deadline(page.waitForTimeout(500), STEP, 'settle');
     const opening = await page.evaluate(() => (window as unknown as { gap: number }).gap);
+    await tell('opening');
     let longest = { gap: 0, step: '' };
-    /** Does `step` and waits two frames; keeps the longest gap between frames and its step. */
+    /** Performs `step` and waits two frames. Records the longest gap between frames with its step,
+     * and logs each frame longer than `LONG`. */
     const act = async (step: string, action: () => Promise<void>) => {
       await page.evaluate(() => (window as unknown as { resetGap(): void }).resetGap());
       await deadline(action(), STEP, step);
       await frames(page);
       const gap = await page.evaluate(() => (window as unknown as { gap: number }).gap);
       if (gap > longest.gap) longest = { gap, step };
+      await tell(`on ${step}`);
     };
     const canvases = await page.locator('main canvas').all();
     for (const [c, canvas] of canvases.entries()) {
@@ -334,15 +409,16 @@ async function visit(url: string, id: string): Promise<string[]> {
         await page.mouse.up();
       });
       await act(`click canvas ${c}`, () => page.mouse.click(cx, cy));
-      // The intents whose picks list what lies under a point, and the keys stepping through rows.
+      // Right-click raises a menu intent listing what lies under the point. Tab and the arrow keys
+      // step through rows.
       await act(`menu on canvas ${c}`, () => page.mouse.click(cx, cy, { button: 'right' }));
       await act(`step with Tab on canvas ${c}`, () => page.keyboard.press('Tab'));
       await act(`step with an arrow on canvas ${c}`, () => page.keyboard.press('ArrowRight'));
       await act(`stop stepping on canvas ${c}`, () => page.keyboard.press('Escape'));
     }
-    // Every page exports a picture of its views: a shot draws them and a worker writes the PNG.
+    // Every page exports a picture of its views. A shot draws them and a worker writes the PNG.
     await page.locator('main canvas').first().focus();
-    await deadline(page.keyboard.press('x'), STEP, 'ask for a picture');
+    await deadline(page.keyboard.press('x'), STEP, 'press x to export a picture');
     const saved = page.waitForFunction(
       () => document.body.textContent?.includes('Saved views.png'),
       undefined,
@@ -354,28 +430,29 @@ async function visit(url: string, id: string): Promise<string[]> {
     try {
       await deadline(saved, STEP + 1000, `${id}'s picture`);
     } catch {
-      // What the views waited on, and what the page said, name why.
+      // Explain the failure with the views' `waiting` lists and the page's status text.
       const said = await page.evaluate(() => {
-        const views = (
-          window as unknown as { stage?: { views: { stats: { waiting: string[] } }[] } }
-        ).stage?.views;
-        const waiting = (views ?? []).map((view) => view.stats.waiting.join('+') || 'nothing');
+        const views = (window as unknown as { stage?: { views: { waiting: string[] }[] } }).stage
+          ?.views;
+        const waiting = (views ?? []).map((view) => view.waiting.join('+') || 'nothing');
         const status = [...document.querySelectorAll('.status, [role=status], output')]
           .map((element) => element.textContent?.trim())
           .filter(Boolean);
-        return `views waiting on ${waiting.join(', ')}; the page said ${status.join(' | ') || 'nothing'}`;
+        return `views waiting on ${waiting.join(', ')}; page status: ${status.join(' | ') || 'nothing'}`;
       });
-      failures.push(`no picture exported: ${said}`);
+      wrong.push(`no picture exported: ${said}`);
     }
     const { gap, step } = longest;
-    const { interval, late } = await page.evaluate(() => {
+    const { gaps, late } = await page.evaluate(() => {
       const w = window as unknown as {
-        interval(): number;
+        gaps: number[];
         stage?: { gpu: { work: { late: number } } };
       };
-      return { interval: w.interval(), late: w.stage?.gpu.work.late ?? 0 };
+      return { gaps: w.gaps, late: w.stage?.gpu.work.late ?? 0 };
     });
-    // A gap of n intervals missed n - 1 frames; past MISSED + 1.5 intervals, more than MISSED did.
+    const interval = gaps.length ? quantile(gaps, 0.5) : 1000 / 60;
+    // A gap of n intervals missed n - 1 frames, so a gap over MISSED + 1.5 intervals missed more
+    // than MISSED.
     const budget = (MISSED + 1.5) * interval;
     console.log(
       `${id}: first frame ${first.toFixed(0)} ms, frames every ${interval.toFixed(0)} ms, longest while ` +
@@ -383,35 +460,38 @@ async function visit(url: string, id: string): Promise<string[]> {
     );
     const missed = (ms: number) => Math.round(ms / interval) - 1;
     if (opening > budget)
-      failures.push(`missed ${missed(opening)} frames in a row opening (${opening.toFixed(0)} ms)`);
+      slow.push(`missed ${missed(opening)} frames in a row opening (${opening.toFixed(0)} ms)`);
     if (gap > budget)
-      failures.push(`missed ${missed(gap)} frames in a row on ${step} (${gap.toFixed(0)} ms)`);
+      slow.push(`missed ${missed(gap)} frames in a row on ${step} (${gap.toFixed(0)} ms)`);
     if (late > 0)
-      failures.push(
-        `${late} pipelines compiled where first used, holding back the frames using them`,
-      );
+      wrong.push(`${late} pipelines compiled at first use, delaying the frames that use them`);
+    return opened;
   } finally {
     await chrome.close();
   }
-  return failures;
 }
 
-/** Serves the suite and visits `only` its pages, or every page its bar lists. */
+/** Formats a frame longer than `LONG` for the log: each view's last CPU and GPU times and `waiting`
+ * list, and the GPU work done, with byte counts in MB. */
+function describe({ gap, cpuMs, gpuMs, waiting, work }: Long): string {
+  const ms = (list: number[]) => list.map((n) => n.toFixed(1)).join('/');
+  const waited = waiting.map((list) => list.join('+') || 'nothing').join(', ');
+  const bytes = new Set(['uploaded', 'written', 'cleared']);
+  const done = Object.entries(work)
+    .map(([kind, n]) => `${kind} ${bytes.has(kind) ? `${(n / 1e6).toFixed(2)} MB` : n}`)
+    .join(', ');
+  return `frame of ${gap.toFixed(0)} ms (cpu ${ms(cpuMs)} ms, gpu ${ms(gpuMs)} ms, waiting on ${waited}; ${done || 'no work'})`;
+}
+
+/** Serves the suite and visits the pages named in `only`, or, if it is empty, every page in the
+ * example picker. */
 async function suite(only: string[]): Promise<string[]> {
-  const server = await createServer({
-    root: examples,
-    configFile: path.join(examples, 'vite.config.ts'),
-    server: { port: 5210, strictPort: false },
-    logLevel: 'error',
-  });
-  await deadline(server.listen(), STEP, 'serve the suite');
+  const { url, close } = await serve(examples, 5210, 'the suite');
   try {
-    const url = server.resolvedUrls?.local[0];
-    if (!url) throw new Error('the suite has no address');
     const chrome = await cold();
     let ids: string[];
     try {
-      const page = await chrome.browser.newPage();
+      const page = await deadline(chrome.browser.newPage(), STEP, 'a page');
       await deadline(page.goto(url), STEP, 'open the suite');
       const picker = page.getByRole('combobox', { name: 'Example', exact: true });
       await deadline(picker.waitFor(), STEP, 'the example picker');
@@ -427,7 +507,7 @@ async function suite(only: string[]): Promise<string[]> {
     }
     return failures;
   } finally {
-    await server.close();
+    await close();
   }
 }
 
@@ -437,7 +517,7 @@ if (!dir) {
   process.exit(2);
 }
 if (software)
-  console.log('SwiftShader draws on the CPU: pipelines must compile, untimed; no pages');
+  console.log('SwiftShader draws on the CPU, so the gate only checks that pipelines compile');
 const shaders =
   only.length && !software ? [] : (await compileBudget(dir)).map((f) => `shaders: ${f}`);
 const failures = [...shaders, ...(software ? [] : await suite(only))];

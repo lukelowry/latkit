@@ -1,11 +1,14 @@
 /**
- * The bench page, one implementation of the contract the runner drives: `bench.ready()` resolves
- * once a GPU device can be made; `bench.list()` names the scenarios and the orders their phases
- * keep; `bench.run(name, size)` builds one at a size on a fresh GPU and measures it; `bench.lost()`
- * says whether that GPU's device was lost. The runner opens a fresh page for every run, so nothing
- * carries over but the browser's shader cache.
+ * The bench page. It implements the interface the runner drives:
+ *
+ * - `bench.ready()` resolves once a GPU device can be made.
+ * - `bench.list()` lists the scenarios and the growth orders of their phases.
+ * - `bench.run(name, size)` builds a scenario at a size on a fresh GPU and measures it.
+ * - `bench.lost()` returns whether that GPU's device was lost.
+ *
+ * The runner opens a fresh page for every run, so only the browser's shader cache carries over.
  */
-import { loadLatkit, type Gpu } from 'latkit';
+import { Gpu } from 'latkit';
 import { LOAD, scenarios, type Order } from './scenarios.ts';
 import { Stage, type Cost } from './stage.ts';
 
@@ -22,30 +25,34 @@ export interface Listed {
 export interface Run {
   scenario: string;
   size: number;
-  /** The adapter and browser: times compare only on the same machine. */
+  /** The adapter and browser. Times compare only on the same machine. */
   machine: string;
   /** Every phase in order: `init`, `data`, `load`, then the scenario's. */
   phases: Record<string, Cost>;
-  /** Frames drawn over frames stepped once everything settled: none, for views that sleep. */
+  /** Frames drawn in the idle frames stepped after everything settled. Views that sleep draw
+   * none. */
   idle: number;
-  /** Bytes the budget lets data take. */
+  /** The data budget, in bytes. */
   budget: number;
-  /** What the views told went wrong. */
+  /** Errors the views reported. */
   errors: string[];
 }
 
-/** What data may take unless a scenario sets it: fixed, so the work counted is every device's. */
+/** The GPU budget unless a scenario sets one. It is fixed, not the device's default, so the work
+ * counted is the same on every device. */
 const BUDGET = { bytes: 256 * 2 ** 20, uploadPerFrame: 32 * 2 ** 20 };
 
-/** The GPU of the run under way, which `lost` asks after. */
+/** The GPU of the current run, which `lost` checks. */
 let current: Gpu | undefined;
 
-/** Resolves once a GPU device can be made: a wedged driver hangs here, so the runner asks first. */
+/** Resolves once a GPU device can be made. A wedged driver hangs here, so the runner calls this
+ * first. */
 async function ready(): Promise<void> {
-  (await (await loadLatkit()).Gpu.create()).destroy();
+  (await Gpu.create()).destroy();
 }
 
-/** Whether the run's device was lost: the runner asks after a failure, and stops the sweep if so. */
+/** Whether the run's device was lost. The runner checks after a failure, and stops the sweep if
+ * so. */
 function lost(): boolean {
   return current?.lost ?? false;
 }
@@ -72,14 +79,13 @@ async function run(name: string, size: number): Promise<Run> {
   if (!scenario) throw new Error(`no scenario ${name}`);
   console.debug('phase init');
   const begun = performance.now();
-  const latkit = await loadLatkit();
-  const gpu = (current = await latkit.Gpu.create());
+  const gpu = (current = await Gpu.create());
   const ms = performance.now() - begun;
   gpu.budget = scenario.budget ?? BUDGET;
   const built = scenario.build(size);
-  const stage = new Stage(latkit, gpu, await canvases(scenario.views?.(size) ?? 1), size);
+  const stage = new Stage(gpu, await canvases(scenario.views?.(size) ?? 1), size);
   const none = { frames: 0, cpu: 0, cpu95: 0, gpu: 0, resident: 0, steady: false };
-  // Each phase says when it starts, so a page that stops answering is known by where it stopped.
+  // Each phase announces its start, so a page that stops responding shows where it stopped.
   const named = <T>(phase: string, run: () => Promise<T>) => {
     console.debug(`phase ${phase}`);
     return run().catch((error: unknown) => {
@@ -105,7 +111,8 @@ async function run(name: string, size: number): Promise<Run> {
   };
 }
 
-/** `n` canvases filling the page in a grid, laid out before any view draws. */
+/** Adds `n` canvases filling the page in a grid, and waits a frame so they are laid out before any
+ * view draws. */
 async function canvases(n: number): Promise<HTMLCanvasElement[]> {
   const main = document.querySelector('main')!;
   main.style.gridTemplateColumns = `repeat(${Math.ceil(Math.sqrt(n))}, minmax(0, 1fr))`;
@@ -114,7 +121,7 @@ async function canvases(n: number): Promise<HTMLCanvasElement[]> {
   return made;
 }
 
-/** The adapter, asked for as latkit asks for its own, and the browser. */
+/** Describes the adapter, requested with the options latkit uses, and the Chrome version. */
 async function machine(): Promise<string> {
   interface Adapter {
     info?: { vendor?: string; architecture?: string; description?: string };

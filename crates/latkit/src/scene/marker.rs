@@ -1,58 +1,61 @@
 use std::sync::Arc;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
-use super::form::{Presets, preset_or, presets};
+use super::form::{preset_schema, presets};
 use super::mark::Markers;
 use crate::gpu::shaders as wgsl;
 use crate::{Color, Expr, Image};
 
-/// How a vertex is drawn: a shape's name, `"block"`, or `{ shape | block | gauge | pie | icon | wgsl:
-/// options }`.
+/// How a vertex is drawn: a shape's name, `"block"`, or
+/// `{ shape | block | gauge | pie | icon | wgsl: options }`. Defaults to an ellipse.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = presets::<Marker>)]
+#[schemars(transform = preset_schema::<Marker>)]
 pub enum Marker {
     /// A filled shape.
     Shape(Shape),
-    /// A block: a rectangle with rounded corners, sized for diagrams.
+    /// A rectangle with rounded corners that holds its label inside, like a diagram's blocks.
     Block {
-        /// Corner radius, CSS pixels, or units in a diagram; the theme's `corner` unless set.
+        /// Corner radius in CSS pixels, or units in a diagram. Defaults to the theme's
+        /// `diagram.corner`.
         #[serde(default)]
         corner: Option<f32>,
     },
-    /// A shape's outline, filled to `fill` from 0 to 1: around a circle, up other shapes.
+    /// A shape's outline, filled to `fill` (0 to 1). A circle fills around its edge, and other
+    /// shapes fill upward.
     Gauge {
-        /// How full each row's gauge is.
+        /// How full each row's gauge is, from 0 to 1.
         fill: Expr,
-        /// The outline.
+        /// The outline's shape. Defaults to an ellipse.
         #[serde(default)]
         shape: Shape,
     },
-    /// A circle cut into slices, each as large as its value.
+    /// A circle divided into slices sized in proportion to their values.
     Pie {
         /// Each slice's value.
         slices: Vec<Expr>,
         /// Each slice's color.
         colors: Vec<Color>,
-        /// The hole in the middle, as a fraction of the radius.
+        /// The hole in the middle, as a fraction of the radius. Defaults to 0.
         #[serde(default)]
         hole: f32,
     },
-    /// One of `images`, fitted in the marker's box; `index` picks which for each row.
+    /// One of `images`, fitted to the marker's box. `index` picks the image for each row.
     Icon {
         /// The images.
         images: Vec<Image>,
-        /// Each row's image, from 0.
+        /// Each row's image index, from 0.
         index: Expr,
     },
-    /// A marker in WGSL: `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`, reading up to
-    /// eight `inputs` as `f.input[i]`. It compiles once, when the view first draws it.
+    /// A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`,
+    /// which can read up to eight `inputs` as `f.input[i]`. It compiles once, when the view first
+    /// draws it.
     Wgsl {
-        /// The function's source.
+        /// The WGSL source of the `marker` function.
         source: Arc<str>,
-        /// Each row's inputs.
+        /// Each row's inputs, at most eight.
         #[serde(default)]
         inputs: Vec<Expr>,
     },
@@ -73,30 +76,13 @@ pub enum Shape {
     Diamond,
 }
 
-impl Presets for Marker {
-    const NAMES: &'static [&'static str] = &["ellipse", "rectangle", "rounded", "diamond", "block"];
-
-    fn preset(name: &str) -> Option<Marker> {
-        Some(match name {
-            "ellipse" => Marker::Shape(Shape::Ellipse),
-            "rectangle" => Marker::Shape(Shape::Rectangle),
-            "rounded" => Marker::Shape(Shape::Rounded),
-            "diamond" => Marker::Shape(Shape::Diamond),
-            "block" => Marker::block(),
-            _ => return None,
-        })
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Marker, D::Error> {
-        Marker::deserialize(deserializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Marker {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Marker, D::Error> {
-        preset_or(deserializer)
-    }
-}
+presets!(Marker {
+    "ellipse" => Marker::Shape(Shape::Ellipse),
+    "rectangle" => Marker::Shape(Shape::Rectangle),
+    "rounded" => Marker::Shape(Shape::Rounded),
+    "diamond" => Marker::Shape(Shape::Diamond),
+    "block" => Marker::block(),
+});
 
 impl Default for Marker {
     fn default() -> Marker {
@@ -111,7 +97,7 @@ impl From<Shape> for Marker {
 }
 
 impl Marker {
-    /// A block with the theme's corners.
+    /// A block with the theme's corner radius.
     pub fn block() -> Marker {
         Marker::Block { corner: None }
     }
@@ -127,13 +113,13 @@ impl Marker {
         }
     }
 
-    /// How the mark's markers draw; inputs start at extra word `input`.
+    /// How the mark's markers draw, with their inputs starting at extra word `input`.
     pub(crate) fn markers(&self, input: u32) -> Markers {
         let inputs = self.inputs().len() as u32;
         let base = Markers { inputs, input, ..Markers::default() };
         match self {
             Marker::Shape(shape) => Markers { marker: wgsl::MARKER_SHAPE, shape: shape.code(), ..base },
-            // A negative corner takes the theme's.
+            // A negative corner means the theme's corner radius.
             Marker::Block { corner } => Markers {
                 marker: wgsl::MARKER_BLOCK,
                 shape: wgsl::SHAPE_ROUNDED,

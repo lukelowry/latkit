@@ -1,60 +1,45 @@
-/** The grid: ACTIVSg70k's buses and branches over the states they stand in, drawn by voltage. */
-import { fileURLToPath } from 'node:url';
-import type { CustomColormap, Mark, Size } from 'latkit/core';
-import { THEME, type Piece } from './look.ts';
+/** The grid: ACTIVSg70k's buses and branches over the US states, colored and sized by voltage. */
+import fs from 'node:fs';
+import { Data, field } from 'latkit';
 import { readCase } from './grids.ts';
+import type { Picture } from './render.ts';
 
-/** The states of the United States, which the CLI reads as GeoJSON. */
-export const STATES = fileURLToPath(
-  new URL('../../crates/latkit-cli/examples/branch-opening/states.geojson', import.meta.url),
-);
-
-/** Colors of the voltage levels, from below 100 kV to 765 kV: the higher, the hotter. */
-export const LEVELS: CustomColormap = {
-  kind: 'sequential',
-  colors: ['#1c2e44', '#22507a', '#2d80b3', '#58bde6', '#ffcf73', '#fff4dc'],
-};
-
-/** Widths by voltage level, growing with its square: the backbone stands out of the rest. */
-export const WIDTHS: Size = {
-  scale: [0.3, 2.3],
-  value: { op: 'mul', args: ['level', 'level'] },
-  domain: [0, 25],
-};
-
-/** The states drawn beneath a grid: filled a shade above the ground, outlined faintly. */
-export function states(outline = '#26364a'): Mark[] {
-  return [
-    { areas: { of: ['states', 'polygons'], color: '#0f1720', pick: false } },
-    { lines: { of: ['states', 'polygons'], width: 0.6, color: outline } },
-  ];
-}
-
-export default function grid(): Piece {
-  const c = readCase('activsg70k');
+export default async function (): Promise<Picture> {
+  const { grid } = await readCase('activsg70k');
+  const usa = new URL(
+    '../../crates/latkit-cli/examples/branch-opening/states.geojson',
+    import.meta.url,
+  );
+  const states = await Data.read(fs.readFileSync(usa), { name: 'states' });
+  const level = field('level');
   return {
-    name: 'grid',
-    alt: 'Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage',
-    data: [c.patch, { name: 'states', file: STATES }],
-    // Over the grid from the south, tilted, so the backbone recedes toward the Great Lakes.
-    camera: { center: [-84.2, 37.2], zoom: 4.38, pitch: 42, bearing: -8 },
     scene: {
-      space: { earth: { projection: 'mercator', graticule: false, surface: THEME.background } },
+      space: { earth: { graticule: false } },
       ease: 0,
-      theme: THEME,
+      theme: { background: '#0b0f14', earth: { ground: '#0b0f14' } },
       marks: [
-        ...states(),
-        { vertices: { of: ['grid', 'Bus'], position: ['lon', 'lat'], radius: 0, pick: false } },
+        // The states, filled slightly lighter than the ground, with faint outlines.
+        { areas: states.table('polygons'), color: '#0f1720', pick: false },
+        { lines: states.table('polygons'), width: 0.6, color: '#26364a' },
+        // The buses draw nothing: they only place the lines' ends.
+        { vertices: grid.table('Bus'), position: ['$lon', '$lat'], radius: 0, pick: false },
         {
-          edges: {
-            of: ['grid', 'Line'],
-            ends: ['from', 'to'],
-            priority: 'level',
-            width: WIDTHS,
-            color: { colormap: LEVELS, value: 'level', domain: [0, 5] },
-          },
+          edges: grid.table('Line'),
+          ends: ['from', 'to'],
+          priority: level,
+          // Width grows with the level's square, so the high-voltage backbone stands out.
+          width: level.mul(level).scale(0.3, 2.3).domain(0, 25),
+          // The voltage levels, from below 100 kV to 765 kV. Higher levels are hotter colors.
+          color: level
+            .colormap({
+              kind: 'sequential',
+              colors: ['#1c2e44', '#22507a', '#2d80b3', '#58bde6', '#ffcf73', '#fff4dc'],
+            })
+            .domain(0, 5),
         },
       ],
     },
+    // A tilted view from the south, so the backbone recedes toward the Great Lakes.
+    camera: { center: [-84.2, 37.2], zoom: 4.38, pitch: 42, bearing: -8 },
   };
 }

@@ -1,8 +1,9 @@
-/** Tides: closed contours swelling outward, each deformed by harmonics that drift with its level. */
-import { Patch } from 'latkit/core';
-import { TAU, THEME, framed, type Piece } from './look.ts';
+/** Tides: nested closed contours, each rippled by harmonics whose phases shift with its level. */
+import { Data, field } from 'latkit';
+import { framed } from './look.ts';
+import type { Picture } from './render.ts';
 
-export default function tides(): Piece {
+export default function (): Picture {
   const contours = 110;
   const steps = 600;
   const geometry: [number, number][][] = [];
@@ -12,7 +13,7 @@ export default function tides(): Piece {
     const r = 50 + 270 * l;
     const path: [number, number][] = [];
     for (let s = 0; s <= steps; s++) {
-      const a = (s / steps) * TAU;
+      const a = (s / steps) * 2 * Math.PI;
       const ripple =
         1 +
         0.13 * Math.sin(3 * a + 5 * l) +
@@ -23,40 +24,25 @@ export default function tides(): Piece {
     geometry.push(path);
     level.push(l);
   }
-  const data = Patch.to('tides').replace('Contour', { count: contours }, { geometry, level });
+  const tides = new Data('tides').replace('Contour', { geometry, level });
   return {
-    name: 'tides',
-    alt: 'One hundred and ten closed contours swelling outward, from deep blue at the center to sand at the rim',
-    data: [data],
-    fit: framed([-640, -320, 640, 320]),
     scene: {
       space: { plane: { grid: 'off' } },
       ease: 0,
-      theme: THEME,
+      theme: { background: '#0b0f14' },
       marks: [
         {
-          lines: {
-            of: ['tides', 'Contour'],
-            width: 1.1,
-            color: {
-              colormap: {
-                kind: 'sequential',
-                colors: [
-                  '#0b2545',
-                  '#13607a',
-                  '#2a9d8f',
-                  '#8fc69a',
-                  '#e9c46a',
-                  '#f4a261',
-                  '#e76f51',
-                ],
-              },
-              value: 'level',
-              domain: [0, 1],
-            },
-          },
+          lines: tides.table('Contour'),
+          width: 1.1,
+          color: field('level')
+            .colormap({
+              kind: 'sequential',
+              colors: ['#0b2545', '#13607a', '#2a9d8f', '#8fc69a', '#e9c46a', '#f4a261', '#e76f51'],
+            })
+            .domain(0, 1),
         },
       ],
     },
+    fit: framed([-640, -320, 640, 320]),
   };
 }

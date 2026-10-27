@@ -1,6 +1,7 @@
-//! The expression machine on the CPU, for what a diagram's sheet reads (where rows stand, how large
-//! they are, and the texts its blocks fit) and what a query keeps, sorts, and selects. The GPU runs
-//! the same expressions for everything drawn; here they read fields, sampled ones at a coordinate.
+//! Evaluates expressions on the CPU, for work that needs only data: a diagram's sheet
+//! (positions, sizes, and block label texts), layouts, row priorities, fitted domains of paged
+//! tables, and queries (filters, sort keys, and selections). The GPU evaluates the same expressions
+//! for drawing. Here they read only fields, with sampled fields read at one axis coordinate.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -9,37 +10,46 @@ use rustc_hash::FxHashMap;
 
 use super::{Binary, Domain, Expr, FieldRef, Node, Unary};
 use crate::Kind;
-use crate::data::{Data, Field, Geometry, Table, Value};
+use crate::data::{Field, Geometry, Snapshot, Table, Value};
 
 /// The rows an expression reads: a table, and every dataset its joins may name.
 pub(crate) struct Rows<'a> {
     pub(crate) table: &'a Table,
-    pub(crate) all: &'a [Data],
-    /// The axis coordinate sampled fields are read at: their last frame by default.
+    pub(crate) all: &'a [Snapshot],
+    /// The axis coordinate at which sampled fields are read. Defaults to infinity, which reads
+    /// their last frame.
     at: f64,
-    /// Fitted domains already reduced, by the input they reduce.
+    /// Fitted domains already computed, keyed by their input node.
     fitted: RefCell<FxHashMap<*const Node, [f64; 2]>>,
+    /// The texts `contains` looks for, lowercased once.
+    lowered: RefCell<FxHashMap<Arc<str>, Arc<str>>>,
 }
 
 impl<'a> Rows<'a> {
-    pub(crate) fn new(table: &'a Table, all: &'a [Data]) -> Rows<'a> {
-        Rows { table, all, at: f64::INFINITY, fitted: RefCell::default() }
+    pub(crate) fn new(table: &'a Table, all: &'a [Snapshot]) -> Rows<'a> {
+        Rows { table, all, at: f64::INFINITY, fitted: RefCell::default(), lowered: RefCell::default() }
     }
 
-    /// The rows with sampled fields read at axis coordinate `at`.
+    /// `text` lowercased for `contains`, cached.
+    fn lowered(&self, text: &Arc<str>) -> Arc<str> {
+        self.lowered.borrow_mut().entry(text.clone()).or_insert_with(|| text.to_lowercase().into()).clone()
+    }
+
+    /// These rows, with sampled fields read at axis coordinate `at`.
     pub(crate) fn at(mut self, at: f64) -> Rows<'a> {
         self.at = at;
         self
     }
 
-    /// `expr` for `row` as a number; `None` where it reads missing, or holds no number.
+    /// `expr` evaluated for `row`. `None` where the result is missing or not a finite number.
     pub(crate) fn number(&self, expr: &Expr, row: usize) -> Option<f64> {
         let v = self.eval(expr, row);
         v.is_finite().then_some(v)
     }
 
-    /// `expr` for every row, NaN where it reads missing, each made into a `T` by `make`: a plain
-    /// field read page by page, anything else row by row.
+    /// `expr` evaluated for every row and converted by `make`, with NaN for missing values. A
+    /// constant fills every row, and a plain field of the table is read page by page. Anything else
+    /// is evaluated row by row.
     pub(crate) fn numbers<T>(&self, expr: &Expr, mut make: impl FnMut(f64) -> T) -> Vec<T> {
         let n = self.table.len();
         let mut out = Vec::with_capacity(n);
@@ -48,12 +58,12 @@ impl<'a> Rows<'a> {
                 out.resize_with(n, || make(*v));
                 return out;
             }
-            Node::Field(f) if f.of.is_none() => {
+            Node::Field(f) if f.from.is_none() => {
                 if let Some(Field::Values(column, _)) = self.table.field_named(&f.name) {
                     let pages = column.pages().iter().map(|p| &p.values);
                     match (column.kind(), f.component) {
                         (Kind::Number | Kind::Bool, None) => {
-                            pages.for_each(|v| v.each_number(|x| out.push(make(x.unwrap_or(f64::NAN)))));
+                            pages.for_each(|v| v.extend_numbers(&mut out, |x| make(x.unwrap_or(f64::NAN))));
                             return out;
                         }
                         (Kind::Point, Some(k)) => {
@@ -76,18 +86,23 @@ impl<'a> Rows<'a> {
         out
     }
 
-    /// The text field `expr` names, for `row`.
+    /// The text `expr` gives `row`: a text field's value, or the value a `when` picks. `None` where
+    /// it is missing.
     pub(crate) fn text(&self, expr: &Expr, row: usize) -> Option<Arc<str>> {
-        let Node::Field(f) = &*expr.0 else { return None };
-        match self.value(f, row)? {
-            Value::Text(text) => Some(text),
+        match &*expr.0 {
+            Node::Field(f) => match self.value(f, row)? {
+                Value::Text(text) => Some(text),
+                _ => None,
+            },
+            Node::When(c, a, b) => self.text(if self.eval(c, row) > 0.5 { a } else { b }, row),
             _ => None,
         }
     }
 
-    /// Field `f`'s value for `row`: of the table, or of a joined one by the row's id.
+    /// Field `f`'s value in `row`: from the table, or for a join, from the joined table's row with
+    /// the same id.
     fn value(&self, f: &FieldRef, row: usize) -> Option<Value> {
-        let value = match &f.of {
+        let value = match &f.from {
             None => self.table.value(row, &f.name, self.at)?,
             Some((data, table)) => {
                 let other = self.all.iter().find(|d| d.name() == data)?.table(table)?;
@@ -101,7 +116,7 @@ impl<'a> Rows<'a> {
         })
     }
 
-    /// `expr` as the GPU computes it, NaN standing for missing.
+    /// `expr` computed as the GPU computes it, with NaN for missing.
     fn eval(&self, expr: &Expr, row: usize) -> f64 {
         match &*expr.0 {
             Node::Number(v) => *v,
@@ -126,8 +141,8 @@ impl<'a> Rows<'a> {
             }
             Node::Contains(a, text) => {
                 let Node::Field(f) = &*a.0 else { return f64::NAN };
-                let held = |t: &str| t.to_lowercase().contains(&text.to_lowercase());
-                f64::from(u8::from(matches!(self.value(f, row), Some(Value::Text(t)) if held(&t))))
+                let needle = self.lowered(text);
+                f64::from(u8::from(matches!(self.value(f, row), Some(Value::Text(t)) if super::holds(&t, &needle))))
             }
             Node::Scale { input, domain, range } => {
                 let x = self.eval(input, row);
@@ -146,7 +161,8 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// The extent of `input` over every row, as a fitted domain reduces it.
+    /// The extent of `input` over every row, as a fitted domain computes it. `[0, 1]` when no row
+    /// has a value.
     fn fit(&self, input: &Expr) -> [f64; 2] {
         let key = Arc::as_ptr(&input.0);
         if let Some(&extent) = self.fitted.borrow().get(&key) {
@@ -209,7 +225,7 @@ mod tests {
     use crate::{Ids, Table, field, when};
 
     #[test]
-    fn numbers_follow_the_gpu() {
+    fn cpu_evaluation_matches_the_gpu() {
         let table = Table::new("T", Ids::count(3))
             .field("w", vec![Some(10.0), None, Some(30.0)])
             .field("on", vec![true, false, true]);
@@ -221,5 +237,14 @@ mod tests {
         assert_eq!((0..3).map(|r| rows.number(&pick, r)).collect::<Vec<_>>(), [Some(1.0), Some(2.0), Some(1.0)]);
         let scaled: Expr = field("w").scale(0.0..=1.0).into();
         assert_eq!(rows.number(&scaled, 2), Some(1.0), "a fitted domain spans the values");
+    }
+
+    #[test]
+    fn a_conditional_text_gives_its_field_or_nothing() {
+        let table = Table::new("T", Ids::count(2)).field("name", vec!["a", "b"]).field("on", vec![true, false]);
+        let rows = Rows::new(&table, &[]);
+        let text = when(field("on")).then(field("name")).otherwise(Expr::missing());
+        assert_eq!(rows.text(&text, 0).as_deref(), Some("a"));
+        assert_eq!(rows.text(&text, 1), None, "a missing text is no text");
     }
 }

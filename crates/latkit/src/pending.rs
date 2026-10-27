@@ -1,5 +1,5 @@
-//! The one future latkit hands out: what a view will answer once the GPU has, and what a host's job
-//! or fetch will bring.
+//! The future latkit returns for every deferred result: a view's answer once the GPU produces
+//! it, or the result of a host's job or fetch.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -8,10 +8,11 @@ use std::task::{Context, Poll, Waker};
 
 use crate::{Error, Result};
 
-/// A value still to come: a future its [`Resolver`] resolves, from a view's frames, a host's worker,
-/// or the network. A view's answers resolve to an error when the device is lost, and stay pending
-/// while no frames are drawn. Destroying their owner cancels them. Await it, or [`take`](Pending::take)
-/// it from a frame loop.
+/// A future value, resolved by its [`Resolver`] from a view's frames, a host's worker, or the
+/// network. Await it, or poll it with [`take`](Pending::take) from a frame loop.
+///
+/// A view's answers resolve to an error when the device is lost, and stay pending while no frames
+/// are drawn. Dropping their owner cancels them.
 #[must_use = "a pending value does nothing unless awaited or taken"]
 pub struct Pending<T>(Arc<Mutex<Slot<T>>>);
 
@@ -21,23 +22,23 @@ enum Slot<T> {
     Taken,
 }
 
-/// What resolves a [`Pending`]: a host keeps it until its job or fetch is done. Dropping it without
-/// resolving cancels the answer and wakes its waiter.
+/// The write side of a [`Pending`]. A host keeps it until its job or fetch finishes. Dropping it
+/// without resolving resolves the value to [`Error::Cancelled`] and wakes its waiter.
 pub struct Resolver<T>(Arc<Mutex<Slot<T>>>);
 
 impl<T> Pending<T> {
-    /// A pending value, and what resolves it.
+    /// Creates a pending value and its resolver.
     pub fn new() -> (Pending<T>, Resolver<T>) {
         let slot = Arc::new(Mutex::new(Slot::Waiting { waker: None, errors: None }));
         (Pending(slot.clone()), Resolver(slot))
     }
 
-    /// A value already here.
+    /// A pending value that is already resolved.
     pub fn ready(result: Result<T>) -> Pending<T> {
         Pending(Arc::new(Mutex::new(Slot::Ready(result))))
     }
 
-    /// Wakes `waker` once the value is resolved: at once when it already is.
+    /// Wakes `waker` when the value resolves, or immediately if it already has.
     #[cfg(feature = "gpu")]
     pub(crate) fn notify(&self, waker: &Waker) {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -51,8 +52,9 @@ impl<T> Pending<T> {
         }
     }
 
-    /// Reports a host job's failure even if its derivation keeps an earlier result. Called once
-    /// before handing the pending value to a derivation; superseded/dropped consumers report nothing.
+    /// Pushes this host job's failure to `errors`, even if the derivation consuming it keeps an
+    /// earlier result. Call once, before handing the pending value to the derivation. Nothing is
+    /// reported after the pending value is dropped, such as when a newer job supersedes it.
     #[cfg(any(feature = "gpu", test))]
     pub(crate) fn report_errors(&self, errors: &Arc<Mutex<Vec<Error>>>) {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -63,7 +65,7 @@ impl<T> Pending<T> {
         }
     }
 
-    /// The value once resolved, taking it; `None` while it waits, and after it was taken.
+    /// Takes the value once resolved. Returns `None` while it is pending and after it was taken.
     pub fn take(&self) -> Option<Result<T>> {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         match std::mem::replace(&mut *slot, Slot::Taken) {
@@ -78,12 +80,12 @@ impl<T> Pending<T> {
 }
 
 impl<T> Resolver<T> {
-    /// Whether the consumer dropped its pending value, so unstarted work can be skipped.
+    /// Whether the consumer dropped its pending value. Work not yet started can then be skipped.
     pub fn is_cancelled(&self) -> bool {
         Arc::strong_count(&self.0) == 1
     }
 
-    /// Resolves the pending value with `result`, waking whatever awaits it.
+    /// Resolves the pending value with `result` and wakes its waiter.
     pub fn resolve(self, result: Result<T>) {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if let Slot::Waiting { errors: Some(errors), .. } = &*slot
@@ -135,6 +137,52 @@ impl<T> Future for Pending<T> {
             }
             Slot::Taken => panic!("a pending value polled after it resolved"),
         }
+    }
+}
+
+/// The wakers of everything watching one thing, keyed by watcher id. Each watcher keeps only its
+/// latest waker. Waking wakes every watcher.
+#[derive(Default)]
+pub(crate) struct Watchers(Mutex<Vec<(u64, Waker)>>);
+
+impl Watchers {
+    /// Registers `waker` for watcher `id`, replacing its previous one.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn watch(&self, id: u64, waker: &Waker) {
+        let mut watchers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match watchers.iter_mut().find(|(watcher, _)| *watcher == id) {
+            Some((_, kept)) => kept.clone_from(waker),
+            None => watchers.push((id, waker.clone())),
+        }
+    }
+
+    /// Removes watcher `id`'s waker. Returns how many watchers are left.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn unwatch(&self, id: u64) -> usize {
+        let mut watchers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        watchers.retain(|(watcher, _)| *watcher != id);
+        watchers.len()
+    }
+
+    /// Wakes every watcher.
+    pub(crate) fn wake_all(&self) {
+        let wakers: Vec<Waker> =
+            self.0.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|(_, waker)| waker.clone()).collect();
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
+/// A waker that wakes every watcher.
+#[cfg(feature = "gpu")]
+impl std::task::Wake for Watchers {
+    fn wake(self: Arc<Self>) {
+        self.wake_all();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake_all();
     }
 }
 

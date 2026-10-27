@@ -5,10 +5,10 @@
 :class: picture
 ```
 
-The example suite's ACTIVSg70k case, 70,000 buses and 88,207 branches, over the states on a Mercator map tilted toward the Great Lakes. Each line takes its color and width from its voltage level, and the backbone draws on top by priority.
+The ACTIVSg70k case from the example suite: 70,000 buses and 88,207 branches over the US states, on a Mercator map tilted toward the Great Lakes. Each line's color and width follow its voltage level, and `priority` draws the high-voltage backbone on top.
 
-The picture is drawn by the `latkit` command line from this module, which writes its data with
-`Patch` and its scene as a typed `Scene`; `node docs/gallery/render.ts grid` draws it again.
+The `latkit` command line draws this picture from the module below, which builds its datasets
+with `Data` and returns its scene. Run `node docs/gallery/render.ts grid` to draw it again.
 
 ```{literalinclude} ../gallery/grid.ts
 :language: typescript

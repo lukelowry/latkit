@@ -1,10 +1,10 @@
-//! Datasets: named tables of paged, immutable columns, changed only by patches.
+//! Datasets: named tables of immutable, paged columns. Only patches change a dataset, and each
+//! version is a snapshot.
 
 mod bits;
 mod buffer;
 mod bytes;
 mod column;
-mod dataset;
 mod describe;
 mod forms;
 mod frames;
@@ -16,39 +16,43 @@ mod ordered;
 mod patch;
 mod query;
 mod samples;
+mod snapshot;
+mod source;
 mod table;
 mod text;
 mod values;
 
 pub use bytes::DecodeLimits;
-pub use dataset::Data;
-pub use describe::{Description, Envelope, FieldDescription, TableDescription};
+pub use describe::{Description, Envelope, EnvelopeRequest, FieldDescription, TableDescription};
 pub use ids::Ids;
+pub use json::{Patches, Reading};
 pub use name::{Id, Name, Row, Rows};
 #[cfg(feature = "gpu")]
 pub(crate) use name::{Keyed, Named};
 pub use patch::Patch;
+pub use query::{Order, Query, QueryResult};
+pub use snapshot::Snapshot;
+pub use source::Data;
+#[cfg(feature = "gpu")]
+pub use source::Source;
 pub use table::Table;
 pub use values::{Kind, Value, Values};
-pub use {
-    json::Patches,
-    query::{Order, Query},
-};
 
 pub(crate) use {geometry::Geometry, table::Field};
 
-// What the GPU side reads of the data.
+// Data internals the GPU side uses.
 #[cfg(feature = "gpu")]
 pub(crate) use {
+    bytes::{read_values, values_bytes},
     column::{Column, PAGE_ROWS, Page},
     frames::{Listed, Manifest},
     geometry::GeometryBuilder,
     ids::RowIds,
+    json::geojson,
     name::{PageId, Version},
     patch::Op,
     samples::{AxisPage, FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, Run, Samples, bucket_frames, detail, sides},
     table::{Inverse, Reference, UNWIRED},
-    values::HOLE,
 };
 
 #[cfg(test)]

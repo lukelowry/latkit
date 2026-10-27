@@ -1,8 +1,9 @@
-/** Currents: streamlines through a field of vortices, as a wind map draws them, colored by speed. */
-import { Patch } from 'latkit/core';
-import { THEME, framed, type Piece } from './look.ts';
+/** Currents: streamlines through a field of vortices, as on a wind map, colored by speed. */
+import { Data, field } from 'latkit';
+import { framed } from './look.ts';
+import type { Picture } from './render.ts';
 
-/** Vortices: where each turns, how strongly, and which way. */
+/** Vortices as `[x, y, strength]`. The sign of the strength sets the direction of spin. */
 const VORTICES = [
   [-380, 120, 1.0],
   [-120, -170, -0.8],
@@ -13,7 +14,8 @@ const VORTICES = [
   [560, 250, -0.5],
 ] as const;
 
-/** The flow at `x`, `y`: a steady drift east, and each vortex's swirl falling off from its center. */
+/** The flow velocity at `x`, `y`: a steady eastward drift plus each vortex's swirl, which falls off
+ * with distance from its center. */
 function flow(x: number, y: number): [number, number] {
   let [u, v] = [0.35, 0.05];
   for (const [cx, cy, s] of VORTICES) {
@@ -25,13 +27,14 @@ function flow(x: number, y: number): [number, number] {
   return [u, v];
 }
 
-export default function currents(): Piece {
+export default function (): Picture {
   const [w, h] = [1300, 720];
   const geometry: [number, number][][] = [];
   const speed: number[] = [];
-  // Seeds on a grid, jittered by a fixed hash, so the field is covered evenly every time.
+  // Streamlines start on a grid, jittered by a fixed hash, so they cover the field evenly and the
+  // same way on every run.
   const jitter = (i: number) => (Math.sin(i * 12.9898) * 43758.5453) % 1;
-  // Inside an ellipse, so the field ends softly rather than at a frame.
+  // Streamlines stay inside an ellipse, so the field has a soft edge rather than a rectangular one.
   const inside = (x: number, y: number) => (x / (w / 2)) ** 2 + (y / (h / 2)) ** 2 < 1;
   for (let i = 0; i < 52 * 30; i++) {
     let x = (((i % 52) + 0.5 + 0.8 * jitter(i)) / 52 - 0.5) * w;
@@ -40,7 +43,7 @@ export default function currents(): Piece {
     const path: [number, number][] = [[x, y]];
     let travelled = 0;
     for (let s = 0; s < 70; s++) {
-      // A midpoint step, so curves stay curves.
+      // A midpoint step, which follows curves more closely than an Euler step.
       const [u0, v0] = flow(x, y);
       const [u, v] = flow(x + 2.5 * u0, y + 2.5 * v0);
       const length = Math.hypot(u, v);
@@ -55,36 +58,25 @@ export default function currents(): Piece {
     geometry.push(path);
     speed.push(travelled / path.length);
   }
-  const data = Patch.to('wind').replace(
-    'Streamline',
-    { count: geometry.length },
-    { geometry, speed },
-  );
+  const wind = new Data('wind').replace('Streamline', { geometry, speed });
   return {
-    name: 'currents',
-    alt: 'Over two thousand streamlines swirling around seven vortices, slow ones deep blue and fast ones pale',
-    data: [data],
-    fit: framed([-w / 2, -h / 2, w / 2, h / 2]),
     scene: {
       space: { plane: { grid: 'off' } },
       ease: 0,
-      theme: THEME,
+      theme: { background: '#0b0f14' },
       marks: [
         {
-          lines: {
-            of: ['wind', 'Streamline'],
-            width: 0.75,
-            color: {
-              colormap: {
-                kind: 'sequential',
-                colors: ['#123056', '#1d5fd1', '#3f8cff', '#7cc4ff', '#cfe8ff'],
-              },
-              value: 'speed',
-              domain: [0.2, 2.2],
-            },
-          },
+          lines: wind.table('Streamline'),
+          width: 0.75,
+          color: field('speed')
+            .colormap({
+              kind: 'sequential',
+              colors: ['#123056', '#1d5fd1', '#3f8cff', '#7cc4ff', '#cfe8ff'],
+            })
+            .domain(0.2, 2.2),
         },
       ],
     },
+    fit: framed([-w / 2, -h / 2, w / 2, h / 2]),
   };
 }

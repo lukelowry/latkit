@@ -1,8 +1,10 @@
 /**
- * The page models' tests run in node, where fetch reads no files: the runtime's WebAssembly, which
- * it fetches from beside its module, is read from disk instead.
+ * Setup for the examples' tests, which run in node. Node's fetch cannot read files, so `file:`
+ * URLs, such as latkit's WebAssembly beside its module, are read from disk instead. latkit is
+ * loaded before any test makes data.
  */
 import { readFile } from 'node:fs/promises';
+import { load } from 'latkit';
 
 const fetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -11,3 +13,4 @@ globalThis.fetch = async (input, init) => {
   const type = url.endsWith('.wasm') ? 'application/wasm' : 'application/octet-stream';
   return new Response(await readFile(new URL(url)), { headers: { 'Content-Type': type } });
 };
+await load();

@@ -1,6 +1,5 @@
-//! What scenes read as JSON. Each type deserializes as itself and its schema is derived from it; a
-//! type a name can stand for also reads one of its presets' names, such as `"inspect"`, `"globe"`, or
-//! `"stress"`.
+//! JSON reading for scenes. Each type deserializes and takes its schema from its own definition. A
+//! type with presets also accepts a preset's name, such as `"inspect"`, `"earth"`, or `"stress"`.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -12,20 +11,20 @@ use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
-/// A type a name can stand for.
+/// A type with named presets.
 pub(crate) trait Presets: Sized {
-    /// The names, as the schema lists them.
+    /// The preset names, in the order the schema lists them.
     const NAMES: &'static [&'static str];
 
-    /// The value `name` stands for.
+    /// The preset named `name`, if any.
     fn preset(name: &str) -> Option<Self>;
 
-    /// The value its options, written out, make: what its derive reads.
+    /// Reads the type from its options object with the derived implementation.
     fn options<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>;
 }
 
-/// `T` read from one of its presets' names, or from its options, read where they are written so an
-/// error names the path to the option it could not read.
+/// Reads `T` from a preset name or from its options. Options are read in place, so an error names
+/// the path to the option that failed.
 pub(crate) fn preset_or<'de, D: Deserializer<'de>, T: Presets>(deserializer: D) -> Result<T, D::Error> {
     struct Named<T>(PhantomData<T>);
 
@@ -49,11 +48,44 @@ pub(crate) fn preset_or<'de, D: Deserializer<'de>, T: Presets>(deserializer: D) 
     deserializer.deserialize_any(Named(PhantomData))
 }
 
-/// `T`'s schema as one of its presets' names or what it derived, its description kept on the whole.
-pub(crate) fn presets<T: Presets>(schema: &mut Schema) {
+/// Declares a type's presets, each name once, as `Presets`. The type reads its options with the
+/// `Deserialize` that serde derives as `remote = "Self"`. Unless it ends `; read by hand`, it also
+/// gets a `Deserialize` that takes a preset's name or options.
+macro_rules! presets {
+    ($type:ident { $($name:literal => $value:expr),+ $(,)? }) => {
+        presets!($type { $($name => $value),+ }; read by hand);
+        impl<'de> serde::Deserialize<'de> for $type {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<$type, D::Error> {
+                crate::scene::form::preset_or(deserializer)
+            }
+        }
+    };
+    ($type:ident { $($name:literal => $value:expr),+ $(,)? }; read by hand) => {
+        impl crate::scene::form::Presets for $type {
+            const NAMES: &'static [&'static str] = &[$($name),+];
+
+            fn preset(name: &str) -> Option<$type> {
+                match name {
+                    $($name => Some($value),)+
+                    _ => None,
+                }
+            }
+
+            fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<$type, D::Error> {
+                $type::deserialize(deserializer)
+            }
+        }
+    };
+}
+
+pub(crate) use presets;
+
+/// Rewrites `T`'s derived schema to accept a preset name or the derived form. The description
+/// moves to the combined schema.
+pub(crate) fn preset_schema<T: Presets>(schema: &mut Schema) {
     let mut derived = std::mem::replace(schema, json_schema!({}));
     let description = derived.remove("description");
-    // A variant without options that a preset names already is the preset.
+    // Drop unit variants that a preset already names, since the preset's name covers them.
     for key in ["oneOf", "anyOf"] {
         if let Some(variants) = derived.get_mut(key).and_then(Value::as_array_mut) {
             variants.retain(|v| !v.get("const").and_then(Value::as_str).is_some_and(|name| T::NAMES.contains(&name)));
@@ -65,8 +97,8 @@ pub(crate) fn presets<T: Presets>(schema: &mut Schema) {
     }
 }
 
-/// A duration read as seconds.
+/// Reads a duration in seconds. Errors on negative or out-of-range values.
 pub(crate) fn seconds<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
     let seconds = f64::deserialize(deserializer)?;
-    Duration::try_from_secs_f64(seconds).map_err(|_| de::Error::custom("seconds from 0, within range"))
+    Duration::try_from_secs_f64(seconds).map_err(|_| de::Error::custom("seconds must be finite and not negative"))
 }

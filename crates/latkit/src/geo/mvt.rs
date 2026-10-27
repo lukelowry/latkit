@@ -1,11 +1,13 @@
-//! Mapbox vector tiles: a tile's layers, their features' geometry in longitude and latitude, clipped
-//! to the tile so neighbors never overlap, and their properties.
+//! Mapbox vector tile decoding. Feature geometry is converted to longitude and latitude and clipped
+//! to the tile, so neighboring tiles never overlap.
 
+use crate::Value;
 use crate::tiles::TileKey;
+use crate::wire::In;
 
 type Point = [f64; 2];
 
-/// What a feature's geometry is.
+/// A feature's geometry type.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Kind {
     Points,
@@ -13,15 +15,9 @@ pub(crate) enum Kind {
     Polygons,
 }
 
-/// A property value as a tile holds it.
-#[derive(Clone, PartialEq, Debug)]
-pub(crate) enum Property {
-    Text(String),
-    Number(f64),
-    Bool(bool),
-}
+crate::wire::codes!(Kind { Points = 0, Lines = 1, Polygons = 2 });
 
-/// A feature's geometry, in degrees.
+/// A feature's geometry, in degrees of longitude and latitude.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) enum Shape {
     Points(Vec<Point>),
@@ -39,14 +35,15 @@ impl Shape {
     }
 }
 
-/// One feature: its place among its layer's features, its shape, and its properties by key.
+/// One feature: its shape, and its properties as pairs of key index and value. A value is a text,
+/// number, or boolean.
 #[derive(Clone, Debug)]
 pub(crate) struct Feature {
     pub(crate) shape: Shape,
-    pub(crate) properties: Vec<(u32, Property)>,
+    pub(crate) properties: Vec<(u32, Value)>,
 }
 
-/// One layer: its name, its keys, and its features.
+/// One layer: its name, its property keys, and its features.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Layer {
     pub(crate) name: String,
@@ -54,8 +51,8 @@ pub(crate) struct Layer {
     pub(crate) features: Vec<Feature>,
 }
 
-/// The layers of tile `key`'s `bytes`; a feature's geometry clipped to the tile, and one left with
-/// nothing inside it dropped. Bytes that are no tile answer `None`.
+/// Decodes the layers of tile `key` from `bytes`. Geometry is clipped to the tile, and features
+/// with nothing inside it are dropped. `None` if the tile or one of its layers is malformed.
 pub(crate) fn decode(bytes: &[u8], key: TileKey) -> Option<Vec<Layer>> {
     let mut layers = Vec::new();
     let mut tile = Reader::new(bytes);
@@ -92,19 +89,19 @@ fn layer(bytes: &[u8], key: TileKey) -> Option<Layer> {
     Some(out)
 }
 
-fn value(bytes: &[u8]) -> Option<Property> {
+fn value(bytes: &[u8]) -> Option<Value> {
     let mut reader = Reader::new(bytes);
-    let mut out = Property::Bool(false);
+    let mut out = Value::Bool(false);
     while !reader.done() {
         let (field, wire) = reader.tag()?;
         out = match (field, wire) {
-            (1, LENGTH) => Property::Text(String::from_utf8_lossy(reader.bytes()?).into_owned()),
-            (2, FIXED32) => Property::Number(f64::from(f32::from_le_bytes(reader.take()?))),
-            (3, FIXED64) => Property::Number(f64::from_le_bytes(reader.take()?)),
-            (4, VARINT) => Property::Number(reader.varint()? as i64 as f64),
-            (5, VARINT) => Property::Number(reader.varint()? as f64),
-            (6, VARINT) => Property::Number(zigzag(reader.varint()?) as f64),
-            (7, VARINT) => Property::Bool(reader.varint()? != 0),
+            (1, LENGTH) => Value::Text(String::from_utf8_lossy(reader.bytes()?).into()),
+            (2, FIXED32) => Value::Number(f64::from(f32::from_le_bytes(reader.take()?))),
+            (3, FIXED64) => Value::Number(f64::from_le_bytes(reader.take()?)),
+            (4, VARINT) => Value::Number(reader.varint()? as i64 as f64),
+            (5, VARINT) => Value::Number(reader.varint()? as f64),
+            (6, VARINT) => Value::Number(zigzag(reader.varint()?) as f64),
+            (7, VARINT) => Value::Bool(reader.varint()? != 0),
             _ => {
                 reader.skip(wire)?;
                 continue;
@@ -114,9 +111,9 @@ fn value(bytes: &[u8]) -> Option<Property> {
     Some(out)
 }
 
-/// A feature: `None` when nothing of it lies in the tile, or its bytes are no feature, which drops
-/// it alone.
-fn feature(bytes: &[u8], values: &[Property], frame: &Frame) -> Option<Feature> {
+/// Decodes one feature. `None`, which drops only this feature, if it lies wholly outside the tile
+/// or is malformed.
+fn feature(bytes: &[u8], values: &[Value], frame: &Frame) -> Option<Feature> {
     let mut reader = Reader::new(bytes);
     let (mut tags, mut geometry, mut kind) = (Vec::new(), Vec::new(), 0);
     while !reader.done() {
@@ -146,7 +143,7 @@ fn feature(bytes: &[u8], values: &[Property], frame: &Frame) -> Option<Feature> 
     Some(Feature { shape, properties })
 }
 
-/// A tile's frame: where its coordinates lie on the earth.
+/// Converts a tile's coordinates to longitude and latitude.
 struct Frame {
     key: TileKey,
     extent: f64,
@@ -157,16 +154,15 @@ impl Frame {
         Frame { key, extent }
     }
 
-    /// The longitude and latitude of tile coordinates `p`.
+    /// The longitude and latitude of tile coordinates `p` (web mercator, y down).
     fn degrees(&self, p: [f64; 2]) -> Point {
         let n = f64::from(1_u32 << self.key.z.min(31));
         let x = (f64::from(self.key.x) + p[0] / self.extent) / n;
         let y = (f64::from(self.key.y) + p[1] / self.extent) / n;
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
-        [x * 360.0 - 180.0, lat]
+        [x * 360.0 - 180.0, super::mercator::latitude_down(y)]
     }
 
-    /// The tile's points, those outside it dropped.
+    /// Decodes points, dropping those outside the tile.
     fn points(&self, geometry: &[u32]) -> Option<Shape> {
         let inside = |p: &[f64; 2]| p.iter().all(|&v| v >= 0.0 && v < self.extent);
         let points: Vec<Point> =
@@ -174,7 +170,7 @@ impl Frame {
         (!points.is_empty()).then_some(Shape::Points(points))
     }
 
-    /// The tile's lines, cut where they leave it.
+    /// Decodes lines, cut where they leave the tile.
     fn lines(&self, geometry: &[u32]) -> Option<Shape> {
         let mut parts: Vec<Vec<Point>> = Vec::new();
         for path in paths(geometry) {
@@ -187,8 +183,8 @@ impl Frame {
         (!parts.is_empty()).then_some(Shape::Lines(parts))
     }
 
-    /// The tile's polygons: each exterior ring, by its positive area, with the holes after it,
-    /// clipped to the tile as a whole.
+    /// Decodes polygons. A ring with positive area starts a polygon, and the negative-area rings
+    /// after it are its holes. Each polygon is clipped to the tile as a whole.
     fn polygons(&self, geometry: &[u32]) -> Option<Shape> {
         let mut groups: Vec<Vec<Vec<[f64; 2]>>> = Vec::new();
         for ring in paths(geometry) {
@@ -215,15 +211,15 @@ impl Frame {
     }
 }
 
-/// A polygon, its exterior then its holes, clipped to the square `0..extent` as a whole: a ring
-/// wholly inside it stays; the runs of the rest inside it join along its edge, where the polygon's
-/// inside lies, into exteriors; and each hole inside goes to the exterior around it. Clipping each
-/// ring alone would leave a hole crossing the edge running along its exterior there, which no
-/// triangulation reads right.
+/// Clips a polygon (exterior, then holes) to the square `0..extent` as a whole. Rings wholly inside
+/// the square stay. The parts of other rings inside it are joined along the square's edge into
+/// exteriors, and each hole wholly inside goes to the exterior containing it. Clipping rings
+/// separately would leave a hole that crosses the edge running along its clipped exterior there,
+/// which triangulation mishandles.
 fn clip_polygon(rings: &[Vec<[f64; 2]>], extent: f64) -> Vec<Vec<Vec<[f64; 2]>>> {
     let inside = |p: &[f64; 2]| p.iter().all(|&v| (0.0..=extent).contains(&v));
     let (mut exteriors, mut holes, mut runs) = (Vec::new(), Vec::new(), Vec::new());
-    // Whether the square lies within the polygon, as the rings that miss it say.
+    // Whether the whole square lies inside the polygon, judged from rings that do not cross it.
     let mut covered = false;
     for (k, ring) in rings.iter().enumerate().filter(|(_, r)| r.len() >= 3) {
         if ring.iter().all(inside) {
@@ -235,7 +231,8 @@ fn clip_polygon(rings: &[Vec<[f64; 2]>], extent: f64) -> Vec<Vec<Vec<[f64; 2]>>>
             continue;
         }
         let crossing = runs_inside(ring, extent);
-        // A ring missing the square holds all of it or none: the exterior first, then a hole within.
+        // A ring that does not cross the square contains all of it or none. The exterior comes
+        // first, so a hole that contains the square clears `covered`.
         if crossing.is_empty() && contains(ring, [extent / 2.0; 2]) {
             covered = k == 0;
         }
@@ -261,9 +258,9 @@ fn clip_polygon(rings: &[Vec<[f64; 2]>], extent: f64) -> Vec<Vec<Vec<[f64; 2]>>>
     polygons
 }
 
-/// The runs of closed `ring`, which has a point outside the square `0..extent`, inside it: each from
-/// where it enters to where it leaves, on the edge. A run lying along the edge alone bounds nothing,
-/// and drops.
+/// The runs of closed `ring` inside the square `0..extent`, each from where it enters to where it
+/// leaves, with both ends on the edge. Returns nothing if `ring` has no point outside the square.
+/// A run lying entirely on the edge bounds nothing and is dropped.
 fn runs_inside(ring: &[[f64; 2]], extent: f64) -> Vec<Vec<[f64; 2]>> {
     let outside = |p: &[f64; 2]| p.iter().any(|&v| !(0.0..=extent).contains(&v));
     let Some(start) = ring.iter().position(outside) else { return Vec::new() };
@@ -280,7 +277,7 @@ fn runs_inside(ring: &[[f64; 2]], extent: f64) -> Vec<Vec<[f64; 2]>> {
             run.push(q);
             continue;
         }
-        // The segment leaves the square: the run ends.
+        // The segment leaves the square, so the run ends.
         run.push(onto_edge(q, extent));
         if run.len() >= 2 && !run.iter().all(on_edge) {
             runs.push(std::mem::take(&mut run));
@@ -290,7 +287,7 @@ fn runs_inside(ring: &[[f64; 2]], extent: f64) -> Vec<Vec<[f64; 2]>> {
     runs
 }
 
-/// `p`, near the square's edge, moved onto it.
+/// Moves `p`, which lies near the square's edge, onto the nearest edge.
 fn onto_edge(p: [f64; 2], extent: f64) -> [f64; 2] {
     let gaps = [p[1].abs(), (p[0] - extent).abs(), (p[1] - extent).abs(), p[0].abs()];
     let edge = (0..4).min_by(|&a, &b| gaps[a].total_cmp(&gaps[b])).unwrap_or(0);
@@ -303,8 +300,8 @@ fn onto_edge(p: [f64; 2], extent: f64) -> [f64; 2] {
     }
 }
 
-/// How far along the square's edge `p` lies, from the corner at 0 the way an exterior winds: along
-/// y = 0, then x = extent, y = extent, and x = 0.
+/// Distance of edge point `p` along the square's perimeter from the corner at the origin, in the
+/// direction an exterior winds: along y = 0, then x = extent, y = extent, and x = 0.
 fn along(p: [f64; 2], extent: f64) -> f64 {
     let gaps = [p[1].abs(), (p[0] - extent).abs(), (p[1] - extent).abs(), p[0].abs()];
     match (0..4).min_by(|&a, &b| gaps[a].total_cmp(&gaps[b])).unwrap_or(0) {
@@ -315,8 +312,9 @@ fn along(p: [f64; 2], extent: f64) -> f64 {
     }
 }
 
-/// The exteriors `runs` make: from where each leaves the square, along its edge the way the
-/// polygon's inside lies to where the next enters, past the corners between, until the first again.
+/// Joins `runs` into exterior rings. From each run's exit, a ring follows the square's edge in the
+/// exterior's winding direction to the next run's entry, adding the corners it passes, until it
+/// returns to its first run.
 fn join(runs: &[Vec<[f64; 2]>], extent: f64) -> Vec<Vec<[f64; 2]>> {
     let around = 4.0 * extent;
     let entries: Vec<f64> = runs.iter().map(|r| along(r[0], extent)).collect();
@@ -362,7 +360,7 @@ fn join(runs: &[Vec<[f64; 2]>], extent: f64) -> Vec<Vec<[f64; 2]>> {
     rings
 }
 
-/// Whether closed `ring` holds `p`, by the crossings of a ray from it.
+/// Whether closed `ring` contains `p`, by counting crossings of a ray from it.
 fn contains(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
     let mut inside = false;
     let mut a = ring[ring.len() - 1];
@@ -375,8 +373,8 @@ fn contains(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
     inside
 }
 
-/// The paths a geometry's commands draw, in tile coordinates: each move starts one, a close returns
-/// to its start (left implicit).
+/// Decodes geometry commands into paths in tile coordinates. Each move-to starts a path, and a
+/// close-path is left implicit.
 fn paths(geometry: &[u32]) -> Vec<Vec<[f64; 2]>> {
     let mut paths: Vec<Vec<[f64; 2]>> = Vec::new();
     let (mut x, mut y) = (0_i64, 0_i64);
@@ -398,7 +396,7 @@ fn paths(geometry: &[u32]) -> Vec<Vec<[f64; 2]>> {
                     if let Some(path) = paths.last_mut() {
                         path.push([x as f64, y as f64]);
                     }
-                    // A move with several points is several points, each its own path.
+                    // A move-to with several points (a multipoint) makes each point its own path.
                     if id == 1 && count > 1 && k + 1 < count {
                         paths.push(Vec::new());
                     }
@@ -412,8 +410,8 @@ fn paths(geometry: &[u32]) -> Vec<Vec<[f64; 2]>> {
     paths
 }
 
-/// Twice a ring's area by the surveyor's formula in tile coordinates, y down: positive for an
-/// exterior ring.
+/// Twice a ring's signed area by the surveyor's formula in tile coordinates (y down). Positive for
+/// an exterior ring.
 fn surveyor(ring: &[[f64; 2]]) -> f64 {
     let Some(&last) = ring.last() else { return 0.0 };
     let mut sum = 0.0;
@@ -425,7 +423,7 @@ fn surveyor(ring: &[[f64; 2]]) -> f64 {
     sum
 }
 
-/// `line` cut to the square `0..extent`: the runs of it inside.
+/// Clips `line` to the square `0..extent`, returning the parts inside.
 fn clip_line(line: &[[f64; 2]], extent: f64) -> Vec<Vec<[f64; 2]>> {
     let mut parts: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut current: Vec<[f64; 2]> = Vec::new();
@@ -445,7 +443,7 @@ fn clip_line(line: &[[f64; 2]], extent: f64) -> Vec<Vec<[f64; 2]>> {
             current.push(a);
         }
         current.push(b);
-        // The segment left the tile: what follows starts a new run.
+        // The segment left the tile, so the next segment starts a new part.
         if b != w[1] {
             parts.push(std::mem::take(&mut current));
         }
@@ -456,7 +454,7 @@ fn clip_line(line: &[[f64; 2]], extent: f64) -> Vec<Vec<[f64; 2]>> {
     parts
 }
 
-/// Segment `a b` clipped to the square `0..extent`, by Liang and Barsky.
+/// Clips segment `a b` to the square `0..extent` (Liang-Barsky). `None` if it lies outside.
 fn clip_segment(a: [f64; 2], b: [f64; 2], extent: f64) -> Option<([f64; 2], [f64; 2])> {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
@@ -506,31 +504,20 @@ const FIXED64: u8 = 1;
 const LENGTH: u8 = 2;
 const FIXED32: u8 = 5;
 
-/// Protocol buffer fields, read in order; `None` past the end or on a malformed field.
-struct Reader<'a> {
-    bytes: &'a [u8],
-}
+/// Reads protocol buffer fields in order. Reads return `None` past the end or on a malformed field.
+struct Reader<'a>(In<'a>);
 
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader { bytes }
+        Reader(In::new(bytes))
     }
 
     fn done(&self) -> bool {
-        self.bytes.is_empty()
+        self.0.is_empty()
     }
 
     fn varint(&mut self) -> Option<u64> {
-        let mut value = 0_u64;
-        for shift in (0..64).step_by(7) {
-            let (&byte, rest) = self.bytes.split_first()?;
-            self.bytes = rest;
-            value |= u64::from(byte & 0x7f) << shift;
-            if byte < 0x80 {
-                return Some(value);
-            }
-        }
-        None
+        self.0.varint()
     }
 
     /// The next field's number and wire type.
@@ -539,17 +526,14 @@ impl<'a> Reader<'a> {
         Some(((tag >> 3) as u32, (tag & 7) as u8))
     }
 
+    /// A length-delimited field's bytes.
     fn bytes(&mut self) -> Option<&'a [u8]> {
         let len = usize::try_from(self.varint()?).ok()?;
-        let (head, rest) = self.bytes.split_at_checked(len)?;
-        self.bytes = rest;
-        Some(head)
+        self.0.bytes(len)
     }
 
     fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
-        let (head, rest) = self.bytes.split_first_chunk::<N>()?;
-        self.bytes = rest;
-        Some(*head)
+        self.0.take()
     }
 
     fn skip(&mut self, wire: u8) -> Option<()> {
@@ -567,7 +551,7 @@ impl<'a> Reader<'a> {
 pub(crate) mod tests {
     use super::*;
 
-    /// Protocol buffer fields, written.
+    /// Writes protocol buffer fields.
     #[derive(Default)]
     pub(crate) struct Writer(pub(crate) Vec<u8>);
 
@@ -603,8 +587,8 @@ pub(crate) mod tests {
         ((v << 1) ^ (v >> 63)) as u32
     }
 
-    /// A tile of one layer `name` holding one feature of `kind` drawn by `geometry`, with property
-    /// `name` set to `value`.
+    /// A tile with one layer named `layer` holding one feature of type `kind`, with geometry
+    /// commands `geometry` and property `name` set to `value`.
     pub(crate) fn tile(layer: &str, kind: u64, geometry: &[u32], value: &str) -> Vec<u8> {
         let mut feature = Writer::default();
         feature.packed(2, &[0, 0]);
@@ -627,7 +611,7 @@ pub(crate) mod tests {
         t.0
     }
 
-    /// A square's commands, from `(x, y)` of `side`, clockwise in tile coordinates.
+    /// Geometry commands for a square of `side` from `(x, y)`, clockwise in tile coordinates.
     pub(crate) fn square(x: i64, y: i64, side: i64) -> Vec<u32> {
         vec![9, zig(x), zig(y), 26, zig(side), 0, 0, zig(side), zig(-side), 0, 15]
     }
@@ -644,7 +628,7 @@ pub(crate) mod tests {
         assert_eq!(ring.len(), 5, "closed");
         assert!((ring[0][0] + 90.0).abs() < 1e-9, "a quarter in: {:?}", ring[0]);
         assert!(ring[0][1] > 60.0 && ring[0][1] < 70.0, "mercator latitude: {:?}", ring[0]);
-        assert_eq!(feature.properties, vec![(0, Property::Text("lake".into()))]);
+        assert_eq!(feature.properties, vec![(0, Value::Text("lake".into()))]);
     }
 
     #[test]
@@ -653,8 +637,8 @@ pub(crate) mod tests {
             let ring = vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side]];
             if exterior { ring } else { ring.into_iter().rev().collect() }
         };
-        // A sea over the tile and its buffer, with islands across its left edge, across its corner,
-        // inside it, and outside it.
+        // A sea covering the tile and its buffer, with islands across its left edge, across its
+        // corner, inside it, and outside it.
         let rings = [
             square(-64.0, -64.0, 4224.0, true),
             square(-200.0, 1800.0, 500.0, false),
@@ -664,7 +648,7 @@ pub(crate) mod tests {
         ];
         let polygons = clip_polygon(&rings, 4096.0);
         assert_eq!(polygons.len(), 1);
-        assert_eq!(polygons[0].len(), 2, "islands across the edge notch the sea; the one inside stays a hole");
+        assert_eq!(polygons[0].len(), 2, "islands across the edge join the outer ring; the one inside stays a hole");
         let points: Vec<[f64; 2]> = polygons[0].concat();
         let triangles = super::super::earcut::earcut(&points, &[polygons[0][0].len()]);
         let area: f64 = triangles
@@ -675,8 +659,8 @@ pub(crate) mod tests {
             })
             .sum();
         let sea = 4096.0 * 4096.0 - 300.0 * 500.0 - 196.0 * 300.0 - 200.0 * 200.0;
-        assert!((area - sea).abs() < 1e-6, "{area} drawn of {sea}");
-        // A sea the tile lies wholly in is the tile; one beside it is nothing.
+        assert!((area - sea).abs() < 1e-6, "area {area}, expected {sea}");
+        // A sea containing the whole tile clips to the tile. One beside it clips to nothing.
         assert_eq!(clip_polygon(&[square(-100.0, -100.0, 5000.0, true)], 4096.0)[0][0].len(), 4);
         assert_eq!(clip_polygon(&[square(5000.0, 0.0, 100.0, true)], 4096.0).len(), 0);
     }
@@ -684,7 +668,7 @@ pub(crate) mod tests {
     #[test]
     fn shapes_are_clipped_to_the_tile() {
         let key = TileKey { z: 1, x: 1, y: 0 };
-        // A square reaching past the tile's left edge: clipped there.
+        // A square reaching past the tile's left edge is clipped there.
         let layers = decode(&tile("land", 3, &square(-512, 1024, 1024), "x"), key).expect("a tile");
         let Shape::Polygons(polygons) = &layers[0].features[0].shape else { panic!("polygons") };
         assert!(polygons[0][0].iter().all(|p| p[0] >= -1e-9), "west of 0 is clipped: {:?}", polygons[0][0]);
@@ -695,19 +679,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_polygon_wholly_outside_leaves_nothing() {
+    fn a_polygon_wholly_outside_the_tile_is_dropped() {
         let key = TileKey { z: 1, x: 1, y: 0 };
-        // Commands move relative to where the last ring ended, (-3000, 600): the second starts at (100, 100).
+        // Commands are relative to where the last ring ended, (-3000, 600), so the second ring
+        // starts at (100, 100).
         let mut geometry = square(-3000, 100, 500);
         geometry.extend(square(3100, -500, 500));
         let layers = decode(&tile("land", 3, &geometry, "x"), key).expect("a tile");
         let Shape::Polygons(polygons) = &layers[0].features[0].shape else { panic!("polygons") };
-        assert_eq!(polygons.len(), 1, "only the one inside: {polygons:?}");
+        assert_eq!(polygons.len(), 1, "only the polygon inside remains: {polygons:?}");
         assert!(polygons.iter().flatten().all(|ring| ring.len() >= 4));
     }
 
     #[test]
-    fn lines_are_cut_where_they_leave() {
+    fn lines_are_cut_where_they_leave_the_tile() {
         let parts = clip_line(&[[-10.0, 5.0], [10.0, 5.0], [10.0, -10.0], [20.0, 5.0]], 100.0);
         assert_eq!(parts.len(), 2, "{parts:?}");
         assert_eq!(parts[0][0], [0.0, 5.0]);

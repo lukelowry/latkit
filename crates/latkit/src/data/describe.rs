@@ -1,59 +1,82 @@
-//! Reading data back without moving it: what a dataset holds, and a sampled field's extremes over
-//! spans of its axis.
+//! Summaries of a dataset. A [`Description`] lists its tables and fields. An [`Envelope`] holds
+//! each row's least and greatest value of a sampled field over spans of the axis.
 
 use super::column::{PAGE_BITS, PAGE_MASK};
-use super::dataset::Data;
 use super::ids::Ids;
 use super::name::Name;
+use super::snapshot::Snapshot;
 use super::table::{Field, Table};
 use super::values::Kind;
 use crate::{Error, Result};
 
-/// The most values an envelope holds, least and greatest each: rows times spans.
+/// The largest envelope allowed, as rows times spans. `least` and `greatest` each hold this many
+/// values at most.
 const ENVELOPE_VALUES: usize = 1 << 26;
 
-/// What a dataset holds: its tables, their rows and fields, and the axis its sampled fields are
-/// recorded over and span.
+/// A summary of a dataset: its tables with their rows and fields, the axis sampled fields are
+/// recorded over, and the part of the axis they cover.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct Description {
     /// The dataset's name.
     pub name: Name,
-    /// The axis's name and unit.
+    /// The axis name and unit, if set.
     pub axis: Option<[Name; 2]>,
-    /// The first and last coordinates its sampled fields hold.
+    /// The first and last axis coordinates held by any sampled field, or `None` if no field holds
+    /// any.
     pub span: Option<[f64; 2]>,
-    /// Its tables, by name.
+    /// Its tables, sorted by name.
     pub tables: Vec<TableDescription>,
 }
 
-/// A table described: its rows, and its fields by name.
+/// A summary of one table: its row count and its fields, sorted by name.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct TableDescription {
     /// The table's name.
     pub name: Name,
-    /// How many rows it has.
+    /// The number of rows.
     pub rows: usize,
-    /// Its fields, by name.
+    /// Its fields, sorted by name.
     pub fields: Vec<FieldDescription>,
 }
 
-/// A field described: what it holds, the table a reference names, the coordinates samples span.
+/// A summary of one field: its kind, plus its target table or axis span where those apply.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct FieldDescription {
     /// The field's name.
     pub name: Name,
-    /// What it holds.
+    /// The kind of values it holds.
     pub kind: Kind,
-    /// The table a reference names.
+    /// For a reference, the target table.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to: Option<Name>,
-    /// The first and last coordinates a sampled field holds.
+    /// For a sampled field, the first and last axis coordinates it holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span: Option<[f64; 2]>,
 }
 
-impl Data {
-    /// What the dataset holds: tables, rows, fields and their kinds, the axis and its span.
+/// A request for each row's least and greatest value of a sampled field over equal spans of the
+/// axis. It reads field `field` of table `table` over `spans` equal spans from `range[0]` to
+/// `range[1]`, for every row or for the rows in `ids`, in that order. Like a query, it is plain
+/// data that deserializes from JSON.
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnvelopeRequest {
+    /// The table to read.
+    pub table: Name,
+    /// The sampled field to read.
+    pub field: Name,
+    /// The axis range the spans cover, `[first, last]`. Both are finite, with `first <= last`.
+    pub range: [f64; 2],
+    /// The number of equal spans to divide the range into. At least 1.
+    pub spans: usize,
+    /// The rows to read, in this order. Defaults to every row.
+    #[serde(default)]
+    pub ids: Option<Ids>,
+}
+
+impl Snapshot {
+    /// A summary of the dataset: its tables, rows, fields and their kinds, and the axis and its
+    /// span.
     pub fn describe(&self) -> Description {
         Description {
             name: self.name().clone(),
@@ -62,10 +85,37 @@ impl Data {
             tables: self.tables().map(Table::describe).collect(),
         }
     }
+
+    /// Each row's least and greatest value of a sampled field over equal spans of the axis, as
+    /// `request` describes. Values are laid out row by row, with NaN where a span holds no frame.
+    ///
+    /// Each span reads the coarsest stored levels of detail that fit inside it, so it costs a few
+    /// reads however many frames it covers. Where only coarser levels are present, such as while
+    /// time tiles load, those are used and may include frames just outside the span.
+    ///
+    /// Returns an error if the table, the field, or a requested row does not exist, the field is
+    /// not sampled, the range is not finite and ordered, `spans` is 0, or rows times spans exceeds
+    /// 2^26.
+    ///
+    /// ```
+    /// # use latkit::{Data, EnvelopeRequest, Ids, Patch, Table};
+    /// let grid = Data::new("grid");
+    /// grid.apply(Table::new("Bus", Ids::count(1)))?;
+    /// grid.apply(Patch::new().append("Bus", [0.0, 1.0, 2.0, 3.0], [("vm", vec![1.0, 0.9, 1.1, 1.0])]))?;
+    /// let request = EnvelopeRequest { table: "Bus".into(), field: "vm".into(), range: [0.0, 4.0], spans: 2, ids: None };
+    /// let envelope = grid.snapshot().envelope(&request)?;
+    /// assert_eq!(envelope.least, [0.9, 1.0]);
+    /// # Ok::<(), latkit::Error>(())
+    /// ```
+    pub fn envelope(&self, request: &EnvelopeRequest) -> Result<Envelope> {
+        let EnvelopeRequest { table, field, range, spans, ids } = request;
+        let rows = self.table(table).ok_or_else(|| Error::invalid("no such table").at(table.as_str()))?;
+        rows.envelope(field, *range, *spans, ids.as_ref()).map_err(|e| e.at(table.as_str()))
+    }
 }
 
 impl Table {
-    /// What the table holds: its rows, and its fields' kinds, targets, and spans.
+    /// A summary of the table: its row count and each field's kind, reference target, and span.
     pub fn describe(&self) -> TableDescription {
         let fields = self.fields.iter().map(|(name, field)| FieldDescription {
             name: name.clone(),
@@ -83,16 +133,13 @@ impl Table {
     }
 
     /// Each row's least and greatest value of sampled field `field` over `spans` equal spans of the
-    /// axis from `range[0]` to `range[1]`: of every row, or of the rows `ids` names, in its order. A
-    /// span reads the coarsest levels of detail the field holds that fit inside it, so it costs a few
-    /// reads, however many frames it covers; where the field holds only coarser ones, as time tiles
-    /// still loading leave it, those stand in.
-    pub fn envelope(&self, field: &str, range: [f64; 2], spans: usize, ids: Option<&Ids>) -> Result<Envelope> {
+    /// axis from `range[0]` to `range[1]`. See [`Snapshot::envelope`].
+    pub(crate) fn envelope(&self, field: &str, range: [f64; 2], spans: usize, ids: Option<&Ids>) -> Result<Envelope> {
         let Some(Field::Sampled(samples, _)) = self.field_named(field) else {
             return Err(Error::invalid("not a sampled field").at(field));
         };
         if !(range[0].is_finite() && range[1].is_finite() && range[0] <= range[1]) || spans == 0 {
-            return Err(Error::invalid("an envelope spans a finite range, in one span or more"));
+            return Err(Error::invalid("an envelope needs a finite, ordered range and at least one span"));
         }
         let rows: Vec<usize> = match ids {
             None => (0..self.len()).collect(),
@@ -102,18 +149,19 @@ impl Table {
         };
         if rows.len().saturating_mul(spans) > ENVELOPE_VALUES {
             return Err(Error::Limit(
-                format!("an envelope holds at most {ENVELOPE_VALUES} values: rows times spans").into(),
+                format!("an envelope holds at most {ENVELOPE_VALUES} values (rows times spans)").into(),
             ));
         }
         let width = (range[1] - range[0]) / spans as f64;
         let at: Vec<f64> =
             (0..=spans).map(|s| if s == spans { range[1] } else { range[0] + width * s as f64 }).collect();
-        // A span holds the frames from its start up to the next span's; the last holds its end too.
+        // Each span covers frames from its start up to the next span's start. The last span also
+        // includes its end.
         let bounds: Vec<u64> = at.iter().enumerate().map(|(s, &t)| samples.bound(t, s == spans)).collect();
         let pieces: Vec<Vec<(u32, u64)>> = bounds.windows(2).map(|b| samples.pieces(b[0]..b[1])).collect();
         let mut least = vec![f32::NAN; rows.len() * spans];
         let mut greatest = least.clone();
-        // Rows by block, so each piece's page is read once for all of a block's rows.
+        // Group rows by row block, so each piece's page is read once for all of a block's rows.
         let mut by_block: Vec<(usize, usize)> =
             rows.iter().enumerate().map(|(i, &row)| (row >> PAGE_BITS, i)).collect();
         by_block.sort_unstable();
@@ -136,13 +184,17 @@ impl Table {
     }
 }
 
-/// Rows' least and greatest values of a sampled field over spans of its axis.
+/// Each row's least and greatest value of a sampled field over spans of the axis, as
+/// [`Snapshot::envelope`] returns them.
 #[derive(Clone, PartialEq, Debug, serde::Serialize)]
 pub struct Envelope {
-    /// Where each span starts, then where the last ends: one more coordinate than spans.
+    /// Each span's start coordinate, then the last span's end. It has one more value than there
+    /// are spans.
     pub at: Vec<f64>,
-    /// Each row's least value in each span, row after row: NaN where it has none.
+    /// The least value of each requested row in each span, row-major (`row * spans + span`). NaN
+    /// where the span has no value.
     pub least: Vec<f32>,
-    /// Each row's greatest value in each span, row after row: NaN where it has none.
+    /// The greatest value of each requested row in each span, row-major (`row * spans + span`).
+    /// NaN where the span has no value.
     pub greatest: Vec<f32>,
 }

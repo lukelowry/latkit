@@ -1,19 +1,19 @@
-//! Groups: a diagram's vertex mark whose rows contain rows draws each as a container around its
-//! members, padded and with its title's header on top, the same at every zoom; lit, it glows about
-//! its border and hides nothing it holds.
+//! Groups: a diagram vertex mark whose rows contain other rows draws each row as a padded container
+//! around its members, with a title header on top. It scales only with the zoom. When lit, it glows
+//! around its border and hides none of its members.
 
 #![cfg(feature = "gpu")]
 
 mod common;
 
 use common::{SIZE, at, errors, frame, gpu, plain_theme};
-use latkit::{Camera, Color, Data, Edges, Ids, Patch, Scene, Table, Theme, Vertices, View};
+use latkit::{Camera, Color, Data, Edges, Ids, Patch, Scene, Table, Theme, Vertices, View, field};
 
 const C: u32 = SIZE / 2;
 
-/// Two nodes in area 1 and one outside it, linked in a chain; y runs down.
+/// Two nodes in area 1 and one outside it, linked in a chain. Y points down.
 fn graph() -> Data {
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(
         Patch::new()
             .set(Table::new("Area", vec![1_u64]))
@@ -34,15 +34,19 @@ fn graph() -> Data {
 }
 
 fn view(gpu: &latkit::Gpu, zoom: f64) -> View {
-    let theme = Theme { surface: Color::rgb(0.0, 0.0, 1.0), group_padding: 10.0, ..plain_theme() };
+    let plain = plain_theme();
+    let diagram = latkit::DiagramTheme { group: Color::rgb(0.0, 0.0, 1.0), group_padding: 10.0, ..plain.diagram };
+    let theme = Theme { diagram, ..plain };
     let scene = Scene::new(common::diagram())
         .theme(theme)
         .draw(Vertices::of("graph", "Area").contains("Node", "area"))
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(Color::rgb(1.0, 0.0, 0.0)));
+        .draw(
+            Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0).color(Color::rgb(1.0, 0.0, 0.0)),
+        );
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
-    view.set_data(graph());
+    view.set_sources([graph()]).expect("a source");
     view
 }
 
@@ -52,11 +56,11 @@ fn blue(pixels: &[[u8; 4]], x: u32, y: u32) -> bool {
 }
 
 #[test]
-fn groups_stand_around_their_members() {
+fn groups_enclose_their_members() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, 0.0);
     let pixels = frame(&gpu, &mut view);
-    // Members span −19…19 across and −4…4 down; the group pads them by 10 units.
+    // Members span −19…19 across and −4…4 down. The group pads them by 10 units.
     assert!(blue(&pixels, C - 27, C) && blue(&pixels, C + 27, C) && blue(&pixels, C, C - 12), "around the members");
     assert!(!blue(&pixels, C - 31, C) && !blue(&pixels, C + 31, C) && !blue(&pixels, C, C + 16), "and no further");
     assert!(at(&pixels, C - 15, C)[0] > 120, "members draw over it");
@@ -64,11 +68,11 @@ fn groups_stand_around_their_members() {
 }
 
 #[test]
-fn a_lit_group_glows_about_its_border_and_hides_nothing() {
+fn a_lit_group_glows_around_its_border_and_hides_nothing() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, 0.0);
     frame(&gpu, &mut view);
-    // The pointer over the group's padding, away from its members: the group lights.
+    // Hovering the group's padding, away from its members, lights the group.
     let point = [C as f32 - 26.0, C as f32 + 12.0];
     let device = latkit::Device::Mouse;
     view.input(&latkit::Input::Move { pointer: 1, point, modifiers: latkit::Modifiers::default(), device }, 0.0);
@@ -83,9 +87,9 @@ fn a_lit_group_glows_about_its_border_and_hides_nothing() {
 }
 
 #[test]
-fn groups_scale_with_the_zoom_and_nothing_else() {
+fn groups_scale_only_with_the_zoom() {
     let Some(gpu) = gpu() else { return };
-    // At twice the zoom the container is twice as wide: the sheet is one fixed picture.
+    // At twice the zoom the container is twice as wide, since the sheet scales as one picture.
     let mut view = view(&gpu, 1.0);
     let pixels = frame(&gpu, &mut view);
     assert!(blue(&pixels, C - 56, C) && blue(&pixels, C + 56, C), "twice as far out");

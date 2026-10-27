@@ -5,10 +5,10 @@
 :class: picture
 ```
 
-Closed contours swelling outward, each deformed by harmonics that drift with its level, colored from the center out.
+Closed contours swelling outward, colored from the center out. Harmonics ripple each contour, and their phases shift from level to level.
 
-The picture is drawn by the `latkit` command line from this module, which writes its data with
-`Patch` and its scene as a typed `Scene`; `node docs/gallery/render.ts tides` draws it again.
+The `latkit` command line draws this picture from the module below, which builds its datasets
+with `Data` and returns its scene. Run `node docs/gallery/render.ts tides` to draw it again.
 
 ```{literalinclude} ../gallery/tides.ts
 :language: typescript

@@ -90,7 +90,8 @@ jobs:
         if: env.PUBLISH == 'true'
         id: bindgen
         run: |
-          echo "version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')" >> "$GITHUB_OUTPUT"
+          version=$(cargo xtask bindgen-version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         if: env.PUBLISH == 'true'
         id: bindgen-cache

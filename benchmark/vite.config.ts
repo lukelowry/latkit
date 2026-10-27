@@ -3,7 +3,7 @@ import { tiles } from './tiles.ts';
 
 export default defineConfig({
   plugins: [tiles()],
-  // The package loads its wasm next to itself; prebundling would move it.
+  // latkit loads its wasm from beside its own module, which prebundling would move.
   optimizeDeps: { exclude: ['latkit'] },
   build: { target: 'es2022' },
 });

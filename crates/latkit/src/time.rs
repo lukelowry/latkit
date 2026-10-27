@@ -1,6 +1,6 @@
-//! Bounded waits: work the views wait on wakes whatever awaits it, and a timer wakes it anyway once a
-//! wait has gone on long enough, so no wait outlasts its deadline. Natively one thread keeps every
-//! timer; in a browser the page's own timers do.
+//! Bounded waits. Views' work wakes the task waiting on it, and a timer also wakes the task at its
+//! deadline, so no wait outlasts its deadline. Native builds run every timer on one thread. In a
+//! browser, the global scope's `setTimeout` runs them.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -16,8 +16,8 @@ pub(crate) fn wake_after(after: Duration, waker: Waker) {
     platform::wake_after(after, waker);
 }
 
-/// What wakes a task waiting on views: their work landing, their readbacks mapping. Waking it marks
-/// it woken until a wait takes that.
+/// Wakes a task waiting on views when their work arrives or their readbacks map. A wake sets a flag
+/// that the next wait clears.
 #[derive(Default)]
 pub(crate) struct Notify {
     woken: AtomicBool,
@@ -55,7 +55,7 @@ impl Future for Wait {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
-        // The waker goes in before the flag is read, so a wake between the two is never lost.
+        // Store the waker before reading the flag, so a wake in between is never lost.
         *self.notify.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(context.waker().clone());
         if self.notify.woken.swap(false, Ordering::AcqRel) {
             return Poll::Ready(());
@@ -79,7 +79,7 @@ mod platform {
     use std::task::Waker;
     use std::time::{Duration, Instant};
 
-    /// The one timer thread: it wakes each waker given it at its time.
+    /// The channel to the single timer thread, which wakes each waker at its due time.
     fn timers() -> &'static Mutex<Sender<(Instant, Waker)>> {
         static TIMERS: OnceLock<Mutex<Sender<(Instant, Waker)>>> = OnceLock::new();
         TIMERS.get_or_init(|| {
@@ -130,7 +130,7 @@ mod platform {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
-    /// Wakes `waker` from the global scope's `setTimeout`, in a page or a worker alike.
+    /// Wakes `waker` with the global scope's `setTimeout`, which works in a page or a worker.
     pub(super) fn wake_after(after: Duration, waker: Waker) {
         let wake = Closure::once_into_js(move || waker.wake());
         let global = js_sys::global();
@@ -149,7 +149,7 @@ mod platform {
     use std::task::Waker;
     use std::time::Duration;
 
-    /// Without the browser's timers a wait is woken at once, and is polled again.
+    /// Without browser timers, wakes `waker` immediately so the wait is polled again.
     pub(super) fn wake_after(_: Duration, waker: Waker) {
         waker.wake();
     }

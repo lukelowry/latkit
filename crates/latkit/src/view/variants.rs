@@ -1,31 +1,147 @@
-//! The pipelines a scene uses, asked for as it is shown, each at its urgency: what its frames draw
-//! with (for each kind of mark, its draw and the compute passes it needs, a stroke mark's for the
-//! path it runs along, shadows when something casts, and each mark's channels for what they read);
-//! then their text (labels, glyphs, the fields text is set in, the overlay); then what changes need
-//! (the passes transitions ease with, comets carried on), what lights rows (the lit rows' draws) and,
-//! for frames that take input, what the hover and the intents need (each kind of mark's probe
-//! program, which answers the hover, picks, boxes, and where a row lies). The GPU compiles them
-//! through its queue, the most urgent first ([`crate::gpu::pipelines`]): the view draws once what it
-//! draws with landed, adds text once that did, and lights rows, probes, and answers queries once the
-//! rest did, so no frame waits on a compile and nothing compiles where it is first used; what the
-//! scene never uses is never asked for. A picture takes no input: it draws once all it draws, writes,
-//! changes, and lights rows with landed.
+//! The pipelines a scene uses, requested when the scene is shown, in three urgency tiers.
+//!
+//! Draw: for each kind of mark, its draw pipeline and the compute passes it needs (for a stroke
+//! mark, those for the path it follows), and each mark's channel pipeline for what its channels
+//! read. Text: labels, glyphs, the distance fields text is set in, and the overlay. Answer: the
+//! passes that transitions and comet carry use, the lit rows' draws, and for frames that take
+//! input, each kind of mark's probe program, which answers hover, picks, box selection, and row
+//! location.
+//!
+//! The GPU compiles them through its queue, most urgent first ([`crate::gpu::pipelines`]). The view
+//! draws once its draw pipelines are ready, adds text once those are, and lights rows, probes, and
+//! answers queries once the rest are. So no frame waits on a compile, and nothing compiles at first
+//! use. Pipelines the scene never uses are never requested. A picture takes no input. It requests
+//! everything it draws with, text, transitions, and lit rows at draw urgency, and draws once all of
+//! them are ready.
+//!
+//! Each pipeline is named once, here: the passes shared by every mark as constants, and each mark's
+//! own through [`MarkVariants`]. The view requests and runs them by these same names, so it runs
+//! only what it requested.
 
-use super::{SHADE, View};
+use std::sync::Arc;
+
+use super::View;
+use super::marks::Shown;
 use crate::gpu::Inner;
+use crate::gpu::atlas::FIELDS;
 use crate::gpu::pipelines::{self, Asked, Urgency, Variant};
 use crate::gpu::shaders::{PATH_ENDS, PATH_GEOMETRY, Shader};
+use crate::scene::mark::MarkKind;
 use crate::{Mark, Marker, Scene, Space};
 
-/// The passes of the select capping a mark's labels.
-const SELECT: [&str; 4] = ["select_start", "select_count", "select_find", "select_cut"];
+/// Writes the word of each drawn row of a paged mark from its runs.
+pub(super) const EXPAND_RUNS: Variant = Variant::compute(Shader::Lists, "expand_runs");
 
-/// The passes placing each labeled mark's labels once its candidates are measured; a diagram's labels
-/// need no placement.
-pub(super) const PLACING: [&str; 5] = ["claim", "decide", "occupy", "ask", "fade"];
+/// The scan of a segment list's counts into each row's first instance.
+pub(super) const SCAN: [Variant; 3] = [
+    Variant::compute(Shader::Lists, "scan_blocks"),
+    Variant::compute(Shader::Lists, "scan_sums"),
+    Variant::compute(Shader::Lists, "add_sums"),
+];
 
-/// What a view asked the GPU to compile for frames into one target, taking input or not: what they
-/// draw with, their text, and what changes, lights rows, probes, and answers queries.
+/// Eases a mark in transition from its frozen words toward its settled ones.
+pub(super) const EASE: Variant = Variant::compute(Shader::Evaluate, "ease");
+
+/// Moves comets along their rows at this frame's flow.
+pub(super) const TRAVEL: Variant = Variant::compute(Shader::Evaluate, "travel");
+
+/// Carries comets' travel over to the rows a transition moved.
+pub(super) const CARRY: Variant = Variant::compute(Shader::Evaluate, "carry");
+
+/// Freezes the words a transition eases from.
+pub(super) const GATHER: Variant = Variant::compute(Shader::Freeze, "gather");
+
+/// Sums each face's normal into its corners.
+pub(super) const NORMALS: Variant = Variant::compute(Shader::Normals, "accumulate");
+
+/// What a mark's pipelines are specialized for: its kind, the `PATH_` code its rows follow, and a
+/// custom marker's WGSL.
+#[derive(Clone, Copy)]
+pub(super) struct MarkVariants<'a> {
+    kind: MarkKind,
+    path: u32,
+    custom: Option<&'a Arc<str>>,
+}
+
+impl<'a> MarkVariants<'a> {
+    /// The variants `mark` uses in `space`, requested before it compiles.
+    fn of(mark: &'a Mark, space: &Space) -> MarkVariants<'a> {
+        let custom = match mark {
+            Mark::Vertices(vertices) => match &vertices.marker {
+                Marker::Wgsl { source, .. } => Some(source),
+                _ => None,
+            },
+            _ => None,
+        };
+        MarkVariants { kind: mark.kind(), path: mark.path(space), custom }
+    }
+
+    /// The variants `shown` runs.
+    pub(super) fn shown(shown: &'a Shown) -> MarkVariants<'a> {
+        let custom = shown.compiled.as_ref().and_then(|c| c.drawing.markers.custom.as_ref());
+        MarkVariants { kind: shown.kind(), path: shown.path(), custom }
+    }
+
+    fn primitive(self) -> u32 {
+        self.kind.primitive().code()
+    }
+
+    /// The shader drawing its rows, or with `lit`, the rows its focus lights. `None` for a face's
+    /// lit rows.
+    pub(super) fn shader(self, lit: bool) -> Option<Shader> {
+        let (every, focus) = self.kind.shaders(self.custom.is_some());
+        if lit { focus } else { Some(every) }
+    }
+
+    /// The pipeline drawing its rows, or with `lit`, the rows its focus lights. A custom marker's
+    /// WGSL compiles together with its shader's.
+    pub(super) fn draw(self, lit: bool, format: wgpu::TextureFormat, samples: u32) -> Option<Asked> {
+        let variant = Variant::draw(self.shader(lit)?, format, samples).path(self.path);
+        Some(match self.custom {
+            Some(source) => Asked::Custom(source.clone(), variant),
+            None => Asked::Shader(variant),
+        })
+    }
+
+    /// The pass measuring its rows' extents for a fit. `None` for edges and faces.
+    pub(super) fn bounds(self) -> Option<Variant> {
+        Some(Variant::compute(Shader::Bounds, self.kind.bounds()?).path(self.path))
+    }
+
+    /// Whether a list may number its instances, for rows whose counts differ: edges between ends
+    /// (which may pass through bends, follow great circles, or bow into lanes), and every path
+    /// through geometry, including areas' triangles.
+    fn listed(self) -> bool {
+        self.path == PATH_GEOMETRY || (self.kind == MarkKind::Edges && self.path == PATH_ENDS)
+    }
+
+    /// The passes counting each row's instances into its list, then writing them, around a
+    /// [`SCAN`].
+    pub(super) fn segments(self) -> [Variant; 2] {
+        ["count_segments", "write_segments"].map(|entry| Variant::compute(Shader::Lists, entry).path(self.path))
+    }
+
+    /// Its program for the probe `shader`, which answers hover, queries, and the depth under the
+    /// pointer for its geometry.
+    pub(super) fn probe(self, shader: Shader) -> Variant {
+        Variant::probe(shader, self.primitive()).path(self.path)
+    }
+
+    /// The label passes: `claim`, which claims the screen cells its labels would cover, then
+    /// `texts`, which finds the texts needed by the labels that kept their cells.
+    pub(super) fn label_passes(self) -> [Variant; 2] {
+        ["claim", "texts"]
+            .map(|entry| Variant::compute(Shader::Texts, entry).path(self.path).primitive(self.primitive()))
+    }
+
+    /// The pipeline drawing its labels' glyphs.
+    pub(super) fn glyphs(self, format: wgpu::TextureFormat, samples: u32) -> Variant {
+        Variant::draw(Shader::Glyphs, format, samples).path(self.path).primitive(self.primitive())
+    }
+}
+
+/// The pipelines a view requested for frames into one target, with or without input, by tier: draw,
+/// text, and answer (transitions, lit rows, probes, and queries).
 pub(super) struct Asking {
     target: (wgpu::TextureFormat, u32),
     input: bool,
@@ -34,35 +150,37 @@ pub(super) struct Asking {
     answering: Vec<Asked>,
 }
 
-/// What nearly every scene draws with, which the GPU compiles for views to come, in this order: the
-/// channels, strokes between ends and through geometry, points and the backdrop, their bounds and
-/// lists, ports; then text.
+/// The pipelines nearly every scene draws with, which the GPU compiles ahead for later views:
+/// channels, edges, lines along paths, vertices and their labels, and the backdrop, ports, and
+/// overlay.
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub(crate) fn common(format: wgpu::TextureFormat, samples: u32) -> Vec<Asked> {
-    let draw = |shader| Variant::draw(shader, format, samples);
-    let mut needs = vec![
-        Variant::channels(pipelines::Reads { joined: false, timed: false, viewed: false }),
-        draw(Shader::Strokes).path(PATH_ENDS),
-        draw(Shader::Strokes).path(PATH_GEOMETRY),
-        draw(Shader::Points),
-        draw(Shader::Backdrop),
-        Variant::compute(Shader::Bounds, "points"),
-    ];
-    for path in [PATH_ENDS, PATH_GEOMETRY] {
-        needs.push(Variant::compute(Shader::Bounds, "strokes").path(path));
-        needs.extend(["count_segments", "write_segments"].map(|e| Variant::compute(Shader::Lists, e).path(path)));
+    let draw = |shader| Asked::Shader(Variant::draw(shader, format, samples));
+    let marks = [(MarkKind::Edges, PATH_ENDS), (MarkKind::Lines, PATH_GEOMETRY), (MarkKind::Vertices, PATH_ENDS)]
+        .map(|(kind, path)| MarkVariants { kind, path, custom: None });
+    let mut needs = vec![Asked::Shader(Variant::channels(pipelines::Reads::NONE))];
+    needs.extend(marks.iter().filter_map(|m| m.draw(false, format, samples)));
+    needs.push(draw(Shader::Backdrop));
+    for m in &marks {
+        needs.extend(m.bounds().map(Asked::Shader));
+        if m.listed() {
+            needs.extend(m.segments().map(Asked::Shader));
+        }
     }
-    needs.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| Variant::compute(Shader::Lists, e)));
-    needs.extend([draw(Shader::PointsPorts), draw(Shader::Overlay), draw(Shader::Glyphs), draw(Shader::GlyphsPorts)]);
-    needs.push(Variant::compute(Shader::Candidates, "candidates"));
-    needs.extend(["columns", "rows"].map(|e| Variant::compute(Shader::Fields, e)));
-    needs.into_iter().map(Asked::Shader).collect()
+    needs.extend(SCAN.map(Asked::Shader));
+    needs.extend([draw(Shader::PointsPorts), draw(Shader::Overlay), draw(Shader::GlyphsPorts)]);
+    let vertices = marks[2];
+    needs.push(Asked::Shader(vertices.glyphs(format, samples)));
+    needs.extend(vertices.label_passes().map(Asked::Shader));
+    needs.extend(FIELDS.map(Asked::Shader));
+    needs
 }
 
 impl View {
-    /// Asks for what frames of the scene into `target`, taking `input` or not, use, each at its
-    /// urgency, the first time; and for the channels of every mark, which compile for what they read
-    /// once their data says. Each wakes the view as it lands.
+    /// Requests the pipelines the scene's frames into `target` use, with or without `input`, each
+    /// at its urgency, on the first call for that pair. Every call also requests each mark's
+    /// channel pipeline, whose variant depends on what the channels read, known once the data is.
+    /// Each finished compile wakes the view. Returns the request's index in `asked`.
     pub(super) fn ask(&mut self, inner: &mut Inner, target: (wgpu::TextureFormat, u32), input: bool) -> usize {
         let device = &self.gpu.0.device;
         let at = if let Some(at) = self.asked.iter().position(|a| a.target == target && a.input == input) {
@@ -74,7 +192,7 @@ impl View {
             } else {
                 ([draw, text, changes, lit].concat(), Vec::new(), Vec::new())
             };
-            // Marks alike share pipelines, each asked for once.
+            // Several marks can need the same pipeline. Request each once.
             for asked in [&mut drawing, &mut texts, &mut answering] {
                 let mut seen = rustc_hash::FxHashSet::default();
                 asked.retain(|need| seen.insert(need.clone()));
@@ -89,8 +207,8 @@ impl View {
         at
     }
 
-    /// Each mark's channels, made for what they read: before its data says, neither joins, samples, nor
-    /// the view.
+    /// Each mark's channel pipeline, built for what its channels read. Before the mark's data is
+    /// known, it reads no joins, samples, or view state.
     fn channels(&self) -> Vec<Asked> {
         let mut channels: Vec<Asked> = Vec::new();
         for shown in &self.marks {
@@ -102,8 +220,8 @@ impl View {
         channels
     }
 
-    /// Whether frames into `format` with `samples` per pixel, taking `input` or not, can draw now:
-    /// whether what they draw with compiled.
+    /// Whether frames into `format` at `samples` per pixel, with or without `input`, can draw now:
+    /// whether their draw pipelines are compiled.
     pub(super) fn pipelines_ready(
         &mut self,
         inner: &mut Inner,
@@ -115,21 +233,20 @@ impl View {
         inner.pipelines.ready(&self.asked[at].drawing) && inner.pipelines.ready(&self.channels())
     }
 
-    /// Whether frames draw text: labels, their glyphs and fields, and the overlay. Until then they
-    /// draw without, and labels fade in once it lands, as after any change.
+    /// Whether frames can draw text: labels, their glyphs and distance fields, and the overlay.
+    /// Until then frames draw without text.
     pub(super) fn texts_ready(&self, inner: &Inner) -> bool {
         self.asked.iter().all(|a| inner.pipelines.ready(&a.texts))
     }
 
-    /// Whether every target the view's frames taking input draw into can ease, light rows, probe,
-    /// and answer queries: whether what those use compiled.
+    /// Whether, for every target that frames taking input draw into, the pipelines for easing, lit
+    /// rows, probes, and queries are compiled.
     pub(super) fn answers_ready(&self, inner: &Inner) -> bool {
         self.asked.iter().filter(|a| a.input).all(|a| inner.pipelines.ready(&a.answering))
     }
 }
 
-/// What a scene's frames use: what they draw with, their text, what changes need, what lights rows,
-/// and what input needs.
+/// The pipelines a scene's frames use, by stage: drawing, text, transitions, lit rows, and input.
 #[derive(Default)]
 struct Stages {
     draw: Vec<Asked>,
@@ -139,46 +256,42 @@ struct Stages {
     input: Vec<Asked>,
 }
 
-/// What frames of `scene` into `format` with `samples` per pixel use, but for each mark's channels,
-/// which compile for what they read.
+/// The pipelines frames of `scene` into `format` at `samples` per pixel use, except each mark's
+/// channel pipeline, which depends on what its channels read.
 fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
-    let any = |test: fn(&Mark) -> bool| scene.marks.iter().any(test);
+    let any = |test: &dyn Fn(&Mark) -> bool| scene.marks.iter().any(test);
     let draw = |shader| Asked::Shader(Variant::draw(shader, format, samples));
-    let compute = |shader, entry| Asked::Shader(Variant::compute(shader, entry));
     let mut stages = Stages {
         draw: vec![draw(Shader::Backdrop)],
-        changes: vec![compute(Shader::Evaluate, "ease"), compute(Shader::Freeze, "gather")],
+        changes: vec![Asked::Shader(EASE), Asked::Shader(GATHER)],
         ..Stages::default()
     };
     let controls = scene.controls;
-    let diagram = matches!(scene.space, Space::Diagram(_));
-    // The overlay writes a plot's axes, the title, and the legends, and the box and the connection a
-    // gesture draws.
-    let legends = any(|m| m.style().legend.is_some() && m.style().color.is_some());
+    // The overlay draws a plot's axes, the title, the legends, and the selection box and connection
+    // line that gestures draw.
+    let legends = any(&|m| m.style().legend.is_some() && m.style().color.is_some());
     let written = matches!(scene.space, Space::Plot(_)) || scene.title.is_some() || scene.subtitle.is_some() || legends;
     if written || controls.select_box || controls.connect {
         stages.text.push(draw(Shader::Overlay));
     }
-    // The distance fields of the text frames set are made before they draw.
-    let labeled = any(|m| {
+    // The distance fields of text a frame sets are built before the frame draws.
+    let labeled = any(&|m| {
         m.style().label.is_some()
             || matches!(m, Mark::Vertices(v) if v.ports.iter().any(|(_, port)| port.label.is_some()))
     });
     if written || labeled {
-        stages.text.extend(["columns", "rows"].map(|e| compute(Shader::Fields, e)));
+        stages.text.extend(FIELDS.map(Asked::Shader));
     }
-    if any(|m| m.style().label.is_some()) && !diagram {
-        stages.text.extend([compute(Shader::Labels, "clear_cells"), compute(Shader::Labels, "reset_cells")]);
+    if any(&Mark::flows) {
+        stages.draw.push(Asked::Shader(TRAVEL));
+        stages.changes.push(Asked::Shader(CARRY));
     }
-    if any(|m| m.style().shadow) {
-        stages.draw.push(Asked::Shader(Variant::draw(Shader::Shade, SHADE, 1)));
+    if any(&|m| MarkVariants::of(m, &scene.space).listed()) {
+        stages.draw.extend(SCAN.map(Asked::Shader));
     }
-    if any(Mark::flows) {
-        stages.draw.push(compute(Shader::Evaluate, "travel"));
-        stages.changes.push(compute(Shader::Evaluate, "carry"));
-    }
-    if any(|m| matches!(m, Mark::Edges(_) | Mark::Lines(_) | Mark::Areas(_))) {
-        stages.draw.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| compute(Shader::Lists, e)));
+    // Any table may become paged: its data can outgrow the budget, or a mark can give a priority.
+    if !scene.marks.is_empty() {
+        stages.draw.push(Asked::Shader(EXPAND_RUNS));
     }
     for mark in &scene.marks {
         mark_stages(mark, scene, format, samples, &mut stages);
@@ -186,82 +299,53 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     stages
 }
 
-/// What `mark` adds to the stages: its draw and compute passes, for the path a stroke mark runs
-/// along or an area's triangles' geometry; its lit rows, which hover, selection, and the ends of
-/// edges light; its probes; its labels.
+/// Adds `mark`'s pipelines to `stages`: its draw and compute passes (for the path a stroke follows
+/// or an area's triangle geometry), its lit-row draw (for the rows that hover, selection, and edge
+/// endpoints light), its probe, and its labels.
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
-    let draw = |shader| Variant::draw(shader, format, samples);
-    let compute = |shader, entry| Asked::Shader(Variant::compute(shader, entry));
-    let style = mark.style();
-    let primitive = mark.kind().primitive().code();
-    let path = mark.path(&scene.space).unwrap_or(PATH_ENDS);
-    let (shader, cast, lit) = match mark {
-        Mark::Vertices(v) => {
-            if let Marker::Wgsl { source, .. } = &v.marker {
-                // A custom marker's WGSL follows its shader's.
-                let custom =
-                    |shader, format, samples| Asked::Custom(source.clone(), Variant::draw(shader, format, samples));
-                stages.draw.push(custom(Shader::PointsCustom, format, samples));
-                stages.lit.push(custom(Shader::PointsCustomFocus, format, samples));
-                if style.shadow {
-                    stages.draw.push(custom(Shader::PointsCustomCast, SHADE, 1));
-                }
-                (None, None, None)
-            } else {
-                (Some(Shader::Points), Some(Shader::PointsCast), Some(Shader::PointsFocus))
-            }
-        }
-        Mark::Faces(_) => (Some(Shader::Triangles), Some(Shader::TrianglesCast), None),
-        Mark::Areas(_) => (Some(Shader::Areas), None, Some(Shader::AreasFocus)),
-        Mark::Edges(_) | Mark::Lines(_) => {
-            (Some(Shader::Strokes), Some(Shader::StrokesCast), Some(Shader::StrokesFocus))
-        }
-    };
-    stages.draw.extend(shader.map(|s| Asked::Shader(draw(s).path(path))));
-    stages.lit.extend(lit.map(|s| Asked::Shader(draw(s).path(path))));
-    if style.shadow {
-        stages.draw.extend(cast.map(|s| Asked::Shader(Variant::draw(s, SHADE, 1).path(path))));
+    let variants = MarkVariants::of(mark, &scene.space);
+    stages.draw.extend(variants.draw(false, format, samples));
+    stages.lit.extend(variants.draw(true, format, samples));
+    stages.draw.extend(variants.bounds().map(Asked::Shader));
+    if variants.listed() {
+        stages.draw.extend(variants.segments().map(Asked::Shader));
     }
-    let bounds = match mark {
-        Mark::Vertices(_) => "points",
-        Mark::Areas(_) => "areas",
-        _ => "strokes",
-    };
-    stages.draw.push(Asked::Shader(Variant::compute(Shader::Bounds, bounds).path(path)));
-    // Rows running through different numbers of segments, or areas of different numbers of
-    // triangles, are numbered by a list.
-    if matches!(mark, Mark::Edges(_)) || path == PATH_GEOMETRY {
-        stages.draw.extend(
-            ["count_segments", "write_segments"].map(|e| Asked::Shader(Variant::compute(Shader::Lists, e).path(path))),
-        );
-    }
-    // One program answers the hover, the queries, and the depth under the pointer for the mark's
-    // geometry: any row drawn can be located, whether or not it picks.
-    stages.input.push(Asked::Shader(Variant::probe(pipelines::probe(samples), primitive).path(path)));
-    if style.label.is_some() {
-        // Measuring where labels hang and drawing them are made for the mark's primitive; a diagram's
-        // labels need no placement.
-        stages.text.push(Asked::Shader(draw(Shader::Glyphs).path(path).primitive(primitive)));
-        stages
-            .text
-            .push(Asked::Shader(Variant::compute(Shader::Candidates, "candidates").path(path).primitive(primitive)));
-        if !matches!(scene.space, Space::Diagram(_)) {
-            stages.text.extend(PLACING.map(|e| Asked::Shader(Variant::compute(Shader::Labels, e).path(path))));
-        }
-        if style.label.as_ref().is_some_and(|l| l.max.is_some()) && !matches!(scene.space, Space::Diagram(_)) {
-            stages.text.extend(SELECT.map(|e| compute(Shader::Labels, e)));
-        }
+    // One probe program answers hover, queries, and the depth under the pointer for the mark's
+    // geometry. Every mark gets one, so any drawn row can be located, pickable or not.
+    stages.input.push(Asked::Shader(variants.probe(pipelines::probe(samples))));
+    if mark.style().label.is_some() {
+        stages.text.push(Asked::Shader(variants.glyphs(format, samples)));
+        stages.text.extend(variants.label_passes().map(Asked::Shader));
     }
     match mark {
-        Mark::Faces(_) => stages.draw.push(compute(Shader::Normals, "accumulate")),
+        Mark::Faces(_) => stages.draw.push(Asked::Shader(NORMALS)),
         Mark::Vertices(vertices) => {
             if !vertices.ports.is_empty() {
-                stages.draw.push(Asked::Shader(draw(Shader::PointsPorts)));
+                stages.draw.push(Asked::Shader(Variant::draw(Shader::PointsPorts, format, samples)));
             }
             if vertices.ports.iter().any(|(_, port)| port.label.is_some()) {
-                stages.text.push(Asked::Shader(draw(Shader::GlyphsPorts)));
+                stages.text.push(Asked::Shader(Variant::draw(Shader::GlyphsPorts, format, samples)));
             }
         }
         Mark::Edges(_) | Mark::Lines(_) | Mark::Areas(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Edges, Lines, Plane, Vertices};
+
+    #[test]
+    fn only_marks_that_frame_a_fit_ask_for_a_bounds_pass() {
+        let scene = Scene::new(Plane::default())
+            .draw(Vertices::of("g", "V"))
+            .draw(Edges::of("g", "E").ends("from", "to"))
+            .draw(Lines::of("g", "L"));
+        let Stages { draw, .. } = stages(&scene, wgpu::TextureFormat::Rgba8Unorm, 1);
+        let asks = |entry, path| draw.contains(&Asked::Shader(Variant::compute(Shader::Bounds, entry).path(path)));
+        assert!(asks("points", PATH_ENDS), "vertices frame a fit");
+        assert!(asks("strokes", PATH_GEOMETRY), "so do lines along their paths");
+        assert!(!asks("strokes", PATH_ENDS), "edges lie between the vertices that frame them");
     }
 }

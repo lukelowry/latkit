@@ -1,17 +1,34 @@
 /**
- * The documentation's gallery, drawn by latkit. Each piece writes its datasets with `Patch`, as
- * latkit's bytes, and its scene as a typed `Scene`; the `latkit` command line draws it into
- * `docs/images/NAME.png`, with nothing done to the picture after.
+ * Draws the documentation's gallery with latkit. Each piece's default export builds its datasets
+ * with `Data` and returns its picture, or a promise of it: a scene and how to look at it. The
+ * `latkit` CLI draws each piece to `docs/images/NAME.png` from the datasets the scene uses. The
+ * pictures are not edited afterwards.
  *
  *   cargo build --locked -p latkit-cli --profile cli
- *   cargo xtask wasm                  # the package `latkit/core` comes from
+ *   cargo xtask wasm                  # builds the `latkit` package the pieces import
  *   node docs/gallery/render.ts [name...]
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCALE, SIZE, type Piece } from './look.ts';
+import { Dataset, Table, load, type Camera, type Fit, type Scene, type Source } from 'latkit';
+import { SIZE } from './look.ts';
+
+/** What a piece returns: its scene, and how the view looks at it. */
+export interface Picture {
+  readonly scene: Scene;
+  /** The camera. Without one, the view frames `fit`. */
+  readonly camera?: Camera;
+  /** What a view without a camera frames. Defaults to everything drawn. */
+  readonly fit?: Fit;
+  /** Elapsed seconds of effects, which sets where flowing comets are. */
+  readonly elapsed?: number;
+  /** The axis coordinate shown, at which sampled fields are read. */
+  readonly at?: number;
+  /** Picture size in pixels, if not `SIZE`. The hero is a wide banner. */
+  readonly size?: readonly [number, number];
+}
 
 /** Every piece, in the gallery's order. */
 export const PIECES = [
@@ -30,6 +47,9 @@ export const PIECES = [
   'tides',
 ] as const;
 
+/** Pixels per CSS pixel. */
+const SCALE = 2;
+
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const work = path.join(root, 'target/gallery');
 const cli = process.env.LATKIT_CLI ?? path.join(root, 'target/cli/latkit');
@@ -38,16 +58,29 @@ const fonts = ['Inter-Regular.ttf', 'Inter-SemiBold.ttf'].map((f) =>
 );
 
 async function render(name: string): Promise<void> {
-  const { default: make } = (await import(`./${name}.ts`)) as { default: () => Piece };
-  const piece = make();
-  const file = (suffix: string) => path.join(work, `${piece.name}.${suffix}`);
-  fs.writeFileSync(file('scene.json'), JSON.stringify(piece.scene));
-  const data = piece.data.flatMap((d, i) => {
-    if ('file' in d) return ['--data', `${d.name}=${d.file}`];
-    fs.writeFileSync(file(`${i}.bin`), d.toBytes());
-    return ['--data', file(`${i}.bin`)];
+  const { default: draw } = (await import(`./${name}.ts`)) as {
+    default: () => Picture | Promise<Picture>;
+  };
+  const picture = await draw();
+  const file = (suffix: string) => path.join(work, `${name}.${suffix}`);
+  // The datasets the scene's tables belong to, collected the way a view collects them.
+  const datasets = new Set<Source>();
+  const scene = JSON.stringify(
+    picture.scene,
+    function (this: Record<string, unknown>, key, value: unknown) {
+      const held = this[key];
+      if (held instanceof Table) datasets.add(held.source);
+      return value;
+    },
+  );
+  fs.writeFileSync(file('scene.json'), scene);
+  const data = [...datasets].flatMap((dataset, i) => {
+    if (!(dataset instanceof Dataset)) throw new Error(`${name}: the CLI draws no tiles`);
+    fs.writeFileSync(file(`${i}.latk`), dataset.toBytes());
+    dataset.destroy();
+    return ['--data', file(`${i}.latk`)];
   });
-  const output = path.join(root, 'docs/images', `${piece.name}.png`);
+  const output = path.join(root, 'docs/images', `${name}.png`);
   const args = [
     'render',
     file('scene.json'),
@@ -55,18 +88,18 @@ async function render(name: string): Promise<void> {
     '--output',
     output,
     '--size',
-    (piece.size ?? SIZE).join('x'),
+    (picture.size ?? SIZE).join('x'),
     '--scale',
     String(SCALE),
     ...fonts.flatMap((f) => ['--font', f]),
   ];
-  if (piece.camera) {
-    fs.writeFileSync(file('camera.json'), JSON.stringify(piece.camera));
+  if (picture.camera) {
+    fs.writeFileSync(file('camera.json'), JSON.stringify(picture.camera));
     args.push('--camera', file('camera.json'));
   }
-  if (piece.fit) args.push('--fit', JSON.stringify(piece.fit));
-  if (piece.elapsed !== undefined) args.push('--elapsed', String(piece.elapsed));
-  if (piece.at !== undefined) args.push('--at', String(piece.at));
+  if (picture.fit) args.push('--fit', JSON.stringify(picture.fit));
+  if (picture.elapsed !== undefined) args.push('--elapsed', String(picture.elapsed));
+  if (picture.at !== undefined) args.push('--at', String(picture.at));
   execFileSync(cli, args, { stdio: 'inherit', timeout: 180_000 });
   console.log(`${path.relative(root, output)}  ${(fs.statSync(output).size / 1024).toFixed(0)} KB`);
 }
@@ -75,5 +108,8 @@ const only = process.argv.slice(2);
 const unknown = only.filter((name) => !(PIECES as readonly string[]).includes(name));
 if (unknown.length)
   throw new Error(`no piece ${unknown.join(', ')}; there are ${PIECES.join(', ')}`);
+await load({
+  wasm: new WebAssembly.Module(fs.readFileSync(new URL(import.meta.resolve('latkit/wasm')))),
+});
 fs.mkdirSync(work, { recursive: true });
 for (const name of only.length ? only : PIECES) await render(name);

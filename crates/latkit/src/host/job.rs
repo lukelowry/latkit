@@ -1,52 +1,59 @@
-//! Jobs: work too large for the frame (laying out in ranks or by stress, routing wires, cutting areas
-//! into triangles, grouping a large table's rows into tiles, writing a picture as a file), handed to the
-//! host to do off the frame. A job is bytes in and bytes out, so a thread, or a worker holding its own
-//! copy of latkit, can do it with nothing shared. A view's job answers with a [`Patch`]: the rows it
-//! worked out, by id, with their places, the paths their wires run along, or their shapes; an image
-//! job answers with the file.
+//! Jobs: work too large for a frame, handed to the host to run in the background. Jobs lay out
+//! graphs (layered or stress), route wires, triangulate areas, assign edge lanes, group a large
+//! table's rows into tiles, decode vector tiles and GeoJSON, and encode images.
+//!
+//! A job is bytes in and bytes out, so a thread, or a worker with its own copy of latkit, can run
+//! it with nothing shared. Layout, route, tile, and GeoJSON jobs return a [`Patch`] of rows by id.
+//! Other jobs return their own format: lane words, shape columns, each table's pyramid (order and
+//! tiles), or an encoded image file.
 
 use std::sync::Arc;
 
 use crate::Side;
-use crate::data::{Field, GeometryBuilder, Id, Name, Op, Patch, Table, Value, Values, Version};
+use crate::data::{GeometryBuilder, Id, Name, Patch, Table, Value, Values, read_values, values_bytes};
 use crate::derive::pyramid::{Leveling, Places, Placing};
 use crate::derive::sight::Domain;
 use crate::geo::mvt::Kind as Geometry;
 use crate::geo::shapes::{earth_parts, triangles};
 use crate::geo::tiles::{Decoded, decode};
+use crate::layout::boxes::Boxes;
 use crate::layout::route::{Net, Terminal, route};
 use crate::layout::{layered::layered, levels::Graph, stress::stress};
 use crate::tiles::TileKey;
+use crate::wire::{In, Out, codes};
 use crate::{Direction, Layered, Layout};
 
-/// Work latkit hands its [`Host`](super::Host) to do off the frame: bytes in, bytes out.
+/// Work latkit hands its [`Host`](super::Host) to run in the background: bytes in, bytes out.
 ///
-/// A host that does jobs elsewhere sends [`into_bytes`](Job::into_bytes) there, and answers with
-/// what [`run`](Job::run) makes of [`from_bytes`](Job::from_bytes) of them.
+/// A host that runs jobs elsewhere sends the job's [`into_bytes`](Job::into_bytes) there, rebuilds
+/// it with [`from_bytes`](Job::from_bytes), and returns the result of [`run`](Job::run).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Job(Vec<u8>);
 
-/// What a job does, its first word.
+/// A job's type, stored as its first word.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
-    Layered = 1,
-    Stress = 2,
-    Routes = 3,
-    Shapes = 4,
-    Tile = 5,
-    GeoJson = 6,
-    Lanes = 7,
-    Pyramid = 8,
-    Image = 9,
+    Layered,
+    Stress,
+    Routes,
+    Shapes,
+    Tile,
+    GeoJson,
+    Lanes,
+    Pyramid,
+    Image,
 }
 
-/// What a shapes job works out of each row's geometry.
+codes!(Kind { Layered = 1, Stress = 2, Routes = 3, Shapes = 4, Tile = 5, GeoJson = 6, Lanes = 7, Pyramid = 8, Image = 9 });
+
+/// The shapes computed from each row's geometry.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Shaping {
-    /// An area's triangles, the point its label hangs from first; on the earth, unwrapped and split
-    /// along its grid.
+    /// An area's triangles, after its label anchor. With `earth`, rings are unwrapped and
+    /// triangles split along the earth grid.
     Triangles { earth: bool },
-    /// An earth line's path: unwrapped, and bent with the globe; cheap enough that no job makes it.
+    /// An earth line's path, unwrapped and given extra points to follow the globe. Cheap enough
+    /// to compute on the frame, so it never needs a shapes job.
     Path,
 }
 
@@ -68,7 +75,7 @@ impl Shaping {
         }
     }
 
-    /// The depth of the shapes made from geometry of `depth`.
+    /// The geometry depth of shapes made from geometry of `depth`.
     pub(crate) fn depth(self, depth: u8) -> u8 {
         match self {
             Shaping::Triangles { .. } => 1,
@@ -76,7 +83,41 @@ impl Shaping {
         }
     }
 
-    /// The shape of `value`, or `None` where it stays as it is: a path that needs no bending.
+    /// Whether geometry of `depth` gets this shaping. Triangles apply to parts or polygons, and
+    /// paths to anything but points.
+    pub(crate) fn takes(self, depth: u8) -> bool {
+        match self {
+            Shaping::Triangles { .. } => matches!(depth, 2 | 3),
+            Shaping::Path => depth >= 1,
+        }
+    }
+
+    /// Name of the derived field holding the shapes of geometry field `field`.
+    pub(crate) fn field_of(self, field: &str) -> Name {
+        match self {
+            Shaping::Triangles { .. } => crate::scene::areas::triangles_of(field),
+            Shaping::Path => crate::scene::lines::path_of(field),
+        }
+    }
+
+    /// Computes the shapes of every row of geometry `values`, in order. A missing row gets an empty
+    /// shape, and a path that needs no extra points is copied unchanged.
+    pub(crate) fn shapes_of(self, values: &Values) -> Values {
+        let depth = values.geometry().map_or(0, crate::data::Geometry::depth);
+        let mut shapes = GeometryBuilder::new(self.depth(depth));
+        for row in 0..values.len() {
+            match values.get(row) {
+                Some(value) => {
+                    let shaped = self.shape(&value);
+                    shapes.push_value(shaped.as_ref().unwrap_or(&value));
+                }
+                None => shapes.push_empty(),
+            }
+        }
+        Values::of_geometry(shapes.finish())
+    }
+
+    /// The shape of `value`, or `None` if it is unchanged (a path that needs no extra points).
     pub(crate) fn shape(self, value: &Value) -> Option<Value> {
         match (self, value) {
             (Shaping::Triangles { earth }, Value::Polygons(polygons)) => Some(Value::Path(triangles(polygons, earth))),
@@ -105,12 +146,13 @@ impl Shaping {
     }
 }
 
-/// A row a job answers for: its table and id.
+/// A row in a job's result: its table and id.
 pub(crate) type Key = (Name, Id);
 
-/// Vertices to place: each one's size, its center when it has one, its group and how far a group's
-/// box reaches past its members (left, bottom, right, top), links between them, and the key of
-/// each vertex the answer places; vertices without a key are only placed around. Plane units, y up.
+/// Vertices to lay out: each one's size, pinned center if any, group, and how far a group's box
+/// reaches past its members (left, bottom, right, top), plus the links between vertices. `keys`
+/// names the row that receives each vertex's center. Vertices without a key are laid out but not
+/// written. Plane units, y up.
 pub(crate) struct Placement<'a> {
     pub(crate) sizes: &'a [[f64; 2]],
     pub(crate) pinned: &'a [Option<[f64; 2]>],
@@ -120,8 +162,9 @@ pub(crate) struct Placement<'a> {
     pub(crate) keys: &'a [Option<Key>],
 }
 
-/// Wires to route: around `obstacles` and among `groups`, each net's terminals with the key of the row
-/// it draws, runs beside `fixed` wires already routed, tracks `spacing` apart. Plane units, y up.
+/// Wires to route around `obstacles` and among `groups`. `keys` names the row that receives each
+/// net's route. Routes run beside the already routed `fixed` wires, on tracks `spacing` apart.
+/// Plane units, y up.
 pub(crate) struct Wiring<'a> {
     pub(crate) obstacles: &'a [[f64; 4]],
     pub(crate) groups: &'a [[f64; 4]],
@@ -132,7 +175,7 @@ pub(crate) struct Wiring<'a> {
 }
 
 impl Job {
-    /// A job from its bytes.
+    /// Rebuilds a job from its bytes.
     pub fn from_bytes(bytes: Vec<u8>) -> Job {
         Job(bytes)
     }
@@ -142,142 +185,133 @@ impl Job {
         self.0
     }
 
-    /// Does the job, answering with a patch's bytes. Bytes that are no job answer nothing.
+    /// Runs the job and returns its result: a patch of rows by id, lane words, shape columns, a
+    /// pyramid's order and tiles, or an encoded image file. Returns no bytes if the job is
+    /// malformed or fails.
     pub fn run(self) -> Vec<u8> {
-        let mut input = Reader::new(&self.0);
-        let kind = input.u32();
-        if kind == Some(Kind::Image as u32) {
-            return run_image(&mut input).unwrap_or_default();
-        }
+        let mut input = In::new(&self.0);
+        let Some(kind) = input.u32().and_then(Kind::from_code) else { return Vec::new() };
         let answer = match kind {
-            Some(k) if k == Kind::Layered as u32 || k == Kind::Stress as u32 => run_layout(k, &mut input),
-            Some(k) if k == Kind::Routes as u32 => run_routes(&mut input),
-            Some(k) if k == Kind::Shapes as u32 => run_shapes(&mut input),
-            Some(k) if k == Kind::Tile as u32 => run_tile(&mut input),
-            Some(k) if k == Kind::GeoJson as u32 => run_geojson(&mut input),
-            Some(k) if k == Kind::Lanes as u32 => run_lanes(&mut input),
-            Some(k) if k == Kind::Pyramid as u32 => run_pyramid(&mut input),
-            _ => None,
+            Kind::Image => return run_image(&mut input).unwrap_or_default(),
+            Kind::Lanes => return run_lanes(&mut input).unwrap_or_default(),
+            Kind::Pyramid => return run_pyramid(&mut input).unwrap_or_default(),
+            Kind::Shapes => return run_shapes(&mut input).unwrap_or_default(),
+            Kind::Layered | Kind::Stress => run_layout(kind, &mut input),
+            Kind::Routes => run_routes(&mut input),
+            Kind::Tile => run_tile(&mut input),
+            Kind::GeoJson => run_geojson(&mut input),
         };
         answer.map(|patch| patch.to_bytes()).unwrap_or_default()
     }
 
-    /// Placing `placement` by `layout`, which is layered or stress; it answers each keyed vertex's
-    /// center as fields `x` and `y`, y up.
+    /// A job laying out `placement` with `layout` (layered or stress). Its result sets each keyed
+    /// vertex's center as fields `x` and `y`, y up.
     pub(crate) fn layout(layout: &Layout, placement: &Placement<'_>) -> Job {
         let mut out = match *layout {
             Layout::Stress(stress) => {
-                let mut out = Writer::new(Kind::Stress);
+                let mut out = job(Kind::Stress);
                 out.f64(stress.gap);
                 out
             }
             Layout::Layered(layered) => {
-                let mut out = Writer::new(Kind::Layered);
-                out.u32(match layered.flow {
-                    Direction::Right => 0,
-                    Direction::Left => 1,
-                    Direction::Down => 2,
-                    Direction::Up => 3,
-                });
+                let mut out = job(Kind::Layered);
+                out.u32(layered.direction.code());
                 out.f64(layered.gap);
                 out.f64(layered.rank_gap);
                 out
             }
-            Layout::None => unreachable!("a sheet asks for a layout only when its scene has one"),
+            Layout::None => unreachable!("a sheet requests a layout only when its scene has one"),
         };
-        out.u32(placement.sizes.len() as u32);
+        out.len(placement.sizes.len());
         for v in 0..placement.sizes.len() {
-            out.f64s(&placement.sizes[v]);
+            out.pod(&placement.sizes[v]);
             out.u32(u32::from(placement.pinned[v].is_some()));
-            out.f64s(&placement.pinned[v].unwrap_or_default());
+            out.pod(&placement.pinned[v].unwrap_or_default());
             out.u32(placement.groups[v].unwrap_or(u32::MAX));
-            out.f64s(&placement.pads[v]);
+            out.pod(&placement.pads[v]);
             out.u32(u32::from(placement.keys[v].is_some()));
             if let Some(key) = &placement.keys[v] {
-                out.key(key);
+                write_key(&mut out, key);
             }
         }
-        out.u32(placement.links.len() as u32);
-        for link in placement.links {
-            out.u32(link[0]);
-            out.u32(link[1]);
-        }
+        out.len(placement.links.len());
+        out.pod(placement.links);
         Job(out.0)
     }
 
-    /// Working out `shaping` for every row of `rows`, whose field `geometry` holds each row's
-    /// geometry; it answers each row's shape as field `shape`.
-    pub(crate) fn shapes(shaping: Shaping, rows: Table) -> Job {
-        let mut out = Writer::new(Kind::Shapes);
+    /// A job computing `shaping` for every row of each geometry column in `parts`. Its result holds
+    /// each part's shapes, read by [`shapes_answer`].
+    pub(crate) fn shapes(shaping: Shaping, parts: &[Values]) -> Job {
+        let mut out = job(Kind::Shapes);
         out.u32(shaping.code());
-        out.0.extend(Patch::new().set(rows).to_bytes());
+        write_columns(&mut out, parts);
         Job(out.0)
     }
 
-    /// Decoding tile `key` from `bytes`, gzip-compressed or not, into the rows of `tables`; it answers
-    /// those rows.
+    /// A job decoding tile `key` from `bytes`, optionally gzip-compressed, into rows of `tables`
+    /// with their derived shapes. Its result is a patch of those rows.
     pub(crate) fn tile(key: TileKey, tables: &[Decoded], bytes: &[u8]) -> Job {
-        let mut out = Writer::new(Kind::Tile);
+        let mut out = job(Kind::Tile);
         out.u32(u32::from(key.z));
         out.u32(key.x);
         out.u32(key.y);
-        out.u32(tables.len() as u32);
+        out.len(tables.len());
         for decoded in tables {
-            out.text(&decoded.layer);
-            out.u32(match decoded.kind {
-                Geometry::Points => 0,
-                Geometry::Lines => 1,
-                Geometry::Polygons => 2,
-            });
-            out.text(&decoded.table);
+            out.str(&decoded.layer);
+            out.u32(decoded.kind.code());
+            out.str(&decoded.table);
+            out.len(decoded.shapes.len());
+            for shaping in &decoded.shapes {
+                out.u32(shaping.code());
+            }
         }
-        out.0.extend_from_slice(bytes);
+        out.bytes(bytes);
         Job(out.0)
     }
 
-    /// The job writing `image` as a file of `format`, which it answers with; nothing where it
-    /// cannot be written.
+    /// A job encoding `image` as a file of `format`. Its result is the file's bytes, or no bytes if
+    /// the image cannot be encoded.
     pub fn encode(image: &crate::Image, format: crate::ImageFormat) -> Job {
-        let mut out = Writer::new(Kind::Image);
-        out.u32(match format {
-            crate::ImageFormat::Png => 0,
-            crate::ImageFormat::Jpeg { quality } => 0x100 | u32::from(quality),
-            crate::ImageFormat::WebP => 1,
-        });
+        let mut out = job(Kind::Image);
+        out.u32(format.code());
         out.u32(image.size[0]);
         out.u32(image.size[1]);
-        out.0.extend_from_slice(&image.rgba);
+        out.bytes(&image.rgba);
         Job(out.0)
     }
 
-    /// Reading GeoJSON `bytes` as dataset `name`, as [`Data::read`](crate::Data::read) does; it
-    /// answers the patch that builds the dataset, or nothing when the bytes are no GeoJSON.
-    pub fn geojson(name: &str, bytes: &[u8]) -> Job {
-        let mut out = Writer::new(Kind::GeoJson);
-        out.text(name);
-        out.0.extend_from_slice(bytes);
-        Job(out.0)
-    }
-
-    /// Finding every edge row's lane among the rows joining the same two vertices, from each row's two
-    /// ends; it answers a table of every row's lane as field `lane`, without rows when none share.
-    pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Job {
-        let mut out = Writer::new(Kind::Lanes);
-        out.u32(from.len() as u32);
-        out.words(from);
-        out.words(to);
-        Job(out.0)
-    }
-
-    /// Grouping `leveling`'s tables into tiles; it answers each table's pyramid, as
-    /// [`Pyramid::read`](crate::derive::pyramid::Pyramid::read) reads it.
-    pub(crate) fn pyramid(leveling: &Leveling) -> Job {
-        let mut out = Writer::new(Kind::Pyramid);
-        match leveling.domain {
-            Domain::Earth => out.f64s(&[0.0, 0.0, 0.0, 0.0]),
-            Domain::Plane { min, size } => out.f64s(&[1.0, min[0], min[1], size]),
+    /// A job that reads GeoJSON `bytes` as dataset `name` in the background, like
+    /// [`Data::read`](crate::Data::read), since GeoJSON can be large. `None` if `bytes` are
+    /// latkit's own bytes or a dataset document, which are read on the calling thread. Its result
+    /// is the patch that builds the dataset, or no bytes if the GeoJSON is invalid.
+    pub fn geojson(name: &str, bytes: &[u8]) -> Option<Job> {
+        if !crate::data::geojson(bytes) {
+            return None;
         }
-        out.u32(leveling.tables.len() as u32);
+        let mut out = job(Kind::GeoJson);
+        out.str(name);
+        out.bytes(bytes);
+        Some(Job(out.0))
+    }
+
+    /// A job assigning each edge row a lane among the rows joining the same two vertices, from the
+    /// rows' endpoints `from` and `to`. Its result is every row's lane word as a little-endian
+    /// `u32`, or no bytes when no two rows share endpoints.
+    pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Job {
+        let mut out = job(Kind::Lanes);
+        out.len(from.len());
+        out.pod(from);
+        out.pod(to);
+        Job(out.0)
+    }
+
+    /// A job grouping the rows of `leveling`'s tables into tiles, all of one dataset's tables at
+    /// once. Its result holds each table's pyramid, read by
+    /// [`Pyramid::read`](crate::derive::pyramid::Pyramid::read).
+    pub(crate) fn pyramid(leveling: &Leveling) -> Job {
+        let mut out = job(Kind::Pyramid);
+        out.pod(&leveling.domain.words());
+        out.len(leveling.tables.len());
         for table in &leveling.tables {
             let places = match &table.places {
                 Places::None => 0,
@@ -293,44 +327,40 @@ impl Job {
             out.u32(flags);
             match &table.places {
                 Places::None => {}
-                Places::Points(points) => out.words(bytemuck::cast_slice(&points[..])),
-                Places::Boxes(boxes) => out.words(bytemuck::cast_slice(&boxes[..])),
+                Places::Points(points) => out.pod(&points[..]),
+                Places::Boxes(boxes) => out.pod(&boxes[..]),
             }
-            out.words(bytemuck::cast_slice(&table.priority));
+            out.pod(&table.priority[..]);
             if let Some((target, ends)) = &table.ends {
                 out.u32(*target);
-                out.u32(ends.len() as u32);
+                out.len(ends.len());
                 for end in ends {
-                    out.words(end);
+                    out.pod(&end[..]);
                 }
             }
         }
         Job(out.0)
     }
 
-    /// Routing `wiring`; it answers each keyed row's wire as field `route`, its polylines.
+    /// A job routing `wiring`. Its result sets each keyed row's wire polylines as field `route`.
     pub(crate) fn routes(wiring: &Wiring<'_>) -> Job {
-        let mut out = Writer::new(Kind::Routes);
+        let mut out = job(Kind::Routes);
         out.f64(wiring.spacing);
         for boxes in [wiring.obstacles, wiring.groups] {
-            out.u32(boxes.len() as u32);
-            for b in boxes {
-                out.f64s(b);
-            }
+            out.len(boxes.len());
+            out.pod(boxes);
         }
-        out.u32(wiring.fixed.len() as u32);
+        out.len(wiring.fixed.len());
         for line in wiring.fixed {
-            out.u32(line.len() as u32);
-            for point in line {
-                out.f64s(point);
-            }
+            out.len(line.len());
+            out.pod(line.as_slice());
         }
-        out.u32(wiring.nets.len() as u32);
+        out.len(wiring.nets.len());
         for (net, key) in wiring.nets.iter().zip(wiring.keys) {
-            out.key(key);
-            out.u32(net.terminals.len() as u32);
+            write_key(&mut out, key);
+            out.len(net.terminals.len());
             for terminal in &net.terminals {
-                out.f64s(&terminal.at);
+                out.pod(&terminal.at);
                 out.u32(terminal.side.map_or(u32::MAX, Side::code));
                 out.u32(terminal.owner.unwrap_or(u32::MAX));
             }
@@ -339,13 +369,20 @@ impl Job {
     }
 }
 
+/// A job's bytes so far: its kind.
+fn job(kind: Kind) -> Out {
+    let mut out = Out::default();
+    out.u32(kind.code());
+    out
+}
+
 impl std::fmt::Debug for Job {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Job").field(&self.0.len()).finish()
     }
 }
 
-/// A patch writing `values` for `keys`, one table at a time in the order the keys name them.
+/// Builds a patch writing `values` for `keys`, grouped by table in order of first appearance.
 fn keyed<T>(keys: &[Key], values: Vec<T>, write: impl Fn(Table, Vec<T>) -> Table) -> Patch {
     let mut tables: Vec<(Name, Vec<Id>, Vec<T>)> = Vec::new();
     for ((table, id), value) in keys.iter().zip(values) {
@@ -360,17 +397,12 @@ fn keyed<T>(keys: &[Key], values: Vec<T>, write: impl Fn(Table, Vec<T>) -> Table
     tables.into_iter().fold(Patch::new(), |patch, (name, ids, values)| patch.set(write(Table::new(name, ids), values)))
 }
 
-fn run_layout(kind: u32, input: &mut Reader<'_>) -> Option<Patch> {
-    let options = if kind == Kind::Stress as u32 {
+fn run_layout(kind: Kind, input: &mut In<'_>) -> Option<Patch> {
+    let options = if kind == Kind::Stress {
         Layout::Stress(crate::Stress { gap: input.f64()? })
     } else {
-        let flow = match input.u32()? {
-            0 => Direction::Right,
-            1 => Direction::Left,
-            2 => Direction::Down,
-            _ => Direction::Up,
-        };
-        Layout::Layered(Layered { flow, gap: input.f64()?, rank_gap: input.f64()? })
+        let direction = Direction::from_code(input.u32()?)?;
+        Layout::Layered(Layered { direction, gap: input.f64()?, rank_gap: input.f64()? })
     };
     let count = input.u32()? as usize;
     let (mut sizes, mut pinned, mut groups, mut pads, mut keys) =
@@ -383,7 +415,7 @@ fn run_layout(kind: u32, input: &mut Reader<'_>) -> Option<Patch> {
         groups.push(Some(input.u32()?).filter(|&g| (g as usize) < count));
         pads.push([input.f64()?, input.f64()?, input.f64()?, input.f64()?]);
         let keyed = input.u32()? != 0;
-        keys.push(if keyed { Some(input.key()?) } else { None });
+        keys.push(if keyed { Some(read_key(input)?) } else { None });
     }
     let links = input.u32()?;
     let links = (0..links).map(|_| Some([input.u32()?, input.u32()?])).collect::<Option<Vec<_>>>()?;
@@ -405,7 +437,7 @@ fn run_layout(kind: u32, input: &mut Reader<'_>) -> Option<Patch> {
     }))
 }
 
-fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
+fn run_routes(input: &mut In<'_>) -> Option<Patch> {
     let spacing = input.f64()?;
     let mut boxes = || {
         let count = input.u32()?;
@@ -422,7 +454,7 @@ fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
     let count = input.u32()?;
     let (mut nets, mut keys) = (Vec::new(), Vec::new());
     for _ in 0..count {
-        keys.push(input.key()?);
+        keys.push(read_key(input)?);
         let terminals = input.u32()?;
         let terminals = (0..terminals)
             .map(|_| {
@@ -434,69 +466,51 @@ fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
             .collect::<Option<Vec<_>>>()?;
         nets.push(Net { terminals });
     }
-    let routes = route(&obstacles, &groups, &nets, &fixed, spacing);
+    let routes = route(&Boxes::new(obstacles), &groups, &nets, &fixed, spacing);
     Some(keyed(&keys, routes, |table, routes| table.field("route", routes)))
 }
 
-fn run_shapes(input: &mut Reader<'_>) -> Option<Patch> {
-    let shaping = Shaping::from_code(input.u32()?)?;
-    let Op::Set(rows) = Patch::from_bytes(input.rest()).ok()?.ops.into_iter().next()? else { return None };
-    let Some(Field::Values(column, _)) = rows.field_named("geometry") else { return None };
-    let depth = column.kind().depth()?;
-    let mut shapes = GeometryBuilder::new(shaping.depth(depth));
-    for row in 0..rows.len() {
-        match column.get(row) {
-            Some(value) => {
-                let shaped = shaping.shape(&value);
-                shapes.push_value(shaped.as_ref().unwrap_or(&value));
-            }
-            None => shapes.push_empty(),
-        }
-    }
-    let shapes = Values::of_geometry(shapes.finish());
-    let mut answer = rows.clone();
-    answer.fields.clear();
-    answer.insert("shape".into(), Field::Values(crate::data::Column::new(&shapes), Version::next()));
-    Some(Patch::new().set(answer))
+/// Reads a shapes job's result: a column per part in the job. `None` if `bytes` are malformed.
+pub(crate) fn shapes_answer(bytes: &[u8]) -> Option<Vec<Values>> {
+    read_columns(&mut In::new(bytes))
 }
 
-fn run_tile(input: &mut Reader<'_>) -> Option<Patch> {
+fn run_shapes(input: &mut In<'_>) -> Option<Vec<u8>> {
+    let shaping = Shaping::from_code(input.u32()?)?;
+    let parts = read_columns(input)?;
+    let mut out = Out::default();
+    write_columns(&mut out, &parts.iter().map(|part| shaping.shapes_of(part)).collect::<Vec<_>>());
+    Some(out.0)
+}
+
+fn run_tile(input: &mut In<'_>) -> Option<Patch> {
     let key = TileKey { z: u8::try_from(input.u32()?).ok()?, x: input.u32()?, y: input.u32()? };
     let count = input.u32()?;
     let tables = (0..count)
         .map(|_| {
-            let layer = input.text()?;
-            let kind = match input.u32()? {
-                0 => Geometry::Points,
-                1 => Geometry::Lines,
-                _ => Geometry::Polygons,
-            };
-            Some(Decoded { layer, kind, table: input.text()?.into() })
+            let layer = input.str()?.to_owned();
+            let kind = Geometry::from_code(input.u32()?)?;
+            let table = input.str()?.into();
+            let shapes = (0..input.u32()?).map(|_| Shaping::from_code(input.u32()?)).collect::<Option<Vec<_>>>()?;
+            Some(Decoded { layer, kind, table, shapes })
         })
         .collect::<Option<Vec<_>>>()?;
     decode(input.rest(), key, &tables)
 }
 
-fn run_image(input: &mut Reader<'_>) -> Option<Vec<u8>> {
-    let format = match input.u32()? {
-        0 => crate::ImageFormat::Png,
-        1 => crate::ImageFormat::WebP,
-        jpeg => crate::ImageFormat::Jpeg { quality: (jpeg & 0xff) as u8 },
-    };
+fn run_image(input: &mut In<'_>) -> Option<Vec<u8>> {
+    let format = crate::ImageFormat::from_code(input.u32()?)?;
     let size = [input.u32()?, input.u32()?];
     crate::Image::new(size, input.rest()).ok()?.encode(format).ok()
 }
 
-fn run_geojson(input: &mut Reader<'_>) -> Option<Patch> {
-    let name = input.text()?;
+fn run_geojson(input: &mut In<'_>) -> Option<Patch> {
+    let name = input.str()?;
     crate::geo::geojson(name, input.rest()).ok().map(|data| data.to_patch())
 }
 
-fn run_pyramid(input: &mut Reader<'_>) -> Option<Patch> {
-    let domain = match [input.f64()?, input.f64()?, input.f64()?, input.f64()?] {
-        [0.0, ..] => Domain::Earth,
-        [_, x, y, size] => Domain::Plane { min: [x, y], size },
-    };
+fn run_pyramid(input: &mut In<'_>) -> Option<Vec<u8>> {
+    let domain = Domain::from_words(input.pod::<f64>(4)?.try_into().ok()?);
     let count = input.u32()?;
     let mut tables = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -505,135 +519,76 @@ fn run_pyramid(input: &mut Reader<'_>) -> Option<Patch> {
         let n = rows as usize;
         let has = |bit: u32| flags & 1 << bit != 0;
         let places = match flags >> 2 & 3 {
-            1 => Places::Points(input.words(2 * n)?.as_chunks::<2>().0.iter().map(|w| w.map(f32::from_bits)).collect()),
-            2 => Places::Boxes(input.words(4 * n)?.as_chunks::<4>().0.iter().map(|w| w.map(f32::from_bits)).collect()),
+            1 => Places::Points(input.pod::<[f32; 2]>(n)?.into()),
+            2 => Places::Boxes(input.pod::<[f32; 4]>(n)?.into()),
             _ => Places::None,
         };
-        let priority = if has(4) { input.words(n)?.into_iter().map(f32::from_bits).collect() } else { Arc::from([]) };
+        let priority = if has(4) { input.pod::<f32>(n)?.into() } else { Arc::from([]) };
         let ends = if has(5) {
             let target = input.u32()?;
             let count = input.u32()?;
-            Some((target, (0..count).map(|_| input.words(n).map(Arc::from)).collect::<Option<Vec<_>>>()?))
+            Some((target, (0..count).map(|_| input.pod::<u32>(n).map(Arc::from)).collect::<Option<Vec<_>>>()?))
         } else {
             None
         };
         tables.push(Placing { rows, leveled: has(0), answered: has(1), places, priority, ends });
     }
-    Some(crate::derive::pyramid::answer(&Leveling { domain, tables }))
+    Some(crate::derive::pyramid::encode(&crate::derive::pyramid::answer(&Leveling { domain, tables })))
 }
 
-fn run_lanes(input: &mut Reader<'_>) -> Option<Patch> {
+fn run_lanes(input: &mut In<'_>) -> Option<Vec<u8>> {
     let rows = input.u32()? as usize;
-    let (from, to) = (input.words(rows)?, input.words(rows)?);
-    Some(crate::derive::lanes_answer(&from, &to))
+    let (from, to) = (input.pod::<u32>(rows)?, input.pod::<u32>(rows)?);
+    let words = crate::derive::lane_words(&from, &to)?;
+    let mut out = Out::default();
+    out.pod(&words);
+    Some(out.0)
 }
 
-/// Little-endian words, floats, and keys, written.
-struct Writer(Vec<u8>);
-
-impl Writer {
-    fn new(kind: Kind) -> Writer {
-        let mut out = Writer(Vec::new());
-        out.u32(kind as u32);
-        out
-    }
-
-    fn u32(&mut self, v: u32) {
-        self.0.extend(v.to_le_bytes());
-    }
-
-    fn f64(&mut self, v: f64) {
-        self.0.extend(v.to_le_bytes());
-    }
-
-    /// Words, copied whole where the machine is little-endian too.
-    fn words(&mut self, words: &[u32]) {
-        if cfg!(target_endian = "little") {
-            self.0.extend_from_slice(bytemuck::cast_slice(words));
-        } else {
-            self.0.extend(words.iter().flat_map(|w| w.to_le_bytes()));
-        }
-    }
-
-    fn f64s(&mut self, vs: &[f64]) {
-        for &v in vs {
-            self.f64(v);
-        }
-    }
-
-    fn text(&mut self, text: &str) {
-        self.u32(text.len() as u32);
-        self.0.extend(text.as_bytes());
-    }
-
-    /// A key: 1 then a numbered id, or 2 then a texted one; the table's name after.
-    fn key(&mut self, (table, id): &Key) {
-        match id {
-            Id::Number(n) => {
-                self.u32(1);
-                self.0.extend(n.to_le_bytes());
-            }
-            Id::Text(t) => {
-                self.u32(2);
-                self.text(t);
-            }
-        }
-        self.text(table);
+/// Writes columns, each as its byte length followed by its values' bytes.
+fn write_columns(out: &mut Out, columns: &[Values]) {
+    out.len(columns.len());
+    for values in columns {
+        let bytes = values_bytes(values);
+        out.len(bytes.len());
+        out.bytes(&bytes);
     }
 }
 
-/// Little-endian words, floats, and keys, read; `None` past the end.
-struct Reader<'a> {
-    bytes: &'a [u8],
+/// Reads columns written by [`write_columns`].
+fn read_columns(input: &mut In<'_>) -> Option<Vec<Values>> {
+    let count = input.u32()?;
+    (0..count)
+        .map(|_| {
+            let len = input.u32()? as usize;
+            read_values(input.bytes(len)?).ok()
+        })
+        .collect()
 }
 
-impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader { bytes }
+/// Writes a key: 1 and a numeric id, or 2 and a text id, then the table name.
+fn write_key(out: &mut Out, (table, id): &Key) {
+    match id {
+        Id::Number(n) => {
+            out.u32(1);
+            out.u64(*n);
+        }
+        Id::Text(text) => {
+            out.u32(2);
+            out.str(text);
+        }
     }
+    out.str(table);
+}
 
-    /// Every byte not read yet.
-    fn rest(&mut self) -> &'a [u8] {
-        std::mem::take(&mut self.bytes)
-    }
-
-    fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
-        let (head, rest) = self.bytes.split_first_chunk::<N>()?;
-        self.bytes = rest;
-        Some(*head)
-    }
-
-    fn u32(&mut self) -> Option<u32> {
-        self.take().map(u32::from_le_bytes)
-    }
-
-    fn f64(&mut self) -> Option<f64> {
-        self.take().map(f64::from_le_bytes)
-    }
-
-    /// `n` words.
-    fn words(&mut self, n: usize) -> Option<Vec<u32>> {
-        let (head, rest) = self.bytes.split_at_checked(n.checked_mul(4)?)?;
-        self.bytes = rest;
-        Some(head.as_chunks::<4>().0.iter().map(|&w| u32::from_le_bytes(w)).collect())
-    }
-
-    fn text(&mut self) -> Option<String> {
-        let len = self.u32()? as usize;
-        let (head, rest) = self.bytes.split_at_checked(len)?;
-        self.bytes = rest;
-        String::from_utf8(head.to_vec()).ok()
-    }
-
-    /// A key as [`Writer::key`] wrote it.
-    fn key(&mut self) -> Option<Key> {
-        let id = match self.u32()? {
-            1 => Id::Number(u64::from_le_bytes(self.take()?)),
-            2 => Id::from(self.text()?),
-            _ => return None,
-        };
-        Some((self.text()?.into(), id))
-    }
+/// Reads a key written by [`write_key`].
+fn read_key(input: &mut In<'_>) -> Option<Key> {
+    let id = match input.u32()? {
+        1 => Id::Number(input.u64()?),
+        2 => Id::from(input.str()?),
+        _ => return None,
+    };
+    Some((input.str()?.into(), id))
 }
 
 #[cfg(test)]
@@ -645,15 +600,14 @@ mod tests {
         (table.into(), Id::Number(id))
     }
 
-    /// Field `field` of `table`'s row `id` in the answer.
+    /// Field `field` of row `id` of `table` in a job's result.
     fn answered(answer: &[u8], table: &str, id: u64, field: &str) -> Option<Value> {
-        let mut data = crate::Data::new("d");
-        data.apply(Patch::from_bytes(answer).ok()?).ok()?;
-        data.get(&crate::Row::new("d", table, id), field)
+        let data = crate::Snapshot::new("d").applied(Patch::from_bytes(answer).ok()?).ok()?;
+        data.get(table, id, field, None)
     }
 
     #[test]
-    fn layout_jobs_answer_the_rows_they_place() {
+    fn layout_jobs_return_the_rows_they_place() {
         let sizes = [[10.0, 10.0]; 3];
         let pinned = [None, Some([5.0, 5.0]), None];
         let keys = [Some(key("V", 7)), None, Some(key("V", 9))];
@@ -679,11 +633,11 @@ mod tests {
         assert_eq!(answered(&answer, "V", 9, "x"), Some(Value::Number(ranked[2][0])));
         assert_eq!(answered(&answer, "V", 7, "y"), Some(Value::Number(ranked[0][1])));
         let stress = Job::layout(&Layout::Stress(crate::Stress::default()), &placement).run();
-        assert!(matches!(answered(&stress, "V", 7, "x"), Some(Value::Number(_))), "stress answers alike");
+        assert!(matches!(answered(&stress, "V", 7, "x"), Some(Value::Number(_))), "stress layouts return rows too");
     }
 
     #[test]
-    fn route_jobs_answer_routed_wires() {
+    fn route_jobs_return_routed_wires() {
         let obstacles = [[0.0, 0.0, 10.0, 10.0], [40.0, 0.0, 50.0, 10.0]];
         let terminal = |x: f64, side, owner| Terminal { at: [x, 5.0], side: Some(side), owner: Some(owner) };
         let nets = [Net { terminals: vec![terminal(10.0, Side::Right, 0), terminal(40.0, Side::Left, 1)] }];
@@ -696,12 +650,12 @@ mod tests {
             spacing: 2.0,
         };
         let answer = Job::routes(&wiring).run();
-        let want = route(&obstacles, &[], &nets, &[], 2.0).swap_remove(0);
+        let want = route(&Boxes::new(obstacles.to_vec()), &[], &nets, &[], 2.0).swap_remove(0);
         assert_eq!(answered(&answer, "Wire", 3, "route"), Some(Value::Parts(want)));
     }
 
     #[test]
-    fn bytes_that_are_no_job_answer_nothing() {
+    fn bytes_that_are_not_a_job_return_nothing() {
         assert_eq!(Job::from_bytes(vec![1, 0, 0, 0, 9]).run(), Vec::<u8>::new());
         assert_eq!(Job::from_bytes(Vec::new()).run(), Vec::<u8>::new());
     }

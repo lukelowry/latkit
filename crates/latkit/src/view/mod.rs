@@ -1,8 +1,10 @@
-//! Views: a scene drawn from named data into any wgpu frame, answering input.
+//! The view. Draws a scene from its sources into any wgpu frame and handles input.
 
 mod axes;
 mod camera;
 mod clock;
+mod drawing;
+mod ends;
 mod event;
 mod fit;
 mod focus;
@@ -10,6 +12,7 @@ mod frame;
 mod gestures;
 mod graph;
 mod input;
+mod kept;
 mod labels;
 mod legends;
 mod lists;
@@ -21,14 +24,13 @@ mod program;
 mod query;
 mod resources;
 mod rig;
-mod rows;
-mod shadows;
 mod sync;
 mod timer;
 mod transition;
 mod uniforms;
 mod variants;
 mod wake;
+mod words;
 
 use std::sync::Arc;
 use std::task::Waker;
@@ -38,10 +40,10 @@ pub use camera::Camera;
 pub(crate) use camera::Projected;
 pub use event::{Cursor, End, Event, Fit, Hit, Phase, Sample, Stats, Trigger, Waiting};
 pub use input::{Button, Device, Input, Key, Modifiers};
-pub(crate) use resources::{DEPTH, SHADE};
-pub(crate) use wake::Signal;
+pub(crate) use resources::DEPTH;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
-pub(crate) use {resources::samples, variants::common};
+pub(crate) use variants::common;
+pub(crate) use wake::Signal;
 
 use camera::Area;
 use clock::Clock;
@@ -58,127 +60,147 @@ use rig::Rig;
 use crate::derive::{Derivations, Derived};
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
-use crate::{Data, Gpu, Name, Patch, Pending, Result, Row, Rows, Scene, Space};
+use crate::{Error, Gpu, Name, Patch, Pending, Result, Row, Rows, Scene, Snapshot, Source, Space};
 
-/// A frame to draw: where, a texture view of a format and size in physical pixels at a ratio of
-/// physical pixels to CSS pixels, and when.
+/// A frame to draw: the target texture view, its format and size, the pixel ratio, and the time.
 #[derive(Clone, Copy, Debug)]
 pub struct Frame<'a> {
     /// The texture view to draw into.
     pub target: &'a wgpu::TextureView,
-    /// Its format; sRGB formats are handled.
+    /// The target's format. Both sRGB and non-sRGB formats work.
     pub format: wgpu::TextureFormat,
-    /// Its width and height in physical pixels.
+    /// The target's width and height in physical pixels.
     pub size: [u32; 2],
     /// Physical pixels per CSS pixel.
     pub pixel_ratio: f32,
-    /// Seconds on the clock of whatever draws the frames: an animation frame's timestamp, a video
-    /// frame's time, a test's step. The view's motion moves by the steps between them, a quarter of
-    /// a second at most, and never back.
+    /// Seconds on the caller's clock: an animation frame's timestamp, a video frame's time, or a
+    /// test's step. Motion advances by the time since the previous frame, clamped to between 0 and
+    /// 0.25 seconds, so it never jumps or runs backward.
     pub time: f64,
 }
 
-/// A scene drawn from named data: the application owns data and scene; the view owns camera,
-/// coordinate, selection, and what the frame needs. It has no loop: [`render`](View::render) records
-/// a frame into an encoder the application submits, and [`input`](View::input) takes the platform's
-/// pointer and keys.
+/// Draws a scene from its sources (named datasets) and handles input.
+///
+/// The application owns the data and the scene. The view owns the camera, the axis coordinate, the
+/// selection, and the GPU state for drawing. It has no loop of its own:
+/// [`render`](View::render) records a frame into an encoder the application submits, and
+/// [`input`](View::input) takes the platform's pointer and key events.
 ///
 /// ```no_run
 /// # async fn example() -> latkit::Result<()> {
-/// use latkit::{Data, Gpu, Ids, Plane, Scene, Table, Vertices, View};
+/// use latkit::{Data, Gpu, Ids, Plane, Scene, Table, Vertices, View, field};
 /// let gpu = Gpu::new().await?;
-/// let mut data = Data::new("graph");
-/// data.apply(Table::new("Node", Ids::count(3)).field("x", vec![0.0, 1.0, 2.0]).field("y", vec![0.0, 1.0, 0.0]))?;
-/// let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("graph", "Node").position("x", "y")))?;
-/// view.set_data(data);
+/// let graph = Data::new("graph");
+/// graph.apply(Table::new("Node", Ids::count(3)).field("x", vec![0.0, 1.0, 2.0]).field("y", vec![0.0, 1.0, 0.0]))?;
+/// let nodes = Vertices::of("graph", "Node").position(field("x"), field("y"));
+/// let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(nodes))?;
+/// view.set_sources([&graph])?;
 /// view.fit(latkit::Fit::All);
+/// // The next frame draws this change: a view draws the latest version of each Data it is given.
+/// graph.apply(Table::new("Node", [1_u64]).field("y", vec![2.0]))?;
 /// # Ok(()) }
 /// ```
 pub struct View {
     gpu: Gpu,
-    /// Which of its GPU's views it is: what the GPU's ledger grants its share to.
+    /// This view's id among the GPU's views. The GPU's ledger keys budget shares by it.
     id: u64,
     scene: Scene,
-    /// Bumps whenever the scene changes.
+    /// Incremented whenever the scene changes.
     scene_version: u64,
-    /// The datasets given, and those the view fetches as the camera asks, by name.
-    sources: Vec<Data>,
-    /// What marks draw of each: the dataset as it is, or as drawn in part.
-    data: Vec<Data>,
-    /// What the view derives from the data and the scene: tables beside the tables it draws, row for
-    /// row, which marks read like data.
+    /// The sources the application gave, each a named dataset.
+    sources: Vec<Source>,
+    /// The version of each dataset the view draws, sorted by name: a given snapshot, the latest
+    /// version of a `Data` as of the last refresh, or the tiles loaded so far.
+    snapshots: Vec<Snapshot>,
+    /// The parts of each paged table the camera chose to draw this frame.
+    choices: crate::derive::tiled::Choices,
+    /// Each paged table's drawing, by dataset and table.
+    drawings: crate::data::Keyed<(Name, Name), drawing::Drawn>,
+    /// The marks' rebuilt tables, per dataset. They replace the current tables once their pages
+    /// arrive.
+    staged: crate::data::Keyed<Name, sync::Staged>,
+    /// Whether this frame's pages fit in the arena, and if not, how the next frame makes space.
+    room: frame::Room,
+    /// Set once the view has reported that its data exceeds the GPU budget. Until a new data
+    /// version publishes, a full arena and a due fit (with nothing drawn to measure) stop
+    /// requesting frames.
+    limited: bool,
+    /// Tables derived from the data and the scene, row for row with the drawn tables. Marks read
+    /// them like data.
     derived: Derivations,
     marks: Vec<Shown>,
     camera: Camera,
     rig: Rig,
     /// CSS pixels kept clear at the top, right, bottom, and left.
     insets: [f32; 4],
+    /// The space a plot's axes take around the plot area, and the stamp of the scene and pixel
+    /// ratio it was measured for.
+    gutters: (u64, axes::Gutters),
     fitting: Fitting,
-    /// The value range a plot without one shows, fitted to its traces.
+    /// The value range fitted to the traces, shown when the plot camera sets none.
     plot_y: Option<[f64; 2]>,
     at: f64,
     clock: Clock,
     effect_time: f64,
     events: Events,
-    /// What landing work wakes, and the waker it is: readbacks, jobs, and fetches hold it.
+    /// The signal that finished work wakes, and a waker for it. Readbacks, jobs, and fetches keep
+    /// clones of the waker.
     signal: Arc<wake::Signal>,
     waker: Waker,
     resources: Option<Resources>,
-    /// Marks' regions of the program buffer.
+    /// Each mark's word range in the program buffer.
     regions: Regions,
-    /// Marks came or went: row regions are laid out again.
-    regions_dirty: bool,
     /// Something visible changed since the last frame.
     changed: bool,
-    /// Whether the application was told the device was lost.
+    /// Whether the device loss has been reported.
     told_lost: bool,
-    /// The work under way the last frame stood in for.
+    /// The pending work the last frame showed placeholders for.
     waiting: Waiting,
-    /// What the scene asked the GPU to compile, by the targets its frames draw into.
+    /// The pipelines requested for each target the frames draw into.
     asked: Vec<variants::Asking>,
-    /// While what its frames draw with compiles, how many compiles had landed when it last looked:
-    /// it draws nothing new until they all have, and sleeps until the next lands.
+    /// While the draw pipelines compile, how many compiles had finished at the last check. The view
+    /// draws nothing new until they all finish, and sleeps until the next one finishes.
     compiling: Option<u64>,
-    /// Likewise while what lights rows, probes, and answers queries compiles: its frames draw without
-    /// lit rows, and probes and queries wait.
+    /// The same, while the pipelines for lit rows, probes, and queries compile. Meanwhile frames
+    /// draw without lit rows, and probes and queries wait.
     answering: Option<u64>,
-    /// Likewise while what its text draws with compiles: its frames draw without labels, glyphs, and
-    /// the overlay.
+    /// The same, while the text pipelines compile. Meanwhile frames draw without labels, glyphs,
+    /// and the overlay.
     texting: Option<u64>,
-    /// Who asked for the arranging under way.
+    /// Callers waiting for the arrangement in progress.
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
-    /// Whether the platform asks for reduced motion, which `Motion::System` follows.
+    /// Whether the platform requests reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
-    /// The shadow map and the face normals, made from what they read.
-    shadow_map: Derived<()>,
+    /// The stamp of the inputs the face normals were last summed from.
     normals: Derived<()>,
-    /// Measures what frames cost the GPU, where it can.
+    /// Measures the GPU time of frames, where the device supports it.
     timer: Option<timer::Timer>,
     focus: Focus,
     probing: Probing,
     queries: query::Queries,
-    /// Words the marks' segment lists take at the front of the lists buffer.
-    segment_words: u32,
+    /// The number of words the marks' segment lists use at the start of the lists buffer.
+    list_words: u32,
     labels: labels::Labels,
     gestures: Gestures,
-    /// The pointer over the view: where, with what keys, and with what; `None` once it left.
+    /// The pointer over the view: its point, pressed modifier keys, and device. `None` once it
+    /// leaves.
     pointer: Option<Trigger>,
-    /// The size of the last frame, CSS pixels, and its pixel ratio.
+    /// The size of the last frame in CSS pixels, and its pixel ratio.
     size: [f64; 2],
     pixel_ratio: f32,
-    /// How each table draws within the view's share of the budget, and what that weighs.
+    /// How each table draws within the view's budget share, and the costs the plan used.
     planning: plan::Planning,
-    /// Pixel columns a trace spans at most: as many as the plan holds.
+    /// The most pixel columns a trace may span, set by the plan.
     trace_columns: u32,
     stats: Stats,
 }
 
-/// Views made so far, which numbers each.
+/// The number of views created, used to give each view its id.
 static VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl View {
-    /// A view drawing `scene` with `gpu`. Its marks draw once [`set_data`](View::set_data) gives them
-    /// their data.
+    /// Creates a view that draws `scene` with `gpu`. Its marks draw nothing until
+    /// [`set_sources`](View::set_sources) provides their datasets. Errors if the scene is invalid.
     pub fn new(gpu: &Gpu, scene: Scene) -> Result<View> {
         scene.check()?;
         let camera = Camera::default_for(&scene.space);
@@ -189,12 +211,18 @@ impl View {
             scene: Scene::new(scene.space.clone()),
             scene_version: 0,
             sources: Vec::new(),
-            data: Vec::new(),
+            snapshots: Vec::new(),
+            choices: crate::derive::tiled::Choices::default(),
+            drawings: crate::data::Keyed::default(),
+            staged: crate::data::Keyed::default(),
+            room: frame::Room::Found,
+            limited: false,
             derived: Derivations::default(),
             marks: Vec::new(),
             camera,
             rig: Rig::default(),
             insets: [0.0; 4],
+            gutters: (0, axes::Gutters::default()),
             fitting: Fitting::default(),
             plot_y: None,
             at: f64::INFINITY,
@@ -205,7 +233,6 @@ impl View {
             signal,
             resources: None,
             regions: Regions::default(),
-            regions_dirty: true,
             changed: true,
             told_lost: false,
             waiting: Waiting::default(),
@@ -215,13 +242,12 @@ impl View {
             texting: None,
             arranging: Vec::new(),
             reduced_motion: false,
-            shadow_map: Derived::default(),
             normals: Derived::default(),
             timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
             focus: Focus::default(),
             probing: Probing::default(),
             queries: query::Queries::default(),
-            segment_words: 0,
+            list_words: 0,
             labels: labels::Labels::default(),
             gestures: Gestures::default(),
             pointer: None,
@@ -231,29 +257,35 @@ impl View {
             trace_columns: u32::MAX,
             stats: Stats::default(),
         };
-        view.show(scene)?;
-        // Views to come find what nearly every scene draws with compiled, once this one draws.
+        view.set_scene(scene)?;
+        // Queue the pipelines nearly every scene uses, so later views find them compiled. They
+        // compile once this view's draw pipelines are ready.
         #[cfg(all(feature = "web", target_arch = "wasm32"))]
         gpu.warm();
-        // Until it draws, a view waits on everything its first frame would.
+        // Until its first frame, the view reports all the work that frame would wait on.
         view.waiting = view.under_way();
         Ok(view)
     }
 
-    /// The scene drawn.
+    /// The scene the view draws.
     pub fn scene(&self) -> &Scene {
         &self.scene
     }
 
-    /// Draws `scene` instead. Marks that match one of the current scene by kind, data, table, and name
-    /// keep their state, and ease to a changed description; an invalid scene changes nothing.
-    pub fn show(&mut self, scene: Scene) -> Result<()> {
+    /// Replaces the scene, compiling its marks against the latest version of each
+    /// [`Data`](crate::Data) source. A mark that matches a current mark by kind, data, table, and
+    /// name keeps its state and eases to its new options. Errors if the scene is invalid or a mark
+    /// fails to compile, and the current scene stays.
+    pub fn set_scene(&mut self, scene: Scene) -> Result<()> {
         scene.check()?;
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
-        // A mark compiles again when its theme or space changed.
+        self.refresh(&mut inner);
+        // Every mark recompiles if the theme, the kind of space, or the presence of a layout
+        // changed.
+        let kind_changed = std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
         let context_changed = scene.theme != self.scene.theme
-            || std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space)
+            || kind_changed
             || matches!(scene.layout, crate::Layout::None) != matches!(self.scene.layout, crate::Layout::None);
         let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
         // Compile every new or changed mark before changing anything.
@@ -265,7 +297,7 @@ impl View {
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.sources, context, &mut inner).map_err(|e| mark.within(i, e))?;
+            shown.compile(&self.snapshots, context, &mut inner).map_err(|e| e.at(i).at("marks"))?;
             fresh.push(Some(shown));
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
@@ -280,16 +312,17 @@ impl View {
                         .iter_mut()
                         .find(|s| s.as_ref().is_some_and(|s| s.mark.draws_like(mark)))
                         .and_then(Option::take)
-                        .expect("kept");
+                        .expect("the unchanged mark's previous state");
                     kept.mark = mark.clone();
                     return kept;
                 };
-                // A changed mark takes over its predecessor's rows, and eases from them.
+                // A changed mark takes over the rows of the old mark with its key, and eases from
+                // them.
                 let before = old.iter_mut().find(|s| s.as_ref().is_some_and(|s| s.key == shown.key));
                 if let Some(mut before) = before.and_then(Option::take) {
                     before.tables.release(&mut inner);
-                    shown.inherit(&before);
-                    if easing && shown.compiled.as_ref().map(|c| c.drawing.stride) == Some(before.stride()) {
+                    shown.inherit(&mut before);
+                    if easing && shown.compiled.is_some() {
                         shown.begin(None);
                     }
                 }
@@ -297,126 +330,205 @@ impl View {
             })
             .collect();
         for mut dropped in old.into_iter().flatten() {
-            dropped.tables.release(&mut inner);
+            dropped.release(&mut inner);
+        }
+        // Mark indices may have changed, so staged tables are dropped and rebuilt.
+        for (_, staged) in std::mem::take(&mut self.staged) {
+            staged.release(&mut inner);
         }
         for shown in self.marks.iter_mut().filter(|s| s.failure.is_none()) {
-            shown.failure = absent(shown, &self.sources, &self.derived.tiles).map(|error| (error, false));
+            shown.failure = absent(shown, &self.snapshots, &self.derived.tiles).map(|error| (error, false));
         }
-        self.regions_dirty = true;
         drop(inner);
         if !self.camera.fits(&scene.space) {
             self.camera = Camera::default_for(&scene.space);
             self.plot_y = None;
+        }
+        // Fit bounds and running motion refer to the old space's positions, so they do not carry
+        // over to another kind of space. The next frame places the camera within the new space's
+        // zoom and pan limits.
+        if kind_changed {
+            self.rig.bounds = None;
+            self.rig.hold();
         }
         if matches!(scene.space, Space::Diagram(_)) {
             self.rig.orbit = 0.0;
         }
         self.scene = scene;
         self.scene_version += 1;
-        // What the new scene uses compiles from now, while its data syncs and its sheet arranges; what
-        // it shares landed already.
+        // Request the new scene's pipelines again. They compile while its data syncs and its sheet
+        // is arranged. Pipelines shared with the old scene are already compiled.
         self.asked.clear();
         self.compiling = None;
         self.answering = None;
         self.texting = None;
-        self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, resources::samples(self.pixel_ratio)), true);
+        // If the GPU's sample count is known, start compiling now. Otherwise the first frame asks.
+        if let Some(samples) = gpu.samples() {
+            self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
+        }
         self.focus.dirty = true;
         self.gestures.keys.stale();
         self.invalidate();
         Ok(())
     }
 
-    /// Gives the view the dataset `data`, replacing the one of the same name. Cheap: unchanged pages
-    /// are shared and only changed fields are evaluated again. A mark it no longer fits draws nothing,
-    /// and the next frame reports why, unless a scene shown before then replaces the mark: new data
-    /// and the scene reading it can be given in either order.
-    pub fn set_data(&mut self, data: Data) {
+    /// Replaces the view's sources, each a named dataset. A [`Data`](crate::Data) draws its latest
+    /// version, starting the frame after each patch applies. A [`Snapshot`] draws as given.
+    /// [`Tiles`](crate::Tiles) loads the pieces in view.
+    ///
+    /// This is cheap: unchanged pages are shared and only changed fields evaluate again. A mark
+    /// whose dataset no longer fits it draws nothing, and the next frame reports why unless a new
+    /// scene replaces that mark first. So the sources and the scene can be set in either order.
+    /// Errors if two sources share a name.
+    pub fn set_sources<S: Into<Source>>(&mut self, sources: impl IntoIterator<Item = S>) -> Result<()> {
+        let sources: Vec<Source> = sources.into_iter().map(Into::into).collect();
+        for (i, source) in sources.iter().enumerate() {
+            if sources[..i].iter().any(|other| other.name() == source.name()) {
+                return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
+            }
+        }
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
-        self.take_data(data, &mut inner);
+        // Forget datasets no source provides any more, and those whose source switched to or from
+        // tiles: the view draws the new source from scratch.
+        let tiled = |source: &Source| matches!(source, Source::Tiles(_));
+        let gone: Vec<Name> = self
+            .sources
+            .iter()
+            .filter(|old| !sources.iter().any(|new| new.name() == old.name() && tiled(new) == tiled(old)))
+            .map(|old| old.name().clone())
+            .collect();
+        let forgot = !gone.is_empty();
+        for name in gone {
+            self.forget(&name, &mut inner);
+        }
+        for old in &self.sources {
+            if let Source::Data(data) = old {
+                data.watchers().unwatch(self.id);
+            }
+        }
+        for source in &sources {
+            match source {
+                Source::Data(data) => {
+                    data.watchers().watch(self.id, &self.waker);
+                    self.take_newer(data.snapshot(), &mut inner);
+                }
+                Source::Snapshot(snapshot) => self.take_newer(snapshot.clone(), &mut inner),
+                Source::Tiles(tiles) => self.derived.tiles.set(tiles.clone(), &mut inner.tiles),
+            }
+        }
+        self.sources = sources;
+        drop(inner);
+        // Marks that lost their tables need the program laid out again.
+        if forgot {
+            self.invalidate();
+        } else {
+            self.wake();
+        }
+        Ok(())
     }
 
-    /// Takes `data` with the GPU's state locked: marks whose schema it changed compile again; one that
-    /// fails keeps why until data fits it again, and the frame tells it. The frame draws the data, as
-    /// it is or in part.
-    fn take_data(&mut self, data: Data, inner: &mut crate::gpu::Inner) {
-        let at = match self.sources.binary_search_by(|d| d.name().cmp(data.name())) {
+    /// The sources the view draws.
+    pub fn sources(&self) -> &[Source] {
+        &self.sources
+    }
+
+    /// The version of dataset `name` the view draws: the latest version it took of a
+    /// [`Data`](crate::Data), a given snapshot, or the pieces of [`Tiles`](crate::Tiles) loaded for
+    /// its camera. `None` if the view has no such dataset.
+    pub fn snapshot(&self, name: &str) -> Option<&Snapshot> {
+        let i = self.snapshots.binary_search_by(|s| s.name().as_str().cmp(name)).ok()?;
+        Some(&self.snapshots[i])
+    }
+
+    /// Updates every source before the frame reads it: the tiles the camera and the plot window
+    /// need, the pieces that arrived for them, and the latest version of each changed `Data`. A
+    /// frame compiles marks, requests pipelines, derives, and draws from one version of each
+    /// dataset, so no pipeline reads a field added after the pipeline was requested. While a shot
+    /// keeps the view's data unchanged, `Data` sources stay at the versions taken when it began,
+    /// but tiles still arrive.
+    fn refresh(&mut self, inner: &mut crate::gpu::Inner) {
+        self.update_tiles(inner);
+        for data in self.derived.tiles.take_changed() {
+            self.take_data(data, inner);
+        }
+        if self.signal.holding() {
+            return;
+        }
+        for i in 0..self.sources.len() {
+            let Source::Data(data) = &self.sources[i] else { continue };
+            let now = data.snapshot();
+            self.take_newer(now, inner);
+        }
+    }
+
+    /// Takes `snapshot` unless the view draws that version already.
+    fn take_newer(&mut self, snapshot: Snapshot, inner: &mut crate::gpu::Inner) {
+        if self.snapshot(snapshot.name()).is_none_or(|drawn| drawn.version() != snapshot.version()) {
+            self.take_data(snapshot, inner);
+        }
+    }
+
+    /// Takes a new version of a dataset, with the GPU's state locked. Marks whose schema it changed
+    /// recompile. A mark that fails keeps its error until the data fits it again, and the next
+    /// frame reports the error. A caller outside a frame requests a frame to draw the data.
+    fn take_data(&mut self, data: Snapshot, inner: &mut crate::gpu::Inner) {
+        let at = match self.snapshots.binary_search_by(|d| d.name().cmp(data.name())) {
             Ok(i) => {
-                self.sources[i] = data;
+                self.snapshots[i] = data;
                 i
             }
             Err(i) => {
-                self.sources.insert(i, data);
+                self.snapshots.insert(i, data);
                 i
             }
         };
         let context = Context { theme: &self.scene.theme, space: &self.scene.space, layout: &self.scene.layout };
-        for shown in &mut self.marks {
-            if shown.stale(&self.sources[at]) {
-                let failed = shown.compile(&self.sources, context, inner).err();
-                let failed = failed.or_else(|| absent(shown, &self.sources, &self.derived.tiles));
+        for (i, shown) in self.marks.iter_mut().enumerate() {
+            if shown.stale(&self.snapshots[at]) {
+                if let Some(staged) = self.staged.get_mut(&shown.mark.style().data) {
+                    staged.forget(i, inner);
+                }
+                let failed = shown.compile(&self.snapshots, context, inner).err();
+                let failed = failed.or_else(|| absent(shown, &self.snapshots, &self.derived.tiles));
                 shown.failure = failed.map(|error| (error, false));
             }
         }
-        // Rows may have moved under the focus and the keys.
+        // Rows may have moved under the focus and the keyboard-stepped hover.
         self.focus.dirty = true;
         self.gestures.keys.stale();
         self.fitting.plot_due = true;
-        self.wake();
     }
 
-    /// The dataset named `name`, as given, or as the view fetches it.
-    pub fn data(&self, name: &str) -> Option<&Data> {
-        self.source(name)
-    }
-
-    /// The dataset named `name`, whole.
-    fn source(&self, name: &str) -> Option<&Data> {
-        self.sources.iter().find(|d| d.name() == name)
-    }
-
-    /// What marks draw of the dataset named `name`: it as it is, or as drawn in part.
-    fn drawn(&self, name: &str) -> Option<&Data> {
-        self.data.iter().find(|d| d.name() == name)
-    }
-
-    /// Fetches `tiles` as the camera asks for them, kept as the dataset they name, which the view
-    /// owns: marks draw it like any other, [`data`](View::data) reads it, and
-    /// [`remove_data`](View::remove_data) stops it. Tiles of the same name replace these.
-    pub fn set_tiles(&mut self, tiles: crate::Tiles) {
-        self.derived.tiles.set(tiles);
-        self.wake();
-    }
-
-    /// Stops drawing the dataset named `name`, given or fetched as tiles.
-    pub fn remove_data(&mut self, name: &str) {
-        self.derived.tiles.remove(name);
-        self.sources.retain(|d| d.name() != name);
-        self.data.retain(|d| d.name() != name);
-        let gpu = self.gpu.clone();
-        let mut inner = gpu.0.lock();
-        for shown in &mut self.marks {
+    /// Stops drawing dataset `name` until a source provides it again, and releases the GPU tables
+    /// its marks use.
+    fn forget(&mut self, name: &str, inner: &mut crate::gpu::Inner) {
+        self.derived.tiles.remove(name, &mut inner.tiles);
+        self.snapshots.retain(|d| d.name() != name);
+        self.drawings.retain(|key, _| key.0 != name);
+        for (i, shown) in self.marks.iter_mut().enumerate() {
             if shown.mark.style().data == *name {
                 shown.failure = None;
             }
             if shown.compiled.as_ref().is_some_and(|c| c.schemas.iter().any(|(n, _)| n == name)) {
-                shown.tables.release(&mut inner);
+                if let Some(staged) = self.staged.get_mut(&shown.mark.style().data) {
+                    staged.forget(i, inner);
+                }
+                shown.tables.release(inner);
                 shown.compiled = None;
                 shown.rows = 0;
                 shown.exits = 0;
-                shown.drawn = None;
+                shown.holding = None;
             }
         }
-        drop(inner);
-        self.invalidate();
     }
 
-    /// The axis coordinate shown: every sampled field reads its last frame at or before it.
+    /// The axis coordinate shown. Every sampled field shows its last frame at or before it.
     pub fn at(&self) -> f64 {
         self.at
     }
 
-    /// Shows axis coordinate `at`; only options that read sampled fields evaluate again.
+    /// Shows axis coordinate `at`. Only options that read sampled fields evaluate again.
     pub fn set_at(&mut self, at: f64) {
         if at.to_bits() != self.at.to_bits() {
             self.at = at;
@@ -424,21 +536,31 @@ impl View {
         }
     }
 
-    /// Where the view looks.
+    /// The view's camera.
     pub fn camera(&self) -> &Camera {
         &self.camera
     }
 
-    /// Looks through `camera` at once. Like every setter, it tells nothing: the application knows.
+    /// Moves to `camera` at once, stopping any flight or coasting and replacing a fit not yet
+    /// applied. Like every setter, it emits no event. Ignored unless `camera`
+    /// [fits](Camera::fits) the scene's space.
+    ///
+    /// Every camera move stays within the camera's zoom and pan limits. On the earth, the limits
+    /// are those [`Earth`](crate::Earth) describes, for the part of the view inside the
+    /// [`insets`](View::insets). After a fit, the camera zooms at most 3 levels out and 8 in from
+    /// the fit, and its center stays within one box size of the box the fit framed. The view learns
+    /// its size from its first frame. When its size, insets, or space change, the next frame moves
+    /// the camera back within the limits and emits a [`Camera`](Event::Camera) event.
     pub fn set_camera(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
+            self.cancel_fit();
             self.rig.hold();
             self.place_camera(camera);
         }
     }
 
-    /// Tells the view whether the platform asks for reduced motion, as a browser's
-    /// `prefers-reduced-motion` does: `Motion::System` follows it. A canvas tells it itself.
+    /// Sets whether the platform requests reduced motion, like a browser's
+    /// `prefers-reduced-motion`. `Motion::System` follows it. A canvas sets it automatically.
     pub fn set_reduced_motion(&mut self, reduced: bool) {
         if reduced != self.reduced_motion {
             self.reduced_motion = reduced;
@@ -446,8 +568,8 @@ impl View {
         }
     }
 
-    /// Whether the view moves on its own: eases, flights, coasting, orbits, label fades, comets, and
-    /// what reads `elapsed()`.
+    /// Whether motion is enabled, so the view animates on its own: eases, flights, coasting,
+    /// orbits, comets, and expressions that read `elapsed()`.
     pub(super) fn moves(&self) -> bool {
         self.moves_with(&self.scene.controls)
     }
@@ -460,39 +582,49 @@ impl View {
         }
     }
 
-    /// What changes ease over: the scene's ease, or nothing where the view does not move on its own.
+    /// How long changes ease: the scene's ease, or zero when motion is disabled.
     pub(super) fn ease(&self) -> Duration {
         if self.moves() { self.scene.ease } else { Duration::ZERO }
     }
 
-    /// Eases to `camera` over twice the scene's ease, on the view's clock.
-    pub fn fly(&mut self, camera: Camera) {
+    /// Eases to `camera` on the view's clock, over `seconds`, or over twice the scene's ease when
+    /// `None`, replacing a fit not yet applied. The target stays within the zoom and pan limits
+    /// [`set_camera`](View::set_camera) describes. Ignored unless `camera` [fits](Camera::fits) the
+    /// scene's space.
+    pub fn fly(&mut self, camera: Camera, seconds: Option<Duration>) {
         if camera.fits(&self.scene.space) {
-            let seconds = (self.ease().max(Duration::from_millis(1)) * 2).as_secs_f64();
-            self.rig.fly(self.camera, camera, self.clock.now(), seconds);
+            self.cancel_fit();
+            let least = Duration::from_millis(1);
+            let seconds = seconds.unwrap_or_else(|| self.ease().max(least) * 2).max(least).as_secs_f64();
+            let to = camera.within(&self.reach());
+            self.rig.fly(self.camera, to, self.clock.now(), seconds);
             self.wake();
         }
     }
 
-    /// Where `position` (x, y, and elevation) lands on screen, CSS pixels from the top left; `None`
-    /// behind the camera. Overlays anchor to what the view draws with it.
-    pub fn point(&self, position: [f64; 3]) -> Option<[f32; 2]> {
+    /// The screen point of `position` (x, y, and elevation), in CSS pixels from the top left.
+    /// `None` behind the camera. Use it to anchor overlays to what the view draws.
+    pub fn screen(&self, position: [f64; 3]) -> Option<[f32; 2]> {
         let view = self.projected();
         view.screen(view.world(position)).map(|s| [s[0] as f32, s[1] as f32])
     }
 
-    /// The position on the ground under `point`: on a plane at elevation 0, on the earth its surface,
-    /// on a plot the values there; `None` where the pointer looks past it.
-    pub fn ground(&self, point: [f32; 2]) -> Option<[f64; 3]> {
+    /// The ground position under screen point `point` (CSS pixels from the top left). On a plane
+    /// it is the point at elevation 0, on the earth the point on the map or globe, and on a plot
+    /// the values there. `None` where the point misses the ground.
+    pub fn position(&self, point: [f32; 2]) -> Option<[f64; 3]> {
         let view = self.projected();
-        view.surface(point.map(f64::from)).map(|w| view.position(w))
+        view.ground(point.map(f64::from)).map(|w| view.position(w))
     }
 
-    /// Lays every vertex row without a position out again by the scene's layout: a diagram's blocks,
-    /// or the points of a plane or the earth. Places a layout gave otherwise hold, so rows added later
-    /// are placed around the rest. Once the layout lands, the answer is a patch to each dataset
-    /// writing each row laid out into its mark's position fields (or its point `geometry`); applied,
-    /// the places are the data's own. A mark whose position is not fields is left out.
+    /// Runs the scene's layout again on every vertex row without a position: a diagram's blocks, or
+    /// the points on a plane or the earth. Without this call, laid-out positions persist and rows
+    /// added later are placed around them.
+    ///
+    /// Once the layout finishes, resolves to one patch per dataset. Each patch writes the laid-out
+    /// positions into the mark's position fields (or its point `geometry`). Applying the patches
+    /// makes the positions part of the data. Marks whose position is not a pair of fields are
+    /// skipped.
     pub fn arrange(&mut self) -> Pending<Vec<Patch>> {
         let (pending, resolver) = Pending::new();
         self.arranging.push(resolver);
@@ -501,7 +633,7 @@ impl View {
         pending
     }
 
-    /// Answers the arranging asked for, once its layout landed.
+    /// Resolves the pending `arrange` calls once their layout has finished.
     fn answer_arranging(&mut self) {
         let Some(placed) = self.derived.take_arranged() else { return };
         let patches = arranged(&self.scene, placed);
@@ -522,13 +654,13 @@ impl View {
         self.wake();
     }
 
-    /// CSS pixels kept clear at the top, right, bottom, and left: the camera centers and fits in what
-    /// remains, as when panels cover part of the view.
+    /// CSS pixels kept clear at the top, right, bottom, and left, for panels that cover part of the
+    /// view. The camera centers and fits within the rest.
     pub fn insets(&self) -> [f32; 4] {
         self.insets
     }
 
-    /// Keeps `insets` clear.
+    /// Sets the [`insets`](View::insets).
     pub fn set_insets(&mut self, insets: [f32; 4]) {
         if insets != self.insets {
             self.insets = insets;
@@ -536,26 +668,28 @@ impl View {
         }
     }
 
-    /// Degrees of bearing a map or plane turns each second about its center.
+    /// The orbit speed: degrees of bearing per second that a map or plane turns about its center.
     pub fn orbit(&self) -> f64 {
         self.rig.orbit
     }
 
-    /// Turns the camera `degrees_per_second` about its center; zero stops it. A diagram never turns.
+    /// Turns the camera about its center at `degrees_per_second`. Zero stops it. A diagram never
+    /// turns.
     pub fn set_orbit(&mut self, degrees_per_second: f64) {
         let turns = degrees_per_second.is_finite() && !matches!(self.scene.space, Space::Diagram(_));
         self.rig.orbit = if turns { degrees_per_second } else { 0.0 };
         self.wake();
     }
 
-    /// The rows selected, a set per table in the order each was first selected.
+    /// The selected rows, one set per table, in the order each table was first selected.
     pub fn selection(&self) -> Vec<Rows> {
         Rows::group(self.focus.selection.iter().cloned())
     }
 
-    /// Selects `rows`, and no others, telling nothing. Rows the data drops, or no pickable mark shows,
-    /// leave the selection with a [`Select`](Event::Select) event without a trigger.
-    pub fn select(&mut self, rows: impl IntoIterator<Item = Rows>) {
+    /// Selects exactly `rows`, without emitting an event. Rows that the data drops, or that no
+    /// pickable mark shows, later leave the selection with a [`Selection`](Event::Selection) event
+    /// that has no trigger.
+    pub fn set_selection(&mut self, rows: impl IntoIterator<Item = Rows>) {
         let rows = Rows::flatten(rows);
         if rows != self.focus.selection {
             self.focus.selection = rows;
@@ -564,80 +698,74 @@ impl View {
         }
     }
 
-    /// What the user points at: the row under the pointer, or the row the keys stepped to.
+    /// The hovered row: the row under the pointer, or the row the keyboard stepped to.
     pub fn hovered(&self) -> Option<&Hit> {
         self.focus.hovered.as_ref()
     }
 
-    /// Every mark that draws nothing because its data no longer fits it, and why.
+    /// An error for every mark that draws nothing because its data no longer fits it.
     pub fn failures(&self) -> impl Iterator<Item = crate::Error> + '_ {
-        self.marks
-            .iter()
-            .enumerate()
-            .filter_map(|(i, shown)| Some(shown.mark.within(i, shown.failure.as_ref()?.0.clone())))
+        self.marks.iter().enumerate().filter_map(|(i, shown)| Some(shown.failure.as_ref()?.0.clone().at(i).at("marks")))
     }
 
-    /// The pointer the view asks for over what it shows.
+    /// The cursor the view requests for what is under the pointer.
     pub fn cursor(&self) -> Cursor {
         self.gestures.cursor(self.probing.hovered(), &self.scene)
     }
 
-    /// What the view did.
+    /// Counters of the view's work and its last frame.
     pub fn stats(&self) -> Stats {
-        let inner = self.gpu.0.lock();
         let rows = |m: &Shown| {
             let style = m.mark.style();
-            self.source(&style.data).and_then(|d| d.table(&style.table)).map_or(0, |t| t.len() as u64)
+            self.snapshot(&style.data).and_then(|d| d.table(&style.table)).map_or(0, |t| t.len() as u64)
         };
-        let [tiles, tiles_loading] = self.derived.tiles.counts();
-        // A table drawn through tiles leaves holes where tiles drawn before were: they draw nothing.
-        let drawn = |m: &Shown| match &m.drawn {
-            Some((_, table)) => (table.len() - table.ids.holes()) as u64,
-            None => u64::from(m.rows),
-        };
+        let [tiles, tiles_loading] = self.derived.tiles.counts(&self.gpu.0.lock().tiles);
         Stats {
             rows: self.marks.iter().map(rows).sum(),
-            drawn: self.marks.iter().map(drawn).sum(),
+            drawn: self.marks.iter().map(|m| u64::from(m.steady_rows())).sum(),
             tiles,
             tiles_loading,
-            uploading: inner.arena.pending(),
-            resident: inner.arena.resident(),
-            budget: inner.budget.bytes.min(inner.arena.capacity()),
-            waiting: self.waiting,
             ..self.stats
         }
     }
 
-    /// Whether the last frame drew everything as the data, scene, and camera say, with nothing
-    /// standing in for work under way: no pipeline it draws with was compiling, no changed page
-    /// waited to upload, no tile drew its ancestor,
-    /// no table its first sample, no row stood where it was until a layout landed, no wire drew its
-    /// elbows, no area its earlier triangles, no label its estimate, and no fit was due. A shot or a
-    /// video waits for it; [`Stats::waiting`] says what it waits on.
+    /// Whether the last frame drew everything the data, scene, and camera describe, with no
+    /// placeholder for pending work. A frame is incomplete while a pipeline it draws with compiles,
+    /// a changed page waits to upload, a tile shows its ancestor, a large table shows an even
+    /// sample of its rows, a row keeps its old position until a layout arrives, a wire shows an
+    /// elbow until its route arrives, an area shows its previous triangles, a label shows its
+    /// estimated size, or a fit is due. Shots and videos wait until it is true.
+    /// [`waiting`](View::waiting) lists what is pending.
     pub fn complete(&self) -> bool {
         self.waiting.is_empty()
     }
 
-    /// What happened since the last call, in order: see [`Event`]. An intent whose detail a pick has
-    /// yet to bring waits for it, and the intents after it wait too.
+    /// The kinds of pending work the last frame showed placeholders for. Empty once the view is
+    /// [complete](View::complete). [`Waiting`](Event::Waiting) events report changes to it.
+    pub fn waiting(&self) -> Waiting {
+        self.waiting
+    }
+
+    /// The events since the last call, in order. See [`Event`]. An intent that needs a pick result
+    /// waits until the pick finishes, and later intents wait behind it.
     pub fn events(&mut self) -> impl Iterator<Item = Event> + use<> {
         self.events.drain()
     }
 
-    /// Woken when the view needs a frame without being asked: work it waited on lands, data or the
-    /// camera changes.
+    /// Sets the waker called when the view needs a frame on its own: when pending work arrives, or
+    /// the data or the camera changes.
     pub fn set_waker(&mut self, waker: Waker) {
         self.signal.set_waker(waker);
     }
 
-    /// What wakes the view: a shot drawing it waits on it.
+    /// The view's wake signal. A shot drawing the view waits on it.
     pub(crate) fn signal(&self) -> &Arc<wake::Signal> {
         &self.signal
     }
 
-    /// Whether a [`Shot`](crate::Shot) or a [`Video`](crate::Video) draws the view: nothing else
-    /// should draw it meanwhile, as a canvas or a window holds its last frame, since a view draws at
-    /// one size at a time.
+    /// Whether a [`Shot`](crate::Shot) or a [`Video`](crate::Video) is drawing the view. Nothing
+    /// else should draw it meanwhile, since a view draws at one size at a time. A canvas or window
+    /// keeps showing its last frame.
     pub fn lent(&self) -> bool {
         self.signal.lent()
     }
@@ -647,30 +775,34 @@ impl View {
         &self.gpu
     }
 
-    /// The error a shot or a video fails on: the first one still untold, which stays for the view's
-    /// owner.
+    /// The error a shot or video fails with: the first error not yet taken from the events. It
+    /// stays queued for the view's owner.
     pub(crate) fn shot_error(&mut self) -> Option<crate::Error> {
         self.tell_gpu_errors();
         self.events.error().cloned()
     }
 
-    /// Whether the view can draw frames into `format` at `pixel_ratio` now: every pipeline its scene
-    /// draws with compiled. The first call for a target asks for every pipeline the scene uses, all at
-    /// once, what it draws with first; in a browser they compile side by side off the GPU's thread,
-    /// and each that lands wakes the view. Until what it draws with has, it draws nothing new, so
-    /// whatever shows its frames keeps the last, as a canvas does; until the rest has, it draws
-    /// without lit rows, and probes and queries wait. Natively it can always draw.
-    /// [`render`](View::render) asks for itself, drawing nothing until then.
+    /// Whether the view can draw frames into `format` at `pixel_ratio` now, because the scene's
+    /// draw pipelines for that target are compiled.
+    ///
+    /// The first call for a target requests every pipeline the scene uses, draw pipelines first. In
+    /// a browser they compile in parallel off the GPU thread, and each one that finishes wakes the
+    /// view. Until the draw pipelines are ready, the view draws nothing new, so a canvas keeps
+    /// showing the last frame. Until the rest are ready, frames omit text and lit rows, and probes
+    /// and queries wait. Natively the view can always draw. [`render`](View::render) checks this
+    /// itself and records nothing until it is true.
     pub fn ready(&mut self, format: wgpu::TextureFormat, pixel_ratio: f32) -> bool {
         self.ready_for(format, pixel_ratio, true)
     }
 
-    /// Whether frames into `format` at `pixel_ratio`, taking `input` or not, can draw now: see
-    /// [`ready`](View::ready).
+    /// Like [`ready`](View::ready), for frames that take `input` or not. It refreshes the sources
+    /// first, so the pipelines a newly added field needs are requested before a frame reads it.
     pub(crate) fn ready_for(&mut self, format: wgpu::TextureFormat, pixel_ratio: f32, input: bool) -> bool {
         let gpu = self.gpu.clone();
+        let samples = gpu.samples_for(pixel_ratio);
         let mut inner = gpu.0.lock();
-        let draws = self.pipelines_ready(&mut inner, format, resources::samples(pixel_ratio), input);
+        self.refresh(&mut inner);
+        let draws = self.pipelines_ready(&mut inner, format, samples, input);
         let answers = self.answers_ready(&inner);
         let texts = self.texts_ready(&inner);
         let landed = inner.pipelines.landed();
@@ -686,74 +818,79 @@ impl View {
         draws
     }
 
-    /// Whether probes and queries can run: what they and the lit rows' draws use compiled.
+    /// Whether probes and queries can run: the probe, query, and lit-row pipelines are compiled.
     fn answers(&self) -> bool {
         self.answering.is_none()
     }
 
-    /// Whether frames draw text: what labels, glyphs, and the overlay use compiled.
+    /// Whether frames draw text: the label, glyph, and overlay pipelines are compiled.
     fn texts(&self) -> bool {
         self.texting.is_none()
     }
 
-    /// Whether what its frames draw with is still compiling: it draws nothing new until all of it
-    /// landed.
+    /// Whether the draw pipelines are still compiling. The view draws nothing new until they have
+    /// all finished.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     pub(crate) fn compiling(&self) -> bool {
         self.compiling.is_some()
     }
 
-    /// Whether a frame would differ from the last one: something changed, moves, or streams in, or
-    /// work the view waited on landed. While it only waits, it needs none: what it waits on wakes it.
+    /// Whether a new frame would differ from the last one: something changed, animates, or streams
+    /// in, or pending work arrived. While the view only waits, it needs no frame. The work it waits
+    /// on wakes it.
     pub fn needs_render(&self) -> bool {
         let landed = || self.gpu.0.lock().pipelines.landed();
-        // While what it draws with compiles, it draws nothing new: each compile landing wakes it.
+        // While draw pipelines compile, the view draws nothing new. Each finished compile wakes it.
         if let Some(seen) = self.compiling {
             return landed() != seen;
         }
-        // What moves on its own, only while the view moves on its own: under reduced motion an orbit,
-        // comets, and what reads `elapsed()` hold still.
+        // Self-driven motion counts only while motion is enabled: under reduced motion, orbits,
+        // comets, and `elapsed()` hold still.
         let moves = self.moves();
         self.changed
             || self.signal.landed()
+            || self.derived.tiles.pending()
             || self.rig.easing()
             || (self.rig.orbit != 0.0 && moves)
-            || self.fitting.due()
-            // Probes and queries wait for what answers them to compile, which wakes the view as it lands.
+            || (self.fitting.due() && !self.limited)
+            // Probes and queries wait for their pipelines, which wake the view as they compile.
             || (self.answers() && (self.probing.due() || self.queries.due()))
             || self.answering.is_some_and(|seen| landed() != seen)
             || self.texting.is_some_and(|seen| landed() != seen)
-            || self.derived.tiled.due()
-            || self.labels.fading(self.clock.now())
-            // A mark evaluates once its columns synced: until then, the pages they wait for wake it.
+            || self.fading()
+            // A mark evaluates once its columns are synced. Until then, the pages they wait for
+            // wake the view.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
             || (moves && self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME))))
             || (moves && self.flowing())
             || self.gpu.0.lock().arena.uploading()
+            || self.room != frame::Room::Found
     }
 
-    /// Whether the view wants a frame: one that would differ ([`needs_render`](View::needs_render)),
-    /// or one noticing a touch held long enough for a menu. A loop drawing on demand draws while this
-    /// holds, as a canvas does; a video holds the frames that only notice.
+    /// Whether the view wants a frame: one that would differ
+    /// ([`needs_render`](View::needs_render)), or one that only checks whether a touch has been
+    /// pressed long enough to open a menu. A loop that draws on demand, like a canvas, draws while
+    /// this is true. A video repeats its last frame rather than draw frames that only check.
     pub fn wants_frame(&self) -> bool {
         self.needs_render() || (self.compiling.is_none() && self.holding())
     }
 
-    /// Whether comets travel along a mark's rows: one that flows draws, and the theme shows them.
+    /// Whether comets travel along some mark's rows: a flowing mark is drawable, and the theme's
+    /// flow color is visible.
     fn flowing(&self) -> bool {
         self.scene.theme.flow.color.a > 0.0 && self.marks.iter().any(|m| m.drawable() && m.mark.flows())
     }
 
-    /// Whether the next frame, taking `input` or not, does work this one left: pages to upload past
-    /// the frame's budget, rows to lay out, a fit, probe, or query due, the tiles the camera wants, or
-    /// a transition to begin. Nothing else would wake the view for it: jobs, texts, fetches, and
-    /// readbacks do as they land.
+    /// Whether this frame left work for the next one (taking `input` or not): pages over the
+    /// frame's upload budget, pages that did not fit in the arena, a due fit, probe, or query, tile
+    /// pieces to take, or a transition to begin. Nothing else would wake the view for these. Jobs,
+    /// texts, fetches, and readbacks wake it themselves when they arrive.
     fn due(&self, input: bool) -> bool {
         self.gpu.0.lock().arena.uploading()
-            || self.regions_dirty
-            || self.fitting.due()
+            || self.room != frame::Room::Found
+            || (self.fitting.due() && !self.limited)
             || (input && self.answers() && (self.probing.due() || self.queries.due()))
-            || self.derived.tiled.due()
+            || self.derived.tiles.pending()
             || self.marks.iter().any(|m| m.begin.is_some())
     }
 
@@ -762,54 +899,61 @@ impl View {
         self.signal.ask();
     }
 
-    /// The work under way a frame drawn now stands in for: see [`complete`](View::complete). A mark
-    /// waits for a dataset it names until it is given; one that failed, or that draws tiles the view
-    /// fetches, which may never hold its table, stands in for nothing.
+    /// The pending work a frame drawn now would show placeholders for. See
+    /// [`complete`](View::complete). A mark waits for its dataset until a source provides it. A
+    /// mark that failed, or whose dataset comes from tiles (which may never contain its table),
+    /// waits for nothing.
     fn under_way(&self) -> Waiting {
         let marks = || self.marks.iter().filter(|m| m.compiled.is_some());
         let given = |m: &Shown| {
             let data = &m.mark.style().data;
-            m.compiled.is_some() || m.failure.is_some() || self.source(data).is_some() || self.derived.tiles.owns(data)
+            m.compiled.is_some()
+                || m.failure.is_some()
+                || self.snapshot(data).is_some()
+                || self.derived.tiles.owns(data)
         };
         Waiting {
             compiling: self.asked.is_empty()
                 || self.compiling.is_some()
                 || self.answering.is_some()
                 || self.texting.is_some(),
-            data: !self.marks.iter().all(given) || marks().any(|m| !m.tables.synced() || m.tables.waiting()),
+            data: !self.marks.iter().all(given)
+                || marks().any(|m| !m.tables.synced())
+                || self.staged.values().any(|s| !s.is_empty()),
             derived: !self.derived.complete(),
             labels: !self.labels.complete(),
             fit: self.fitting.due() || self.fitting.reading(),
-            marks: self.regions_dirty || marks().any(|m| m.counting() || m.begin.is_some()),
+            marks: marks().any(|m| m.counting() || m.begin.is_some()),
         }
     }
 
-    /// Whether something eases toward where it goes: a transition, a flight, coasting, or a label
-    /// fade. An orbit, a comet, and anything else that moves for as long as it is shown never settles,
-    /// and is not counted.
+    /// Whether something is easing to rest: a transition, a flight, coasting, or a tile fade.
+    /// Orbits, comets, and other continuous motion never settle and do not count.
     pub(crate) fn easing(&self) -> bool {
-        self.rig.easing()
-            || self.labels.fading(self.clock.now())
-            || self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some())
+        self.rig.easing() || self.fading() || self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some())
+    }
+
+    /// Whether tiles of a paged table are fading in or out.
+    fn fading(&self) -> bool {
+        self.drawings.values().any(|d| d.current.as_ref().is_some_and(|c| c.fades))
     }
 
     fn invalidate(&mut self) {
-        self.regions_dirty = true;
         self.regions.relayout = true;
         self.fitting.plot_due = true;
         self.wake();
     }
 
-    /// The part of the view the camera frames: inside the insets, and on a plot inside its axes.
+    /// The part of the view the camera frames, in CSS pixels: inside the insets, and on a plot
+    /// inside its axes. At least one pixel each way.
     fn area(&self) -> Area {
         let [w, h] = self.size;
         let [top, right, bottom, left] = self.insets.map(f64::from);
         let mut area = [left, top, w - right, h - bottom];
-        if let Space::Plot(plot) = &self.scene.space {
+        if matches!(self.scene.space, Space::Plot(_)) {
             // A plot's axes start below its title, which the other spaces draw over.
-            let gutters = axes::gutters(plot, &self.scene.theme);
-            let top = area[1] + self.title_band() + gutters[0];
-            area = [area[0] + gutters[3], top, area[2] - gutters[1], area[3] - gutters[2]];
+            let [top, right, bottom, left] = self.gutters.1.room;
+            area = [area[0] + left, area[1] + self.title_band() + top, area[2] - right, area[3] - bottom];
         }
         if area[2] - area[0] < 1.0 {
             area[2] = area[0] + 1.0;
@@ -832,7 +976,8 @@ impl View {
         self.projected_with(&self.drawn_camera())
     }
 
-    /// What `camera` would show, a plot's missing value range filled as the frame fills it.
+    /// The projection through `camera`. A plot camera without a value range uses the fitted one,
+    /// as the frame does.
     fn projected_with(&self, camera: &Camera) -> Projected {
         let camera = match *camera {
             Camera::Plot { x, y: None } => Camera::Plot { x, y: Some(self.plot_y.unwrap_or([0.0, 1.0])) },
@@ -848,9 +993,19 @@ impl Drop for View {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         for shown in &mut self.marks {
-            shown.tables.release(&mut inner);
+            shown.release(&mut inner);
         }
+        for (_, staged) in std::mem::take(&mut self.staged) {
+            staged.release(&mut inner);
+        }
+        self.derived.tiles.release(&mut inner.tiles);
         inner.ledger.leave(self.id);
+        drop(inner);
+        for source in &self.sources {
+            if let Source::Data(data) = source {
+                data.watchers().unwatch(self.id);
+            }
+        }
     }
 }
 
@@ -864,10 +1019,10 @@ impl std::fmt::Debug for View {
     }
 }
 
-/// The patches writing rows laid out into the data, by dataset: each row's place into the position
-/// fields of the vertex mark drawing its table, or its point geometry.
+/// One patch per dataset that writes each laid-out row's position into the position fields of the
+/// vertex mark drawing its table, or into its point geometry.
 fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<Patch> {
-    /// A table's rows laid out: its dataset and name, their ids, and their places.
+    /// A table's laid-out rows: its dataset and table names, the row ids, and their positions.
     type Laid = ((Name, Name), Vec<crate::Id>, Vec<[f64; 2]>);
     let mut tables: Vec<Laid> = Vec::new();
     for (row, place) in placed {
@@ -905,10 +1060,10 @@ fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<Patch> {
     patches
 }
 
-/// Why `shown`, whose dataset is given, draws nothing: the table it names is absent. A dataset the
-/// view fetches as tiles fills its tables as they land, so a table it lacks is not missing.
-fn absent(shown: &Shown, sources: &[Data], tiles: &crate::derive::tiles::TileSets) -> Option<crate::Error> {
+/// The error for a mark `shown` whose dataset is present but lacks the table it names. A dataset
+/// from tiles gains tables as pieces arrive, so a table it lacks is not an error.
+fn absent(shown: &Shown, snapshots: &[Snapshot], tiles: &crate::tiles::TileSets) -> Option<crate::Error> {
     let style = shown.mark.style();
-    let data = sources.iter().find(|d| *d.name() == style.data)?;
+    let data = snapshots.iter().find(|d| *d.name() == style.data)?;
     (shown.compiled.is_none() && !tiles.owns(&style.data)).then(|| shown.mark.absent_from(data)).flatten()
 }

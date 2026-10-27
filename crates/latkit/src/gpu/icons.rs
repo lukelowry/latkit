@@ -1,99 +1,48 @@
-//! Icons on the GPU: every image an icon marker shows, as a layer of one texture array of a common
-//! size, scaled to fit. Markers name their images; the same image shares its layer.
+//! Icons on the GPU. Each image an icon marker shows is scaled to a common size and stored as one
+//! layer of a texture array. Markers showing the same image share its layer.
 
-use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use super::layers::Layers;
+use crate::Result;
 use crate::gpu::work::Queue;
 
 /// Texels across an icon layer.
 const SIZE: u32 = 64;
 
-pub(crate) struct Icons {
-    texture: wgpu::Texture,
-    pub(crate) view: wgpu::TextureView,
-    /// Each image's layer, by the address of its pixels.
-    layers: HashMap<usize, (Arc<[u8]>, u32)>,
-    capacity: u32,
-    /// Changes whenever the texture is replaced, so views rebind it.
-    pub(crate) generation: u64,
+/// An image's pixels, compared by address so that markers showing one image share its layer.
+/// Holding the pixels keeps the address from being reused.
+pub(crate) struct Pixels(Arc<[u8]>);
+
+impl PartialEq for Pixels {
+    fn eq(&self, other: &Pixels) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
-fn create(device: &wgpu::Device, layers: u32) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("latkit icons"),
-        size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: layers },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D2Array),
-        ..Default::default()
-    });
-    (texture, view)
+impl Eq for Pixels {}
+
+impl Hash for Pixels {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        Arc::as_ptr(&self.0).cast::<u8>().hash(hasher);
+    }
 }
+
+pub(crate) type Icons = Layers<Pixels>;
 
 impl Icons {
-    pub(crate) fn new(device: &wgpu::Device) -> Icons {
-        let (texture, view) = create(device, 1);
-        Icons { texture, view, layers: HashMap::new(), capacity: 1, generation: 0 }
+    pub(crate) fn icons(device: &wgpu::Device) -> Icons {
+        Layers::new(device, "icons", [SIZE, SIZE], 1)
     }
 
     /// The layer of each of `images`, uploading the ones not yet on the GPU.
-    pub(crate) fn layers(&mut self, device: &wgpu::Device, queue: &Queue, images: &[crate::Image]) -> Vec<u32> {
-        let needed = self.layers.len() as u32 + images.len() as u32;
-        if needed > self.capacity {
-            let capacity = needed.next_power_of_two().min(device.limits().max_texture_array_layers);
-            let (texture, view) = create(device, capacity);
-            let mut encoder =
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit icons") });
-            encoder.copy_texture_to_texture(
-                self.texture.as_image_copy(),
-                texture.as_image_copy(),
-                wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: self.capacity },
-            );
-            queue.submit([encoder.finish()]);
-            self.texture = texture;
-            self.view = view;
-            self.capacity = capacity;
-            self.generation += 1;
-        }
-        images
-            .iter()
-            .map(|image| {
-                let key = image.rgba.as_ptr() as usize;
-                if let Some((_, layer)) = self.layers.get(&key) {
-                    return *layer;
-                }
-                let layer = (self.layers.len() as u32).min(self.capacity - 1);
-                let texels = fit(image);
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &self.texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &texels,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(SIZE * 4),
-                        rows_per_image: Some(SIZE),
-                    },
-                    wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
-                );
-                self.layers.insert(key, (image.rgba.clone(), layer));
-                layer
-            })
-            .collect()
+    pub(crate) fn of(&mut self, device: &wgpu::Device, queue: &Queue, images: &[crate::Image]) -> Result<Vec<u32>> {
+        images.iter().map(|image| self.layer(device, queue, Pixels(image.rgba.clone()), || fit(image))).collect()
     }
 }
 
-/// `image` scaled to `SIZE` square by its nearest texels, centered with its aspect kept.
+/// Scales `image` into a `SIZE` square by nearest texel, centered with its aspect ratio kept.
 fn fit(image: &crate::Image) -> Vec<u8> {
     let [w, h] = image.size.map(|v| v.max(1));
     let scale = f64::from(w.max(h)) / f64::from(SIZE);

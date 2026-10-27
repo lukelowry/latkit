@@ -1,6 +1,7 @@
-//! A colormap's 256 texels from its stops, made one way for the catalog the build bakes and for the
-//! maps made at run time: blended in OKLab, so lightness runs evenly; wrapping when cyclic; a stop a
-//! texel in turn when categorical. Free of the crate, so the build script includes it as it is.
+//! Builds a colormap's 256 texels from its stops, both for the catalog baked at build time and for
+//! maps made at run time. Colors blend in OKLab so lightness changes evenly. Cyclic ramps wrap, and
+//! categorical ramps repeat their stops texel by texel. The file uses nothing from the crate, so
+//! the build script includes it unchanged.
 
 /// How a ramp spans its stops.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -9,16 +10,17 @@ pub(crate) enum Spread {
     Continuous,
     /// Around a circle: past the last stop, back to the first.
     Cyclic,
-    /// A stop's color for each texel in turn.
+    /// Each texel takes the next stop's color, repeating.
     Categorical,
 }
 
-/// The 256 texels through `stops`, each a place from 0 to 1, ascending, and a straight sRGB color
-/// from 0 to 1. A stop without a place sits evenly between its neighbors' places, as in a CSS
-/// gradient: the first at 0, the last at 1, or a turn after the first when cyclic. A categorical
-/// ramp's texel `i` takes stop `i` modulo their count.
+/// The 256 texels through `stops`: each an optional place from 0 to 1, ascending, and a
+/// straight-alpha sRGB color with channels from 0 to 1. A stop without a place sits evenly between
+/// its neighbors' places, like a CSS gradient. An unplaced first stop sits at 0. An unplaced last
+/// stop sits at 1, except in a cyclic ramp. There, unplaced stops spread evenly up to one turn past
+/// the first stop. A categorical ramp's texel `i` takes stop `i` modulo the stop count.
 pub(crate) fn texels(spread: Spread, stops: &[(Option<f32>, [f32; 4])]) -> [[u8; 4]; 256] {
-    assert!(!stops.is_empty(), "a ramp has a stop");
+    assert!(!stops.is_empty(), "a ramp needs at least one stop");
     if spread == Spread::Categorical || stops.len() == 1 {
         return std::array::from_fn(|t| bytes(stops[t % stops.len()].1));
     }
@@ -58,10 +60,10 @@ fn blend(stops: &[(f32, [f32; 4])], x: f32, cyclic: bool) -> [f32; 4] {
     let n = stops.len();
     let (first, last) = (stops[0], stops[n - 1]);
     let (a, b) = match stops.partition_point(|s| s.0 <= x) {
-        // Before the first stop: from the last a turn back, when cyclic.
+        // Before the first stop: when cyclic, blend from the last stop, one turn back.
         0 if cyclic => ((last.0 - 1.0, last.1), first),
         0 => (first, first),
-        // Past the last stop: on to the first a turn on, when cyclic.
+        // Past the last stop: when cyclic, blend toward the first stop, one turn on.
         i if i == n && cyclic => (last, (first.0 + 1.0, first.1)),
         i if i == n => (last, last),
         i => (stops[i - 1], stops[i]),
@@ -82,7 +84,7 @@ fn gamma(c: f32) -> f32 {
     if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.max(0.0).powf(1.0 / 2.4) - 0.055 }
 }
 
-/// A straight sRGB color in OKLab, its alpha kept.
+/// Converts a straight-alpha sRGB color to OKLab, keeping alpha.
 fn oklab([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     let [r, g, b] = [r, g, b].map(linear);
     let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
@@ -96,7 +98,7 @@ fn oklab([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     ]
 }
 
-/// An OKLab color in straight sRGB, its alpha kept.
+/// Converts an OKLab color to straight-alpha sRGB, keeping alpha.
 fn srgb([l, a, b, alpha]: [f32; 4]) -> [f32; 4] {
     let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
     let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
@@ -118,14 +120,14 @@ mod tests {
     const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
     #[test]
-    fn stops_land_on_their_texels_and_blend_in_oklab() {
+    fn stops_sit_on_their_texels_and_blend_in_oklab() {
         let ramp = texels(Spread::Continuous, &[(None, BLACK), (None, WHITE)]);
         assert_eq!((ramp[0], ramp[255]), ([0, 0, 0, 255], [255, 255, 255, 255]));
-        // OKLab's half lightness is a darker byte than sRGB's middle: about 100, not 128.
+        // OKLab's half lightness is a darker byte than sRGB's midpoint: about 100, not 128.
         assert!((95..105).contains(&ramp[128][0]), "{:?}", ramp[128]);
         let red = [1.0, 0.0, 0.0, 1.0];
         let placed = texels(Spread::Continuous, &[(None, BLACK), (Some(64.0 / 255.0), red), (None, WHITE)]);
-        assert_eq!(placed[64], [255, 0, 0, 255], "a placed stop lands on its texel");
+        assert_eq!(placed[64], [255, 0, 0, 255], "a placed stop sets its texel's color");
         assert_eq!(placed[0], [0, 0, 0, 255]);
     }
 

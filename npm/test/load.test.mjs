@@ -15,40 +15,39 @@ test('installed package imports without WASM, retries failures, and shares initi
       headers: { 'Content-Type': 'application/wasm' },
     });
   });
-  const { loadLatkit, field, Patch } = await import(
+  const { load, field, Data, Patch } = await import(
     pathToFileURL(path.join(directory, 'dist/index.js')).href
   );
   assert.equal(requests, 0);
-  assert.deepEqual(field('x').toJSON(), { field: 'x' });
-  // Patches are written without WASM.
+  assert.equal(field('x').toJSON(), '$x');
+  // Writing a patch needs no WASM. Creating a dataset throws until WASM is loaded.
   const patch = new Patch().replace('Node', { count: 1 }, { x: [42] });
+  assert.throws(() => new Data('early'), { code: 'unloaded' });
   assert.equal(requests, 0);
-  const first = loadLatkit({ wasm: 'https://example.invalid/latkit.wasm' });
-  assert.equal(first, loadLatkit());
+  const first = load({ wasm: 'https://example.invalid/latkit.wasm' });
+  assert.equal(first, load());
   await assert.rejects(first, { code: 'io' });
-  const retry = loadLatkit({ wasm: new URL('https://example.invalid/latkit.wasm') });
-  assert.equal(retry, loadLatkit({ wasm: 'https://example.invalid/latkit.wasm' }));
-  const kit = await retry;
-  assert.equal(kit, await loadLatkit());
+  const retry = load({ wasm: new URL('https://example.invalid/latkit.wasm') });
+  assert.equal(retry, load({ wasm: 'https://example.invalid/latkit.wasm' }));
+  await retry;
+  assert.equal(load(), retry, 'loaded once');
   assert.equal(requests, 2);
-  await assert.rejects(loadLatkit({ wasm: 'https://example.invalid/other.wasm' }), {
-    code: 'io',
-  });
+  await assert.rejects(load({ wasm: 'https://example.invalid/other.wasm' }), { code: 'io' });
   await assert.rejects(
-    loadLatkit({
-      createWorker: () => {
+    load({
+      worker: () => {
         throw new Error('unused');
       },
     }),
     { code: 'io' },
   );
-  const data = new kit.Data('test').apply(patch);
+  const data = new Data('test').apply(patch);
   const kept = data.snapshot();
   data.apply(new Patch().set('Node', [0], { x: [7] }));
   assert.equal(data.get('Node', 0, 'x'), 7);
   data.destroy();
   data.destroy();
-  assert.throws(() => data.name, /destroyed/);
+  assert.throws(() => data.name, { code: 'destroyed' });
   assert.equal(kept.get('Node', 0, 'x'), 42, 'a snapshot outlives its source');
   kept.destroy();
   kept.destroy();

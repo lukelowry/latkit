@@ -1,6 +1,6 @@
-//! Errors as JavaScript throws them: an `Error` with latkit's message, its `code` (`invalid`,
-//! `unsupported`, `limit`, `io`, `device-lost`, `cancelled`, or `timeout`), and for invalid input the
-//! `path` to the part.
+//! latkit errors thrown as JavaScript `Error`s, with latkit's message, a `code` (`invalid`,
+//! `unsupported`, `limit`, `io`, `device-lost`, `cancelled`, or `timeout`), and, for invalid input,
+//! the `path` to the invalid part.
 
 use js_sys::Reflect;
 use wasm_bindgen::JsValue;

@@ -27,7 +27,7 @@ impl Text {
         (0..self.len()).map(|i| self.get(i))
     }
 
-    /// The UTF-8 bytes the slice spans and offsets relative to them.
+    /// The offsets rebased to start at 0, and the UTF-8 text they index, for encoding a slice.
     pub(crate) fn compact(&self) -> (Vec<u32>, &str) {
         let base = self.offsets.first().copied().unwrap_or(0);
         let end = self.offsets.last().copied().unwrap_or(0);

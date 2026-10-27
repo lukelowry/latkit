@@ -1,46 +1,41 @@
-/** Frequency: every machine of ACTIVSg10k swinging after a fault, traced over time on a plot. */
-import { THEME, type Piece } from './look.ts';
+/** Frequency: the speed of every machine in ACTIVSg10k after a fault, traced over time. */
+import { field } from 'latkit';
 import { readCase } from './grids.ts';
+import type { Picture } from './render.ts';
 
-export default function frequency(): Piece {
-  const c = readCase('activsg10k');
-  const fault = c.header.fault!;
-  const [fx, fy] = [c.positions[2 * fault.bus]!, c.positions[2 * fault.bus + 1]!];
-  // Each machine's distance from the fault, in degrees: the disturbance reaches the near ones first.
-  const distance = Float32Array.from(c.machineBus, (b) =>
-    Math.hypot(c.positions[2 * b]! - fx, c.positions[2 * b + 1]! - fy),
-  );
-  c.patch.set('Machine', { count: c.header.machines }, { distance });
-  const machines = c.header.machines.toLocaleString('en-US');
+export default async function (): Promise<Picture> {
+  const { grid, header, lon, lat, machineBus, simulation } = await readCase('activsg10k');
+  const fault = header.fault!;
+  const [fx, fy] = [lon[fault.bus]!, lat[fault.bus]!];
+  // Each machine's distance from the fault in degrees. The disturbance reaches near machines first.
+  const distance = Float32Array.from(machineBus, (b) => Math.hypot(lon[b]! - fx, lat[b]! - fy));
+  grid.set('Machine', { distance });
   return {
-    name: 'frequency',
-    alt: `The speed of ${machines} machines over ten seconds after a fault, near ones bright and swinging hardest, far ones dark`,
-    data: [c.patch],
-    // The whole recording across; speeds fitted up the side.
-    camera: { x: [0, (c.header.frames! - 1) * c.header.dt!], y: null },
     scene: {
       space: { plot: { x: { label: 'Time (s)' }, y: { label: 'Speed (mHz from 60 Hz)' } } },
       ease: 0,
-      theme: THEME,
+      // The dark theme, with a darker background and labels without halos.
+      theme: {
+        background: '#0b0f14',
+        text: { color: '#c3ccd6', font: 'sans-serif', size: 12, halo: 0 },
+      },
       marks: [
         {
-          lines: {
-            of: ['grid', 'Machine'],
-            trace: 'speed',
-            // The nearest machines, swinging hardest, on top.
-            priority: { op: 'neg', args: ['distance'] },
-            width: 0.7,
-            color: {
-              colormap: {
-                kind: 'sequential',
-                colors: ['#fff1c9', '#ffb36b', '#e8577a', '#7a3fc4', '#24366e'],
-              },
-              value: 'distance',
-              domain: [0, 9],
-            },
-          },
+          lines: grid.table('Machine'),
+          trace: 'speed',
+          // The nearest machines, which swing hardest, draw on top.
+          priority: field('distance').neg(),
+          width: 0.7,
+          color: field('distance')
+            .colormap({
+              kind: 'sequential',
+              colors: ['#fff1c9', '#ffb36b', '#e8577a', '#7a3fc4', '#24366e'],
+            })
+            .domain(0, 9),
         },
       ],
     },
+    // x spans the whole recording. With `y` null, the speed range fits what is in view.
+    camera: { x: [0, simulation!.duration], y: null },
   };
 }

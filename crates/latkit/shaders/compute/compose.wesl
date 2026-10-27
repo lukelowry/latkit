@@ -1,6 +1,6 @@
-// A shot's panels composed into the bytes a consumer takes, so no pixel is touched on the CPU: RGBA
-// rows with straight alpha for an image, or NV12 planes (BT.709, limited range) for an encoder. One
-// dispatch per panel writes its panel of the picture in whole words; a fill writes the background
+// Composes a shot's panels into output bytes on the GPU, so the CPU touches no pixels: RGBA rows
+// with straight alpha for an image, or NV12 planes (BT.709, limited range) for a video encoder. One
+// dispatch per panel writes its part of the picture in whole words. A fill writes the background
 // where no panel draws.
 
 import package::lib::types::Compose;
@@ -14,8 +14,8 @@ const LUMA: vec3f = vec3f(0.2126, 0.7152, 0.0722);
 const BLUE: f32 = 1.8556;
 const RED: f32 = 1.5748;
 
-// A panel's premultiplied color as the picture keeps it: straight with its alpha in a transparent
-// image, else over black.
+// A panel's premultiplied color as the picture stores it: straight alpha in a transparent image,
+// else composited over black.
 fn kept(c: vec4f) -> vec4f {
     if compose.alpha == 0u {
         return vec4f(c.rgb, 1.0);
@@ -26,7 +26,7 @@ fn kept(c: vec4f) -> vec4f {
     return vec4f(c.rgb / c.a, c.a);
 }
 
-// Writes the 4×2 block of NV12 at `at` from its eight colors, rows of four.
+// Writes the 4×2 NV12 block at `at` from its eight colors, in two rows of four.
 fn write_block(at: vec2u, rgb: array<vec3f, 8>) {
     var chroma = vec4f(0.0);
     for (var row = 0u; row < 2u; row++) {
@@ -35,7 +35,7 @@ fn write_block(at: vec2u, rgb: array<vec3f, 8>) {
             let c = rgb[row * 4u + column];
             let y = dot(c, LUMA);
             luma[column] = y;
-            // Cb and Cr of each 2×2, averaged.
+            // Cb and Cr, averaged over each 2×2.
             let pair = column / 2u * 2u;
             chroma[pair] += (c.b - y) / BLUE * 0.25;
             chroma[pair + 1u] += (c.r - y) / RED * 0.25;

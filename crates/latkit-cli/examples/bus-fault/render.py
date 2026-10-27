@@ -86,31 +86,31 @@ def prepare(source, job, indices):
     ]})
 
     height_scale = 1.7 * 0.15 * max(max(lon) - min(lon), max(lat) - min(lat))
-    theme = {"background": BACKGROUND, "text": "#c9d4dc", "font": "Segoe UI, sans-serif", "fontSize": 15}
+    theme = {"background": BACKGROUND, "text": {"color": "#c9d4dc", "font": "Segoe UI, sans-serif", "size": 15}}
     scenes = {
         "map.json": {
             "space": {"plane": {"grid": "off"}}, "ease": 0,
-            "theme": {**theme, "edge": None, "laneBow": 0},
+            "theme": {**theme, "edge": {"color": None, "bow": 0}},
             "title": "ACTIVSg70k",
             "subtitle": f"A fault on bus {FAULT} at 1 s, cleared at 1.15 s",
             "marks": [
-                {"lines": {"of": ["states", "polygons"], "color": "#5c7a8f6b", "width": 0.75}},
-                {"edges": {"of": ["grid", "Branch"], "ends": ["from", "to"], "width": "width"}},
-                {"vertices": {
-                    "of": ["grid", "Bus"], "position": ["lon", "lat"], "radius": 0.8,
-                    "elevation": {"op": "mul", "args": ["height", height_scale]},
+                {"lines": ["states", "polygons"], "color": "#5c7a8f6b", "width": 0.75},
+                {"edges": ["grid", "Branch"], "ends": ["from", "to"], "width": "$width"},
+                {
+                    "vertices": ["grid", "Bus"], "position": ["$lon", "$lat"], "radius": 0.8,
+                    "elevation": {"mul": ["$height", height_scale]},
                     "color": {"colormap": {"kind": "diverging", "colors": PALETTE},
-                              "value": "df", "domain": [-0.05, 0.05]},
+                              "value": "$df", "domain": [-0.05, 0.05]},
                     "legend": "Bus frequency deviation · Hz",
-                }},
+                },
             ],
         },
         "plot.json": {
             "space": {"plot": {"x": {"label": "Simulation time · s"}, "y": {"label": "Δf · Hz", "precision": 2}}},
             "ease": 0,
-            "theme": {**theme, "fontSize": 13, "playhead": "#eff5f8"},
-            "marks": [{"lines": {"of": ["trace", "Bus"], "trace": "df", "width": 1.4,
-                                 "color": {"colormap": "tableau10", "value": "group"}}}],
+            "theme": {**theme, "text": {**theme["text"], "size": 13}, "plot": {"playhead": "#eff5f8"}},
+            "marks": [{"lines": ["trace", "Bus"], "trace": "df", "width": 1.4,
+                       "color": {"colormap": "tableau10", "value": "$group"}}],
         },
         "map-camera.json": {"center": [-87.8, 35], "zoom": math.log2(40), "pitch": 55, "bearing": 8},
         "plot-camera.json": {"x": [times[0], times[-1]], "y": [-0.05, 0.05]},

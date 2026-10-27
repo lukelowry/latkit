@@ -1,17 +1,21 @@
-//! What a `Gpu` did, counted exactly. Unlike time, it repeats from run to run and machine to machine
-//! wherever the budget, the device's limits, and the frames drawn do, so the benchmark gates it and
-//! tests assert it. Every write to the GPU goes through [`Queue`], which counts it; clippy refuses the
-//! raw queue's writes anywhere else. Whatever else counts holds the counters itself: the pipelines,
-//! the readback pool, the atlas, and each frame's jobs and evaluations through the `Gpu`.
+//! Exact counts of the work a `Gpu` does. Unlike timings, the counts repeat across runs and
+//! machines for the same budget, device limits, and frames drawn. The benchmark gates on them and
+//! tests assert them.
+//!
+//! Every write to the GPU goes through [`Queue`], which counts it. Clippy forbids the raw queue's
+//! writes anywhere else. The pipelines, the readback pool, and the atlas hold the counters
+//! themselves, and views count each frame's jobs and evaluations through the `Gpu`.
 
 use std::ops::{Deref, Sub};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-/// [`Work`], the [`Count`] naming each of its fields, and the [`Counters`] keeping them, from one list.
+/// Defines [`Work`], a [`Count`] variant for each of its fields, and the [`Counters`] that hold
+/// them, from one list.
 macro_rules! work {
     ($($(#[$doc:meta])* $field:ident: $count:ident,)*) => {
-        /// What a [`Gpu`](crate::Gpu) did since it was made; subtract two for what happened between.
+        /// Counts of the work a [`Gpu`](crate::Gpu) has done since it was created. Subtract two
+        /// snapshots to get the work between them.
         #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, schemars::JsonSchema)]
         pub struct Work {
             $($(#[$doc])* pub $field: u64,)*
@@ -23,7 +27,7 @@ macro_rules! work {
             $($count,)*
         }
 
-        /// The counts, shared by every view of a `Gpu`, from any thread.
+        /// The counters, shared by every view of a `Gpu` and updated from any thread.
         #[derive(Default)]
         pub(crate) struct Counters {
             $($field: AtomicU64,)*
@@ -55,28 +59,41 @@ macro_rules! work {
 work! {
     /// Bytes of data pages uploaded.
     uploaded: Uploaded,
-    /// Bytes written besides pages: uniforms, programs, label runs, the selection, textures.
+    /// Data pages, or pieces of pages, uploaded. A change's uploads count pages here and bytes in
+    /// `uploaded`.
+    uploads: Uploads,
+    /// Bytes written other than pages: uniforms, programs, label runs, the selection, and textures.
     written: Written,
     /// Rows whose channels the GPU evaluated.
     evaluated: Evaluated,
-    /// Reads back from the GPU: probes, queries, fits, label placements, segment counts, pictures;
-    /// not the frame timer's, which only some devices have.
+    /// Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows
+    /// that changed, plus every row of a page that references a vertex now resident elsewhere.
+    resolved: Resolved,
+    /// Bytes of per-row word pages the GPU cleared: pages read before anything writes them, and the
+    /// normals that faces sum from scratch.
+    cleared: Cleared,
+    /// Rows packed into pages of a paged table's draw order. Each page is packed once, the first
+    /// time a view draws it, and again only when a write changes its rows.
+    packed: Packed,
+    /// Readbacks from the GPU: probes, queries, fits, label texts, segment counts, and pictures.
+    /// Frame timer readbacks, which only some devices support, are not counted.
     readbacks: Readbacks,
-    /// Jobs handed out: layouts, routes, lanes, triangulations, pyramids, tiles; to the host's
-    /// workers, or done at once without a host.
+    /// Jobs started: layouts, routes, lanes, triangulations, pyramids, and tiles. They run on the
+    /// host's workers, or immediately without a host.
     jobs: Jobs,
-    /// Label texts the host was asked to set.
+    /// Label texts the host was asked to rasterize.
     texts: Texts,
-    /// Pipelines compiled: in a browser, each as a view or a shot asks for it ahead, off the GPU's
-    /// thread; natively, where it is first made.
+    /// Pipelines compiled. In a browser, each compiles in the background when a view or shot
+    /// requests it ahead of use. Natively, each compiles when first created.
     pipelines: Pipelines,
-    /// Pipelines made without being asked for ahead, each compiled where it is first used: in a
-    /// browser on the GPU's thread, holding frames back. None, unless a scene uses what it did not
-    /// ask for.
+    /// Pipelines not requested ahead of use, compiled when first used. In a browser they compile
+    /// on the GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not
+    /// request.
     late: Late,
 }
 
-/// The device's queue, counting what is written through it; everything else it does as the queue.
+/// The device's queue, which counts what is written through it. Everything else passes through to
+/// the queue.
 pub(crate) struct Queue {
     raw: wgpu::Queue,
     counters: Arc<Counters>,
@@ -94,7 +111,9 @@ impl Queue {
         self.raw.write_buffer(buffer, offset, bytes);
     }
 
-    /// Writes in command order, so a reused scratch buffer keeps earlier passes' inputs intact.
+    /// Writes `bytes` into `buffer` at `offset` through a copy recorded in `encoder`, counted as
+    /// written. The write lands in command order, so a reused scratch buffer keeps earlier passes'
+    /// inputs intact, and the write takes effect after any copy recorded before it.
     pub(crate) fn write_buffer_in(
         &self,
         device: &wgpu::Device,
@@ -113,10 +132,24 @@ impl Queue {
         encoder.copy_buffer_to_buffer(&upload, 0, buffer, offset, bytes.len() as u64);
     }
 
-    /// Writes a data page's words into `buffer` at `offset`, counted as uploaded.
+    /// Clears `size` bytes of `buffer` from `offset` in `encoder`, counted as cleared.
+    pub(crate) fn clear_buffer(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        buffer: &wgpu::Buffer,
+        offset: u64,
+        size: u64,
+    ) {
+        self.counters.add(Count::Cleared, size);
+        encoder.clear_buffer(buffer, offset, Some(size));
+    }
+
+    /// Writes `bytes` into `buffer` at `offset`, counted as uploaded. The bytes are the words of
+    /// `pages` adjacent data pages or pieces of pages.
     #[expect(clippy::disallowed_methods, reason = "the counted upload")]
-    pub(crate) fn upload(&self, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
+    pub(crate) fn upload(&self, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8], pages: u64) {
         self.counters.add(Count::Uploaded, bytes.len() as u64);
+        self.counters.add(Count::Uploads, pages);
         self.raw.write_buffer(buffer, offset, bytes);
     }
 

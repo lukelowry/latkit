@@ -1,6 +1,6 @@
 /**
- * The characterization: per scenario, a row per phase and measure, a column per size, and the
- * exponent each grows by.
+ * Formats the results as a text table: per scenario, a row per phase and measure, a column per
+ * size, and each row's growth exponent.
  */
 import type { Listed } from './page/main.ts';
 import type { Summary, Verdict } from './judge.ts';
@@ -11,7 +11,7 @@ const bytes = (v: number) =>
 const count = (n: number) =>
   n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${+(n / 1e3).toFixed(1)}k` : `${n}`;
 
-/** Each scenario's phases at each size, and the exponent each grows by. */
+/** Formats each scenario's phases at each size, with each measure's growth exponent. */
 export function report(list: Listed[], { summaries, exponents }: Verdict): string {
   const out: string[] = [];
   for (const scenario of list) {

@@ -1,11 +1,14 @@
-//! The GPU: one device shared by every view, with the page arena, pipelines, colormaps, and text
-//! dictionaries every view draws from.
+//! The GPU device that every view shares, and the page arena, pipelines, colormaps, and text
+//! dictionaries the views draw from.
 
 pub(crate) mod arena;
 pub(crate) mod atlas;
 pub(crate) mod colormaps;
 pub(crate) mod dictionary;
+pub(crate) mod grown;
 pub(crate) mod icons;
+mod layers;
+pub(crate) mod packed;
 pub(crate) mod pipelines;
 pub(crate) mod readback;
 pub(crate) mod shaders;
@@ -19,6 +22,7 @@ use atlas::Atlas;
 use colormaps::Colormaps;
 use dictionary::Dictionaries;
 use icons::Icons;
+use packed::Packed;
 use pipelines::Pipelines;
 use readback::Readbacks;
 use work::{Counters, Queue, Work};
@@ -26,11 +30,11 @@ use work::{Counters, Queue, Work};
 use crate::host::Host;
 use crate::{Error, Result};
 
-/// The format views draw canvases and shots in, so both share one set of pipelines: every WebGPU
-/// canvas takes it.
+/// The texture format of canvases and shots, shared so both use one set of pipelines. Every WebGPU
+/// canvas supports it.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
-/// The GPU device that views draw with. Cheap to clone; views of one `Gpu` share uploaded data.
+/// The GPU device that views draw with. Cheap to clone. Views of one `Gpu` share uploaded data.
 #[derive(Clone)]
 pub struct Gpu(pub(crate) Arc<Shared>);
 
@@ -52,69 +56,113 @@ impl DeviceEvents {
         self.errors
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(Error::Unsupported(format!("the GPU refused: {error}").into()));
+            .push(Error::Unsupported(format!("GPU error: {error}").into()));
     }
 }
 
 pub(crate) struct Shared {
-    /// The instance and adapter `Gpu::new` created the device from, for surfaces.
+    /// The instance and adapter `Gpu::new` created the device from, for creating surfaces.
     pub(crate) instance: Option<wgpu::Instance>,
     pub(crate) adapter: Option<wgpu::Adapter>,
     pub(crate) device: wgpu::Device,
-    /// The queue, counting what is written through it.
+    /// The queue, which counts what is written through it.
     pub(crate) queue: Queue,
-    /// What the GPU did, counted: views count the rows they evaluate and the jobs they hand out
-    /// through it, and [`Gpu::work`] reads it.
+    /// Work counters. Views count the rows they evaluate and the jobs they start here, and
+    /// [`Gpu::work`] reads them.
     pub(crate) counters: Arc<Counters>,
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) lost: Arc<AtomicBool>,
-    /// Errors the device reported outside any scope, for views to tell.
+    /// Errors the device reported outside any error scope, for views to report.
     pub(crate) errors: Arc<Mutex<Vec<Error>>>,
+    /// Multisample count of every frame drawn with this GPU. It is set once from the screen's pixel
+    /// ratio, so a later change (browser zoom, a window moved to another screen) never rebuilds a
+    /// scene's pipelines.
+    samples: std::sync::OnceLock<u32>,
     inner: Mutex<Inner>,
+}
+
+/// Multisample count at `pixel_ratio`: 1 at 1.75 and above, else 4. Shader-drawn marks antialias
+/// themselves and only triangle edges need multisampling, so dense screens skip it.
+fn samples_at(pixel_ratio: f32) -> u32 {
+    if pixel_ratio >= 1.75 { 1 } else { 4 }
 }
 
 pub(crate) struct Inner {
     pub(crate) arena: Arena,
+    /// Piece keys of recently drawn geometry pages.
+    pub(crate) pieces: arena::Pieces,
     pub(crate) pipelines: Pipelines,
     pub(crate) colormaps: Colormaps,
     pub(crate) dictionaries: Dictionaries,
+    /// Pages of paged tables, packed in draw order and shared by every view drawing them.
+    pub(crate) packed: Packed,
+    /// Fetched and decoded tiles of each tile source, shared by every view drawing it.
+    pub(crate) tiles: crate::tiles::Cache,
     pub(crate) atlas: Atlas,
     pub(crate) icons: Icons,
     pub(crate) readbacks: Readbacks,
     pub(crate) host: Option<Arc<dyn Host>>,
     pub(crate) budget: Budget,
-    /// What each view plans within: its share of the budget.
+    /// Each view's share of the budget, which it plans within.
     pub(crate) ledger: Ledger,
+    /// What the current frame may still upload and compute. Views drawn together share it.
+    pub(crate) frame: Allowance,
 }
 
-/// The share of the budget the views of a GPU plan what they draw within, between them; the rest holds
-/// pages a new version uploads while the one it replaces is still drawn, and pages cached.
+/// What one frame may still do across a GPU's views: bytes to upload, and microseconds of work done
+/// on the frame rather than in jobs. A frame ends when a view that drew in it draws again. So views
+/// drawn together (a page's canvases, a shot's panels) share one allowance, and a view drawn alone
+/// gets a new one each time, even when it redraws the same instant.
+#[derive(Default)]
+pub(crate) struct Allowance {
+    drawn: Vec<u64>,
+    pub(crate) upload: u64,
+    pub(crate) work: u32,
+}
+
+impl Inner {
+    /// Begins view `view`'s part of a frame. If no view has drawn yet, or `view` already drew in
+    /// the current frame, starts a new one: resets the allowance, frees the blocks the last frame
+    /// released, and grows the pool to cover its shortfall.
+    pub(crate) fn begin_frame(&mut self, view: u64, device: &wgpu::Device, queue: &Queue) {
+        if self.frame.drawn.is_empty() || self.frame.drawn.contains(&view) {
+            self.frame =
+                Allowance { drawn: Vec::new(), upload: self.budget.upload_per_frame, work: crate::derive::FRAME_WORK };
+            self.arena.begin_frame(device, queue);
+        }
+        self.frame.drawn.push(view);
+    }
+}
+
+/// Fraction of the budget that all of a GPU's views plan their drawing within. The rest holds
+/// cached pages, and the pages of a new data version that upload while the old version still draws.
 const PLANNED: f64 = 0.5;
 
-/// What each view of a GPU plans what it draws within: shares of one part of the budget, granted
-/// max-min fair, so views together never plan past it however many there are. Pages several views
-/// draw are on the GPU once, so they count once, split between those views.
+/// Each view's share of the planned part of the budget. Shares are max-min fair, so all views
+/// together never plan past it, however many there are. A page that several views draw is resident
+/// once, so it counts once, split between those views.
 #[derive(Default)]
 pub(crate) struct Ledger {
-    /// What each view would draw whole, by view.
+    /// Each view's request for drawing everything, by view.
     asks: rustc_hash::FxHashMap<u64, Ask>,
 }
 
-/// What a view would draw whole: bytes of its own, and the pages it reads that any view drawing the
-/// same data shares.
+/// A view's memory request for drawing everything: its own bytes, plus the pieces it shares with
+/// any view drawing the same data.
 #[derive(Clone, Default, PartialEq, Debug)]
 pub(crate) struct Ask {
-    /// Bytes no other view holds: its marks' state, focus, labels, traces, and derived columns.
+    /// Bytes no other view holds: its marks' state, focus, traces, and derived columns.
     pub(crate) own: f64,
-    /// Each piece any view drawing it shares, by what it holds, and its bytes.
+    /// Each shared piece, keyed by content, with its bytes.
     pub(crate) shared: Vec<(u64, f64)>,
 }
 
 impl Ledger {
-    /// Records what view `view` would draw whole, `whole` bytes as it counts them, and grants it its
-    /// share of what `budget` plans, as a part of `whole`. Each view asks its own bytes and a split of
-    /// each piece it shares between the views drawing it; each gets all it asks while an even split
-    /// of what is left covers it, else that split, views asking less having what they ask first.
+    /// Records view `view`'s request `ask` and returns its grant from the planned part of `budget`,
+    /// scaled to `whole` (the view's own count of its bytes). Each view asks for its own bytes plus
+    /// an even split of each piece it shares. Grants are max-min fair: smaller asks are granted in
+    /// full first, and once an ask exceeds an even split of what is left, each remaining view gets
+    /// that split.
     pub(crate) fn grant(&mut self, view: u64, whole: f64, ask: Ask, budget: u64) -> f64 {
         self.asks.insert(view, ask);
         let mut sharing: rustc_hash::FxHashMap<u64, f64> = rustc_hash::FxHashMap::default();
@@ -148,18 +196,21 @@ impl Ledger {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Budget {
-    /// Bytes the data every view of the `Gpu` draws may take on the GPU: its pages, and each view's
-    /// rows. A view draws a table too large for its share through the tiles the camera asks for, so
-    /// what it draws always fits; pages no view draws stay cached in the room left, the least
-    /// recently drawn going first. By default half the device's largest storage buffer. The pool of
-    /// pages grows as data needs it, and never shrinks: set the budget before data draws.
+    /// GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's
+    /// per-row state. A table too large for a view's share draws as a paged table, with only the
+    /// pages the camera needs, so it always fits. Pages no view draws stay cached in the rest of
+    /// the budget, and the least recently drawn are evicted first. Defaults to half the device's
+    /// largest storage buffer. The page pool grows as data needs it and never shrinks, so set the
+    /// budget before drawing data.
     pub bytes: u64,
-    /// Bytes uploaded per frame at most; larger data streams in over frames.
+    /// The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to
+    /// 32 MiB.
     pub upload_per_frame: u64,
 }
 
 impl Budget {
-    /// Half the largest storage buffer `device` binds, and 32 MiB uploaded per frame.
+    /// The default budget: half the largest storage buffer `device` binds, and 32 MiB uploaded per
+    /// frame.
     fn of(device: &wgpu::Device) -> Budget {
         let limits = device.limits();
         let largest = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
@@ -169,6 +220,7 @@ impl Budget {
 
 impl Gpu {
     /// Creates a device on the best adapter: WebGPU in browsers, Vulkan, Metal, or DX12 natively.
+    /// Errors if no adapter or device is available.
     pub async fn new() -> Result<Gpu> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY | wgpu::Backends::BROWSER_WEBGPU,
@@ -188,7 +240,7 @@ impl Gpu {
             max_storage_buffers_per_shader_stage: supported.max_storage_buffers_per_shader_stage,
             ..wgpu::Limits::default()
         };
-        // Timestamps, where the adapter writes them, measure what each frame costs the GPU.
+        // Timestamp queries, where the adapter supports them, measure each frame's GPU time.
         let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -202,19 +254,33 @@ impl Gpu {
         Ok(Gpu::create(Some(instance), Some(adapter), device, queue))
     }
 
-    /// Queues, once, what nearly every scene draws with into the page's canvases, so views opened
-    /// later find it compiled: in a browser, as its first view opens, compiling once that view's
-    /// frames have all they draw with. A GPU no view uses compiles nothing.
+    /// Queues, once, the pipelines nearly every scene uses to draw into the page's canvases, so
+    /// views opened later find them compiled. In a browser this runs when the first view opens, and
+    /// these pipelines compile after that view's own draw pipelines. A GPU no view uses compiles
+    /// nothing.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     pub(crate) fn warm(&self) {
         let pixel_ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32);
-        let samples = crate::view::samples(pixel_ratio);
-        self.0.lock().pipelines.warm(&self.0.device, || crate::view::common(FORMAT, samples));
+        let samples = self.samples_for(pixel_ratio);
+        let waker = crate::web::waker(self);
+        self.0.lock().pipelines.warm(&self.0.device, &waker, || crate::view::common(FORMAT, samples));
+    }
+
+    /// The multisample count of its frames, once set.
+    pub(crate) fn samples(&self) -> Option<u32> {
+        self.0.samples.get().copied()
+    }
+
+    /// The multisample count of its frames. If no screen set it when the GPU was created, the first
+    /// frame's `pixel_ratio` sets it, and it stays fixed from then on.
+    pub(crate) fn samples_for(&self, pixel_ratio: f32) -> u32 {
+        *self.0.samples.get_or_init(|| samples_at(pixel_ratio))
     }
 
     /// Draws with an application-owned device and queue without replacing their callbacks.
     /// Forward device loss and uncaptured errors through [`Gpu::device_events`]. Clone this
-    /// `Gpu` to share its caches and budget between views.
+    /// `Gpu` to share its caches and budget between views. Errors if the device does not meet
+    /// WebGPU's default limits.
     pub fn from_wgpu(device: wgpu::Device, queue: wgpu::Queue) -> Result<Gpu> {
         if !wgpu::Limits::default().check_limits(&device.limits()) {
             return Err(Error::Unsupported("the device does not meet WebGPU's default limits".into()));
@@ -222,7 +288,7 @@ impl Gpu {
         Ok(Gpu::create(None, None, device, queue))
     }
 
-    /// A lightweight sink for the application's existing device callbacks; it does not own the GPU.
+    /// A handle that the application's own device callbacks report to. It does not own the GPU.
     pub fn device_events(&self) -> DeviceEvents {
         DeviceEvents { lost: self.0.lost.clone(), errors: self.0.errors.clone() }
     }
@@ -253,29 +319,50 @@ impl Gpu {
         let queue = Queue::new(queue, counters.clone());
         #[cfg_attr(
             target_arch = "wasm32",
-            allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the one thread a page has")
+            allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the page's single thread")
         )]
         let shared = Arc::new_cyclic(|gpu| {
             let inner = Inner {
                 arena: Arena::new(&device, budget.bytes),
+                pieces: arena::Pieces::default(),
                 pipelines: Pipelines::new(&device, counters.clone(), gpu.clone()),
-                colormaps: Colormaps::new(&device),
+                colormaps: Colormaps::colormaps(&device),
                 dictionaries: Dictionaries::default(),
+                packed: Packed::new(counters.clone()),
+                tiles: crate::tiles::Cache::default(),
                 atlas: Atlas::new(&device, counters.clone()),
-                icons: Icons::new(&device),
+                icons: Icons::icons(&device),
                 readbacks: Readbacks::counted(counters.clone()),
                 host: None,
                 budget,
                 ledger: Ledger::default(),
+                frame: Allowance::default(),
             };
-            Shared { instance, adapter, device, queue, counters, sampler, lost, errors, inner: Mutex::new(inner) }
+            Shared {
+                instance,
+                adapter,
+                device,
+                queue,
+                counters,
+                sampler,
+                lost,
+                errors,
+                samples: std::sync::OnceLock::new(),
+                inner: Mutex::new(inner),
+            }
         });
+        // In a page, set the multisample count now from the screen's pixel ratio. Every view and
+        // canvas of the GPU draws for that screen.
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        if let Some(window) = web_sys::window() {
+            let _ = shared.samples.set(samples_at(window.device_pixel_ratio() as f32));
+        }
         Gpu(shared)
     }
 
-    /// What this GPU did since it was made, counted exactly. It repeats wherever the budget, the
-    /// device's limits, and the frames drawn do, so tests and benchmarks hold it to what it was.
-    /// Subtract two for what happened between.
+    /// Exact counts of the work this GPU has done since it was created. The counts repeat for the
+    /// same budget, device limits, and frames drawn, so tests and benchmarks can compare them with
+    /// a baseline. Subtract two snapshots to get the work between them.
     pub fn work(&self) -> Work {
         self.0.counters.work()
     }
@@ -290,7 +377,8 @@ impl Gpu {
         &self.0.queue
     }
 
-    /// The instance a `Gpu` from [`Gpu::new`] was created with, for creating surfaces it can draw to.
+    /// The instance a `Gpu` from [`Gpu::new`] was created with, for creating surfaces it can draw
+    /// to.
     pub fn instance(&self) -> Option<&wgpu::Instance> {
         self.0.instance.as_ref()
     }
@@ -300,7 +388,7 @@ impl Gpu {
         self.0.adapter.as_ref()
     }
 
-    /// Sets how much GPU memory latkit uses; bytes past what the device binds are not used.
+    /// Sets how much GPU memory latkit uses. Bytes beyond what the device can bind are not used.
     pub fn set_budget(&self, budget: Budget) {
         let mut inner = self.0.lock();
         inner.arena.set_limit(&self.0.device, budget.bytes);
@@ -312,12 +400,25 @@ impl Gpu {
         self.0.lock().budget
     }
 
-    /// Gives views the platform's services: setting text, and doing jobs off the frame.
-    pub fn set_host(&self, host: impl Host) {
-        self.0.lock().host = Some(Arc::new(host));
+    /// Bytes resident on the GPU for all its views: data pages and each view's per-row state.
+    pub fn resident(&self) -> u64 {
+        self.0.lock().arena.resident()
     }
 
-    /// Whether the device was lost; drawing then does nothing, and a new `Gpu` is needed.
+    /// Bytes waiting to upload, across all its views.
+    pub fn uploading(&self) -> u64 {
+        self.0.lock().arena.pending()
+    }
+
+    /// Gives views the platform's services: text, background jobs, fetching, and video encoding.
+    /// Text the previous host rasterized is rasterized again by this one.
+    pub fn set_host(&self, host: impl Host) {
+        let mut inner = self.0.lock();
+        inner.host = Some(Arc::new(host));
+        inner.atlas.rehost();
+    }
+
+    /// Whether the device was lost. Drawing then does nothing, and a new `Gpu` is needed.
     pub fn lost(&self) -> bool {
         self.0.lost.load(Ordering::Acquire)
     }
@@ -328,7 +429,7 @@ impl Shared {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The lock, unless something holds it now.
+    /// The lock, or `None` if it is held now.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     pub(crate) fn try_lock(&self) -> Option<MutexGuard<'_, Inner>> {
         match self.inner.try_lock() {
@@ -357,21 +458,21 @@ mod tests {
     fn views_share_the_planned_budget_max_min_fair() {
         let mut ledger = Ledger::default();
         let grant = |ledger: &mut Ledger, view, bytes| ledger.grant(view, bytes, own(bytes), 1000);
-        assert_eq!(grant(&mut ledger, 1, 100.0), 100.0, "a view asking less than half the budget has all it asks");
-        assert_eq!(grant(&mut ledger, 2, 900.0), 400.0, "the next has what is left");
-        assert_eq!(grant(&mut ledger, 3, 900.0), 200.0, "two large views split what the small one leaves");
+        assert_eq!(grant(&mut ledger, 1, 100.0), 100.0, "a view asking for under half the budget gets all it asks");
+        assert_eq!(grant(&mut ledger, 2, 900.0), 400.0, "the next gets the rest");
+        assert_eq!(grant(&mut ledger, 3, 900.0), 200.0, "two large views split the rest of the budget");
         ledger.leave(2);
-        assert_eq!(grant(&mut ledger, 3, 900.0), 400.0, "a view that leaves gives its share back");
+        assert_eq!(grant(&mut ledger, 3, 900.0), 400.0, "a view that leaves returns its share");
     }
 
     #[test]
-    fn pages_views_share_count_once() {
+    fn pages_shared_by_views_count_once() {
         let mut ledger = Ledger::default();
-        // Eight views of one dataset: 300 bytes of shared pages each reads, and 20 of its own.
+        // Eight views of one dataset, each reading 300 shared bytes and holding 20 of its own.
         let ask = Ask { own: 20.0, shared: vec![(7, 300.0)] };
         let shares: Vec<f64> = (0..8).map(|view| ledger.grant(view, 320.0, ask.clone(), 1000)).collect();
-        assert_eq!(shares[7], 320.0, "300 + 8 × 20 fits the 500 planned: every view draws whole");
-        // Two views of other data each, too large together: each has the same part of what it asks.
+        assert_eq!(shares[7], 320.0, "300 + 8 × 20 fits the 500 planned, so every view gets its full ask");
+        // Two views of different data, too large together, each get the same fraction of their ask.
         let mut ledger = Ledger::default();
         ledger.grant(1, 400.0, Ask { own: 0.0, shared: vec![(1, 400.0)] }, 1000);
         assert_eq!(ledger.grant(2, 400.0, Ask { own: 0.0, shared: vec![(2, 400.0)] }, 1000), 250.0);

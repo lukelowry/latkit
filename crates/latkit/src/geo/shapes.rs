@@ -1,7 +1,9 @@
-//! What geometry becomes to draw: an area's triangles with the point its label hangs from, and on the
-//! earth a path that bends with the globe. On the earth, longitudes unwrap across the antimeridian so
-//! nothing streaks across the map, and nothing spans more than [`EARTH_STEP`] degrees: triangles
-//! split along a grid of that pitch, paths gain points.
+//! Converts geometry into drawable shapes: polygon triangles with a label anchor, and earth paths
+//! that follow the globe.
+//!
+//! On the earth, longitudes are unwrapped across the antimeridian so no shape streaks across the
+//! map. No piece spans more than [`EARTH_STEP`] degrees: triangles are split along a grid of that
+//! pitch, and paths gain points.
 
 use std::collections::BinaryHeap;
 
@@ -9,12 +11,14 @@ use super::earcut::earcut;
 
 type Point = [f64; 2];
 
-/// Degrees an earth triangle spans a side at most, and an earth path's segment: a chord this long
-/// sags under a two-thousandth of the globe's radius.
+/// Largest span in degrees, in longitude or latitude, of an earth triangle or path segment. A chord
+/// this long sags less than 1/2000 of the globe's radius.
 pub(crate) const EARTH_STEP: f64 = 2.0;
 
-/// The triangles of `polygons`, each its outer ring then its holes, as a point list: the point its
-/// label hangs from first, then three points per triangle. Without triangles, no points at all.
+/// Triangulates `polygons`, each an outer ring followed by holes, into a point list: the label
+/// anchor first, then three points per triangle. The anchor lies in the polygon with the largest
+/// outer ring. Returns an empty list when there are no triangles. With `earth`, rings are unwrapped
+/// and triangles split along the [`EARTH_STEP`] grid.
 pub(crate) fn triangles(polygons: &[Vec<Vec<Point>>], earth: bool) -> Vec<Point> {
     let mut out = vec![[f64::NAN; 2]];
     let mut largest: Option<(f64, Vec<Vec<Point>>)> = None;
@@ -50,8 +54,8 @@ pub(crate) fn triangles(polygons: &[Vec<Vec<Point>>], earth: bool) -> Vec<Point>
     out
 }
 
-/// `parts` as an earth path draws them: longitudes unwrapped across the antimeridian, and a point
-/// every [`EARTH_STEP`] degrees along longer segments. `None` when nothing changes.
+/// Prepares `parts` for an earth path: longitudes unwrapped across the antimeridian, and points
+/// added every [`EARTH_STEP`] degrees along longer segments. `None` if no segment needs either.
 pub(crate) fn earth_parts(parts: &[Vec<Point>]) -> Option<Vec<Vec<Point>>> {
     let changes = parts.iter().any(|part| {
         part.windows(2).any(|w| (w[1][0] - w[0][0]).abs() > EARTH_STEP || (w[1][1] - w[0][1]).abs() > EARTH_STEP)
@@ -59,8 +63,8 @@ pub(crate) fn earth_parts(parts: &[Vec<Point>]) -> Option<Vec<Vec<Point>>> {
     changes.then(|| parts.iter().map(|part| densified(&unwrap(part))).collect())
 }
 
-/// `polygon`'s rings with longitudes unwrapped: each ring continuous, and every ring on the side of
-/// the antimeridian the outer ring starts on.
+/// Unwraps each ring of `polygon` so its longitudes are continuous, then shifts it by whole turns
+/// to start within 180 degrees of the outer ring's first point.
 fn unwrapped(polygon: &[Vec<Point>]) -> Vec<Vec<Point>> {
     let first = polygon.first().and_then(|r| r.first()).map_or(0.0, |p| p[0]);
     polygon
@@ -80,7 +84,7 @@ fn unwrapped(polygon: &[Vec<Point>]) -> Vec<Vec<Point>> {
         .collect()
 }
 
-/// `line` with each longitude moved by whole turns to within 180 degrees of the one before.
+/// Shifts each longitude of `line` by whole turns to within 180 degrees of the previous point's.
 fn unwrap(line: &[Point]) -> Vec<Point> {
     let mut out: Vec<Point> = Vec::with_capacity(line.len());
     for &p in line {
@@ -93,14 +97,15 @@ fn unwrap(line: &[Point]) -> Vec<Point> {
     out
 }
 
-/// The whole turns that bring a step of `degrees` within half a turn. A step of exactly half a turn
-/// stays: a tile half the world wide has edges that long, and which way round they run is theirs.
+/// Whole turns (360 degrees) that bring a longitude step of `degrees` within 180 degrees. A step of
+/// exactly 180 is kept as given, because a zoom-1 tile's edges span exactly that and their
+/// direction matters.
 fn turns(degrees: f64) -> f64 {
     degrees.signum() * ((degrees.abs() - 180.0) / 360.0).ceil().max(0.0)
 }
 
-/// `line` with points every [`EARTH_STEP`] degrees along its longer segments, straight in longitude
-/// and latitude.
+/// Adds points every [`EARTH_STEP`] degrees along longer segments of `line`, interpolated linearly
+/// in longitude and latitude.
 fn densified(line: &[Point]) -> Vec<Point> {
     let mut out: Vec<Point> = Vec::with_capacity(line.len());
     for (k, &p) in line.iter().enumerate() {
@@ -117,9 +122,9 @@ fn densified(line: &[Point]) -> Vec<Point> {
     out
 }
 
-/// Triangle `t` cut along the grid of [`EARTH_STEP`] degrees into the pieces each cell holds, each
-/// fanned into triangles. A crossing is worked out from its edge's ends in one order, so triangles
-/// sharing an edge share its crossings and no crack opens.
+/// Cuts triangle `t` along the [`EARTH_STEP`] grid and fans each cell's piece into triangles. A
+/// triangle within one cell is kept whole. Each crossing is computed from its edge's endpoints in a
+/// fixed order, so triangles sharing an edge get identical crossings and no cracks appear.
 fn split(t: [Point; 3], out: &mut Vec<Point>) {
     let cell = |v: f64| (v / EARTH_STEP).floor();
     let lo = [0, 1].map(|k| cell(t[0][k].min(t[1][k]).min(t[2][k])));
@@ -157,8 +162,8 @@ fn split(t: [Point; 3], out: &mut Vec<Point>) {
     }
 }
 
-/// The part of convex polygon `piece` on one side of the line where coordinate `axis` is `at`: at or
-/// above it when `keep_above`, else at or below it.
+/// Clips convex polygon `piece` to one side of the line where coordinate `axis` equals `at`: at or
+/// above it when `keep_above`, else at or below it. Writes the result to `out`.
 fn clip(piece: &[Point], axis: usize, at: f64, keep_above: bool, out: &mut Vec<Point>) {
     out.clear();
     let inside = |p: &Point| if keep_above { p[axis] >= at } else { p[axis] <= at };
@@ -174,8 +179,8 @@ fn clip(piece: &[Point], axis: usize, at: f64, keep_above: bool, out: &mut Vec<P
     }
 }
 
-/// Where segment `p q` crosses the line where coordinate `axis` is `at`, worked out from its ends in
-/// one order whichever way the segment runs.
+/// Where segment `p q` crosses the line where coordinate `axis` equals `at`. The endpoints are
+/// ordered first, so the result does not depend on the segment's direction.
 fn crossing(p: Point, q: Point, axis: usize, at: f64) -> Point {
     let (a, b) = if (p[0], p[1]) <= (q[0], q[1]) { (p, q) } else { (q, p) };
     let t = (at - a[axis]) / (b[axis] - a[axis]);
@@ -198,8 +203,8 @@ fn ring_area(ring: &[Point]) -> f64 {
     sum
 }
 
-/// The point a polygon's label hangs from: the point inside it farthest from its edges, found to a
-/// fiftieth of its size, as polylabel finds it.
+/// A polygon's label anchor: the interior point farthest from its edges, found to within 1/50 of
+/// its longer side by polylabel's method.
 fn label_point(rings: &[Vec<Point>]) -> Point {
     let Some(outer) = rings.first() else { return [f64::NAN; 2] };
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
@@ -213,7 +218,7 @@ fn label_point(rings: &[Vec<Point>]) -> Point {
     if short.is_nan() || short <= 0.0 {
         return [lo[0].midpoint(hi[0]), lo[1].midpoint(hi[1])];
     }
-    // Cells start square, at most sixteen along the longer side.
+    // Initial cells are squares as wide as the shorter side, with at most 16 along the longer side.
     let size = short.max(long / 16.0);
     let precision = long / 50.0;
     let probe = |center: Point, half: f64| Cell::new(center, half, signed_distance(center, rings));
@@ -233,7 +238,7 @@ fn label_point(rings: &[Vec<Point>]) -> Point {
     if middle.distance > best.distance {
         best = middle;
     }
-    // Each cell probed costs a pass over the rings; cap them so a huge polygon stays bounded.
+    // Each probe is a pass over the rings, so cap the probes to bound the cost on huge polygons.
     let mut probes = 0;
     while let Some(cell) = queue.pop() {
         if cell.distance > best.distance {
@@ -251,8 +256,9 @@ fn label_point(rings: &[Vec<Point>]) -> Point {
     best.center
 }
 
-/// A square cell of polylabel's search: its center, half its side, the distance from its center to
-/// the polygon's edges (negative outside), and the most any point of it could reach.
+/// A square cell in polylabel's search: its center, half its side, the signed distance from its
+/// center to the polygon's edges (negative outside), and `max`, an upper bound on that distance for
+/// any point in the cell.
 #[derive(Clone, Copy)]
 struct Cell {
     center: Point,
@@ -337,7 +343,7 @@ mod tests {
         vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side], [x, y]]
     }
 
-    /// The area the triangles of a point list cover.
+    /// Total area of a point list's triangles, after its label anchor.
     fn covered(points: &[Point]) -> f64 {
         points[1..]
             .chunks(3)
@@ -357,8 +363,8 @@ mod tests {
     }
 
     #[test]
-    fn a_half_world_tile_stays_where_it_lies_from_any_corner() {
-        // A tile at zoom 1 is half the world wide: its edges run exactly 180 degrees.
+    fn a_half_world_tile_does_not_wrap_regardless_of_its_first_corner() {
+        // A zoom-1 tile is half the world wide, so its edges span exactly 180 degrees.
         let corners = [[0.0, 0.0], [180.0, 0.0], [180.0, 80.0], [0.0, 80.0]];
         for start in 0..4 {
             let mut ring: Vec<Point> = (0..4).map(|k| corners[(start + k) % 4]).collect();
@@ -388,7 +394,7 @@ mod tests {
                     t.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min),
                     t.iter().map(|p| p[k]).fold(f64::NEG_INFINITY, f64::max),
                 );
-                assert!(hi - lo <= EARTH_STEP + 1e-9, "a piece spans {lo}..{hi}");
+                assert!(hi - lo <= EARTH_STEP + 1e-9, "a triangle spans at most one grid step: {lo}..{hi}");
             }
         }
     }
@@ -403,8 +409,8 @@ mod tests {
 
     #[test]
     fn earth_parts_bend_and_unwrap() {
-        assert!(earth_parts(&[vec![[0.0, 0.0], [1.0, 1.0]]]).is_none(), "short segments stay");
-        let parts = earth_parts(&[vec![[170.0, 10.0], [-170.0, 10.0]]]).expect("crosses");
+        assert!(earth_parts(&[vec![[0.0, 0.0], [1.0, 1.0]]]).is_none(), "short segments need no bending");
+        let parts = earth_parts(&[vec![[170.0, 10.0], [-170.0, 10.0]]]).expect("a long segment bends");
         assert_eq!(parts[0].first(), Some(&[170.0, 10.0]));
         assert_eq!(parts[0].last(), Some(&[190.0, 10.0]));
         assert!(parts[0].windows(2).all(|w| (w[1][0] - w[0][0]).abs() <= EARTH_STEP + 1e-9));

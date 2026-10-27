@@ -1,63 +1,91 @@
-/** Options for the page's shared WASM runtime. Omitted options reuse its existing configuration. */
-export interface LoadOptions {
-  /** The matching package's WASM asset, or an already compiled module. Defaults to the bundled asset. */
-  wasm?: string | URL | WebAssembly.Module;
-  /** Creates a worker running the standalone `latkit/worker` bundle. Defaults to the bundled worker. */
-  createWorker?: () => Worker;
-}
+/** Loading latkit's WebAssembly. */
+
+import init, * as bindings from '../pkg/latkit.js';
+import { encoder } from './encoder.js';
+import { loaded, thrown } from './internal.js';
+import { jobs } from './jobs.js';
+
+let configured: { wasm?: string | WebAssembly.Module; worker?: () => Worker } | undefined;
+let loading: Promise<void> | undefined;
+
+/** The GPU device requested while loading, kept until the first `Gpu.create()` takes it. */
+let first: Promise<bindings.Gpu> | undefined;
 
 /**
- * The initialized data and rendering API. In a browser the page's first GPU is made as the runtime
- * loads, and the first `Gpu.create()` takes it; later calls request devices of their own.
+ * Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
+ * load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
+ * load rejects with an `io` error and can be retried. While the WebAssembly compiles, `load()`
+ * requests a GPU adapter so the browser starts its GPU process early. Then it requests the first
+ * device for `Gpu.create()`.
  */
-export interface Latkit {
-  Data: typeof import('./runtime.js').Data;
-  Gpu: typeof import('./runtime.js').Gpu;
-  Shot: typeof import('./runtime.js').Shot;
-  colormapCss: typeof import('./runtime.js').colormapCss;
-}
-
-let configured: LoadOptions | undefined;
-let loading: Promise<Latkit> | undefined;
-
-/**
- * Loads the runtime once per page. Concurrent calls share one promise; a failed load can be retried.
- * Options explicitly supplied after the first call must match that call. Importing the package alone
- * neither initializes WASM nor requests a GPU or worker; loading asks for the page's GPU adapter
- * while the WASM compiles.
- */
-export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
-  // Snapshot URLs so a caller cannot change the configuration while it loads.
+export function load(
+  options: {
+    /**
+     * The URL of this version's `latkit/wasm` asset, or that asset compiled. Defaults to the
+     * bundled asset.
+     */
+    wasm?: string | URL | WebAssembly.Module;
+    /**
+     * Creates a worker that runs the standalone `latkit/worker` bundle. Defaults to the bundled
+     * worker.
+     */
+    worker?: () => Worker;
+  } = {},
+): Promise<void> {
+  // Store a URL as text, so the caller cannot change the configuration while it loads.
   const wasm = options.wasm instanceof URL ? options.wasm.href : options.wasm;
   if (loading) {
     if (
       (wasm !== undefined && wasm !== configured?.wasm) ||
-      (options.createWorker !== undefined && options.createWorker !== configured?.createWorker)
-    ) {
+      (options.worker !== undefined && options.worker !== configured?.worker)
+    )
       return Promise.reject(
-        Object.assign(new Error('latkit is already loading or loaded with different options'), {
-          code: 'io',
-        }),
+        thrown({ code: 'io', message: 'latkit is already loading or loaded with other options' }),
       );
-    }
     return loading;
   }
-  configured = { wasm, createWorker: options.createWorker };
+  configured = { wasm, worker: options.worker };
   startGpuProcess();
-  loading = import('./runtime.js')
-    .then((runtime) => runtime.initialize(configured!))
-    .catch((cause: unknown) => {
-      configured = undefined;
-      loading = undefined;
-      throw Object.assign(new Error('could not load latkit', { cause }), { code: 'io' });
-    });
+  loading = initialize(configured).catch((cause: unknown) => {
+    configured = undefined;
+    loading = undefined;
+    throw thrown({ code: 'io', message: 'could not load latkit', cause });
+  });
   return loading;
 }
 
 /**
- * Asks for a GPU adapter as latkit's own request does, while the runtime loads: the browser starts
- * its GPU process meanwhile, which takes most of a cold device's 280 ms, and latkit's request finds
- * it running.
+ * Instantiates the bindings, installs the job workers and the video encoder where the browser has
+ * them, and requests the first GPU device.
+ */
+async function initialize(options: { wasm?: string | WebAssembly.Module; worker?: () => Worker }) {
+  await init(options.wasm === undefined ? undefined : { module_or_path: options.wasm });
+  if (options.worker || typeof Worker === 'function')
+    bindings.setJobs(jobs(bindings.module() as WebAssembly.Module, options.worker));
+  if (typeof VideoEncoder === 'function') bindings.setEncoder(encoder);
+  loaded();
+  // Request the first device now, so drawing does not wait for it later. The device compiles
+  // nothing until a view is created.
+  if ((globalThis.navigator as { gpu?: unknown } | undefined)?.gpu) {
+    first = bindings.Gpu.create();
+    first.catch(() => {});
+  }
+}
+
+/**
+ * @internal Returns the device requested while loading, once. Later calls return `undefined`, and
+ * `Gpu.create()` requests a new device.
+ */
+export function firstDevice(): Promise<bindings.Gpu> | undefined {
+  const device = first;
+  first = undefined;
+  return device;
+}
+
+/**
+ * Requests a high-performance GPU adapter, like latkit's own request, while the WebAssembly loads.
+ * This starts the browser's GPU process early. Starting it takes most of a cold device's 280 ms, so
+ * latkit's later request finds the process running.
  */
 function startGpuProcess(): void {
   const gpu = (

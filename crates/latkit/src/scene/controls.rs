@@ -1,103 +1,95 @@
 use std::time::Duration;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
-use super::form::{Presets, preset_or, presets, seconds};
+use super::form::{preset_schema, presets, seconds};
 
-/// How a view answers the pointer and keyboard, and how much it moves on its own: a preset, or options
-/// over the defaults. Each mark says whether its rows pick, select, and drag; these say what the view
-/// itself does.
+/// How a view responds to the pointer and keyboard, and how much it animates on its own: a preset
+/// (`"none"` or `"inspect"`), or options that change the defaults. Each mark sets whether its own
+/// rows pick, select, and drag. These options control the view itself.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = presets::<Controls>)]
+#[schemars(transform = preset_schema::<Controls>)]
 pub struct Controls {
-    /// Dragging the background moves the camera.
+    /// Whether dragging the background pans the camera. Defaults to `true`.
     pub pan: bool,
-    /// What zooms: the wheel and pinching, or the wheel only with Control or Meta held (as a
-    /// trackpad's pinch sends it), leaving the plain wheel to scroll the page; or nothing.
+    /// Which input zooms the view. `wheel` zooms with the wheel and pinching. `modifier` zooms with
+    /// pinching, and with the wheel only while Control or Meta is held (as trackpad pinches send
+    /// it), so the plain wheel scrolls the page. `off` turns zooming off. Defaults to `wheel`.
     pub zoom: Zoom,
-    /// Dragging with the secondary button, or with Shift, turns and tilts a map or plane.
+    /// Whether dragging with the secondary button, or with Shift, rotates and tilts a map or plane.
+    /// Defaults to `true`.
     pub turn: bool,
-    /// Tab steps through the rows nearest the view's middle and arrows to the nearest row their way;
-    /// Enter opens the row stepped to and Space selects it. Otherwise arrows pan, `+` and `-` zoom,
-    /// Home fits, and Escape clears the selection.
+    /// Whether the keyboard controls the view. Defaults to `true`. Tab and Shift+Tab step through
+    /// the rows nearest the view's center. Arrow keys step to the nearest row in their direction.
+    /// Enter opens the row stepped to, and Space selects it. With no row stepped to, arrow keys pan
+    /// (Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the
+    /// selection.
     pub keyboard: bool,
-    /// The row the user points at glows. It is hovered either way: events tell it, and `hovered()`
-    /// reads it.
+    /// Whether the hovered row glows and a hovered vertex sized in CSS pixels grows. Defaults to
+    /// `true`. Hover is tracked either way: [`Event::Hovered`](crate::Event) still fires and
+    /// `hovered()` still returns the row.
     pub hover: bool,
-    /// CSS pixels around the pointer that picks reach; touch reaches 8 more.
+    /// How far a row can be from the pointer and still be picked, in CSS pixels. Touch adds 8.
+    /// Defaults to 6.
     pub pick_radius: f32,
-    /// Dragging with Shift selects the rows in a box, instead of turning; a Shift click still toggles
-    /// its row.
+    /// Whether Shift+drag selects the rows inside a box instead of turning the camera. Shift+click
+    /// still toggles one row. Defaults to `false`.
     pub select_box: bool,
-    /// Dragging from a port, from a vertex with Alt, or an edge off its end draws a connection,
-    /// told as [`Event::Connect`](crate::Event).
+    /// Whether the user can draw connections by dragging from a port, from a vertex with Alt held,
+    /// or an edge's end off its vertex. Connections are reported as
+    /// [`Event::Connect`](crate::Event). Defaults to `false`.
     pub connect: bool,
-    /// Delete and Backspace tell [`Event::Delete`](crate::Event) with the selection.
+    /// Whether Delete and Backspace report the selection as [`Event::Delete`](crate::Event).
+    /// Defaults to `false`.
     pub delete: bool,
-    /// Clicking again where nothing moved selects the next row under the point, nearest first, so
-    /// rows drawn over one another can each be selected.
+    /// Whether clicking again at the same point, with the camera unmoved, selects the next row
+    /// under the pointer, nearest first. This lets overlapping rows each be selected. Defaults to
+    /// `false`.
     pub cycle: bool,
-    /// Seconds a touch or a pen held still asks for a menu, as the secondary button does; zero never
-    /// does.
+    /// How many seconds a touch or pen must hold still to request a menu
+    /// ([`Event::Menu`](crate::Event)), like the secondary button. 0 turns this off. Defaults to
+    /// 0.5.
     #[serde(deserialize_with = "seconds")]
     #[schemars(with = "f64")]
     pub press: Duration,
-    /// How much the view moves on its own: eases, flights, coasting, orbits, label fades, comets, and
-    /// what reads `elapsed()`.
+    /// How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
+    /// options that read `elapsed()`. `system` follows the user's reduced-motion setting, `full`
+    /// animates everything, and `reduced` animates only motion the user drives. Defaults to
+    /// `system`.
     pub motion: Motion,
 }
 
-/// What zooms a view.
+/// Which input zooms a view.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Zoom {
     /// The wheel, pinching, and the keys.
     #[default]
     Wheel,
-    /// Pinching and the keys, and the wheel only with Control or Meta held, as a trackpad's pinch
-    /// sends it: the plain wheel scrolls the page.
+    /// Pinching and the keys, and the wheel only with Control or Meta held (as trackpad pinches
+    /// send it), so the plain wheel scrolls the page.
     Modifier,
-    /// Nothing.
+    /// No input zooms.
     Off,
 }
 
-/// How much a view moves on its own.
+/// How much a view animates on its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Motion {
-    /// As the platform asks: reduced where the user asked their system for less motion.
+    /// Follows the system setting: reduced when the user has asked their system for less motion.
     #[default]
     System,
-    /// Every motion.
+    /// All motion.
     Full,
-    /// Only what the user moves: changes apply at once, flights jump, nothing coasts or orbits,
-    /// labels show without fading, and comets and what reads `elapsed()` hold still.
+    /// Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits,
+    /// and comets and options that read `elapsed()` stay still.
     Reduced,
 }
 
-impl Presets for Controls {
-    const NAMES: &'static [&'static str] = &["none", "inspect"];
-
-    fn preset(name: &str) -> Option<Controls> {
-        match name {
-            "none" => Some(Controls::none()),
-            "inspect" => Some(Controls::inspect()),
-            _ => None,
-        }
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Controls, D::Error> {
-        Controls::deserialize(deserializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Controls {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Controls, D::Error> {
-        preset_or(deserializer)
-    }
-}
+presets!(Controls { "none" => Controls::none(), "inspect" => Controls::inspect() });
 
 impl Default for Controls {
     fn default() -> Controls {
@@ -119,7 +111,8 @@ impl Default for Controls {
 }
 
 impl Controls {
-    /// A view that answers nothing: a still picture, its camera where the application puts it.
+    /// Controls for a still picture: no panning, zooming, turning, keyboard, hover glow, or press
+    /// menus, so only the application moves the camera. Marks that select still select on click.
     pub fn none() -> Controls {
         Controls {
             pan: false,
@@ -132,8 +125,8 @@ impl Controls {
         }
     }
 
-    /// A view to inspect rows in: they glow under the pointer, select, and step with the keys, while
-    /// the camera stays where the application puts it.
+    /// Controls for inspecting rows: rows glow under the pointer, select on click, and step with
+    /// the keys. Only the application moves the camera.
     pub fn inspect() -> Controls {
         Controls { pan: false, zoom: Zoom::Off, turn: false, ..Controls::default() }
     }

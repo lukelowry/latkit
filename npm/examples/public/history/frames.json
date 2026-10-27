@@ -1,0 +1,16 @@
+{
+  "data": "base.latk",
+  "chunk": 256,
+  "url": "{field}/{level}/{index}.latk",
+  "frames": [
+    {
+      "table": "Signal",
+      "field": "value",
+      "levels": 4,
+      "frames": [
+        0,
+        5760
+      ]
+    }
+  ]
+}

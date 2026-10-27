@@ -1,10 +1,10 @@
-//! One schema compiler for validation and interactive rendering.
+//! Compiles marks against dataset schemas, for both validation and views.
 
 use std::sync::Arc;
 
 use super::mark::{Context, Drawing};
 use crate::expr::compile::{Compiler, Fields, Program};
-use crate::{Data, Error, Kind, Mark, Name, Result, Table};
+use crate::{Error, Kind, Mark, Name, Result, Snapshot, Table};
 
 /// A mark compiled against the schemas of its dataset and any datasets it joins.
 pub(crate) struct Compiled {
@@ -13,8 +13,11 @@ pub(crate) struct Compiled {
     pub(crate) schemas: Vec<(Name, u64)>,
 }
 
-/// Missing data stays pending in a live view; validation requires it before calling this.
-pub(crate) fn compile(mark: &Mark, all: &[Data], context: Context<'_>) -> Result<Option<Compiled>> {
+/// Compiles `mark` against the schemas in `all`. Returns `None` while the mark's dataset or table
+/// is missing. A view keeps such a mark pending, and validation reports the missing table before
+/// calling this. Errors when an option fails to compile or the mark compiles to more than 32
+/// channels.
+pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Result<Option<Compiled>> {
     let style = mark.style();
     let Some(data) = all.iter().find(|d| *d.name() == style.data) else { return Ok(None) };
     let Some(table) = data.table(&style.table) else { return Ok(None) };
@@ -27,7 +30,7 @@ pub(crate) fn compile(mark: &Mark, all: &[Data], context: Context<'_>) -> Result
     }
     let mut schemas = vec![(data.name().clone(), data.schema())];
     for column in &program.columns {
-        if let Some((name, _)) = &column.of
+        if let Some((name, _)) = &column.from
             && !schemas.iter().any(|(n, _)| n == name)
             && let Some(other) = all.iter().find(|d| d.name() == name)
         {
@@ -39,12 +42,12 @@ pub(crate) fn compile(mark: &Mark, all: &[Data], context: Context<'_>) -> Result
 
 struct Schema<'a> {
     table: &'a Table,
-    all: &'a [Data],
+    all: &'a [Snapshot],
 }
 
 impl Fields for Schema<'_> {
-    fn kind(&self, of: Option<&(Name, Name)>, name: &str) -> Option<Kind> {
-        match of {
+    fn kind(&self, from: Option<&(Name, Name)>, name: &str) -> Option<Kind> {
+        match from {
             None => self.table.kind(name),
             Some((data, table)) => self.all.iter().find(|d| d.name() == data)?.table(table)?.kind(name),
         }

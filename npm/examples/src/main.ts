@@ -1,6 +1,10 @@
-import { Gpu } from './latkit.js';
-import { examples } from './examples/index.js';
-import { Shell } from './ui/shell.js';
-import './ui/style.css';
+import { start } from './shell/shell.js';
+import './shell/style.css';
 
-new Shell(examples, Gpu.create());
+start([
+  { id: 'grids', title: 'Power grids', load: () => import('./pages/grids/index.js') },
+  { id: 'bunny', title: 'Soft body', load: () => import('./pages/bunny/index.js') },
+  { id: 'orbits', title: 'Orbits', load: () => import('./pages/orbits.js') },
+  { id: 'telemetry', title: 'Telemetry', load: () => import('./pages/telemetry.js') },
+  { id: 'diagram', title: 'Diagram', load: () => import('./pages/diagram.js') },
+]);

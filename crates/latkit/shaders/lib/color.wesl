@@ -1,7 +1,7 @@
 // Colors are sRGB-encoded, as in CSS, and packed RGBA8 in state.
 
-import package::lib::types::{MISSING_COLOR, COLORMAP_CYCLIC, COLORMAP_CATEGORICAL};
-import package::lib::bind::{frame, colormaps, ramp};
+import package::lib::types::{THEME_MISSING, COLORMAP_CYCLIC, COLORMAP_CATEGORICAL};
+import package::lib::bind::{frame, colormaps, ramp, theme_word};
 import package::lib::read::missing;
 
 // `x` mapped linearly from `domain` onto `range`, clamped.
@@ -14,10 +14,11 @@ fn scale(x: f32, domain: vec2f, range: vec2f) -> f32 {
     return mix(range.x, range.y, clamp(t, 0.0, 1.0));
 }
 
-// `x` through colormap `layer` over `domain`, packed; missing for a missing `x`.
+// `x` through colormap `layer` over `domain`, packed RGBA8. The theme's missing color if `x` is
+// missing.
 fn colormap(layer: u32, kind: u32, x: f32, domain: vec2f) -> u32 {
     if missing(x) {
-        return MISSING_COLOR;
+        return theme_word(THEME_MISSING);
     }
     if kind == COLORMAP_CATEGORICAL {
         let bin = u32(abs(floor(x))) % 256u;
@@ -32,7 +33,8 @@ fn to_linear(c: vec3f) -> vec3f {
     return select(pow((c + 0.055) / 1.055, vec3f(2.4)), c / 12.92, c <= vec3f(0.04045));
 }
 
-// A premultiplied fragment color for the target: sRGB values convert when it stores linear color.
+// A premultiplied fragment color prepared for the target. sRGB values convert to linear when the
+// target stores linear color.
 fn output(premultiplied: vec4f) -> vec4f {
     if frame.linear == 0u || premultiplied.a <= 0.0 {
         return premultiplied;

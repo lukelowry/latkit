@@ -1,6 +1,5 @@
-//! GeoJSON as data: a feature collection's features become rows of three tables by what their
-//! geometry is, `points`, `lines`, and `polygons`, each with its geometry as field `geometry` and its
-//! properties as fields.
+//! Reads GeoJSON into three tables by geometry type: `points`, `lines`, and `polygons`. Each row
+//! holds its geometry in field `geometry` and each property in a field of its own.
 
 use std::fmt;
 
@@ -8,22 +7,25 @@ use serde::Deserialize;
 use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde_json::{Map, Value as Json};
 
-use crate::data::{Data, Ids, Name, Patch, Table, Values};
+use crate::data::{Ids, Name, Patch, Snapshot, Table, Value, Values};
 use crate::{Error, Result};
 
 type Point = [f64; 2];
 
-/// The features of GeoJSON `bytes`, gzip-compressed or not, as dataset `name`: a feature collection,
-/// one feature, or a bare geometry.
+/// Reads GeoJSON `bytes`, optionally gzip-compressed, as dataset `name`. The document may be a
+/// feature collection, a single feature, or a bare geometry.
 ///
-/// Points become rows of table `points`, a point field `geometry`; line strings rows of `lines`, a
-/// field of parts; polygons rows of `polygons`, a field of polygons. A multi-point is a row per point,
-/// and a geometry collection a row per member. Properties become fields: numbers, booleans, and texts,
-/// any other value written as its JSON. Rows take their features' ids where every row of a table has
-/// one and no two share it, and are numbered in order otherwise.
-pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Data> {
+/// Points become rows of table `points` with a point field `geometry`. Line strings become rows of
+/// `lines` (a parts field), and polygons rows of `polygons` (a polygons field). A multi-point adds
+/// a row per point, and a geometry collection a row per member. Each property becomes a field of
+/// numbers, booleans, or text, with any other value written as JSON. A null counts as missing.
+///
+/// A table keeps its features' ids when every row has one, all are non-negative integers or all are
+/// strings, and none repeat. Otherwise its rows are numbered in order. Errors if `bytes` are not
+/// GeoJSON.
+pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Snapshot> {
     let bytes = super::gunzipped(bytes)?;
-    let top: Top = serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("not GeoJSON: {e}")))?;
+    let top: Top = crate::json::from_bytes(&bytes).map_err(|e| Error::invalid(format!("not GeoJSON: {e}")))?;
     let mut tables = [Rows::default(), Rows::default(), Rows::default()];
     let mut add = |feature: Feature| {
         if let Some(geometry) = feature.geometry {
@@ -46,12 +48,11 @@ pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Data> {
             patch = patch.replace(table);
         }
     }
-    let mut data = Data::new(name);
-    data.apply(patch)?;
-    Ok(data)
+    Snapshot::new(name).applied(patch)
 }
 
-/// The top of a document: a collection, a feature, or a geometry, as one struct of each's members.
+/// A document's top-level object, with the members of a feature collection, a feature, and a
+/// geometry in one struct.
 #[derive(Deserialize)]
 struct Top {
     #[serde(rename = "type")]
@@ -79,13 +80,13 @@ struct Geometry {
     geometries: Option<Vec<Geometry>>,
 }
 
-/// Which table a geometry's rows go to.
+/// Indices into the table array, by geometry type.
 const POINTS: usize = 0;
 const LINES: usize = 1;
 const POLYGONS: usize = 2;
 
 impl Geometry {
-    /// Adds this geometry's rows, with the feature's id and properties, to the table of each kind.
+    /// Adds this geometry's rows, with the feature's id and properties, to the table for its type.
     fn into_rows(self, id: Option<&Json>, properties: &Map<String, Json>, tables: &mut [Rows; 3]) {
         let coordinates = self.coordinates.unwrap_or(Coordinates::Empty);
         match (self.kind.as_str(), coordinates) {
@@ -108,7 +109,7 @@ impl Geometry {
                     member.into_rows(id, properties, tables);
                 }
             }
-            // A geometry without coordinates, or of a type GeoJSON does not have, adds no row.
+            // Unknown types, missing coordinates, and coordinates of the wrong depth add no row.
             _ => {}
         }
     }
@@ -120,7 +121,7 @@ enum Shape {
     Polygons(Vec<Vec<Vec<Point>>>),
 }
 
-/// One table's rows as they are read: each row's id, its properties, and its shape.
+/// Rows read for one table: each row's id, properties, and shape.
 #[derive(Default)]
 struct Rows {
     ids: Vec<Option<Json>>,
@@ -135,7 +136,7 @@ impl Rows {
         self.shapes.push(shape);
     }
 
-    /// The rows as table `name`, or `None` without any.
+    /// Builds table `name` from the rows, or `None` if there are none.
     fn table(self, name: &str) -> Option<Table> {
         if self.shapes.is_empty() {
             return None;
@@ -172,7 +173,7 @@ impl Rows {
             }
         }
         for key in keys {
-            // A property named like the geometry would replace it.
+            // A property named `geometry` would replace the geometry field, so skip it.
             if key == "geometry" {
                 continue;
             }
@@ -184,7 +185,8 @@ impl Rows {
     }
 }
 
-/// The rows' ids: every one present, of one kind, and distinct; else `None`.
+/// The rows' ids, if every row has one, all are non-negative integers or all are strings, and none
+/// repeat. Else `None`.
 fn ids(ids: &[Option<Json>]) -> Option<Ids> {
     let mut seen = std::collections::HashSet::with_capacity(ids.len());
     if ids.iter().all(|id| id.as_ref().and_then(Json::as_u64).is_some_and(|n| seen.insert(n.to_string()))) {
@@ -200,30 +202,25 @@ fn ids(ids: &[Option<Json>]) -> Option<Ids> {
     None
 }
 
-/// A property's values as a field: numbers where every value present is one, booleans likewise, and
-/// texts otherwise, any value not a text written as its JSON.
+/// Converts a property's values into a field, typed as [`Values::infer`] types them, with arrays
+/// and objects written as JSON text.
 fn property(values: &[Option<&Json>]) -> Values {
-    let present = || values.iter().flatten();
-    if present().all(|v| v.is_number()) {
-        return values.iter().map(|v| v.and_then(Json::as_f64)).collect::<Vec<_>>().into();
-    }
-    if present().all(|v| v.is_boolean()) {
-        return values.iter().map(|v| v.and_then(Json::as_bool)).collect::<Vec<_>>().into();
-    }
-    let texts: Vec<Option<String>> = values
+    let values: Vec<Option<Value>> = values
         .iter()
         .map(|v| {
             v.map(|v| match v {
-                Json::String(text) => text.clone(),
-                other => other.to_string(),
+                Json::Number(n) => Value::Number(n.as_f64().unwrap_or(f64::NAN)),
+                Json::Bool(b) => Value::Bool(*b),
+                Json::String(text) => Value::Text(text.as_str().into()),
+                other => Value::Text(other.to_string().into()),
             })
         })
         .collect();
-    texts.into()
+    Values::infer(&values)
 }
 
-/// Coordinates of any depth: a position, a list of them, lists of those, or polygons. Positions read
-/// their longitude and latitude and skip any altitude.
+/// Coordinates of any nesting depth: a position, a list of positions, a list of those, or a list of
+/// polygons. Positions keep longitude and latitude and drop any altitude.
 enum Coordinates {
     Number(f64),
     Position(Point),
@@ -239,7 +236,7 @@ impl<'de> Deserialize<'de> for Coordinates {
     }
 }
 
-/// Reads coordinates of any depth: the first element of each array says how deep the rest are.
+/// Reads coordinates of any depth. The first element of each array sets the depth of the rest.
 struct Depth;
 
 impl<'de> Visitor<'de> for Depth {
@@ -298,7 +295,7 @@ impl<'de> Visitor<'de> for Depth {
     }
 }
 
-/// One position: longitude and latitude, any altitude skipped.
+/// One position: longitude and latitude, ignoring any altitude.
 struct Position(Point);
 
 impl<'de> Deserialize<'de> for Position {
@@ -361,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn gzip_compressed_bytes_read_alike() {
+    fn gzip_compressed_geojson_reads_the_same() {
         use std::io::Write;
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         encoder.write_all(COLLECTION.as_bytes()).expect("written");
@@ -370,10 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn bare_geometries_and_bad_documents() {
+    fn a_bare_geometry_reads_and_a_truncated_document_errors() {
         let data = geojson("g", br#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [0, 1], [0, 0]]]}"#)
             .expect("a geometry");
         assert_eq!(data.table("polygons").map(Table::len), Some(1));
-        assert!(geojson("g", b"{\"type\": \"FeatureCollection\"").is_err(), "cut short");
+        assert!(geojson("g", b"{\"type\": \"FeatureCollection\"").is_err(), "a truncated document errors");
     }
 }

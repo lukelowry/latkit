@@ -1,14 +1,14 @@
 # Clifford
 
 ```{image} ../images/clifford.png
-:alt: A Clifford strange attractor of 260,000 translucent points, colored by the way each step turns
+:alt: A Clifford strange attractor of 260,000 translucent points, colored by the direction of each step
 :class: picture
 ```
 
-A strange attractor of 260,000 translucent points, colored through a cyclic colormap by where each step heads, so density and flow both show.
+A strange attractor of 260,000 translucent points, colored by the direction of each step through a cyclic colormap, so both density and flow show.
 
-The picture is drawn by the `latkit` command line from this module, which writes its data with
-`Patch` and its scene as a typed `Scene`; `node docs/gallery/render.ts clifford` draws it again.
+The `latkit` command line draws this picture from the module below, which builds its datasets
+with `Data` and returns its scene. Run `node docs/gallery/render.ts clifford` to draw it again.
 
 ```{literalinclude} ../gallery/clifford.ts
 :language: typescript

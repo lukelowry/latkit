@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustc_hash::FxHashMap;
 
-/// The name of a dataset, table, or field: cheap to clone, compared and ordered by its text.
+/// The name of a dataset, table, or field. Cheap to clone, and compared and ordered by its text.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Name(Arc<str>);
 
-/// A name is a text.
+/// A name's schema is a string.
 impl schemars::JsonSchema for Name {
     fn inline_schema() -> bool {
         true
@@ -108,8 +108,9 @@ impl fmt::Debug for Name {
     }
 }
 
-/// A row's identity within its table: a number or a text. A number above 2^53 − 1 serializes as
-/// decimal text, which names the same row, since JSON readers such as JavaScript's round it.
+/// A row's id within its table, either a number or a text. A number above 2^53 − 1 serializes as
+/// decimal text, since JSON readers such as JavaScript's would round it. The text names the same
+/// row.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Id {
     /// A numeric id.
@@ -125,9 +126,24 @@ impl Id {
             Id::Text(t) => IdRef::Text(t),
         }
     }
+
+    /// The id as a number that every JSON reader represents exactly, as it serializes. `None` for a
+    /// text id or a number above 2^53 − 1.
+    pub fn exact_number(&self) -> Option<f64> {
+        match self {
+            Id::Number(n) if *n <= SAFE => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    /// The id that a JSON or JavaScript number names, if it is a whole number from 0 to 2^53 − 1.
+    /// `None` for any other number, which may already be rounded.
+    pub fn from_number(number: f64) -> Option<Id> {
+        (number.fract() == 0.0 && (0.0..=SAFE as f64).contains(&number)).then_some(Id::Number(number as u64))
+    }
 }
 
-/// The largest whole number every JSON reader holds exactly.
+/// The largest whole number every JSON reader represents exactly.
 const SAFE: u64 = (1 << 53) - 1;
 
 impl serde::Serialize for Id {
@@ -222,7 +238,8 @@ impl IdRef<'_> {
     }
 }
 
-/// A row of a table in a dataset. It survives any change that keeps the names and the id.
+/// One row, identified by dataset name, table name, and id. It stays valid across any change that
+/// keeps those names and the id.
 #[derive(
     Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -242,7 +259,8 @@ impl Row {
     }
 }
 
-/// Rows of one table in a dataset, by id: what a view selects, fits, and tells as sets of rows.
+/// Rows of one table in a dataset, by id. Views use it for selections, fits, and the rows events
+/// report.
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Rows {
     /// The dataset's name.
@@ -264,7 +282,7 @@ impl Rows {
         self.ids.iter().map(|id| Row { data: self.data.clone(), table: self.table.clone(), id: id.clone() })
     }
 
-    /// `rows` as sets of rows, a set per table in the order each first appears.
+    /// Groups `rows` into one set per dataset and table, in order of first appearance.
     pub(crate) fn group(rows: impl IntoIterator<Item = Row>) -> Vec<Rows> {
         let mut sets: Vec<Rows> = Vec::new();
         for Row { data, table, id } in rows {
@@ -306,13 +324,21 @@ macro_rules! counter {
 counter!(
     /// Identifies one state of something that changes: a dataset, a table's rows, or a field.
     Version,
-    /// Identifies the contents of one page; a written page gets a new id.
+    /// Identifies the contents of one page. A written page gets a new id.
     PageId
 );
 
-/// Values by key: one hash table of keys for every kind of value, so a map by name compiles once
-/// whatever it holds, and the values in a list, in the order inserted; a removal moves the last into
-/// its place.
+impl PageId {
+    /// A page id made from `digest`, a hash of the page's words, so pages with equal contents
+    /// share one id. Its top bit is set, so it never equals a counter-assigned id.
+    pub(crate) fn of_content(digest: u64) -> PageId {
+        PageId(digest | 1 << 63)
+    }
+}
+
+/// A map that keeps its entries in a `Vec` in insertion order, with a hash index from key to
+/// position. The index type does not depend on `V`, so the hash map code is compiled once per key
+/// type. Removing an entry moves the last entry into its position.
 #[derive(Clone, Debug)]
 pub(crate) struct Keyed<K, V> {
     index: FxHashMap<K, u32>,
@@ -387,12 +413,12 @@ impl<K: Hash + Eq + Clone, V> Keyed<K, V> {
         Some(value)
     }
 
-    /// Where `key`'s value is, or goes.
+    /// The entry for `key`, present or not.
     pub(crate) fn entry(&mut self, key: K) -> Entry<'_, K, V> {
         Entry { keyed: self, key }
     }
 
-    /// Keeps the entries `keep` holds to, in their order.
+    /// Keeps the entries for which `keep` returns true, in their order.
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
         let before = self.entries.len();
         self.entries.retain_mut(|(key, value)| keep(key, value));
@@ -409,6 +435,10 @@ impl<K: Hash + Eq + Clone, V> Keyed<K, V> {
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.entries.iter().map(|(key, value)| (key, value))
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        self.entries.iter_mut().map(|(key, value)| (&*key, value))
     }
 
     pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
@@ -454,14 +484,14 @@ impl<'a, K, V> IntoIterator for &'a Keyed<K, V> {
     }
 }
 
-/// Where a key's value is in a [`Keyed`], or goes.
+/// The entry of a [`Keyed`] for one key, present or not.
 pub(crate) struct Entry<'a, K, V> {
     keyed: &'a mut Keyed<K, V>,
     key: K,
 }
 
 impl<'a, K: Hash + Eq + Clone, V> Entry<'a, K, V> {
-    /// The key's value, made by `make` where it has none.
+    /// The key's value, inserting `make()` if it has none.
     pub(crate) fn or_insert_with(self, make: impl FnOnce() -> V) -> &'a mut V {
         let Entry { keyed, key } = self;
         let i = keyed.at(&key).unwrap_or_else(|| {
@@ -488,6 +518,6 @@ impl<K: Hash + Eq + Clone + Borrow<Q>, Q: Hash + Eq + ?Sized, V> std::ops::Index
     type Output = V;
 
     fn index(&self, key: &Q) -> &V {
-        self.get(key).expect("a key the table holds")
+        self.get(key).expect("the key is present")
     }
 }

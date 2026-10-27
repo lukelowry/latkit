@@ -1,19 +1,19 @@
-/// Offsets that pack boxes (each `[width, height]`) into rows `gap` apart whose width over height approaches `aspect`,
-/// in the order given; the first box's top left lands at the origin. Returns each box's top-left corner (y up: top is
-/// the greater y).
+/// Packs boxes (each `[width, height]`) in the given order into rows `gap` apart, so the result's
+/// width over height approaches `aspect`. Returns each box's top-left corner, with y up (top is the
+/// greater y). The first box's top left is at the origin.
 pub(crate) fn pack(boxes: &[[f64; 2]], gap: f64, aspect: f64) -> Vec<[f64; 2]> {
     rows(boxes, gap, span(boxes, gap, aspect))
 }
 
-/// How wide rows of `boxes` run for the rows' width over height to approach `aspect`: as wide as a rectangle of that
-/// aspect holding all the boxes and their gaps.
+/// The row width at which rows of `boxes` approach width over height `aspect`: the width of a
+/// rectangle of that aspect whose area is the boxes' total area, gaps included.
 pub(super) fn span(boxes: &[[f64; 2]], gap: f64, aspect: f64) -> f64 {
     let area: f64 = boxes.iter().map(|[width, height]| (width + gap) * (height + gap)).sum();
     (area * aspect).sqrt()
 }
 
-/// Each box's top-left corner in rows `gap` apart, going down from the origin. A row breaks before a box that would
-/// run it past `span`, so only a box wider than `span` makes a row wider.
+/// Each box's top-left corner, in rows `gap` apart going down from the origin. A row breaks before
+/// a box that would extend it past `span`, so only a box wider than `span` makes a row wider.
 pub(super) fn rows(boxes: &[[f64; 2]], gap: f64, span: f64) -> Vec<[f64; 2]> {
     let (mut x, mut top, mut tallest) = (0.0, 0.0, 0.0_f64);
     boxes
@@ -37,7 +37,7 @@ pub(super) fn rows(boxes: &[[f64; 2]], gap: f64, span: f64) -> Vec<[f64; 2]> {
 mod tests {
     use super::*;
 
-    /// Boxes of uneven sizes, the same each run.
+    /// Boxes of uneven sizes, the same on every run.
     fn uneven(count: usize) -> Vec<[f64; 2]> {
         let mut seed = 0x2545_f491_u32;
         let mut next = move || {

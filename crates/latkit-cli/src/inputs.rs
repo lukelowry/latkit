@@ -1,5 +1,5 @@
-//! What a job reads: scenes, datasets, cameras, fits, and frames. Datasets and frames' patches are
-//! the library's JSON documents, loaded through the host, which reads the files they name.
+//! Reading a job's inputs: scenes, datasets, cameras, fits, and frames. Datasets and frame patches
+//! load through the library and its host, which reads the files their documents reference.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
@@ -8,18 +8,17 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use latkit::host::Native;
-use latkit::{Camera, Data, Error, Fit, Name, Patch, Patches, Scene};
+use latkit::{Camera, Data, Error, Fit, Name, Patch, Patches, Reading, Scene};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde::de::IgnoredAny;
 
 use crate::args::{Source, is_stdio};
 use crate::{Failure, block};
 
-/// Frames read and loaded ahead of the one drawing.
+/// Number of frames read and loaded ahead of the one being drawn.
 const AHEAD: usize = 2;
 
-/// The bytes at `path`, or stdin's for `-`.
+/// Reads the bytes at `path`, or stdin for `-`.
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>, Failure> {
     let mut bytes = Vec::new();
     let result = if is_stdio(path) {
@@ -31,84 +30,78 @@ pub(crate) fn read(path: &Path) -> Result<Vec<u8>, Failure> {
     Ok(bytes)
 }
 
-/// What paths in the document at `path` are relative to: the document, or nothing for stdin.
+/// The base for relative paths in the document at `path`: the document's path, or empty for stdin.
 fn base(path: &Path) -> String {
     if is_stdio(path) { String::new() } else { path.to_string_lossy().into_owned() }
 }
 
-/// What the JSON document at `path` holds, read as a `T`.
+/// Reads the JSON document at `path` as a `T`.
 pub(crate) fn document<T: DeserializeOwned>(path: &Path) -> Result<T, Failure> {
     let bytes = read(path)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| Failure::at(Error::invalid("not UTF-8 text"), path))?;
     latkit::from_json(text).map_err(|e| Failure::at(e, path))
 }
 
-/// A scene from its JSON.
+/// Reads argument `arg` of the option or argument `name` as a `T`: JSON when it starts with `{`,
+/// else the document in the file it names.
+pub(crate) fn json<T: DeserializeOwned>(arg: &str, name: &str) -> Result<T, Failure> {
+    if arg.trim_start().starts_with('{') {
+        latkit::from_json(arg).map_err(|e| Failure::from(e.at(name)))
+    } else {
+        document(Path::new(arg))
+    }
+}
+
+/// Reads a scene from its JSON file.
 pub(crate) fn scene(path: &Path) -> Result<Scene, Failure> {
     document(path)
 }
 
-/// A camera from its JSON.
-pub(crate) fn camera(path: &Path) -> Result<Camera, Failure> {
-    document(path)
-}
-
-/// A fit: `all`, or one as JSON.
+/// Parses a fit: a bare name such as `all`, or JSON.
 pub(crate) fn fit(text: &str) -> Result<Fit, Failure> {
     let json = if text.trim_start().starts_with(['{', '"', '[']) { text.to_owned() } else { format!("\"{text}\"") };
     latkit::from_json(&json).map_err(|e| Failure::from(e.at("--fit")))
 }
 
-/// The dataset `source` names: a JSON document loaded through `host`, latkit bytes, or GeoJSON,
-/// named as it says.
+/// Loads the dataset `source` names: latkit bytes, GeoJSON, or a JSON document whose referenced
+/// files `host` reads. The name `source` gives, if any, names the dataset.
 pub(crate) fn dataset(source: &Source, host: &Native, deadline: Duration) -> Result<Data, Failure> {
     let path = &source.path;
     let bytes = read(path)?;
-    let at = |error: Error| Failure::at(error, path);
-    let name = source.name.as_deref();
-    if bytes.starts_with(b"LATK") || bytes.starts_with(&[0x1f, 0x8b]) || geojson(&bytes) {
-        return Data::read(&bytes, name).map_err(|e| at(e.at("NAME=FILE")));
-    }
-    let text = std::str::from_utf8(&bytes).map_err(|_| at(Error::invalid("a dataset is JSON or latkit bytes")))?;
-    let data = block(deadline, Data::load(text, &base(path), host)).map_err(at)?;
-    Ok(match name {
-        Some(name) if name != data.name().as_str() => data.renamed(name),
-        _ => data,
-    })
+    let base = base(path);
+    let reading = Reading { name: source.name.as_deref(), base: &base, host: Some(host) };
+    block(deadline, Data::read(&bytes, reading)).map_err(|e| Failure::at(e, path))
 }
 
-/// Whether JSON `bytes` are GeoJSON: an object with a `type`.
-fn geojson(bytes: &[u8]) -> bool {
-    #[derive(Deserialize)]
-    struct Probe {
-        #[serde(rename = "type")]
-        kind: Option<IgnoredAny>,
-    }
-    serde_json::from_slice::<Probe>(bytes).is_ok_and(|p| p.kind.is_some())
-}
-
-/// One output frame's changes, as a line of the frames file says.
+/// One line of a frames file: an output frame's changes, or with `--span`, changes at `at`.
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Frame {
-    /// The axis coordinate every view shows.
+    /// The axis coordinate every view shows. With `--span`, where the line applies (required).
     pub(crate) at: Option<f64>,
-    /// Patches by dataset name, in the order written.
+    /// Patches by dataset name, applied in the order written.
     #[serde(default)]
     patch: Patches,
-    /// Where views look at once: one camera for every view it fits, or one per view.
+    /// Cameras views switch to at once: one for every view whose space it fits, or one per view.
     pub(crate) camera: Option<Each<Camera>>,
-    /// Where views ease to.
+    /// Cameras views ease to, given like `camera`.
     pub(crate) fly: Option<Each<Camera>>,
-    /// What views frame.
+    /// What views fit: one fit for every view, or one per view.
     pub(crate) fit: Option<Each<Fit>>,
     /// CSS pixels every view keeps clear: top, right, bottom, left.
     pub(crate) insets: Option<[f32; 4]>,
-    /// Degrees a second every map or plane turns.
+    /// Degrees per second every map or plane turns.
     pub(crate) orbit: Option<f64>,
 }
 
-/// One value for every view, or one for each in order, `null` leaving a view as it is.
+impl Frame {
+    /// A frame that shows axis coordinate `at` and changes nothing else.
+    pub(crate) fn showing(at: f64) -> Frame {
+        Frame { at: Some(at), patch: Patches::default(), camera: None, fly: None, fit: None, insets: None, orbit: None }
+    }
+}
+
+/// One value for every view, or one per view in order. `null` leaves a view unchanged.
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 #[schemars(inline)]
@@ -127,10 +120,10 @@ impl<T: Clone> Each<T> {
     }
 }
 
-/// A frame's index, what it changes, and its patches by dataset, loaded.
+/// A frame's index, its changes, and its loaded patches by dataset name.
 pub(crate) type Next = (usize, Frame, Vec<(Name, Patch)>);
 
-/// The lines of a frames file, each a frame, its patches loaded through the host.
+/// Reads a frames file, one frame per line, loading each frame's patches through the host.
 pub(crate) struct Frames {
     path: PathBuf,
     lines: io::Lines<Box<dyn BufRead + Send>>,
@@ -149,7 +142,7 @@ impl Frames {
         Ok(Frames { path: path.to_path_buf(), lines: input.lines(), index: 0, host, deadline })
     }
 
-    /// The next frame, its patches loaded; `None` at the end. Blank lines are skipped.
+    /// The next frame, with its patches loaded. `None` at the end. Skips blank lines.
     pub(crate) fn next(&mut self) -> Result<Option<Next>, Failure> {
         loop {
             let Some(line) = self.lines.next() else { return Ok(None) };
@@ -159,20 +152,39 @@ impl Frames {
             }
             let index = self.index;
             self.index += 1;
-            let at = |error: Error| Failure::at(error.at(index).at("frames"), &self.path);
+            let at = |error: Error| blame(&self.path, index, error);
             let mut frame: Frame = latkit::from_json(&line).map_err(at)?;
             if frame.at.is_some_and(|a| !a.is_finite()) {
-                return Err(at(Error::invalid("at is finite").at("at")));
+                return Err(at(Error::invalid("expected a finite number").at("at")));
             }
             let base = base(&self.path);
-            let patches = std::mem::take(&mut frame.patch).load(&base, &self.host);
+            let reading = Reading { base: &base, host: Some(&self.host), name: None };
+            let patches = std::mem::take(&mut frame.patch).read(reading);
             let patches = block(self.deadline, patches).map_err(|e| at(e.at("patch")))?;
             return Ok(Some((index, frame, patches)));
         }
     }
 
-    /// The frames read and loaded on a thread of their own, a few ahead of the one taken, so their
-    /// files are read while frames draw.
+    /// Every frame, with its patches loaded, for a span. Each needs `at`, in order.
+    pub(crate) fn ordered(mut self) -> Result<Vec<Next>, Failure> {
+        let mut frames: Vec<Next> = Vec::new();
+        while let Some(next) = self.next()? {
+            let before = frames.last().and_then(|(_, frame, _)| frame.at).unwrap_or(f64::NEG_INFINITY);
+            let error = match next.1.at {
+                None => Error::invalid("expected `at`, where the span applies the frame"),
+                Some(at) if at < before => Error::invalid("expected `at` at or after the frame before"),
+                Some(_) => {
+                    frames.push(next);
+                    continue;
+                }
+            };
+            return Err(blame(&self.path, next.0, error.at("at")));
+        }
+        Ok(frames)
+    }
+
+    /// Reads and loads frames on a separate thread, a few ahead of the one taken, so their files
+    /// load while frames draw.
     pub(crate) fn ahead(mut self) -> Ahead {
         let (send, frames) = mpsc::sync_channel(AHEAD);
         std::thread::spawn(move || {
@@ -185,6 +197,11 @@ impl Frames {
         });
         Ahead(frames)
     }
+}
+
+/// `error` in frame `index` of the frames file at `path`.
+pub(crate) fn blame(path: &Path, index: usize, error: Error) -> Failure {
+    Failure::at(error.at(index).at("frames"), path)
 }
 
 /// Frames loaded ahead of drawing.
@@ -217,25 +234,31 @@ mod tests {
         let host = Native::new();
         let load = |text: &str| dataset(&text.parse().unwrap(), &host, deadline());
         let path = dir.path().join("grid.json").to_string_lossy().into_owned();
-        let data = load(&path).unwrap();
-        assert_eq!(data.table("Bus").unwrap().get("a", "x"), Some(latkit::Value::Number(-2.5)));
+        let data = load(&path).unwrap().snapshot();
+        assert_eq!(data.get("Bus", "a", "x", None), Some(latkit::Value::Number(-2.5)));
         assert_eq!(load(&format!("other={path}")).unwrap().name().as_str(), "other");
         std::fs::write(dir.path().join("grid.bin"), data.to_bytes()).unwrap();
-        assert_eq!(load(&dir.path().join("grid.bin").to_string_lossy()).unwrap().table("Bus").unwrap().len(), 2);
+        let rows = |data: &Data, table: &str| {
+            data.snapshot().describe().tables.into_iter().find(|t| t.name == table).map(|t| t.rows)
+        };
+        let bin = load(&dir.path().join("grid.bin").to_string_lossy()).unwrap();
+        assert_eq!(rows(&bin, "Bus"), Some(2));
         let geo = r#"{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}"#;
         std::fs::write(dir.path().join("p.geojson"), geo).unwrap();
         let geo_path = dir.path().join("p.geojson").to_string_lossy().into_owned();
-        assert!(load(&geo_path).is_err(), "GeoJSON names its dataset");
-        assert_eq!(load(&format!("places={geo_path}")).unwrap().table("points").unwrap().len(), 1);
+        assert!(load(&geo_path).is_err(), "GeoJSON needs a name");
+        let places = load(&format!("places={geo_path}")).unwrap();
+        assert_eq!(rows(&places, "points"), Some(1));
     }
 
     #[test]
-    fn frames_keep_their_patches_order_and_apply_to_every_view_or_each() {
+    fn frames_keep_patch_order_and_take_one_value_or_one_per_view() {
         let frame: Frame = latkit::from_json(r#"{"patch": {"b": [], "a": []}}"#).unwrap();
-        let patches = block(deadline(), frame.patch.load("", &Native::new())).unwrap();
+        let host = Native::new();
+        let patches = block(deadline(), frame.patch.read(Reading { host: Some(&host), ..Reading::default() })).unwrap();
         let names: Vec<&str> = patches.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["b", "a"]);
-        assert!(latkit::from_json::<Frame>(r#"{"patch": {"a": [], "a": []}}"#).is_err(), "a dataset patched twice");
+        assert!(latkit::from_json::<Frame>(r#"{"patch": {"a": [], "a": []}}"#).is_err(), "a dataset named twice fails");
         let error = latkit::from_json::<Frame>(r#"{"patch": {"a": [[]]}}"#).map(drop).unwrap_err();
         assert!(error.to_string().starts_with("patch.a[0]"), "{error}");
         let one: Each<f64> = latkit::from_json("2").unwrap();

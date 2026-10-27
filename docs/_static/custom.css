@@ -19,6 +19,7 @@ body[data-theme] {
   --color-table-header-background: transparent;
   --color-table-border: var(--color-background-border);
   --color-api-background-hover: var(--color-background-secondary);
+  --color-highlight-on-target: var(--color-highlighted-background);
 }
 
 ::selection {
@@ -146,6 +147,112 @@ body[data-theme] .highlight {
 
 .highlight pre {
   padding: 0.75rem 1rem;
+}
+
+/* Reference: each entry's declaration, then its members, each a signature over its definition.
+   Types in signatures are links; a member's anchor shows on hover, as a heading's does. A long
+   signature wraps with its later lines indented. */
+
+:is(h1, h2, h3, h4) code.literal {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.95em;
+}
+
+h3:has(> code.literal) {
+  margin-top: 2.5rem;
+}
+
+p.signature,
+dl.member > dt {
+  font-family: var(--font-stack--monospace);
+  font-size: var(--font-size--small);
+  line-height: 1.6;
+  text-indent: -2rem;
+}
+
+p.signature {
+  margin: -0.35rem 0 0;
+  padding-left: 2rem;
+  color: var(--color-foreground-secondary);
+}
+
+p.signature + p.signature {
+  margin-top: 0;
+}
+
+p.signature + :not(p.signature) {
+  margin-top: 0.85rem;
+}
+
+:is(p.signature, dl.member > dt) code.literal {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+}
+
+:is(p.signature, dl.member > dt) a.reference {
+  text-decoration: none;
+}
+
+:is(p.signature, dl.member > dt) a.reference:hover {
+  text-decoration: underline;
+}
+
+dl.member {
+  margin: 0 0 1.25rem;
+}
+
+dl.member > dt {
+  margin-inline: -0.5rem;
+  padding: 0.15rem 0.5rem 0.15rem 2.5rem;
+  border-radius: 0.25rem;
+  color: var(--color-foreground-secondary);
+  transition: background 0.1s ease-out;
+}
+
+dl.member > dt:hover {
+  background: var(--color-api-background-hover);
+}
+
+dl.member:target > dt {
+  background: var(--color-highlight-on-target);
+}
+
+dl.member > dt strong {
+  color: var(--color-api-name);
+  font-weight: 600;
+}
+
+dl.member > dd {
+  margin: 0.2rem 0 0 1.5rem;
+}
+
+dl.member > dd > :first-child {
+  margin-top: 0;
+}
+
+dl.member > dd > :last-child {
+  margin-bottom: 0;
+}
+
+dl.member dl.member {
+  margin: 0.6rem 0 0;
+}
+
+dl.member dl.member > dd {
+  margin-top: 0;
+}
+
+article p.rubric {
+  margin: 2rem 0 0.75rem;
+  font-size: var(--font-size--small--2);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-foreground-muted);
 }
 
 /* Tables */

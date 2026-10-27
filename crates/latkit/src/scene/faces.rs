@@ -4,17 +4,17 @@ use crate::gpu::shaders as wgsl;
 use crate::{Error, Name, Result};
 
 mark!(
-/// Rows drawn as triangles between the vertices three reference fields name: meshes, surfaces, and
-/// fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from
-/// above shows its exact colors.
+/// Rows drawn as triangles between three vertices named by reference fields: meshes, surfaces, and
+/// fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen
+/// from above shows its exact colors.
 ///
 /// ```
 /// # use latkit::Faces;
 /// let surface = Faces::of("mesh", "Face").corners("a", "b", "c");
 /// ```
-Faces {
-    /// The reference fields naming each row's three vertices. Without a color, a face blends the
-    /// colors of its corners.
+Faces("faces") {
+    /// The reference fields naming each row's three vertices. Required. Without a color, a face
+    /// blends the colors of its corners.
     corners: Option<[Name; 3]> as "[a: string, b: string, c: string]",
 });
 
@@ -24,8 +24,8 @@ impl Faces {
         Faces { style: Style::new(data.into(), table.into()), corners: None }
     }
 
-    /// The reference fields naming each row's three vertices. Without a color, a face blends the
-    /// colors of its corners.
+    /// Sets the reference fields naming each row's three vertices. Required. Without a color, a
+    /// face blends the colors of its corners.
     #[must_use]
     pub fn corners(mut self, a: impl Into<Name>, b: impl Into<Name>, c: impl Into<Name>) -> Faces {
         self.corners = Some([a.into(), b.into(), c.into()]);
@@ -36,8 +36,8 @@ impl Faces {
         let Some(corners) = &self.corners else {
             return Err(Error::invalid("name the reference fields of each row's three corners").at("corners"));
         };
-        for (corner, word) in corners.iter().zip([wgsl::FACE_A, wgsl::FACE_B, wgsl::FACE_C]) {
-            c.end(corner, word).map_err(|e| e.at("corners"))?;
+        for corner in corners {
+            c.end(corner).map_err(|e| e.at("corners"))?;
         }
         let mut flags = 0;
         match &self.style.color {
@@ -47,7 +47,7 @@ impl Faces {
             None => flags |= wgsl::ENDS_COLOR,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::FACE_FLAGS, bit: wgsl::VISIBLE })?;
-        let mut drawing = Drawing::new(MarkKind::Faces, wgsl::FACE_WORDS);
+        let mut drawing = Drawing::new(MarkKind::Faces);
         drawing.flags = flags;
         Ok(drawing)
     }

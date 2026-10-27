@@ -1,25 +1,27 @@
-// Distance fields of text: the coverage a host set for a run, turned into each texel's signed distance
-// to the text's edge, inside positive, as a byte of `0.5 + distance / (2 TEXT_SPREAD)`, over the run
-// widened by `TEXT_SPREAD` texels on every side. Partial coverage places the edge within its texel, so
-// antialiasing becomes subtexel distance.
+// Text distance fields. For each run, converts the coverage the host rasterized into each texel's
+// signed distance to the text's edge (positive inside), stored as the byte
+// `0.5 + distance / (2 TEXT_SPREAD)`. The field covers the run plus `TEXT_SPREAD` texels on each
+// side. Partial coverage places the edge within its texel, so antialiased edges keep subtexel
+// precision.
 //
-// A texel's squared distance to the text is the least, over the field's texels, of each one's own (none
-// inside the text, a partial texel's subtexel distance squared, far outside it) plus the squared
-// distance to it; likewise to what lies outside the text. The least splits into one down each column,
-// then one along each row, and only texels within the spread bring a texel within it, so each looks
-// that far and no farther: exact wherever the field is not clamped. After the columns, one of a
-// texel's two distances is its own, none, so one signed word holds both: to the outside above zero, to
-// the text below.
+// A texel's squared distance to the text is the minimum, over the field's texels, of each texel's
+// own squared distance plus the squared distance to that texel. A texel's own squared distance is 0
+// inside the text, its subtexel distance squared where coverage is partial, and effectively
+// infinite outside. The distance to the outside works the same way. The minimum splits into a pass
+// down each column, then a pass along each row. Only texels within the spread can bring a texel
+// within the spread, so each pass looks only that far, which is exact wherever the field is not
+// clamped. After the column pass, one of a texel's two distances is always 0, so one signed word
+// holds both: the distance to the outside above zero, and to the text below.
 
 import package::lib::types::{
     TEXT_SPREAD, FIELD_COVERAGE, FIELD_WIDTH, FIELD_HEIGHT, FIELD_COLUMNS, FIELD_AT, FIELD_ROW, FIELD_WORDS,
 };
 
-// The runs, `FIELD_WORDS` each, then their coverage, four bytes a word, their columns' least
-// distances, and their fields, four texels a word.
+// The runs, `FIELD_WORDS` words each, then their coverage (four bytes per word), their column
+// minima, and their fields (four texels per word).
 @group(2) @binding(0) var<storage, read_write> fields: array<u32>;
 
-// Texels the field reaches past the text, and the column minima a word of four texels reads.
+// `SPREAD`: texels the field reaches past the text. `NEAR`: column minima read per 4-texel word.
 const SPREAD: i32 = i32(TEXT_SPREAD);
 const NEAR: i32 = 4 + 2 * SPREAD;
 // Farther than any texel within the spread.
@@ -31,7 +33,7 @@ struct Run {
     size: vec2u,
     columns: u32,
     at: u32,
-    // Words between the starts of the field's rows.
+    // Words from the start of one field row to the next.
     row: u32,
 }
 
@@ -46,7 +48,7 @@ fn run(i: u32) -> Run {
     );
 }
 
-// Texels across and down its field: its coverage's, and the spread on every side.
+// The field's width and height in texels: the coverage plus the spread on every side.
 fn field_size(r: Run) -> vec2u {
     return r.size + vec2u(2u * u32(SPREAD));
 }
@@ -70,7 +72,8 @@ fn own(r: Run, p: vec2i) -> vec2f {
     return select(vec2f(0.0, d * d), vec2f(d * d, 0.0), d > 0.0);
 }
 
-// Down each column: the least of each texel's own within the spread above and below.
+// Column pass: for each texel, the least over the texels within the spread above and below it of
+// their own squared distance plus the squared vertical distance.
 @compute @workgroup_size(16, 16)
 fn columns(@builtin(global_invocation_id) id: vec3u) {
     let r = run(id.z);
@@ -88,8 +91,8 @@ fn columns(@builtin(global_invocation_id) id: vec3u) {
     fields[r.columns + id.y * size.x + id.x] = bitcast<u32>(least.y - least.x);
 }
 
-// Along each row, four texels a word: the least of the columns' within the spread to either side,
-// then each texel's byte.
+// Row pass, four texels per word: for each texel, the least over the column minima within the
+// spread to either side of each plus the squared horizontal distance, then the texel's byte.
 @compute @workgroup_size(16, 16)
 fn rows(@builtin(global_invocation_id) id: vec3u) {
     let r = run(id.z);
@@ -97,7 +100,7 @@ fn rows(@builtin(global_invocation_id) id: vec3u) {
     if id.x * 4u >= size.x || id.y >= size.y {
         return;
     }
-    // Past the field's edge lies nothing.
+    // Nothing lies past the field's edge.
     var near: array<vec2f, NEAR>;
     let first = i32(id.x * 4u) - SPREAD;
     for (var k = 0; k < NEAR; k++) {

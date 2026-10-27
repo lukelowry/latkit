@@ -3,43 +3,99 @@ use std::cell::RefCell;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
+use super::queue::Queue;
 use super::{Encoder, Unit};
 use super::{Host, Job, Raster, Request, TextRun};
 use crate::Encoding;
 use crate::{Error, Pending};
 
-/// The browser: text set with a 2D canvas in the page's fonts, jobs done by the page's workers once
-/// [`set_jobs`](Browser::set_jobs) names them, else at once, bytes fetched with `fetch`, and video
-/// encoded by WebCodecs once [`set_encoder`](Browser::set_encoder) names how.
+/// The browser host. Text is rasterized with a 2D canvas in the page's fonts, and bytes are fetched
+/// with `fetch`. Jobs run on the page's workers once [`set_jobs`](Browser::set_jobs) provides them,
+/// else immediately. Video is encoded with WebCodecs once [`set_encoder`](Browser::set_encoder)
+/// provides an encoder.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Browser;
 
 thread_local! {
     static CANVAS: RefCell<Option<(OffscreenCanvas, OffscreenCanvasRenderingContext2d)>> = const { RefCell::new(None) };
     static JOBS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+    static QUEUE: RefCell<Queue> = RefCell::new(Queue::default());
     static ENCODERS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
 }
 
+/// How many jobs the page's workers run at once: one fewer than the number of cores, from 1 to 4.
+/// The page keeps a worker for each, so it never queues.
+fn workers() -> usize {
+    let cores = web_sys::window()
+        .map(|window| window.navigator().hardware_concurrency())
+        .or_else(|| {
+            js_sys::global()
+                .dyn_into::<web_sys::WorkerGlobalScope>()
+                .ok()
+                .map(|scope| scope.navigator().hardware_concurrency())
+        })
+        .unwrap_or(2.0) as usize;
+    cores.saturating_sub(1).clamp(1, 4)
+}
+
+/// The latkit error for a value the page's script threw or rejected with. An error whose `code` is
+/// `unsupported` or `timeout` keeps that code. Anything else becomes an [`Error::Io`] saying `what`
+/// failed.
+fn failure(error: &JsValue, what: &str) -> Error {
+    let field = |key: &str| js_sys::Reflect::get(error, &key.into()).ok().and_then(|v| v.as_string());
+    let message = field("message").or_else(|| error.as_string()).unwrap_or_default();
+    match field("code").as_deref() {
+        Some("unsupported") => Error::Unsupported(message.into()),
+        Some("timeout") => Error::Timeout,
+        _ => Error::Io(format!("{what}: {message}").into()),
+    }
+}
+
+/// Hands waiting jobs to the page's workers while any is free, skipping cancelled jobs.
+fn pump(run: &js_sys::Function) {
+    loop {
+        let next = QUEUE.with(|queue| queue.borrow_mut().next(workers()));
+        let Some((job, resolver)) = next else { return };
+        let bytes = js_sys::Uint8Array::from(&job.into_bytes()[..]);
+        let promise = run.call1(&JsValue::NULL, &bytes).map(js_sys::Promise::from);
+        let run = run.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let answer = match promise {
+                Ok(promise) => wasm_bindgen_futures::JsFuture::from(promise)
+                    .await
+                    .map(|bytes| js_sys::Uint8Array::new(&bytes).to_vec())
+                    .map_err(|error| failure(&error, "a job failed")),
+                Err(error) => Err(failure(&error, "a job failed")),
+            };
+            resolver.resolve(answer);
+            QUEUE.with(|queue| queue.borrow_mut().done());
+            pump(&run);
+        });
+    }
+}
+
 impl Browser {
-    /// Has views' jobs done by `run`, which takes a job's bytes as a `Uint8Array` and returns a
-    /// promise of its answer's: a pool of workers, each holding the page's compiled module.
+    /// Runs views' jobs with `run`, which takes a job's bytes as a `Uint8Array` and returns a
+    /// promise of its result's bytes. `run` should pass jobs to workers that each hold the page's
+    /// compiled module. Jobs queue here, and `run` gets one only when a worker is free.
     pub fn set_jobs(run: js_sys::Function) {
         JOBS.with(|jobs| *jobs.borrow_mut() = Some(run));
     }
 
-    /// Has videos encoded by what `create` makes of `(width, height, fps, bitrate)`: an object whose
-    /// `close()` releases resources; `encode(nv12, time, key)` and `finish()` return promises of the units finished since, each
-    /// `[time, key, bytes]`, in order. The npm package makes one with WebCodecs.
+    /// Encodes videos with encoders made by `create(width, height, fps, bitrate)`. An encoder's
+    /// `encode(nv12, time, key)` and `finish()` return promises of the units finished since the
+    /// last call, in order, each `[time, key, bytes]`. Its `close()` releases its resources. The
+    /// npm package provides one built on WebCodecs.
     pub fn set_encoder(create: js_sys::Function) {
         ENCODERS.with(|encoders| *encoders.borrow_mut() = Some(create));
     }
 }
 
-/// An encoder the page made: its `encode` and `finish` answer promises of units.
+/// An encoder made by the page. Its `encode` and `finish` return promises of units.
 struct Script(JsValue);
 
 impl Script {
-    /// Calls method `name` with `args`, resolving to the units its promise answers.
+    /// Calls method `name` with `args`, resolving to the units its promise returns.
     fn call(&self, name: &str, args: &js_sys::Array) -> Pending<Vec<Unit>> {
         let promise = js_sys::Reflect::get(&self.0, &name.into())
             .and_then(JsCast::dyn_into::<js_sys::Function>)
@@ -47,31 +103,27 @@ impl Script {
             .map(|answer| js_sys::Promise::resolve(&answer));
         let promise = match promise {
             Ok(promise) => promise,
-            Err(error) => return Pending::ready(Err(Error::Unsupported(format!("the encoder: {error:?}").into()))),
+            Err(error) => return Pending::ready(Err(failure(&error, "the encoder failed"))),
         };
         let (pending, resolver) = Pending::new();
         wasm_bindgen_futures::spawn_local(async move {
             let answer = wasm_bindgen_futures::JsFuture::from(promise).await;
-            resolver.resolve(
-                answer
-                    .map_err(|error| Error::Unsupported(format!("the encoder failed: {error:?}").into()))
-                    .and_then(units),
-            );
+            resolver.resolve(answer.map_err(|error| failure(&error, "the encoder failed")).and_then(units));
         });
         pending
     }
 }
 
-/// The units an encoder answered: `[time, key, bytes]` each.
+/// Reads the units an encoder returned, each `[time, key, bytes]`.
 fn units(answer: JsValue) -> crate::Result<Vec<Unit>> {
     let units: js_sys::Array =
-        answer.dyn_into().map_err(|_| Error::Unsupported("the encoder answered no units".into()))?;
+        answer.dyn_into().map_err(|_| Error::Io("the encoder did not return an array of units".into()))?;
     units
         .iter()
         .map(|unit| {
             let unit: js_sys::Array =
-                unit.dyn_into().map_err(|_| Error::Unsupported("a unit is [time, key, bytes]".into()))?;
-            let time = unit.get(0).as_f64().ok_or_else(|| Error::Unsupported("a unit's time".into()))?;
+                unit.dyn_into().map_err(|_| Error::Io("an encoder unit is not an array [time, key, bytes]".into()))?;
+            let time = unit.get(0).as_f64().ok_or_else(|| Error::Io("an encoder unit has no numeric time".into()))?;
             let bytes = js_sys::Uint8Array::new(&unit.get(2));
             Ok(Unit { time: time as u64, key: unit.get(1).is_truthy(), annex_b: bytes.to_vec() })
         })
@@ -98,10 +150,11 @@ impl Encoder for Script {
     }
 }
 
-/// Pixels of room around each run, so antialiasing and overhangs are kept.
+/// Padding in pixels around each run, so antialiasing and overhangs are not clipped.
 const PAD: f64 = 2.0;
 
-/// `text` broken at spaces into lines no wider than `max_width`, each with its width.
+/// Breaks `text` at spaces into lines no wider than `max_width`, each with its width. A word wider
+/// than `max_width` gets a line of its own.
 fn lines(
     context: &OffscreenCanvasRenderingContext2d,
     text: &str,
@@ -125,13 +178,13 @@ fn lines(
     Some(lines)
 }
 
-/// The page's 2D context for setting and measuring text, made on first use.
+/// Calls `f` with the 2D context that rasterizes and measures text, created on first use.
 fn with_context<R>(f: impl FnOnce(&OffscreenCanvas, &OffscreenCanvasRenderingContext2d) -> Option<R>) -> Option<R> {
     CANVAS.with(|cell| {
         let mut cell = cell.borrow_mut();
         if cell.is_none() {
             let canvas = OffscreenCanvas::new(256, 64).ok()?;
-            // Each run is read back once it is set.
+            // Each run is read back after drawing, so ask for a canvas suited to readback.
             let options = js_sys::Object::new();
             js_sys::Reflect::set(&options, &"willReadFrequently".into(), &true.into()).ok()?;
             let context = canvas.get_context_with_context_options("2d", &options).ok()??;
@@ -143,7 +196,7 @@ fn with_context<R>(f: impl FnOnce(&OffscreenCanvas, &OffscreenCanvasRenderingCon
     })
 }
 
-/// A run laid out: its lines, each with its width, and its ascent and line height.
+/// A run's layout: its lines with their widths, its ascent, and its line height.
 struct Layout {
     lines: Vec<(String, f64)>,
     ascent: f64,
@@ -151,7 +204,7 @@ struct Layout {
 }
 
 impl Layout {
-    /// `run` laid out in `context`, set to its font.
+    /// Lays out `run` in `context`, setting the context's font to the run's.
     fn of(context: &OffscreenCanvasRenderingContext2d, run: &TextRun) -> Option<Layout> {
         context.set_font(&format!("{}px {}", run.size_px, run.font));
         let lines = lines(context, &run.text, run.max_width.map(f64::from))?;
@@ -160,7 +213,7 @@ impl Layout {
         Some(Layout { lines, ascent, line_height: ascent + metrics.font_bounding_box_descent() })
     }
 
-    /// Its width and height, with room around it.
+    /// Its width and height, including padding.
     fn size(&self) -> [f64; 2] {
         let widest = self.lines.iter().map(|(_, w)| *w).fold(0.0, f64::max);
         [widest + 2.0 * PAD, self.line_height * self.lines.len() as f64 + 2.0 * PAD]
@@ -175,20 +228,9 @@ impl Host for Browser {
 
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         let Some(run) = JOBS.with(|jobs| jobs.borrow().clone()) else { return Pending::ready(Ok(job.run())) };
-        let bytes = js_sys::Uint8Array::from(&job.into_bytes()[..]);
-        let promise = match run.call1(&JsValue::NULL, &bytes).map(js_sys::Promise::from) {
-            Ok(promise) => promise,
-            Err(error) => return Pending::ready(Err(Error::Unsupported(format!("jobs: {error:?}").into()))),
-        };
         let (pending, resolver) = Pending::new();
-        wasm_bindgen_futures::spawn_local(async move {
-            let answer = wasm_bindgen_futures::JsFuture::from(promise).await;
-            resolver.resolve(
-                answer
-                    .map(|bytes| js_sys::Uint8Array::new(&bytes).to_vec())
-                    .map_err(|error| Error::Unsupported(format!("a job failed: {error:?}").into())),
-            );
-        });
+        QUEUE.with(|queue| queue.borrow_mut().push(job, resolver));
+        pump(&run);
         pending
     }
 
@@ -209,7 +251,7 @@ impl Host for Browser {
                 canvas.set_width(canvas.width().max(size[0].next_power_of_two()));
                 canvas.set_height(canvas.height().max(size[1].next_power_of_two()));
             }
-            // Resizing resets the context.
+            // Resizing the canvas resets the context's state, so set it again.
             context.set_font(&format!("{}px {}", run.size_px, run.font));
             context.set_text_baseline("alphabetic");
             context.set_fill_style_str("#fff");
@@ -226,7 +268,7 @@ impl Host for Browser {
 
     fn encoder(&self, encoding: &Encoding) -> crate::Result<Box<dyn Encoder>> {
         let unsupported =
-            || Error::Unsupported("videos in a browser encode with WebCodecs, which the page did not give".into());
+            || Error::Unsupported("browser videos need a WebCodecs encoder, and the page provided none".into());
         let create = ENCODERS.with(|encoders| encoders.borrow().clone()).ok_or_else(unsupported)?;
         let [width, height] = encoding.size;
         let args = js_sys::Array::of4(
@@ -235,15 +277,14 @@ impl Host for Browser {
             &encoding.fps.into(),
             &f64::from(encoding.bitrate).into(),
         );
-        let encoder = create
-            .apply(&JsValue::NULL, &args)
-            .map_err(|error| Error::Unsupported(format!("no encoder for {width}×{height}: {error:?}").into()))?;
+        let encoder =
+            create.apply(&JsValue::NULL, &args).map_err(|error| failure(&error, "the encoder failed to start"))?;
         Ok(Box::new(Script(encoder)))
     }
 }
 
-/// The bytes `request` asks for: none where there is nothing at its URL, and only the range asked for
-/// where a server sends every byte.
+/// Fetches the bytes of `request`. Returns no bytes on status 204 or 404. When a server ignores the
+/// requested range and sends every byte, slices out the range.
 async fn fetched(request: &Request) -> crate::Result<Vec<u8>> {
     let failed = |what: &str| Error::Io(format!("{} could not be read: {what}", request.url).into());
     let init = web_sys::RequestInit::new();
@@ -254,19 +295,19 @@ async fn fetched(request: &Request) -> crate::Result<Vec<u8>> {
     }
     init.set_headers(&headers);
     let fetch = web_sys::Request::new_with_str_and_init(&request.url, &init).map_err(|e| failed(&format!("{e:?}")))?;
-    // The page's fetch, or a worker's.
+    // Use the window's fetch, or the worker's.
     let global = js_sys::global();
     let promise = match (global.dyn_ref::<web_sys::Window>(), global.dyn_ref::<web_sys::WorkerGlobalScope>()) {
         (Some(window), _) => window.fetch_with_request(&fetch),
         (None, Some(worker)) => worker.fetch_with_request(&fetch),
-        (None, None) => return Err(failed("no fetch here")),
+        (None, None) => return Err(failed("no fetch in this context")),
     };
     let response = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(|e| failed(&format!("{e:?}")))?;
     let response: web_sys::Response = response.dyn_into().map_err(|_| failed("not a response"))?;
     match response.status() {
         200 | 206 => {}
         204 | 404 => return Ok(Vec::new()),
-        status => return Err(failed(&format!("status {status}"))),
+        status => return Err(failed(&format!("HTTP status {status}"))),
     }
     let body = response.array_buffer().map_err(|e| failed(&format!("{e:?}")))?;
     let body = wasm_bindgen_futures::JsFuture::from(body).await.map_err(|e| failed(&format!("{e:?}")))?;

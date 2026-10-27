@@ -1,22 +1,22 @@
-// Labels: where a labeled row's text hangs, how large it draws, and whether it can show. Draws place
-// every label from its anchor each frame, so labels follow the camera and the rows they name exactly;
-// placement measures the same box only to decide which labels give way. Text is a distance field set
-// at `TEXT_BASE`, drawn at any size: CSS pixels, or units in a diagram, where text scales with the
-// sheet and fades out once too small to read.
+// Labels: where a labeled row's text is anchored, its size, the space it claims, and whether it can
+// show. Draws place every label from its anchor each frame, so labels track the camera and their
+// rows exactly. The label passes measure the same boxes to claim space and find the visible texts.
+// Text is a distance field set at `TEXT_BASE` and drawn at any size: in CSS pixels, or in a diagram
+// in length units. In a diagram, text scales with the sheet and fades out once too small to read.
 
 import package::lib::types::{
-    POINTS, STROKES, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, PATH_GEOMETRY, TEXT_BASE, TEXT_SPREAD, HEADER_BAND,
-    SPACE_DIAGRAM,
+    POINTS, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, HEADER_BAND, SPACE_DIAGRAM,
+    LABEL_CELL, LABEL_MARGIN, LABEL_GUESS,
 };
 import package::lib::bind::{frame, eye, mark};
 import package::lib::mark::PRIMITIVE;
-import package::lib::project::{to_screen, clip_of};
 import package::lib::points::point;
-import package::lib::path::{PATH, Segment, segment_screen, path_count};
-import package::lib::triangles::{triangle_corner, area_anchor};
+import package::lib::path::PATH;
+import package::lib::center::{row_center, point_center};
+import package::lib::drawn::held_row;
 
-// Where row `row`'s label hangs, CSS pixels, how it aligns to that point (0 left or top, 0.5
-// centered), the room it must fit in (none when zero), and whether its row shows.
+// A label's anchor point in CSS pixels, its alignment there (0 left or top, 0.5 centered), the room
+// it must fit in (no limit when zero), and whether its row shows.
 struct Anchor {
     at: vec2f,
     align: vec2f,
@@ -24,75 +24,49 @@ struct Anchor {
     shown: bool,
 }
 
-// CSS pixels a size in length units spans this frame.
+// A size in length units, in CSS pixels at this frame's zoom.
 fn length_px(size: f32) -> f32 {
     return size * frame.unit;
 }
 
-fn anchor(row: u32) -> Anchor {
-    var a: Anchor;
-    switch PRIMITIVE {
-        case POINTS: {
-            let p = point(row);
-            a.shown = p.shown;
-            let center = to_screen(p.clip);
-            let text = length_px(mark.label_size);
-            if (mark.flags & GROUP) != 0u {
-                // A group's title sits in its header band, inset from the left.
-                let header = text * HEADER_BAND;
-                a.at = center + vec2f(-p.half.x + frame.group_padding, -p.half.y + 0.5 * header);
-                a.align = vec2f(0.0, 0.5);
-                a.room = vec2f(2.0 * (p.half.x - frame.group_padding), header);
-            } else if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
-                // A block, or any marker given a width and height, holds its label while it fits.
-                a.at = center;
-                a.align = vec2f(0.5);
-                a.room = vec2f(2.0 * p.half.x - text, 2.0 * p.half.y);
-            } else {
-                a.at = center + vec2f(p.half.x + 0.4 * text, 0.0);
-                a.align = vec2f(0.0, 0.5);
-            }
+// The label anchor of drawn row `item`: centered on the row's center, except beside a point's
+// marker, inside a block or a sized marker, in a group's header band, and beside a trace's last
+// sample.
+fn anchor(item: u32) -> Anchor {
+    var a = Anchor(vec2f(0.0), vec2f(0.5), vec2f(0.0), false);
+    if PRIMITIVE != POINTS {
+        let c = row_center(item);
+        a.at = c.at;
+        a.shown = c.shown;
+        if PATH == PATH_TRACE {
+            a.at.x += 6.0;
+            a.align = vec2f(0.0, 0.5);
         }
-        case STROKES: {
-            let count = path_count(row);
-            // A trace labels its last sample; other paths their middle.
-            let last = PATH == PATH_TRACE;
-            let on = segment_screen(Segment(row, select(count / 2u, max(count, 1u) - 1u, last), 0.0));
-            a.shown = count > 0u && on.shown;
-            if last {
-                a.at = on.b + vec2f(6.0, 0.0);
-                a.align = vec2f(0.0, 0.5);
-            } else {
-                a.at = 0.5 * (on.a + on.b);
-                a.align = vec2f(0.5);
-            }
-        }
-        default: {
-            a.align = vec2f(0.5);
-            if PATH == PATH_GEOMETRY {
-                // An area's label hangs inside its largest polygon, farthest from its edges.
-                let c = area_anchor(row);
-                let clip = clip_of(c.world);
-                a.shown = c.shown && c.ahead && clip.w > 0.0;
-                a.at = to_screen(clip);
-                return a;
-            }
-            var sum = vec2f(0.0);
-            a.shown = true;
-            for (var k = 0u; k < 3u; k++) {
-                let c = triangle_corner(row, k);
-                let clip = clip_of(c.world);
-                a.shown = a.shown && c.shown && c.ahead && clip.w > 0.0;
-                sum += to_screen(clip);
-            }
-            a.at = sum / 3.0;
-        }
+        return a;
+    }
+    let p = point(held_row(item));
+    let c = point_center(p);
+    a.shown = c.shown;
+    let text = length_px(mark.label_size);
+    if (mark.flags & GROUP) != 0u {
+        // A group's title sits in its header band, inset from the left.
+        let header = text * HEADER_BAND;
+        a.at = c.at + vec2f(-p.half.x + frame.group_padding, -p.half.y + 0.5 * header);
+        a.align = vec2f(0.0, 0.5);
+        a.room = vec2f(2.0 * (p.half.x - frame.group_padding), header);
+    } else if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
+        // A block, or a marker with a width and height, shows its label inside if it fits.
+        a.at = c.at;
+        a.room = vec2f(2.0 * p.half.x - text, 2.0 * p.half.y);
+    } else {
+        a.at = c.at + vec2f(p.half.x + 0.4 * text, 0.0);
+        a.align = vec2f(0.0, 0.5);
     }
     return a;
 }
 
-// How much text `px` CSS pixels tall shows: in a diagram it fades out as the view zooms away from
-// it; elsewhere it is set at a size that reads.
+// Opacity of text `px` CSS pixels tall. In a diagram, text fades out as the view zooms out.
+// Elsewhere text has a fixed, readable size, so it always shows.
 fn legibility(px: f32) -> f32 {
     if frame.space != SPACE_DIAGRAM {
         return 1.0;
@@ -100,9 +74,8 @@ fn legibility(px: f32) -> f32 {
     return smoothstep(3.5, 6.0, px);
 }
 
-// A run of text placed on screen: the text's box and the quad around it, which reaches over the
-// distance field's spread, in CSS pixels; its corners in the atlas, texels; and CSS pixels per
-// texel.
+// A run of text placed on screen: the text's box and its quad, which extends over the distance
+// field's spread (both in CSS pixels), its atlas corners in texels, and CSS pixels per texel.
 struct Text {
     lo: vec2f,
     hi: vec2f,
@@ -113,12 +86,13 @@ struct Text {
     scale: f32,
 }
 
-// A rectangle's corner in the atlas: 16 bits of x, then 16 of y.
+// An atlas corner packed in one word: x in the low 16 bits, y in the high 16.
 fn corner(word: u32) -> vec2f {
     return vec2f(f32(word & 0xffffu), f32(word >> 16u));
 }
 
-// The run at atlas corners `uv0` and `uv1`, set `size` CSS pixels tall, hung at `at` by `align`.
+// The run at atlas corners `uv0` and `uv1`, drawn at size `size` in CSS pixels, aligned by `align`
+// at point `at`.
 fn text_at(uv0: u32, uv1: u32, size: f32, at: vec2f, align: vec2f) -> Text {
     var t: Text;
     t.uv_lo = corner(uv0);
@@ -133,12 +107,61 @@ fn text_at(uv0: u32, uv1: u32, size: f32, at: vec2f, align: vec2f) -> Text {
     return t;
 }
 
-// Whether text of extent `extent` fits `room`; no room holds any.
+// Whether text of extent `extent` fits `room`. A room of zero width fits any text.
 fn fits(extent: vec2f, room: vec2f) -> bool {
     return room.x <= 0.0 || all(extent <= room);
 }
 
-// Whether a box reaches into the view.
+// Whether a box overlaps the view.
 fn in_view(lo: vec2f, hi: vec2f) -> bool {
     return all(hi > vec2f(0.0)) && all(lo < eye.size);
+}
+
+// Labels beside their rows compete for space. Each label writes its claim key into the cells its
+// box covers, and each cell keeps the largest key. A label shows only if it keeps every cell it
+// covers, so where labels would overlap, the label of the row drawn on top shows. The claims depend
+// on this frame alone. A label inside its row (a block's label, or a group's title) or in a diagram
+// does not compete.
+
+// Whether the label anchored at `a` competes for space with other labels.
+fn claims_room(a: Anchor) -> bool {
+    return a.room.x <= 0.0 && frame.space != SPACE_DIAGRAM;
+}
+
+// The claim key of drawn row `i`. Later marks, then later rows, draw on top, so their keys are
+// larger. Never 0, which marks a cell no label claimed.
+fn claim_key(i: u32) -> u32 {
+    return (min(mark.index, 255u) << 24u) | min(i + 1u, 0xffffffu);
+}
+
+// The box a label claims: its text's box once set, else space for a short text at its anchor.
+fn claimed(a: Anchor, uv0: u32, uv1: u32, size: f32) -> Text {
+    if uv0 != 0u || uv1 != 0u {
+        return text_at(uv0, uv1, size, a.at, a.align);
+    }
+    var t: Text;
+    t.lo = a.at - vec2f(LABEL_GUESS * size, size) * a.align;
+    t.hi = t.lo + vec2f(LABEL_GUESS * size, size);
+    return t;
+}
+
+// The claim grid's cells a box covers: its first and last column and row (none when it lies off the
+// grid), and the grid's width in cells.
+struct Cells {
+    first: vec2i,
+    last: vec2i,
+    width: i32,
+}
+
+fn cells_of(t: Text) -> Cells {
+    let margin = LABEL_MARGIN * eye.size;
+    let size = vec2i(ceil((eye.size + 2.0 * margin) / LABEL_CELL));
+    let first = max(vec2i(floor((t.lo + margin) / LABEL_CELL)), vec2i(0));
+    let last = min(vec2i(floor((t.hi + margin) / LABEL_CELL)), size - 1);
+    return Cells(first, last, size.x);
+}
+
+// Cell `x`, `y`'s index in the grid of `c`.
+fn cell(c: Cells, x: i32, y: i32) -> u32 {
+    return u32(y * c.width + x);
 }

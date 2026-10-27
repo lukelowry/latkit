@@ -4,17 +4,18 @@ use crate::gpu::shaders as wgsl;
 use crate::{Error, Kind, Name, Result};
 
 mark!(
-/// Rows drawn as the areas a polygon field holds: parcels, states, lakes, the land and water of a
-/// map. The view cuts each row's polygons into triangles once, off the frame when they are large;
-/// on the earth they bend with the globe and stay whole across the antimeridian. Outline areas with
-/// a [`Lines`](crate::Lines) mark of the same table, which draws their rings.
+/// Rows drawn as the areas of a polygon field: parcels, states, lakes, the land and water of a map.
+/// The view triangulates each row's polygons once, in the background when they are large. On the
+/// earth, areas follow the globe's curve and stay unbroken across the antimeridian. To outline
+/// areas, add a [`Lines`](crate::Lines) mark of the same table. It draws their rings.
 ///
 /// ```
 /// # use latkit::{field, Areas, Colormap};
 /// let states = Areas::of("map", "states").color(field("load").colormap(Colormap::MAKO));
 /// ```
-Areas {
-    /// The polygon field each row fills: one polygon's rings, or polygons. `geometry` unless set.
+Areas("areas") {
+    /// The polygon field each row fills. It holds one polygon's rings or several polygons. Defaults
+    /// to the field named `geometry`.
     geometry: Option<Name>,
 });
 
@@ -24,15 +25,15 @@ impl Areas {
         Areas { style: Style::new(data.into(), table.into()), geometry: None }
     }
 
-    /// The polygon field each row fills: one polygon's rings, or polygons. Unless set, the field
-    /// `geometry`.
+    /// Sets the polygon field each row fills. It holds one polygon's rings or several polygons.
+    /// Defaults to the field named `geometry`.
     #[must_use]
     pub fn geometry(mut self, field: impl Into<Name>) -> Areas {
         self.geometry = Some(field.into());
         self
     }
 
-    /// The field each row fills.
+    /// The polygon field each row fills.
     pub(crate) fn field(&self) -> Name {
         self.geometry.clone().unwrap_or_else(|| GEOMETRY.into())
     }
@@ -51,14 +52,14 @@ impl Areas {
             None => c.theme("color", wgsl::THEME_AREA, color)?,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::AREA_FLAGS, bit: wgsl::VISIBLE })?;
-        let mut drawing = Drawing::new(MarkKind::Areas, wgsl::AREA_WORDS);
+        let mut drawing = Drawing::new(MarkKind::Areas);
         drawing.geometry = c.derived_path(&triangles_of(&field));
         Ok(drawing)
     }
 }
 
-/// The derived field holding the triangles of polygon field `field`: per row the point its label
-/// hangs from, then three points per triangle.
+/// The name of the derived field that holds the triangles of polygon field `field`. Each row holds
+/// its label's anchor point, then three points per triangle.
 pub(crate) fn triangles_of(field: &str) -> Name {
     format!("{field}.triangles").into()
 }

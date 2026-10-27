@@ -1,22 +1,20 @@
 /**
- * The documentation's performance table, from a committed baseline: each scenario at the largest
- * size it ran, what opening took, and what a frame took while it moved and was picked from.
+ * Writes the documentation's performance table, docs/_static/performance.csv, from a committed
+ * times baseline. Each row is a scenario at the largest size it ran: its `load` time, the slowest
+ * CPU and GPU frame times among its moving phases, and its slowest pick or hover.
  *
  *   node benchmark/docs.ts [baselines/MACHINE.json]
+ *
+ * Without an argument it reads the last machine baseline in sorted file name order.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { TimeBaseline } from './judge.ts';
 import { scenarios } from './page/scenarios.ts';
 
-interface Measured {
-  time: number;
-  gpu: number;
-}
-interface Baseline {
-  machine: string;
-  times: Record<string, Record<string, Record<string, Measured>>>;
-}
+/** One size's phases of a scenario, each with its times. */
+type Phases = TimeBaseline['times'][string][number];
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const baselines = path.join(here, 'baselines');
@@ -30,15 +28,15 @@ const file =
       .sort()
       .at(-1)!,
   );
-const baseline = JSON.parse(fs.readFileSync(file, 'utf8')) as Baseline;
+const baseline = JSON.parse(fs.readFileSync(file, 'utf8')) as TimeBaseline;
 
-/** Phases that run every frame, as the view moves or plays. */
+/** Phases that act every frame while the view moves or plays. */
 const MOVING = ['pan', 'zoom', 'move', 'scrub', 'narrow', 'stream'];
 /** Phases that answer the pointer. */
 const PICKING = ['pick', 'hover'];
 
 const ms = (v: number) => (v >= 100 ? Math.round(v).toLocaleString('en-US') : v.toFixed(1));
-const most = (phases: Record<string, Measured>, names: string[], of: (m: Measured) => number) => {
+const most = (phases: Phases, names: string[], of: (m: Phases[string]) => number) => {
   const found = names.filter((n) => phases[n]).map((n) => of(phases[n]!));
   return found.length ? ms(Math.max(...found)) : '';
 };
@@ -52,7 +50,7 @@ for (const [name, sizes] of Object.entries(baseline.times)) {
     .map(Number)
     .sort((a, b) => a - b)
     .at(-1)!;
-  const phases = sizes[String(largest)]!;
+  const phases = sizes[largest]!;
   rows.push([
     scenario.about[0]!.toUpperCase() + scenario.about.slice(1),
     `${largest.toLocaleString('en-US')} ${scenario.unit}`,

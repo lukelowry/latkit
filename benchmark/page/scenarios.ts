@@ -1,52 +1,71 @@
 /**
- * Every scenario: what it sweeps, the scene and data at each size, and what it does. Each phase
- * declares how its cost may grow with size, so the sweep checks the README's rules: CPU per frame
- * stays flat in the rows, a one-row change costs the same at any size, restyling moves no data,
- * views share pages, and loading grows no faster than the data. `init`, `data`, and `load` come
- * first in every scenario, and idle frames are counted after the last.
+ * The benchmark scenarios: the sizes each sweeps, its scene and data at each size, and its phases.
+ * Each phase declares how its cost may grow with size. Together the phases check that:
+ *
+ * - CPU time per frame stays flat as rows grow;
+ * - a one-row change costs the same at any size;
+ * - restyling uploads no data;
+ * - views share pages;
+ * - returning the camera to where it was packs, uploads, and evaluates nothing;
+ * - appending never thins what draws;
+ * - loading grows no faster than the data.
+ *
+ * Every scenario starts with `init`, `data`, and `load`, and idle frames are counted after its last
+ * phase.
  */
-import { field, type Budget, type Camera, type ColormapName, type Scene, type Space } from 'latkit';
+import {
+  Shot,
+  field,
+  type Budget,
+  type Camera,
+  type ColormapName,
+  type Scene,
+  type Space,
+} from 'latkit';
 import * as make from './data.ts';
-import { deadline, type Cost, type Stage, type Write } from './stage.ts';
+import type { Cost, Stage, Write } from './stage.ts';
 
 export interface Scenario {
-  /** What it stresses. */
+  /** What the scenario stresses. */
   about: string;
-  /** What a size counts, and the sizes swept, smallest first; `--quick` runs the smallest. */
+  /** What a size counts, such as rows or buses. */
   unit: string;
+  /** The sizes swept, smallest first. `--quick` runs only the smallest. */
   sizes: readonly number[];
   build(size: number): Built;
   phases: readonly Phase[];
-  /** How `load` may grow; with the data, in time and bytes, unless set. */
+  /** How `load` may grow. Defaults to `LOAD`: linear in time and bytes, like the data. */
   load?: Order;
-  /** Views of one GPU drawing the scene; one unless set. */
+  /** Number of views on one GPU drawing the scene. Defaults to one. */
   views?(size: number): number;
-  /** The GPU's budget, where the scenario is about it. */
+  /** The GPU budget, for a scenario that needs its own. */
   budget?: Budget;
-  /** Run in a fresh browser without a shader cache: what a first visit costs. */
+  /** Run in a fresh browser without a shader cache, to measure a first visit. */
   cold?: boolean;
-  /** Its data is fetched as the camera asks, so what it uploads moves with the frame a fetch lands in. */
+  /** Data is fetched as the camera needs it, so uploads vary with the frame a fetch arrives in. */
   fetches?: boolean;
 }
 
 export interface Built {
   scene: Scene;
-  /** Each dataset, made beforehand, so `data` times latkit alone. */
+  /** A writer per dataset, with arrays made beforehand so `data` times latkit alone. */
   data: Record<string, Write>;
-  /** Vector tiles by dataset name: URL templates the bench server answers. */
+  /** Vector tile URL templates by dataset name, served by the bench server. */
   tiles?: Record<string, string>;
-  /** Where the view looks; it fits everything unless set. */
+  /** The starting camera. The view fits everything if it is not set. */
   camera?: Camera;
 }
 
 /**
- * How a phase's cost may grow with size: 0 not at all, 1 no faster than linearly. `time` is a steady
- * phase's CPU per frame or an action's milliseconds; `bytes` is what it uploaded and what stays
- * resident. A measure left out is held only to the baselines.
+ * How a phase's cost may grow with size: 0 means not at all, 1 means no faster than linearly.
+ * `time` is a steady phase's CPU time per frame, or a once phase's milliseconds. `bytes` limits the
+ * bytes uploaded, and for `load` also the bytes resident unless `resident` is set. A measure left
+ * out is checked only against the baselines.
  */
 export interface Order {
   time?: 0 | 1;
   bytes?: 0 | 1;
+  resident?: 0 | 1;
 }
 
 export interface Phase {
@@ -57,7 +76,7 @@ export interface Phase {
 
 export const LOAD: Order = { time: 1, bytes: 1 };
 export const DECADES = [1e3, 1e4, 1e5, 1e6, 2e6];
-/** Frames a steady phase acts in: past its warm-up, enough for a steady median, and no more. */
+/** Frames a steady phase acts in: enough past its warm-up for a stable median, and no more. */
 export const FRAMES = 40;
 export const HISTORY = 1024;
 type MapCamera = Extract<Camera, { center: unknown }>;
@@ -70,12 +89,10 @@ const dots = (space: Space, colormap: ColormapName = 'viridis', label?: string):
   ease: 0,
   marks: [
     {
-      vertices: {
-        of: ['d', 'Point'],
-        position: ['x', 'y'],
-        color: field('v').colormap(colormap).domain(0, 1),
-        ...(label ? { label: field(label) } : {}),
-      },
+      vertices: ['d', 'Point'],
+      position: ['$x', '$y'],
+      color: field('v').colormap(colormap).domain(0, 1),
+      ...(label ? { label: field(label) } : {}),
     },
   ],
 });
@@ -85,13 +102,11 @@ const grid = (space: Space): Scene => ({
   space,
   ease: 0,
   marks: [
-    { edges: { of: ['g', 'Line'], ends: ['from', 'to'], width: 0.6 } },
+    { edges: ['g', 'Line'], ends: ['from', 'to'], width: 0.6 },
     {
-      vertices: {
-        of: ['g', 'Bus'],
-        position: ['lon', 'lat'],
-        color: field('load').colormap('viridis').domain(0, 1),
-      },
+      vertices: ['g', 'Bus'],
+      position: ['$lon', '$lat'],
+      color: field('load').colormap('viridis').domain(0, 1),
     },
   ],
 });
@@ -99,32 +114,31 @@ const grid = (space: Space): Scene => ({
 const plot: Scene = {
   space: 'plot',
   ease: 0,
-  marks: [{ lines: { of: ['t', 'Signal'], trace: 'v' } }],
+  marks: [{ lines: ['t', 'Signal'], trace: 'v' }],
 };
 
 const sheet: Scene = {
   space: 'diagram',
   ease: 0,
-  layout: { layered: { flow: 'right' } },
+  layout: { layered: { direction: 'right' } },
   marks: [
-    { edges: { of: ['d', 'Net'], route: 'orthogonal' } },
+    { edges: ['d', 'Net'], route: 'orthogonal' },
     {
-      vertices: {
-        of: ['d', 'Block'],
-        marker: 'block',
-        label: { text: 'name' },
-        ports: [
-          ['in', 'left'],
-          ['out', { side: 'right', output: true }],
-        ],
-      },
+      vertices: ['d', 'Block'],
+      marker: 'block',
+      label: { text: '$name' },
+      ports: [
+        ['in', 'left'],
+        ['out', { side: 'right', output: true }],
+      ],
     },
   ],
 };
 
 // Phases.
 
-/** Pans and zooms gently about where the views looked, a frame at a time, back to where it began. */
+/** Pans and zooms gently around the starting camera, a step each frame, looping back to the
+ * start. */
 const pan = (order: Order = { time: 0 }): Phase => ({
   name: 'pan',
   order,
@@ -143,7 +157,8 @@ const pan = (order: Order = { time: 0 }): Phase => ({
   },
 });
 
-/** Zooms two levels in and back: labels give way, tiles refine. */
+/** Zooms two levels in and back out, which asks for the texts of labels coming into view and
+ * refines tiles. */
 const zoom = (): Phase => ({
   name: 'zoom',
   order: { time: 0 },
@@ -156,19 +171,60 @@ const zoom = (): Phase => ({
   },
 });
 
-/** Recolors through `scene`'s colormap: the GPU evaluates again; no data moves. */
+/** Zooms two levels in, then back to the start. Only the way back is measured. It draws pages that
+ * are still resident, so it packs, uploads, and evaluates nothing. */
+const revisit = (): Phase => ({
+  name: 'revisit',
+  order: { time: 0, bytes: 0 },
+  run: async (s) => {
+    const start = s.view.camera as MapCamera;
+    await s.once(() => {
+      for (const v of s.views) v.camera = { ...start, zoom: start.zoom + 2 };
+    });
+    return s.once(() => {
+      for (const v of s.views) v.camera = start;
+    });
+  },
+});
+
+/** Recolors through `scene`'s colormap. The GPU evaluates again, but no data is uploaded. */
 const restyle = (scene: Scene): Phase => ({
   name: 'restyle',
   order: { bytes: 0 },
-  run: (s) => s.once(() => s.show(scene)),
+  run: (s) => s.once(() => (s.scene = scene)),
 });
 
-/** Changes one row's value every frame: what one row costs at any size. */
+/** Changes one row's value every frame, to measure what one row costs at any size. */
 const one = (data: string, table: string, name: string): Phase => ({
   name: 'one row',
   order: { time: 0, bytes: 0 },
   run: (s) =>
     s.steady(FRAMES, (i) => s.apply(data, (p) => p.set(table, [i], { [name]: [(i % 10) / 10] }))),
+});
+
+/** Appends a row to `table` every frame, like a feed of new rows. Fails if any view draws fewer
+ * rows than at the start. */
+const append = (
+  data: string,
+  table: string,
+  row: (i: number) => Record<string, number[]>,
+): Phase => ({
+  name: 'append',
+  order: { time: 0 },
+  run: async (s) => {
+    const n = s.count(data, table);
+    const drawn = () => s.views.map((v) => v.stats.drawn);
+    const start = drawn();
+    let thinned = '';
+    const cost = await s.steady(FRAMES, (i) => {
+      const now = drawn();
+      if (!thinned && now.some((d, v) => d < start[v]!))
+        thinned = `${now.join(', ')} drawn, ${start.join(', ')} before`;
+      s.apply(data, (p) => p.set(table, [n + i], row(i)));
+    });
+    if (thinned) throw new Error(`appending reduced the rows drawn: ${thinned}`);
+    return cost;
+  },
 });
 
 /** Changes every row's value at once. */
@@ -182,27 +238,30 @@ const every = (data: string, table: string, name: string): Phase => ({
   },
 });
 
-/** Asks what lies under the middle, as a click does: how long the answer takes. The first ask in a
- * page makes the query's pipelines; later asks reuse them. */
+/** Picks what lies under the middle, as a click does, and measures how long the answer takes. The
+ * first pick in a page creates the query's pipelines, and later picks reuse them. */
 const pick = (): Phase[] => [
   {
     name: 'first pick',
     order: { time: 0, bytes: 0 },
-    run: (s) => s.once(() => s.view.pick(s.middle, 6)),
+    run: (s) => s.once(() => s.view.pick(s.middle, { radius: 6 })),
   },
   {
     name: 'pick',
     order: { time: 0, bytes: 0 },
-    run: (s) => s.once(() => s.view.pick(s.middle, 6)),
+    run: (s) => s.once(() => s.view.pick(s.middle, { radius: 6 })),
   },
 ];
 
-/** Moves the pointer onto a row near the middle and waits for the view to name it. */
+/** Moves the pointer onto a row near the middle and waits for the view's `hovered` event to report
+ * it. */
 const hover = (): Phase => ({
   name: 'hover',
   order: { time: 0, bytes: 0 },
   run: async (s) => {
-    const [hit] = await deadline(s.until(s.view.pick(s.middle, 40)), 10_000, 'a row to hover');
+    const [hit] = await s.until(
+      s.view.pick(s.middle, { radius: 40, signal: AbortSignal.timeout(10_000) }),
+    );
     if (!hit) {
       const seen = { middle: s.middle, camera: s.view.camera, stats: s.view.stats };
       throw new Error(`nothing near the middle to hover: ${JSON.stringify(seen)}`);
@@ -212,7 +271,7 @@ const hover = (): Phase => ({
       return await s.once(
         () =>
           new Promise<void>((resolve) => {
-            const stop = s.view.on('hover', ({ hit: h }) => {
+            const stop = s.view.on('hovered', ({ hit: h }) => {
               told.push(h?.row ?? null);
               if (!h) return;
               stop();
@@ -234,15 +293,18 @@ const hover = (): Phase => ({
   },
 });
 
-/** Selects a hundred rows: the glow, and what dims; a table drawn through tiles keeps them drawn. */
+/** Selects 100 rows, which glow while the rest dim. A paged table keeps the selected rows drawn. */
 const select = (data: string, table: string): Phase => ({
   name: 'select',
   order: { time: 0 },
   run: (s) =>
-    s.once(() => s.view.select([{ data, table, ids: Array.from({ length: 100 }, (_, id) => id) }])),
+    s.once(
+      () => (s.view.selection = [{ data, table, ids: Array.from({ length: 100 }, (_, id) => id) }]),
+    ),
 });
 
-/** Moves every row to a new place at once, easing: CPU per frame while they fly. */
+/** Moves every row to a new position at once, easing, and measures CPU time per frame while they
+ * move. */
 const move = (): Phase => ({
   name: 'move',
   order: { time: 0, bytes: 1 },
@@ -252,7 +314,8 @@ const move = (): Phase => ({
   },
 });
 
-/** Records a frame of every trace each animation frame, as a live feed does, forgetting the oldest. */
+/** Appends a sample to every trace each frame, like a live feed, and forgets samples older than
+ * `HISTORY` frames. */
 const stream = (): Phase => ({
   name: 'stream',
   order: { time: 1, bytes: 1 },
@@ -262,7 +325,8 @@ const stream = (): Phase => ({
   },
 });
 
-/** Moves the coordinate shown across what was recorded: the playhead, and colors read at it. */
+/** Moves the views' `at` coordinate across the recorded span, which moves the playhead and the
+ * colors read at it. */
 const scrub = (): Phase => ({
   name: 'scrub',
   order: { time: 0, bytes: 0 },
@@ -274,8 +338,8 @@ const scrub = (): Phase => ({
   },
 });
 
-/** Narrows the window shown from everything to its last tenth: levels of detail give way, each
- * trace's finer one uploading as it first draws. */
+/** Narrows the visible window from the whole span to its last tenth. Each trace switches to finer
+ * levels of detail, uploading each level as it first draws. */
 const narrow = (order: Order = { time: 0, bytes: 0 }): Phase => ({
   name: 'narrow',
   order,
@@ -287,7 +351,8 @@ const narrow = (order: Order = { time: 0, bytes: 0 }): Phase => ({
   },
 });
 
-/** Renames a block every frame, so it resizes and its tree routes again: an edit at any size. */
+/** Renames a block every frame, which resizes it and routes its tree again, to measure an edit at
+ * any size. */
 const edit = (): Phase => ({
   name: 'edit',
   order: { time: 0, bytes: 0 },
@@ -304,41 +369,43 @@ const arrange = (): Phase => ({
   run: (s) => s.once(() => s.view.arrange()),
 });
 
-/** A shot of every view side by side, the scenario's size in pixels, at 16:9. */
+/** A shot of every view side by side, at 16:9, with about the scenario's size in pixels. */
 function shot(s: Stage) {
   const width = Math.round(Math.sqrt((s.size * 16) / 9) / 4) * 4;
   const height = Math.round((width * 9) / 16 / 2) * 2;
   const n = s.views.length;
-  return new s.latkit.Shot([width, height]).panels(s.views.map((_, i) => [i / n, 0, 1 / n, 1]));
+  const views = s.views.map((view, i) => ({ view, region: [i / n, 0, 1 / n, 1] as const }));
+  return new Shot([width, height], { views });
 }
 
 const image = (): Phase => ({
   name: 'image',
   order: { time: 1 },
-  run: (s) => s.once(() => shot(s).image(s.views)),
+  run: (s) => s.once(() => shot(s).image()),
 });
 
 const png = (): Phase => ({
   name: 'png',
   order: { time: 1 },
   run: async (s) => {
-    const picture = await deadline(shot(s).image(s.views), 60_000, 'a picture');
+    const picture = await shot(s).image({ signal: AbortSignal.timeout(60_000) });
     return s.once(() => picture.encode('png'));
   },
 });
 
-/** Thirty frames of video, turning; held, nothing moves, so frames after the first cost nothing. */
+/** Records 30 frames of video while the camera turns. Unless `moving`, the camera holds still, so
+ * frames after the first need no new drawing. */
 const video = (moving: boolean): Phase => ({
   name: moving ? 'video' : 'held',
   order: moving ? { time: 1 } : {},
   run: (s) => {
     const start = s.view.camera as MapCamera;
     return s.once(async () => {
-      const video = shot(s).video(s.gpu, 30, new WritableStream<Uint8Array>());
+      const video = shot(s).video({ fps: 30, output: new WritableStream<Uint8Array>() });
       for (let i = 0; i < 30; i++) {
         if (moving)
           for (const v of s.views) v.camera = { ...start, bearing: start.bearing + 2 * i };
-        await video.frame(s.views);
+        await video.frame();
       }
       await video.finish();
     });
@@ -364,12 +431,18 @@ export const scenarios: Record<string, Scenario> = {
     phases: [
       pan(),
       zoom(),
+      revisit(),
       restyle(dots('plane', 'magma')),
       one('d', 'Point', 'v'),
       every('d', 'Point', 'v'),
       ...pick(),
       hover(),
       select('d', 'Point'),
+      append('d', 'Point', (i) => ({
+        x: [((i * 37) % 100) / 100],
+        y: [((i * 53) % 100) / 100],
+        v: [0.5],
+      })),
     ],
   },
   grid: {
@@ -380,13 +453,25 @@ export const scenarios: Record<string, Scenario> = {
       scene: grid({ earth: { projection: 'globe' } }),
       data: { g: make.lattice(n) },
     }),
-    phases: [pan(), zoom(), one('g', 'Bus', 'load'), ...pick(), hover()],
+    phases: [
+      pan(),
+      zoom(),
+      revisit(),
+      one('g', 'Bus', 'load'),
+      ...pick(),
+      hover(),
+      append('g', 'Bus', (i) => ({
+        lon: [-170 + (340 * ((i * 37) % 100)) / 100],
+        lat: [-60 + (120 * ((i * 53) % 100)) / 100],
+        load: [0.5],
+      })),
+    ],
   },
   labels: {
-    about: 'every vertex labeled: placement, collisions, and the texts set',
+    about: 'every vertex labeled: the texts in view found, set, and drawn',
     unit: 'rows',
-    // From ten thousand rows on, more labels show than a frame sets texts for, so a frame's CPU
-    // holds at the text budget however many rows are labeled.
+    // From 10,000 rows on, more labels show than a frame sets texts for, so a frame's CPU time
+    // stays at the text budget however many rows are labeled.
     sizes: [1e4, 1e5, 1e6],
     build: (n) => ({
       scene: dots('plane', 'viridis', 'name'),
@@ -403,8 +488,8 @@ export const scenarios: Record<string, Scenario> = {
         space: 'plane',
         ease: 0,
         marks: [
-          { edges: { of: ['d', 'Link'], ends: ['from', 'to'] } },
-          { vertices: { of: ['d', 'Point'], position: ['x', 'y'] } },
+          { edges: ['d', 'Link'], ends: ['from', 'to'] },
+          { vertices: ['d', 'Point'], position: ['$x', '$y'] },
         ],
       },
       data: { d: make.lanes(n) },
@@ -417,15 +502,13 @@ export const scenarios: Record<string, Scenario> = {
     sizes: [1e2, 1e3, 1e4, 3e4],
     build: (n) => ({
       scene: {
-        space: 'mercator',
+        space: 'earth',
         ease: 0,
         marks: [
           {
-            areas: {
-              of: ['m', 'Region'],
-              geometry: 'rings',
-              color: field('v').colormap('viridis').domain(0, 1),
-            },
+            areas: ['m', 'Region'],
+            geometry: 'rings',
+            color: field('v').colormap('viridis').domain(0, 1),
           },
         ],
       },
@@ -434,15 +517,15 @@ export const scenarios: Record<string, Scenario> = {
     phases: [pan(), zoom(), one('m', 'Region', 'v'), ...pick()],
   },
   tiles: {
-    about: 'vector tiles fetched as the camera asks for them, from a local server',
+    about: 'vector tiles fetched from a local server as the camera needs them',
     unit: 'squares a tile',
     sizes: [16, 256, 4096],
     fetches: true,
     build: (n) => ({
       scene: {
-        space: 'mercator',
+        space: 'earth',
         ease: 0,
-        marks: [{ areas: { of: ['t', 'cells'], color: '#4a7fb5' } }],
+        marks: [{ areas: ['t', 'cells'], color: '#4a7fb5' }],
       },
       data: {},
       tiles: { t: `${location.origin}/tiles/${n}/{z}/{x}/{y}.mvt` },
@@ -462,7 +545,7 @@ export const scenarios: Record<string, Scenario> = {
     unit: 'traces',
     sizes: [10, 1e2, 1e3, 1e4],
     build: (n) => ({ scene: plot, data: { t: make.traces(n, HISTORY) } }),
-    // Every trace narrowed uploads its finer level.
+    // Narrowing uploads each trace's finer level, so its bytes grow with the traces.
     phases: [stream(), scrub(), narrow({ time: 0, bytes: 1 }), hover()],
   },
   history: {
@@ -484,15 +567,16 @@ export const scenarios: Record<string, Scenario> = {
     unit: 'views',
     sizes: [1, 2, 4, 8],
     views: (n) => n,
-    // Room for eight views' own rows, which the views' shares of a budget hold together, so the
-    // bytes that grow would be pages copied.
+    // A budget large enough that the views' shares of it fit the per-row data of eight views.
+    // Each view keeps its own per-row data, so resident bytes grow with the views. The pages are
+    // shared, so uploads do not.
     budget: { bytes: 1024 * 2 ** 20, uploadPerFrame: 32 * 2 ** 20 },
-    load: { time: 1, bytes: 0 },
+    load: { time: 1, bytes: 0, resident: 1 },
     build: () => ({ scene: grid('plane'), data: { g: make.lattice(1e5) } }),
     phases: [pan({ time: 1, bytes: 0 })],
   },
   budget: {
-    about: 'a 16 MiB budget: what draws fits, through tiles, and nothing fails',
+    about: 'a 16 MiB budget: paged tables fit, and nothing fails',
     unit: 'buses',
     sizes: [1e5, 1e6, 2e6],
     budget: { bytes: 16 * 2 ** 20, uploadPerFrame: 4 * 2 ** 20 },

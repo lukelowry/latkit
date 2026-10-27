@@ -3,11 +3,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const { jobs } = await import(
-  process.env.LATKIT_TEST_PACKAGE
-    ? pathToFileURL(path.join(process.env.LATKIT_TEST_PACKAGE, 'dist/jobs.js')).href
-    : new URL('../src/jobs.ts', import.meta.url).href
-);
+const directory = process.env.LATKIT_TEST_PACKAGE ?? path.resolve(import.meta.dirname, '..');
+const { jobs } = await import(pathToFileURL(path.join(directory, 'dist/jobs.js')).href);
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 
@@ -69,7 +66,7 @@ test('failed startup, malformed messages, and timeouts reject instead of hanging
   const message = assert.rejects(run(new Uint8Array()), /read worker/);
   workers[1].onmessageerror();
   await message;
-  const timeout = assert.rejects(run(new Uint8Array()), /timed out/);
+  const timeout = assert.rejects(run(new Uint8Array()), { code: 'timeout' });
   t.mock.timers.tick(60_000);
   await timeout;
   assert(workers.every((worker) => worker.terminated));
@@ -94,7 +91,7 @@ test('worker construction failure rejects, and later calls can recover', async (
   t.mock.timers.tick(30_000);
 });
 
-test('queued jobs continue after a busy worker fails', async (t) => {
+test('concurrent jobs run on separate workers, fail alone, and reuse idle ones', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const workers = [];
   const run = jobs(module, () => {
@@ -102,18 +99,19 @@ test('queued jobs continue after a busy worker fails', async (t) => {
     workers.push(worker);
     return worker;
   });
-  const answers = Array.from({ length: 8 }, (_, i) => run(new Uint8Array([i])));
-  const settled = Promise.allSettled(answers);
-  const limit = workers.length;
-  assert(limit >= 1 && limit <= 4);
+  const lost = assert.rejects(run(new Uint8Array([0])), /lost worker/);
+  const kept = run(new Uint8Array([1]));
+  assert.equal(workers.length, 2, 'latkit hands over only jobs that can run, so none queue here');
   workers[0].onerror({ preventDefault() {}, message: 'lost worker' });
-  for (const worker of workers) {
-    if (worker.terminated) continue;
-    worker.answer({ ready: true });
-    for (let i = 0; i < 8; i++) worker.answer({ bytes: new Uint8Array([1]) });
-  }
-  const results = await settled;
-  assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+  await lost;
+  workers[1].answer({ ready: true });
+  workers[1].answer({ bytes: new Uint8Array([1]) });
+  assert.deepEqual(await kept, new Uint8Array([1]));
+  const again = run(new Uint8Array([2]));
+  assert.equal(workers.length, 2, 'the idle worker takes the next job');
+  assert.deepEqual(workers[1].sent.at(-1), new Uint8Array([2]));
+  workers[1].answer({ bytes: new Uint8Array([3]) });
+  assert.deepEqual(await again, new Uint8Array([3]));
   t.mock.timers.tick(30_000);
   assert(workers.every((worker) => worker.terminated));
 });

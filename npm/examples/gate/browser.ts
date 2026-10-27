@@ -1,16 +1,18 @@
 /**
- * What the gate and the benchmark share: Chrome to drive, and deadlines every wait races.
+ * Helpers shared by the gate and the benchmark: serving a page, launching Chrome, collecting a
+ * page's errors, and deadlines for every wait.
  */
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium, type Browser } from 'playwright-core';
+import { chromium, type Browser, type Page } from 'playwright-core';
+import { createServer } from 'vite';
 
 /** Milliseconds any one step may take before giving up on it. */
 export const STEP = 60_000;
 
-/** Rejects after `ms` with what timed out. */
+/** Races `work` against a timer that rejects after `ms` with an error naming `step`. */
 export function deadline<T>(work: Promise<T>, ms: number, step: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<never>((_, reject) => {
@@ -19,7 +21,51 @@ export function deadline<T>(work: Promise<T>, ms: number, step: string): Promise
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-/** Chrome to drive: `$LATKIT_CHROME`, or the newest Chromium in Playwright's browser cache. */
+/** A Vite dev server, and the address it serves at. */
+export interface Served {
+  readonly url: string;
+  /** Stops the server, waiting at most 10 s. */
+  close(): Promise<void>;
+}
+
+/** Serves the Vite project in `root` with its `vite.config.ts`, at `port` or the next free port.
+ * `what` names it in errors. */
+export async function serve(root: string, port: number, what: string): Promise<Served> {
+  const server = await deadline(
+    createServer({
+      root,
+      configFile: path.join(root, 'vite.config.ts'),
+      logLevel: 'error',
+      server: { port, strictPort: false },
+    }),
+    STEP,
+    `configure ${what}`,
+  );
+  const close = () => deadline(server.close(), 10_000, `stop serving ${what}`).catch(() => {});
+  try {
+    await deadline(server.listen(), STEP, `serve ${what}`);
+    const url = server.resolvedUrls?.local[0];
+    if (!url) throw new Error(`${what} has no address`);
+    return { url, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+/** Collects `page`'s uncaught errors and console errors as they happen, each cut to 300
+ * characters. */
+export function errorsOf(page: Page): string[] {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`page: ${error.message.slice(0, 300)}`));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(`console: ${message.text().slice(0, 300)}`);
+  });
+  return errors;
+}
+
+/** Returns the path of the Chrome to drive: `$LATKIT_CHROME`, or else the newest Chromium in
+ * Playwright's browser cache. Throws if there is none. */
 export function chrome(): string {
   const given = process.env.LATKIT_CHROME;
   if (given) return given;
@@ -55,20 +101,20 @@ export function chrome(): string {
   );
 }
 
-/** A Chrome being driven, and how it ends. */
+/** A launched Chrome. */
 export interface Chrome {
   browser: Browser;
   /**
-   * Ends Chrome: politely within seconds, else by killing its processes. A page stuck on its GPU
-   * never closes politely, and a Chrome left behind keeps the GPU busy under the next one.
+   * Closes Chrome, or kills its processes if it has not closed within 5 s. A page stuck on the GPU
+   * never closes normally, and a leftover Chrome would keep the GPU busy during the next one.
    */
   close(): Promise<void>;
 }
 
 /**
- * WebGPU on SwiftShader, which draws on the CPU, so no shader can hang the machine's GPU. These
- * override Chrome's own GPU checks, so a real GPU never gets them. ANGLE draws on SwiftShader too on
- * Linux, as its GPU-less CI needs; on Windows that leaves WebGPU no adapter at all.
+ * Flags that run WebGPU on SwiftShader, which draws on the CPU, so no shader can hang the machine's
+ * GPU. They override Chrome's own GPU checks, so they are never passed with a real GPU. On Linux,
+ * ANGLE uses SwiftShader too, as GPU-less CI needs. On Windows that flag leaves WebGPU no adapter.
  */
 const SOFTWARE = [
   '--enable-unsafe-webgpu',
@@ -81,13 +127,14 @@ const SOFTWARE = [
 ];
 
 /**
- * A machine with two GPUs draws on its fast one, every launch: Chrome ignores WebGPU's
- * `powerPreference` on Windows, and picks either otherwise, so times and limit-bound work would
- * compare two devices.
+ * Makes a machine with two GPUs draw on the fast one on every launch. Chrome ignores WebGPU's
+ * `powerPreference` on Windows and may pick either GPU elsewhere, so times and limit-bound work
+ * would otherwise compare two devices.
  */
 const HARDWARE = ['--force_high_performance_gpu'];
 
-/** Chrome, headless, with `args` besides: on SwiftShader when `software`, as Linux always is. */
+/** Launches headless Chrome with the extra `args`. It draws on SwiftShader when `software`, which
+ * defaults to true on Linux. */
 export async function launch(
   args: readonly string[] = [],
   software = process.platform === 'linux',

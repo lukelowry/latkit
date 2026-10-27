@@ -1,24 +1,47 @@
+/// <reference lib="dom" preserve="true" />
+/// <reference lib="esnext.disposable" preserve="true" />
 /**
- * Scenes, expressions, and patches are plain data, usable without WebAssembly. Call loadLatkit() to
- * read data and draw.
+ * latkit: columnar data drawn with WebGPU.
+ *
+ * Scenes, expressions, and patches are plain data and need no WebAssembly. Datasets, views,
+ * pictures, and the colormap functions do, so call `await load()` first. Every `Handle` works with
+ * `using`. The references above let the browser types latkit uses (canvases, `Blob`, `Response`,
+ * `WebAssembly.Module`) and `Symbol.dispose` typecheck under any `lib` setting, in Node.js too.
  */
 export type * from './inputs.js';
 export type * from './outputs.js';
-export * from './patch.js';
-export * from './scene.js';
-export { loadLatkit, type LoadOptions, type Latkit } from './load.js';
-export type {
-  Canvas,
+export { load } from './load.js';
+export {
+  Handle,
+  type ByteSource,
+  type LatkitError,
+  type ReadableBytes,
+  type Wait,
+} from './internal.js';
+export {
   Data,
-  Envelope,
-  Gpu,
-  Image,
-  ImageFormat,
-  LatkitError,
-  Panel,
-  Shot,
+  Dataset,
+  Snapshot,
   Table,
-  Video,
-  View,
-  ViewEvents,
-} from './runtime.js';
+  Tiles,
+  type Envelope,
+  type QueryResult,
+  type Source,
+  type TableInput,
+} from './data.js';
+export {
+  Patch,
+  reference,
+  type Fields,
+  type Geometry,
+  type Reference,
+  type RowIds,
+  type Run,
+  type Values,
+} from './patch.js';
+export * from './scene.js';
+export { colormapCss, colormaps } from './colormap.js';
+export { Gpu } from './gpu.js';
+export { View, type Insets, type Point, type Position, type ViewEvents } from './view.js';
+export type { Placed, Rect } from './canvas.js';
+export { Image, Shot, Video, type ImageFormat, type ShotOptions } from './shot.js';

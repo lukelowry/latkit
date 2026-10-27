@@ -5,9 +5,10 @@ use super::values::Value;
 
 /// Shared, immutable geometries of one depth: nested offsets over `[x, y]` coordinates.
 ///
-/// Depth 0 is a point per row, 1 a path, 2 parts (rings of a polygon, or the paths of a multi-path),
-/// and 3 polygons. `levels[0]` is indexed by row; each level's offsets index the next level, and the
-/// last level indexes `coords`. Offsets are absolute, so slicing rows slices only `levels[0]`.
+/// Depth 0 is a point per row, 1 a path, 2 parts (rings of a polygon, or the paths of a
+/// multi-path), and 3 polygons. `levels[0]` is indexed by row. Each level's offsets index the next
+/// level, and the last level indexes `coords`. Offsets are absolute, so slicing rows slices only
+/// `levels[0]`.
 #[derive(Clone)]
 pub(crate) struct Geometry {
     depth: u8,
@@ -42,7 +43,8 @@ impl Geometry {
         Geometry { depth: self.depth, levels, coords }
     }
 
-    /// The span `item` of `level` covers in the next level, or in `coords` from the last level.
+    /// The range of the next level (or of `coords`, from the last level) that `item` of `level`
+    /// covers.
     pub(crate) fn span(&self, level: usize, item: usize) -> Range<usize> {
         let offsets = &self.levels[level];
         offsets[item] as usize..offsets[item + 1] as usize
@@ -52,8 +54,18 @@ impl Geometry {
         &self.coords
     }
 
-    /// Whether row `row` holds exactly what `other`'s row `other_row` does: the same parts of the same
-    /// coordinates, compared by their bits.
+    /// The number of coordinates its rows cover. For a slice, only its own rows count.
+    pub(crate) fn points(&self) -> usize {
+        let Some(rows) = self.levels.first() else { return self.coords.len() };
+        let mut span = rows[0] as usize..rows[rows.len() - 1] as usize;
+        for offsets in &self.levels[1..] {
+            span = offsets[span.start] as usize..offsets[span.end] as usize;
+        }
+        span.len()
+    }
+
+    /// Whether row `row` equals `other`'s row `other_row`: the same part structure and
+    /// bit-identical coordinates.
     pub(crate) fn same_row(&self, row: usize, other: &Geometry, other_row: usize) -> bool {
         fn same(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|(p, q)| p.map(f64::to_bits) == q.map(f64::to_bits))
@@ -77,7 +89,7 @@ impl Geometry {
         walk(self, other, 0, row, other_row)
     }
 
-    /// Row `row`'s coordinates, every part's in order.
+    /// Row `row`'s coordinates, all parts in order.
     pub(crate) fn row_coords(&self, row: usize) -> &[[f64; 2]] {
         if self.depth == 0 {
             return &self.coords[row..=row];
@@ -89,7 +101,7 @@ impl Geometry {
         &self.coords[span]
     }
 
-    /// A digest of row `row`: its coordinates and how they break into parts.
+    /// A hash of row `row`: its coordinates and how they split into parts.
     pub(crate) fn row_hash(&self, row: usize) -> u64 {
         use std::hash::Hasher;
         let mut hasher = rustc_hash::FxHasher::default();
@@ -109,25 +121,13 @@ impl Geometry {
         hasher.finish()
     }
 
-    /// Coordinates the rows span, every part's.
-    pub(crate) fn coords_spanned(&self) -> usize {
-        if self.depth == 0 {
-            return self.len();
-        }
-        let mut span = 0..self.len();
-        for offsets in &self.levels {
-            span = offsets[span.start] as usize..offsets[span.end] as usize;
-        }
-        span.len()
-    }
-
-    /// How many points row `row`'s path takes as shaders read it: every coordinate, and a break
-    /// between its parts or rings.
+    /// The number of points shaders read for row `row`: every coordinate, plus one break between
+    /// consecutive parts or rings.
     pub(crate) fn row_points(&self, row: usize) -> usize {
         if self.depth == 0 {
             return 1;
         }
-        // The row's parts or rings: the items of the level above its coordinates.
+        // Find the row's parts or rings: its items at the level just above the coordinates.
         let mut span = row..row + 1;
         for offsets in &self.levels[..self.levels.len() - 1] {
             span = offsets[span.start] as usize..offsets[span.end] as usize;
@@ -149,7 +149,8 @@ impl Geometry {
         }
     }
 
-    /// Offsets relative to each level's first entry and the coordinates the rows span.
+    /// Each level's offsets rebased to start at 0, and the coordinates the rows cover, for encoding
+    /// a slice.
     pub(crate) fn compact(&self) -> (Vec<Vec<u32>>, Vec<[f64; 2]>) {
         let mut builder = GeometryBuilder::new(self.depth);
         for row in 0..self.len() {
@@ -204,6 +205,25 @@ impl GeometryBuilder {
         }
     }
 
+    /// Appends rows `rows` of `source`, copying each level's offsets and the coordinates in bulk.
+    pub(crate) fn push_rows(&mut self, source: &Geometry, rows: Range<usize>) {
+        debug_assert_eq!(source.depth, self.depth);
+        let mut span = rows;
+        for level in 0..self.levels.len() {
+            let offsets = &source.levels[level];
+            let (first, last) = (offsets[span.start], offsets[span.end]);
+            // Items already pushed at the next level. This run's offsets continue from there.
+            let next = match self.levels.get(level + 1) {
+                Some(below) => below.len() - 1,
+                None => self.coords.len(),
+            };
+            let next = u32::try_from(next).expect("a geometry page holds at most 2^32 items");
+            self.levels[level].extend(offsets[span.start + 1..=span.end].iter().map(|&o| o - first + next));
+            span = first as usize..last as usize;
+        }
+        self.coords.extend_from_slice(&source.coords[span]);
+    }
+
     fn copy(&mut self, source: &Geometry, level: usize, item: usize) {
         let span = source.span(level, item);
         if level + 1 == source.levels.len() {
@@ -216,7 +236,7 @@ impl GeometryBuilder {
         self.close(level);
     }
 
-    /// An empty row: no coordinates, or a missing point.
+    /// Appends an empty row: no coordinates, or a NaN point at depth 0.
     pub(crate) fn push_empty(&mut self) {
         if self.depth == 0 {
             self.coords.push([f64::NAN; 2]);
@@ -297,6 +317,26 @@ mod tests {
         assert_eq!(tail.len(), 2);
         assert_eq!(tail.get(0), Value::Polygons(Vec::new()));
         assert_eq!(tail.get(1), geometry.get(2));
+    }
+
+    #[test]
+    fn copying_a_run_matches_copying_each_row() {
+        let geometry = polygons();
+        let (mut one, mut runs) = (GeometryBuilder::new(3), GeometryBuilder::new(3));
+        for row in [0, 1, 2, 1, 2] {
+            one.push_from(&geometry, row);
+        }
+        runs.push_rows(&geometry, 0..3);
+        runs.push_rows(&geometry, 1..3);
+        let (one, runs) = (one.finish(), runs.finish());
+        assert_eq!(
+            (0..5).map(|row| runs.get(row)).collect::<Vec<_>>(),
+            (0..5).map(|row| one.get(row)).collect::<Vec<_>>()
+        );
+        let tail = geometry.slice(1..3);
+        let mut sliced = GeometryBuilder::new(3);
+        sliced.push_rows(&tail, 0..2);
+        assert_eq!(sliced.finish().get(1), geometry.get(2), "a slice's offsets need not start at 0");
     }
 
     #[test]

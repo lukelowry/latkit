@@ -1,7 +1,9 @@
-//! A scene's title and its marks' legends, written over the marks: the title and subtitle at the top
-//! left, and the legends stacked up from the bottom right, each under its title: a bar of its mark's
-//! colormap across the domain, ticked; a cell of color for each category; or, where categories are
-//! named, a swatch beside each name. Rebuilt each frame as overlay sprites, O(legends).
+//! A scene's title and its marks' legends, drawn over the marks.
+//!
+//! The title and subtitle sit at the top left. Legends stack upward from the bottom right of the
+//! drawing area (inside a plot's axes), each under its title. A legend is a ticked bar of the
+//! mark's colormap across its domain, a color cell per category, or, for named categories, a swatch
+//! beside each name. Rebuilt each frame as overlay sprites, in O(legends).
 
 use std::sync::Arc;
 
@@ -11,9 +13,9 @@ use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
 use crate::{Axis, Color, Colormap, ColormapKind, Theme};
 
-/// CSS pixels between the view's edge and what is written there.
+/// CSS pixels between the view's inset edge and the title or legends.
 const MARGIN: f64 = 16.0;
-/// A legend's bar: width and height, CSS pixels.
+/// A legend's bar width and height, in CSS pixels.
 const BAR: [f64; 2] = [220.0, 8.0];
 /// Cells a continuous bar is drawn in.
 const CELLS: usize = 64;
@@ -21,18 +23,19 @@ const CELLS: usize = 64;
 const CATEGORIES: usize = 24;
 /// The most names a column of a legend lists.
 const ROWS: usize = 8;
-/// The size of what a legend writes beside its colors, ticks and names, for the theme's text size.
+/// Text scale of a legend's tick labels and names, relative to the theme's text size.
 const SMALL: f64 = 0.9;
-/// The sizes of the title and subtitle for the theme's text size, and the line each takes for its size.
+/// Text scales of the title and subtitle, relative to the theme's text size, and their line height
+/// relative to their own size.
 const TITLE: f64 = 1.75;
 const SUBTITLE: f64 = 1.1;
 const LEADING: f64 = 1.35;
 
 impl View {
-    /// CSS pixels the scene's title and subtitle take below the top inset, with the margin above them
-    /// and half of it below: none when it has neither.
+    /// CSS pixels the title and subtitle take below the top inset, including the margin above them
+    /// and half a margin below. 0 when the scene has neither.
     pub(super) fn title_band(&self) -> f64 {
-        let font = f64::from(self.scene.theme.font_size);
+        let font = f64::from(self.scene.theme.text.size);
         let lines: f64 = [(self.scene.title.is_some(), TITLE), (self.scene.subtitle.is_some(), SUBTITLE)]
             .into_iter()
             .filter_map(|(shown, scale)| shown.then_some(font * scale * LEADING))
@@ -53,28 +56,32 @@ impl View {
         let [top, right, bottom, left] = self.insets.map(f64::from);
         let area = [left + MARGIN, top + MARGIN, w - right - MARGIN, h - bottom - MARGIN];
         let ratio = f64::from(self.pixel_ratio);
-        let font = f64::from(theme.font_size);
+        let font = f64::from(theme.text.size);
         let writer = |inner: &mut Inner, scale: f64, color: Color, f: &mut dyn FnMut(&mut Writer<'_>)| {
             let size_px = (font * scale * ratio).round().max(1.0) as u32;
-            f(&mut Writer { inner, font: theme.font.clone(), size_px, ratio, color });
+            f(&mut Writer { inner, font: theme.text.font.clone(), size_px, ratio, color });
         };
         let mut sprites = Vec::new();
         let mut y = area[1];
         for (text, scale, color) in
-            [(&scene.title, TITLE, theme.text), (&scene.subtitle, SUBTITLE, theme.text.alpha(0.7))]
+            [(&scene.title, TITLE, theme.text.color), (&scene.subtitle, SUBTITLE, theme.text.color.alpha(0.7))]
         {
             let Some(text) = text else { continue };
             writer(inner, scale, color, &mut |w| sprites.extend(w.text(text, [area[0], y], Align::BelowRight)));
             y += font * scale * LEADING;
         }
-        let mut base = area[3];
+        // Legends stack up from the drawing area's bottom right. On a plot that is inside its axes,
+        // clear of their labels.
+        let drawing = self.area();
+        let right = drawing[2] - MARGIN;
+        let mut base = drawing[3] - MARGIN;
         for (title, color) in legends() {
             let Some((colormap, domain)) = color.colormap_of() else { continue };
             let write = |s, color, f: &mut dyn FnMut(&mut Writer<'_>)| writer(inner, s, color, f);
             let height = if !colormap.named_categories().is_empty() {
-                categories(&mut sprites, theme, [area[2], base], colormap, ratio, write, title)
+                categories(&mut sprites, theme, [right, base], colormap, ratio, write, title)
             } else if let Some(domain) = domain {
-                legend(&mut sprites, theme, [area[2], base], colormap, domain, write, title)
+                legend(&mut sprites, theme, [right, base], colormap, domain, write, title)
             } else {
                 continue;
             };
@@ -84,9 +91,9 @@ impl View {
     }
 }
 
-/// Draws a legend of `colormap`'s named categories ending at `corner`, its right edge at its x and its
-/// bottom at its y: a swatch of each category's color beside its name, in columns of up to
-/// `ROWS`, under `title`, placed whole on pixels of `ratio`. How tall it is.
+/// Draws a legend of `colormap`'s named categories with its bottom-right corner at `corner`: a
+/// swatch of each category's color beside its name, in columns of up to `ROWS`, under `title`,
+/// snapped to device pixels of `ratio`. Returns its height.
 fn categories(
     sprites: &mut Vec<wgsl::Sprite>,
     theme: &Theme,
@@ -96,14 +103,14 @@ fn categories(
     mut write: impl FnMut(f64, Color, &mut dyn FnMut(&mut Writer<'_>)),
     title: &Arc<str>,
 ) -> f64 {
-    let font = f64::from(theme.font_size);
+    let font = f64::from(theme.text.size);
     let names = colormap.named_categories();
     let names = &names[..names.len().min(CATEGORIES)];
     let [row, swatch] = [font * 1.5, font * 0.8];
     let rows = names.len().min(ROWS);
     let top = corner[1] - rows as f64 * row;
     let start = sprites.len();
-    // Laid out from x = 0, each column clear of the names before it, then moved into place.
+    // Lay out from x = 0, each column clear of the names before it, then shift it all into place.
     let mut x = 0.0;
     for (column, names) in names.chunks(ROWS).enumerate() {
         let mut right = x;
@@ -112,7 +119,7 @@ fn categories(
             let category = column * ROWS + r;
             let color = Color::from_bytes(colormap.texels()[category]);
             sprites.push(fill([x, middle - swatch / 2.0], [x + swatch, middle + swatch / 2.0], color));
-            write(SMALL, theme.text.alpha(0.85), &mut |w| {
+            write(SMALL, theme.text.color.alpha(0.85), &mut |w| {
                 if let Some(text) = w.text(name, [x + swatch + font * 0.5, middle], Align::Right) {
                     right = f64::max(right, f64::from(text.b[0]));
                     sprites.push(text);
@@ -123,7 +130,7 @@ fn categories(
     }
     let mut height = corner[1] - top;
     if !title.is_empty() {
-        write(1.0, theme.text, &mut |w| sprites.extend(w.text(title, [0.0, top - 5.0], Align::Above)));
+        write(1.0, theme.text.color, &mut |w| sprites.extend(w.text(title, [0.0, top - 5.0], Align::Above)));
         height += font * 1.4 + 5.0;
     }
     let right = sprites[start..].iter().fold(0.0_f32, |right, s| right.max(s.a[0]).max(s.b[0]));
@@ -135,8 +142,8 @@ fn categories(
     height
 }
 
-/// Draws a legend whose bar ends at `corner`'s x, its tick labels' bottom at its y: `colormap` across
-/// `domain` under `title`. How tall it is.
+/// Draws a bar legend of `colormap` across `domain`, under `title`, with the bar's right end at
+/// `corner`'s x and the tick labels' bottom at its y. Returns its height.
 fn legend(
     sprites: &mut Vec<wgsl::Sprite>,
     theme: &Theme,
@@ -146,11 +153,11 @@ fn legend(
     mut write: impl FnMut(f64, Color, &mut dyn FnMut(&mut Writer<'_>)),
     title: &Arc<str>,
 ) -> f64 {
-    let font = f64::from(theme.font_size);
+    let font = f64::from(theme.text.size);
     let bar_bottom = corner[1] - font * SMALL * 1.4 - 4.0;
     let [left, top] = [corner[0] - BAR[0], bar_bottom - BAR[1]];
     let color = |t: usize| Color::from_bytes(colormap.texels()[t.min(255)]);
-    let text = theme.text.alpha(0.85);
+    let text = theme.text.color.alpha(0.85);
     let across = |v: f64| left + (v - domain[0]) / (domain[1] - domain[0]).max(f64::MIN_POSITIVE) * BAR[0];
     let mut labels: Vec<(String, f64)> = Vec::new();
     if colormap.kind() == ColormapKind::Categorical {
@@ -190,13 +197,13 @@ fn legend(
     });
     let mut height = corner[1] - top;
     if !title.is_empty() {
-        write(1.0, theme.text, &mut |w| sprites.extend(w.text(title, [left, top - 5.0], Align::Above)));
+        write(1.0, theme.text.color, &mut |w| sprites.extend(w.text(title, [left, top - 5.0], Align::Above)));
         height += font * 1.4 + 5.0;
     }
     height
 }
 
-/// A rectangle filled with `color`, corner `a` to corner `b`, CSS pixels.
+/// A rectangle filled with `color`, from corner `a` to corner `b`, in CSS pixels.
 fn fill(a: [f64; 2], b: [f64; 2], color: Color) -> wgsl::Sprite {
     let mut sprite = line(a, b, 0.0, color);
     sprite.kind = wgsl::SPRITE_FILL;

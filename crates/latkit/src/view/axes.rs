@@ -1,23 +1,57 @@
 //! A plot's axes, drawn over its marks: grid lines at round values, tick labels and titles in the
 //! theme's font, and the playhead at the shown coordinate. Rebuilt each frame as overlay sprites,
-//! O(ticks).
+//! in O(ticks). The space they take around the plot area is measured with the host's text metrics.
 
 use std::sync::Arc;
 
 use super::View;
 use super::camera::Area;
+use crate::derive::stamp_of;
 use crate::gpu::Inner;
-use crate::gpu::shaders as wgsl;
-use crate::host::TextRun;
-use crate::{Axis, Camera, Color, Format, Plot, Space, Theme};
+use crate::gpu::shaders::{self as wgsl, TEXT_SPREAD};
+use crate::host::{Host, TextRun};
+use crate::{Axis, Camera, Color, Format, Plot, Space};
 
-/// Room the axes take outside a plot's area: top, right, bottom, left, CSS pixels.
-pub(crate) fn gutters(plot: &Plot, theme: &Theme) -> [f64; 4] {
-    let f = f64::from(theme.font_size);
-    let top = if plot.y.label.is_some() && !plot.y.hidden { f * 2.4 } else { f };
-    let bottom = if plot.x.hidden { 8.0 } else { f * 2.4 + if plot.x.label.is_some() { f * 2.2 } else { 0.0 } };
-    let left = if plot.y.hidden { 8.0 } else { f * 6.0 };
-    [top, f * 1.5, bottom, left]
+/// A tick's length, and the gap between it and its label, in CSS pixels.
+const TICK: f64 = 4.0;
+const GAP: f64 = 3.0;
+/// Space kept on the sides of a hidden axis, in CSS pixels.
+const HIDDEN: f64 = 8.0;
+
+/// The space a plot's axes take around the plot area, from their measured text.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub(crate) struct Gutters {
+    /// Space outside the area in CSS pixels: top, right, bottom, left.
+    pub(crate) room: [f64; 4],
+    /// The height of a tick label in CSS pixels.
+    tick: f64,
+}
+
+/// The space `plot`'s axes take. `measure` gives the CSS pixel size of a run of the theme's text,
+/// including the distance field around it. Below the area: a tick, its labels, and the x title.
+/// Left: a tick and the widest y label. Above: the y title, at least half a label's height. Right:
+/// half the widest x label. A hidden axis leaves `HIDDEN` on its two sides instead.
+pub(crate) fn gutters(plot: &Plot, measure: impl Fn(&str) -> [f64; 2]) -> Gutters {
+    let tick = measure("0")[1];
+    let widest = |axis: &Axis| written(axis).iter().map(|text| measure(text)[0]).fold(0.0, f64::max);
+    let title = |axis: &Axis| axis.label.as_deref().map_or(0.0, |title| measure(title)[1]);
+    let (x, y) = (!plot.x.hidden, !plot.y.hidden);
+    let top = if y { title(&plot.y).max(tick / 2.0) } else { HIDDEN };
+    let right = if x { widest(&plot.x) / 2.0 } else { HIDDEN };
+    let bottom = if x { TICK + GAP + tick + title(&plot.x) } else { HIDDEN };
+    let left = if y { TICK + GAP + widest(&plot.y) } else { HIDDEN };
+    Gutters { room: [top, right, bottom, left], tick }
+}
+
+/// Labels as wide as the widest that `axis` writes: its given ticks' labels, or else a sample value
+/// with a sign, two digits, and three decimals, in its format.
+fn written(axis: &Axis) -> Vec<String> {
+    let Some(given) = &axis.ticks else { return vec![label(-88.888, 0.001, axis)] };
+    let mut values: Vec<f64> = given.iter().map(|&(v, _)| v).collect();
+    values.sort_unstable_by(f64::total_cmp);
+    let step = values.windows(2).map(|w| w[1] - w[0]).filter(|&d| d > 0.0).fold(f64::INFINITY, f64::min);
+    let step = if step.is_finite() { step } else { 1.0 };
+    given.iter().map(|(v, text)| text.clone().unwrap_or_else(|| label(*v, step, axis))).collect()
 }
 
 /// A round step about `span / count`: 1, 2, 2.5, or 5 times a power of ten.
@@ -57,7 +91,7 @@ pub(super) fn label(value: f64, step: f64, axis: &Axis) -> String {
     }
 }
 
-/// The ticks of `axis` across `range`: the ones it gives, else round values `step` apart.
+/// The ticks of `axis` across `range`: the ones it gives, otherwise round values `step` apart.
 fn axis_ticks(axis: &Axis, range: [f64; 2], step: f64) -> Vec<(f64, String)> {
     match &axis.ticks {
         Some(given) => given
@@ -69,7 +103,7 @@ fn axis_ticks(axis: &Axis, range: [f64; 2], step: f64) -> Vec<(f64, String)> {
     }
 }
 
-/// Values `step` apart within `range`.
+/// Values `step` apart within `range`, at most 201.
 pub(super) fn ticks(range: [f64; 2], step: f64) -> impl Iterator<Item = f64> {
     let first = (range[0] / step).ceil();
     let last = (range[1] / step).floor().min(first + 200.0);
@@ -87,14 +121,14 @@ pub(super) fn line(a: [f64; 2], b: [f64; 2], width: f32, color: Color) -> wgsl::
     sprite
 }
 
-/// Where a run of text goes: its anchor, and which of its edges meets the anchor.
+/// Which edges of a run of text meet its anchor.
 #[derive(Clone, Copy)]
 pub(super) enum Align {
-    /// Centered across, top at the anchor.
+    /// Centered horizontally, top at the anchor.
     Below,
-    /// Right edge at the anchor, centered up and down.
+    /// Right edge at the anchor, centered vertically.
     Left,
-    /// Left edge at the anchor, centered up and down.
+    /// Left edge at the anchor, centered vertically.
     Right,
     /// Left edge at the anchor, bottom at the anchor.
     Above,
@@ -104,7 +138,7 @@ pub(super) enum Align {
     BelowRight,
 }
 
-/// What sets text for the overlay: the atlas, in one font, size, and color.
+/// Sets overlay text through the atlas, in one font, size, and color.
 pub(super) struct Writer<'a> {
     pub(super) inner: &'a mut Inner,
     pub(super) font: Arc<str>,
@@ -114,7 +148,8 @@ pub(super) struct Writer<'a> {
 }
 
 impl Writer<'_> {
-    /// `text` as a sprite placed by `align` at `anchor`, CSS pixels; `None` while it cannot be set.
+    /// `text` as a sprite aligned by `align` at `anchor` (CSS pixels), snapped to device pixels.
+    /// `None` while the text cannot be set yet.
     pub(super) fn text(&mut self, text: &str, anchor: [f64; 2], align: Align) -> Option<wgsl::Sprite> {
         let run = TextRun { text: text.into(), font: self.font.clone(), size_px: self.size_px, max_width: None };
         let host = self.inner.host.clone();
@@ -142,17 +177,18 @@ impl Writer<'_> {
 }
 
 impl View {
-    /// The sprites drawn over the marks this frame: a plot's axes, the title and legends,
-    /// and a box being selected.
+    /// The sprites drawn over the marks this frame: a plot's axes, the title and legends, and a box
+    /// being selected or a connection being drawn.
     pub(super) fn overlay(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
         let evictions = inner.atlas.evictions;
         let mut sprites = self.written(inner);
-        // The atlas made room while setting this frame's text: set it again on the new packing.
+        // If the atlas evicted texts while setting this frame's text, set it again on the new
+        // packing.
         if inner.atlas.evictions != evictions {
             sprites = self.written(inner);
         }
         let theme = &self.scene.theme;
-        let color = theme.selected.unwrap_or(theme.hover);
+        let color = theme.focus.selected.unwrap_or(theme.focus.hover);
         let at = |p: [f32; 2]| [f64::from(p[0]), f64::from(p[1])];
         match self.gestures.now {
             super::gestures::Gesture::Box { from, to, .. } => {
@@ -168,7 +204,8 @@ impl View {
         sprites
     }
 
-    /// The sprites of the overlay's text and what goes with it: a plot's axes, the title, and the legends.
+    /// The overlay's text sprites and the lines that go with them: a plot's axes, the title, and
+    /// the legends.
     fn written(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
         let mut sprites = self.axes_sprites(inner);
         sprites.extend(self.annotations(inner));
@@ -178,31 +215,54 @@ impl View {
     fn axes_sprites(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
         let Space::Plot(plot) = &self.scene.space else { return Vec::new() };
         let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return Vec::new() };
-        self.axes(inner, plot, &self.scene.theme, self.area(), x, y)
+        self.axes(inner, plot, self.area(), x, y)
     }
 
-    fn axes(
-        &self,
-        inner: &mut Inner,
-        plot: &Plot,
-        theme: &Theme,
-        area: Area,
-        x: [f64; 2],
-        y: [f64; 2],
-    ) -> Vec<wgsl::Sprite> {
+    /// Measures the space the plot's axes take, with the host's metrics for the theme's text at the
+    /// view's pixel ratio, once per scene and ratio. The plot area is what they leave.
+    pub(super) fn measure_gutters(&mut self) {
+        let Space::Plot(plot) = &self.scene.space else { return };
+        let stamp = stamp_of((self.scene_version, self.pixel_ratio.to_bits()));
+        if stamp == self.gutters.0 {
+            return;
+        }
+        let host: Option<Arc<dyn Host>> = self.gpu.0.lock().host.clone();
+        let host = host.as_deref();
+        let theme = &self.scene.theme;
+        let ratio = f64::from(self.pixel_ratio);
+        let size = (f64::from(theme.text.size) * ratio).round().max(1.0);
+        let field = 2.0 * f64::from(TEXT_SPREAD);
+        let measure = |text: &str| {
+            let run =
+                TextRun { text: text.into(), font: theme.text.font.clone(), size_px: size as u32, max_width: None };
+            // Without a host, estimate 0.6 em per character and a 1.25 em line.
+            let guess = [0.6 * size * text.chars().count() as f64, 1.25 * size];
+            let [w, h] = host.and_then(|host| host.measure(&run).ok()).map_or(guess, |s| s.map(f64::from));
+            [(w + field) / ratio, (h + field) / ratio]
+        };
+        let measured = gutters(plot, measure);
+        if measured != self.gutters.1 {
+            self.fitting.plot_due = true;
+        }
+        self.gutters = (stamp, measured);
+    }
+
+    fn axes(&self, inner: &mut Inner, plot: &Plot, area: Area, x: [f64; 2], y: [f64; 2]) -> Vec<wgsl::Sprite> {
         let [left, top, right, bottom] = area;
         let across = |v: f64| left + (v - x[0]) / (x[1] - x[0]) * (right - left);
         let up = |v: f64| bottom - (v - y[0]) / (y[1] - y[0]) * (bottom - top);
-        let font = f64::from(theme.font_size);
+        let theme = &self.scene.theme;
+        let gutters = self.gutters.1;
+        let font = f64::from(theme.text.size);
         let ratio = f64::from(self.pixel_ratio);
         let mut writer = Writer {
             inner,
-            font: theme.font.clone(),
+            font: theme.text.font.clone(),
             size_px: (font * ratio).round().max(1.0) as u32,
             ratio,
-            color: theme.text,
+            color: theme.text.color,
         };
-        let axis = theme.text.alpha(0.35);
+        let axis = theme.text.color.alpha(0.35);
         let mut sprites = Vec::new();
         if !plot.x.hidden {
             let step = step(x[1] - x[0], (right - left) / (font * 8.0));
@@ -211,12 +271,13 @@ impl View {
                 if plot.x.grid {
                     sprites.push(line([at, top], [at, bottom], 1.0, theme.grid));
                 }
-                sprites.push(line([at, bottom], [at, bottom + 4.0], 1.0, axis));
-                sprites.extend(writer.text(&text, [at, bottom + 6.0], Align::Below));
+                sprites.push(line([at, bottom], [at, bottom + TICK], 1.0, axis));
+                sprites.extend(writer.text(&text, [at, bottom + TICK + GAP], Align::Below));
             }
             sprites.push(line([left, bottom], [right, bottom], 1.0, axis));
             if let Some(title) = &plot.x.label {
-                sprites.extend(writer.text(title, [right, bottom + font * 2.2], Align::BelowLeft));
+                let below = bottom + TICK + GAP + gutters.tick;
+                sprites.extend(writer.text(title, [right, below], Align::BelowLeft));
             }
         }
         if !plot.y.hidden {
@@ -226,20 +287,18 @@ impl View {
                 if plot.y.grid {
                     sprites.push(line([left, at], [right, at], 1.0, theme.grid));
                 }
-                sprites.push(line([left - 4.0, at], [left, at], 1.0, axis));
-                sprites.extend(writer.text(&text, [left - 7.0, at], Align::Left));
+                sprites.push(line([left - TICK, at], [left, at], 1.0, axis));
+                sprites.extend(writer.text(&text, [left - TICK - GAP, at], Align::Left));
             }
             sprites.push(line([left, top], [left, bottom], 1.0, axis));
             if let Some(title) = &plot.y.label {
-                // Hung from the top of the room above the plot, so a taller face grows toward the axis
-                // rather than off the picture.
-                let room = gutters(plot, theme)[0];
-                sprites.extend(writer.text(title, [left - font * 4.0, top - room + font * 0.35], Align::BelowRight));
+                // Above the area, aligned with the left edge of the space its labels take.
+                sprites.extend(writer.text(title, [left - gutters.room[3], top], Align::Above));
             }
         }
         if self.at.is_finite() && (x[0]..=x[1]).contains(&self.at) {
             let at = across(self.at);
-            sprites.push(line([at, top], [at, bottom], 1.5, theme.playhead));
+            sprites.push(line([at, top], [at, bottom], 1.5, theme.plot.playhead));
         }
         sprites
     }
@@ -264,5 +323,29 @@ mod tests {
         let given = Axis { ticks: Some(vec![(0.0, Some("off".into())), (1.0, None), (5.0, None)]), ..Axis::default() };
         assert_eq!(axis_ticks(&given, [0.0, 2.0], 1.0), [(0.0, "off".to_owned()), (1.0, "1".to_owned())]);
         assert_eq!(ticks([0.1, 1.0], 0.25).count(), 4);
+    }
+
+    #[test]
+    fn gutters_fit_the_axis_labels_and_titles() {
+        // Host text metrics: 7 pixels per character and a 20-pixel line, plus 16 for the field.
+        let measure = |text: &str| [7.0 * text.chars().count() as f64 + 16.0, 36.0];
+        let titled = |label: &str| Axis { label: Some(label.into()), ..Axis::default() };
+        let plot = Plot { x: titled("Time"), y: titled("Load") };
+        let room = gutters(&plot, measure).room;
+        // Above: the y title. Below: a tick, its labels, and the x title.
+        assert_eq!(room[0], 36.0);
+        assert_eq!(room[2], TICK + GAP + 36.0 + 36.0);
+        // Left: a tick and "-88.888". Right: half that label.
+        let widest = 7.0 * 7.0 + 16.0;
+        assert_eq!(room[3], TICK + GAP + widest);
+        assert_eq!(room[1], widest / 2.0);
+        // Given ticks are measured as written.
+        let given =
+            Axis { ticks: Some(vec![(0.0, Some("idle".into())), (1.0, Some("overloaded".into()))]), ..Axis::default() };
+        let room = gutters(&Plot { x: Axis::default(), y: given }, measure).room;
+        assert_eq!(room[3], TICK + GAP + 7.0 * 10.0 + 16.0);
+        assert_eq!(room[0], 18.0, "without a title, the top gutter is half a label high");
+        let hidden = Axis { hidden: true, ..Axis::default() };
+        assert_eq!(gutters(&Plot { x: hidden.clone(), y: hidden }, measure).room, [HIDDEN; 4]);
     }
 }

@@ -7,30 +7,30 @@ use crate::Name;
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// An input does not fit what it describes; `path` names the part, such as `marks[2].vertices.color`.
+    /// An input is invalid. `path` names the invalid part, such as `marks[2].color`.
     #[error("{path}: {reason}")]
     Invalid {
-        /// Where in the input the problem is.
+        /// Location of the problem in the input.
         path: Path,
-        /// What is wrong there.
+        /// Why that part is invalid.
         reason: Cow<'static, str>,
     },
-    /// The platform or device cannot do what was asked.
+    /// The platform or device does not support the request.
     #[error("unsupported: {0}")]
     Unsupported(Cow<'static, str>),
     /// A budget or device limit would be exceeded.
     #[error("over limit: {0}")]
     Limit(Cow<'static, str>),
-    /// Reading or writing external bytes failed: a fetch, a file, a worker, an encoder.
+    /// Reading or writing external bytes failed, such as a fetch, file, worker, or encoder.
     #[error("io: {0}")]
     Io(Cow<'static, str>),
     /// The operation did not complete before its deadline.
     #[error("operation timed out")]
     Timeout,
-    /// The GPU device was lost; create a new `Gpu`.
+    /// The GPU device was lost. Create a new `Gpu`.
     #[error("GPU device lost")]
     DeviceLost,
-    /// The owner of pending work was destroyed before it could answer.
+    /// The owner of pending work was dropped before the work finished.
     #[error("operation cancelled")]
     Cancelled,
 }
@@ -39,6 +39,9 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 impl Error {
+    /// Every kind's [`code`](Error::code).
+    const CODES: [&'static str; 7] = ["invalid", "unsupported", "limit", "io", "device-lost", "cancelled", "timeout"];
+
     /// An [`Error::Invalid`] at the root of the input.
     pub fn invalid(reason: impl Into<Cow<'static, str>>) -> Error {
         Error::Invalid { path: Path::default(), reason: reason.into() }
@@ -58,7 +61,7 @@ impl Error {
         }
     }
 
-    /// Prefixes the path of an [`Error::Invalid`] with `step`; other errors pass through.
+    /// Prefixes the path of an [`Error::Invalid`] with `step`. Returns other errors unchanged.
     #[must_use]
     pub fn at(self, step: impl Into<Step>) -> Error {
         match self {
@@ -69,9 +72,24 @@ impl Error {
             other => other,
         }
     }
+
+    /// This error, of the same kind, with `source` named as where it happened. `source` becomes the
+    /// first step of an invalid input's path, or the start of another error's message.
+    #[cfg(feature = "gpu")]
+    #[must_use]
+    pub(crate) fn within(self, source: &str) -> Error {
+        let named = |message: Cow<'static, str>| Cow::Owned(format!("{source}: {message}"));
+        match self {
+            Error::Invalid { .. } => self.at(source),
+            Error::Unsupported(message) => Error::Unsupported(named(message)),
+            Error::Limit(message) => Error::Limit(named(message)),
+            Error::Io(message) => Error::Io(named(message)),
+            other => other,
+        }
+    }
 }
 
-/// The error as `{ code, message, path? }`: the shape the npm package's `LatkitError` takes.
+/// Serializes as `{ code, message, path? }`, the shape of the npm package's `LatkitError`.
 impl serde::Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
@@ -85,7 +103,7 @@ impl serde::Serialize for Error {
     }
 }
 
-/// The error as it serializes: a failure, as plain data.
+/// Schema of the serialized error, named `Failure`.
 impl schemars::JsonSchema for Error {
     fn schema_name() -> Cow<'static, str> {
         "Failure".into()
@@ -93,12 +111,18 @@ impl schemars::JsonSchema for Error {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "What failed: its `code`, the message, and for invalid input the `path` to the part, such as `marks[2].vertices.color`.",
+            "description": "A failure as JSON, in the same form as the npm package's `LatkitError`.",
             "type": "object",
             "properties": {
-                "code": { "enum": ["invalid", "unsupported", "limit", "io", "device-lost", "cancelled", "timeout"] },
-                "message": { "type": "string" },
-                "path": { "type": "string" },
+                "code": {
+                    "description": "The kind of failure. See `LatkitError.code`.",
+                    "enum": Error::CODES,
+                },
+                "message": { "description": "A description of what failed.", "type": "string" },
+                "path": {
+                    "description": "For `invalid` failures, the path of the invalid input, such as `marks[2].color`.",
+                    "type": "string",
+                },
             },
             "required": ["code", "message"],
         })
@@ -109,7 +133,7 @@ impl schemars::JsonSchema for Error {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Path(pub Vec<Step>);
 
-/// One step of a [`Path`]: a named part or an index.
+/// One step of a [`Path`]: a named part or a list index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     /// A named part, such as a table, field, or option.
@@ -171,5 +195,19 @@ mod tests {
     #[test]
     fn only_invalid_errors_take_steps() {
         assert_eq!(Error::DeviceLost.at("marks"), Error::DeviceLost);
+    }
+
+    #[test]
+    fn the_schema_lists_every_code() {
+        let every = [
+            Error::invalid(""),
+            Error::Unsupported("".into()),
+            Error::Limit("".into()),
+            Error::Io("".into()),
+            Error::DeviceLost,
+            Error::Cancelled,
+            Error::Timeout,
+        ];
+        assert_eq!(every.map(|e| e.code()), Error::CODES);
     }
 }

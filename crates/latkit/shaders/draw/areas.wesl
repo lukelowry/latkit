@@ -1,21 +1,21 @@
-// Areas: one instanced triangle per triangle of every area, numbered by the mark's list, flat on the
-// ground in its row's color and lit by the earth's daylight. Areas lie under what draws after them:
-// they test depth but write none. The focus variant draws the triangles of the rows the mark's focus
-// lights again, over everything, tinted toward the theme's focus colors.
+// Areas: one instanced triangle per area triangle, numbered by the mark's list, flat on the ground
+// in its row's color and lit by the earth's daylight. Areas lie under anything drawn after them:
+// they test depth but do not write it. The focus variant redraws the lit rows' triangles over
+// everything, tinted toward the theme's focus colors.
 
 import package::lib::types::{SELECTED, HOVERED};
 import package::lib::bind::frame;
 import package::lib::project::culled;
 import package::lib::triangles::{triangle_corner, triangle_shown, corner_clip};
 import package::lib::focus::focus_of;
-import package::lib::shade::daylight;
+import package::lib::daylight::daylight;
 import package::lib::color::output;
 
 struct Varyings {
     @builtin(position) clip: vec4f,
     @location(0) color: vec4f,
     @location(1) @interpolate(flat) row: u32,
-    // The row's focus bits, which the focus draw tints by.
+    // The row's focus bits, which choose the focus draw's tint.
     @location(2) @interpolate(flat) focus: u32,
 }
 
@@ -46,7 +46,7 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     var rgb = v.color.rgb;
     let focus = v.focus;
     if (focus & SELECTED) != 0u {
-        // A selected color with a negative red asks for each row's own, brightened.
+        // A selected color with a negative red means each row's own color, brightened.
         let tint = select(frame.selected.rgb, min(rgb * 1.6 + 0.08, vec3f(1.0)), frame.selected.r < 0.0);
         rgb = mix(rgb, tint, 0.5);
     } else if (focus & HOVERED) != 0u {

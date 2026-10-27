@@ -1,6 +1,7 @@
 /**
- * A worker doing views' jobs: it instantiates the module the page posts first, then answers each
- * job's bytes with its answer's.
+ * The worker that runs views' jobs. The page's first message is the compiled WebAssembly module,
+ * which the worker instantiates and acknowledges with `{ ready: true }`. Each later message is a
+ * job's bytes, answered with `{ bytes }` holding the result. Failures post `{ error }`.
  */
 
 import { initSync, job } from '../pkg/latkit.js';

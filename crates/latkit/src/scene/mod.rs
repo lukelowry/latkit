@@ -1,4 +1,5 @@
-//! Scenes: what a view draws, as plain data. Marks name their data; the view is given the data.
+//! Scenes: plain data that describes what a view draws. Each mark names a dataset, and the view
+//! draws it from the sources it is given.
 
 pub(crate) mod areas;
 pub(crate) mod compile;
@@ -34,51 +35,61 @@ pub use marker::{Marker, Shape};
 pub use port::{Port, Side};
 pub(crate) use space::sun;
 pub use space::{Axis, Diagram, Earth, Format, Grid, Plane, Plot, Projection, Space};
-pub use theme::{Flow, Shadow, Theme};
+pub use theme::{
+    AreaTheme, DiagramTheme, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, Length, LineTheme, PlotTheme, ShadowTheme,
+    TextTheme, Theme, VertexTheme,
+};
 pub use vertices::Vertices;
 
-use crate::{Data, Error, Expr, Result};
+use crate::{Error, Result, Snapshot, Source};
 
-/// What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,
-/// controls, how long changes ease, and the title written over it. Plain data: as JSON, each field by
-/// its name in camelCase, each mark `{ vertices | edges | faces | lines | areas: options }`.
+/// A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
+/// ease duration, and an optional title.
+///
+/// A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
+/// its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
 ///
 /// ```
-/// # use latkit::{Colormap, Edges, Earth, Scene, Vertices, field};
+/// # use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};
 /// let voltage = field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05);
-/// let scene = Scene::new(Earth::globe())
+/// let buses = Vertices::of("grid", "Bus").position(field("lon"), field("lat")).color(voltage);
+/// let scene = Scene::new(Earth::default().projection(Projection::Globe))
 ///     .draw(Edges::of("grid", "Branch").ends("from", "to"))
-///     .draw(Vertices::of("grid", "Bus").position("lon", "lat").color(voltage).legend("Bus voltage · pu"))
+///     .draw(buses.legend("Bus voltage · pu"))
 ///     .title("Voltage");
 /// ```
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Scene {
+    /// The coordinate space positions are in.
     pub(crate) space: Space,
-    /// What the view draws, in drawing order.
+    /// The marks, in drawing order: each draws over the marks before it.
     #[serde(default)]
     pub(crate) marks: Vec<Mark>,
-    /// How the view places vertex rows without positions: a diagram's blocks, or points on a plane
-    /// or the earth, gaps in the space's units.
+    /// How the view places vertex rows that have no position, such as a diagram's blocks or points
+    /// on a plane or the earth. Defaults to `none`.
     #[serde(default)]
     pub(crate) layout: Layout,
+    /// Default colors and sizes, and the look of text, focus, and each space. Defaults to `dark`.
     #[serde(default)]
     pub(crate) theme: Theme,
+    /// How the view responds to the pointer and keyboard.
     #[serde(default)]
     pub(crate) controls: Controls,
-    /// Seconds that changes ease over; 0.3 unless set.
+    /// How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to
+    /// 0.3.
     #[serde(default = "ease", deserialize_with = "form::seconds")]
     #[schemars(with = "f64")]
     pub(crate) ease: Duration,
-    /// Written at the view's top left, larger than the theme's text.
+    /// A title drawn at the view's top left, larger than the theme's text.
     #[serde(default)]
     pub(crate) title: Option<Arc<str>>,
-    /// Written under the title.
+    /// A subtitle drawn under the title.
     #[serde(default)]
     pub(crate) subtitle: Option<Arc<str>>,
 }
 
-/// How long changes ease unless set.
+/// The default ease duration.
 fn ease() -> Duration {
     Duration::from_millis(300)
 }
@@ -98,97 +109,118 @@ impl Scene {
         }
     }
 
-    /// Draws `mark` over the marks before it.
+    /// Adds `mark`, drawn over the marks added before it.
     #[must_use]
     pub fn draw(mut self, mark: impl Into<Mark>) -> Scene {
         self.marks.push(mark.into());
         self
     }
 
-    /// Places vertex rows that have no position: a diagram's blocks, or points on a plane or the earth.
+    /// Sets the layout that places vertex rows without a position, such as a diagram's blocks or
+    /// points on a plane or the earth.
     #[must_use]
     pub fn layout(mut self, layout: impl Into<Layout>) -> Scene {
         self.layout = layout.into();
         self
     }
 
-    /// The theme.
+    /// Sets the theme.
     #[must_use]
     pub fn theme(mut self, theme: Theme) -> Scene {
         self.theme = theme;
         self
     }
 
-    /// How the view answers the pointer and keyboard.
+    /// Sets how the view responds to the pointer and keyboard.
     #[must_use]
     pub fn controls(mut self, controls: Controls) -> Scene {
         self.controls = controls;
         self
     }
 
-    /// How long changed descriptions and new data ease; zero changes at once.
+    /// Sets how long scene and data changes take to animate. Zero applies them at once. Defaults to
+    /// 0.3 s.
     #[must_use]
     pub fn ease(mut self, over: Duration) -> Scene {
         self.ease = over;
         self
     }
 
-    /// Writes `title` at the view's top left, in the theme's text and font, larger.
+    /// Sets a title drawn at the view's top left, in the theme's text color and font but larger.
     #[must_use]
     pub fn title(mut self, title: impl Into<Arc<str>>) -> Scene {
         self.title = Some(title.into());
         self
     }
 
-    /// Writes `subtitle` under the title.
+    /// Sets a subtitle drawn under the title.
     #[must_use]
     pub fn subtitle(mut self, subtitle: impl Into<Arc<str>>) -> Scene {
         self.subtitle = Some(subtitle.into());
         self
     }
 
-    /// The space.
+    /// The scene's space.
     pub fn space(&self) -> &Space {
         &self.space
     }
 
-    /// Checks the scene against complete datasets without creating a GPU. Uses the same expression
-    /// compiler as a view, but requires every drawn dataset and table to be present, but for the
-    /// datasets `tiles` make, which a view fetches as it draws: their marks are checked once they do.
-    pub fn validate(&self, data: &[Data], tiles: &[crate::Tiles]) -> Result<()> {
+    /// Checks the scene against `sources` without a GPU, using the same compiler as a view.
+    ///
+    /// Every drawn dataset and table must be present, except datasets from a [`Source::Tiles`]. A
+    /// view fetches those while drawing, so their marks are checked as tiles arrive. Errors on
+    /// duplicate source names, missing datasets or tables, options a mark cannot compile, and other
+    /// mistakes in the scene itself, such as two marks with one key.
+    pub fn validate(&self, sources: &[Source]) -> Result<()> {
         self.check()?;
-        for (i, item) in data.iter().enumerate() {
-            if data[..i].iter().any(|other| other.name() == item.name()) {
-                return Err(Error::invalid("duplicate dataset name").at(i).at("data"));
+        for (i, source) in sources.iter().enumerate() {
+            if sources[..i].iter().any(|other| other.name() == source.name()) {
+                return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
             }
         }
+        let snapshots: Vec<Snapshot> = sources
+            .iter()
+            .filter_map(|source| match source {
+                Source::Data(data) => Some(data.snapshot()),
+                Source::Snapshot(snapshot) => Some(snapshot.clone()),
+                Source::Tiles(_) => None,
+            })
+            .collect();
         for (i, mark) in self.marks.iter().enumerate() {
             let style = mark.style();
-            if tiles.iter().any(|t| *t.name() == style.data) {
+            if sources.iter().any(|s| matches!(s, Source::Tiles(t) if *t.name() == style.data)) {
                 continue;
             }
-            let dataset = data.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
-                mark.within(i, Error::invalid(format!("dataset '{}' was not supplied", style.data)).at("of"))
+            let dataset = snapshots.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
+                let reason = format!("no source provides dataset '{}'", style.data);
+                Error::invalid(reason).at(mark.kind().name()).at(i).at("marks")
             })?;
             if let Some(error) = mark.absent_from(dataset) {
-                return Err(mark.within(i, error));
+                return Err(error.at(i).at("marks"));
             }
             compile::compile(
                 mark,
-                data,
+                &snapshots,
                 mark::Context { theme: &self.theme, space: &self.space, layout: &self.layout },
             )
-            .map_err(|error| mark.within(i, error))?;
+            .map_err(|error| error.at(i).at("marks"))?;
         }
         Ok(())
     }
 
-    /// Two marks with one key would be indistinguishable across scenes; options a space does not have
-    /// are refused.
+    /// Checks the scene on its own, without data. Errors when a plot has a layout, when the theme's
+    /// comet spacing and length use different units, when two marks share a key (they could not be
+    /// told apart across scenes), when a mark uses an option its space lacks, and when a legend has
+    /// no colormap with a fixed domain or named categories to show.
     pub(crate) fn check(&self) -> Result<()> {
         let diagram = matches!(self.space, Space::Diagram(_));
         if matches!(self.space, Space::Plot(_)) && self.layout != Layout::None {
-            return Err(Error::invalid("a plot lays out no vertices").at("layout"));
+            return Err(Error::invalid("a plot cannot have a layout").at("layout"));
+        }
+        let flow = &self.theme.flow;
+        if !flow.spacing.alike(flow.length) {
+            let reason = "comet spacing and length must use the same unit, which each row's flow also uses";
+            return Err(Error::invalid(reason).at("length").at("flow").at("theme"));
         }
         for (i, mark) in self.marks.iter().enumerate() {
             if self.marks[..i].iter().any(|m| m.key() == mark.key()) {
@@ -196,16 +228,16 @@ impl Scene {
                 return Err(Error::invalid(reason).at(i).at("marks"));
             }
             if let Some((option, reason)) = mark.misplaced(diagram) {
-                return Err(mark.within(i, Error::invalid(reason).at(option)));
+                return Err(Error::invalid(reason).at(option).at(i).at("marks"));
             }
             let style = mark.style();
-            let shown = match style.color.as_ref().and_then(Expr::colormap_of) {
+            let shown = match style.color.as_ref().and_then(crate::Expr::colormap_of) {
                 Some((colormap, domain)) => domain.is_some() || !colormap.named_categories().is_empty(),
                 None => false,
             };
             if style.legend.is_some() && !shown {
-                let reason = "a legend shows a color mapped through a colormap with a domain or named categories";
-                return Err(mark.within(i, Error::invalid(reason).at("legend")));
+                let reason = "a legend needs a color mapped through a colormap with a domain or named categories";
+                return Err(Error::invalid(reason).at("legend").at(i).at("marks"));
             }
         }
         Ok(())

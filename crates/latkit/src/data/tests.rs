@@ -1,8 +1,9 @@
-//! Patches applied to a dataset agree with a plain model of rows, whatever the sequence.
+//! Dataset tests, including a property test that any sequence of patches leaves a dataset matching
+//! a plain model of its rows.
 
 use proptest::prelude::*;
 
-use crate::{Data, Error, Id, Ids, Patch, Row, Table, Value};
+use crate::{Data, EnvelopeRequest, Error, Id, Ids, Patch, Row, Snapshot, Table, Value};
 
 /// One row of the model: id, number field `x`, and reference `r` to another row's id.
 type ModelRow = (u64, Option<f64>, Option<u64>);
@@ -67,21 +68,20 @@ impl Model {
                     (0..self.rows.len()).map(|i| values.first().copied().flatten().map(|v| v + i as f64)).collect();
                 let at = self.frames.len() as f64;
                 self.frames.push(self.rows.iter().zip(&values).map(|(m, v)| (m.0, *v)).collect());
-                Patch::new().append([at], "T", [("s", values)])
+                Patch::new().append("T", [at], [("s", values)])
             }
         }
     }
 
-    fn check(&self, data: &Data) {
+    fn check(&self, data: &Snapshot) {
         let table = data.table("T").expect("the table exists");
         let ids: Vec<Id> = table.ids().collect();
         assert_eq!(ids, self.rows.iter().map(|m| Id::Number(m.0)).collect::<Vec<_>>());
         for &(id, x, r) in &self.rows {
-            let row = Row::new("grid", "T", id);
             let has_x = table.kind("x").is_some();
-            assert_eq!(data.get(&row, "x"), if has_x { x.map(Value::Number) } else { None }, "x of {id}");
+            assert_eq!(data.get("T", id, "x", None), if has_x { x.map(Value::Number) } else { None }, "x of {id}");
             let wired = r.filter(|r| self.rows.iter().any(|m| m.0 == *r));
-            assert_eq!(data.get(&row, "r"), wired.map(|r| Value::Row(Row::new("grid", "T", r))), "r of {id}");
+            assert_eq!(data.get("T", id, "r", None), wired.map(|r| Value::Row(Row::new("grid", "T", r))), "r of {id}");
         }
     }
 }
@@ -91,23 +91,24 @@ proptest! {
 
     #[test]
     fn patches_agree_with_the_model(changes in proptest::collection::vec(change(), 1..12)) {
-        let mut data = Data::new("grid");
+        let data = Data::new("grid");
         data.apply(Patch::new().set(Table::new("T", Vec::<u64>::new()))).expect("an empty table");
         let mut model = Model { rows: Vec::new(), frames: Vec::new() };
         for change in &changes {
-            let before = data.clone();
+            let before = data.snapshot();
             let before_bytes = before.to_bytes();
             let patch = model.apply(change);
             data.apply(patch).expect("valid patches apply");
-            model.check(&data);
+            model.check(&data.snapshot());
             prop_assert_eq!(before.to_bytes(), before_bytes, "an earlier snapshot never changes");
-            let back = Data::from_bytes(&data.to_bytes()).expect("round trip");
+            let back = Snapshot::from_bytes(&data.snapshot().to_bytes()).expect("round trip");
             model.check(&back);
         }
+        let data = data.snapshot();
         for (frame, rows) in model.frames.iter().enumerate() {
             for &(id, value) in rows {
                 if let Some(at) = model.rows.iter().position(|m| m.0 == id) {
-                    let read = data.get_at(&Row::new("grid", "T", id), "s", frame as f64);
+                    let read = data.get("T", id, "s", frame as f64);
                     let want = value.map(|v| Value::Number(f64::from(v as f32)));
                     prop_assert_eq!(read, want, "frame {} of {} (row {})", frame, id, at);
                 }
@@ -118,9 +119,9 @@ proptest! {
 
 #[test]
 fn a_failed_patch_changes_nothing() {
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     data.apply(Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0])).expect("valid");
-    let before = data.to_bytes();
+    let before = data.snapshot().to_bytes();
     let error = data
         .apply(
             Patch::new()
@@ -130,86 +131,86 @@ fn a_failed_patch_changes_nothing() {
         .expect_err("text into a number field");
     assert!(matches!(&error, Error::Invalid { .. }), "{error}");
     assert_eq!(error.to_string(), "patch[1].Bus.kv: Text values for a Number field");
-    assert_eq!(data.to_bytes(), before);
+    assert_eq!(data.snapshot().to_bytes(), before);
 }
 
 #[test]
-fn appends_one_after_another_record_as_one_and_name_their_own_errors() {
+fn consecutive_appends_merge_and_report_their_own_errors() {
     let table = || Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0]);
-    let mut one = Data::new("grid");
+    let one = Data::new("grid");
     one.apply(Patch::new().replace(table()).append(
-        [0.0, 1.0, 2.0],
         "Bus",
+        [0.0, 1.0, 2.0],
         [("vm", vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0])],
     ))
     .expect("valid");
-    let mut each = Data::new("grid");
+    let each = Data::new("grid");
     let mut patch = Patch::new().replace(table());
     for f in 0..3 {
         let v = 2.0 * f as f32;
-        patch = patch.append([f64::from(f)], "Bus", [("vm", vec![v + 1.0, v + 2.0])]);
+        patch = patch.append("Bus", [f64::from(f)], [("vm", vec![v + 1.0, v + 2.0])]);
     }
     each.apply(patch).expect("valid");
-    assert_eq!(each.to_bytes(), one.to_bytes(), "a frame a change records as the frames in one");
+    assert_eq!(each.snapshot().to_bytes(), one.snapshot().to_bytes(), "appends of one frame each merge into one");
     let error = each
         .apply(
             Patch::new()
-                .append([3.0], "Bus", [("vm", vec![1.0_f32, 1.0])])
-                .append([4.0], "Bus", [("vm", vec![1.0_f32])])
-                .append([5.0], "Bus", [("vm", vec![1.0_f32, 1.0])]),
+                .append("Bus", [3.0], [("vm", vec![1.0_f32, 1.0])])
+                .append("Bus", [4.0], [("vm", vec![1.0_f32])])
+                .append("Bus", [5.0], [("vm", vec![1.0_f32, 1.0])]),
         )
-        .expect_err("a frame short of a row");
+        .expect_err("a frame missing a row's value");
     assert!(error.to_string().starts_with("patch[1].Bus.vm"), "{error}");
 }
 
 #[test]
 fn field_lengths_must_match_rows() {
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     let error = data.apply(Table::new("Bus", Ids::count(3)).field("kv", vec![1.0, 2.0])).expect_err("short field");
     assert_eq!(error.to_string(), "patch[0].Bus.kv: 2 values for 3 rows");
 }
 
 #[test]
 fn repeated_ids_are_refused() {
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     let error = data.apply(Table::new("Bus", vec!["a", "a"])).expect_err("repeated id");
     assert!(error.to_string().starts_with("patch[0].Bus.ids[1]"), "{error}");
 }
 
 #[test]
 fn references_to_unknown_tables_are_refused() {
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     let error =
         data.apply(Table::new("Branch", Ids::count(1)).reference("from", "Bus", vec![1_u64])).expect_err("no Bus");
     assert_eq!(error.to_string(), "Branch.from: no table Bus");
 }
 
 #[test]
-fn dangling_references_wire_up_when_the_row_arrives() {
-    let mut data = Data::new("grid");
+fn dangling_references_resolve_once_the_row_exists() {
+    let data = Data::new("grid");
     data.apply(Patch::new().set(Table::new("Bus", vec![1_u64])).set(Table::new("Branch", Ids::count(1)).reference(
         "to",
         "Bus",
         vec![2_u64],
     )))
     .expect("valid");
-    let branch = Row::new("grid", "Branch", 0_u64);
-    assert_eq!(data.get(&branch, "to"), None);
+    let to = || data.snapshot().get("Branch", 0_u64, "to", None);
+    assert_eq!(to(), None);
     data.apply(Table::new("Bus", vec![2_u64])).expect("valid");
-    assert_eq!(data.get(&branch, "to"), Some(Value::Row(Row::new("grid", "Bus", 2_u64))));
+    assert_eq!(to(), Some(Value::Row(Row::new("grid", "Bus", 2_u64))));
     data.apply(Patch::new().remove("Bus", vec![1_u64])).expect("valid");
-    assert_eq!(data.get(&branch, "to"), Some(Value::Row(Row::new("grid", "Bus", 2_u64))));
+    assert_eq!(to(), Some(Value::Row(Row::new("grid", "Bus", 2_u64))));
 }
 
 #[test]
 fn inverses_follow_every_change_and_snapshots_keep_theirs() {
-    let inverse = |data: &Data, target: usize| {
+    let inverse = |data: &Snapshot, target: usize| {
         let Some(super::table::Field::Reference(r)) = data.table("Branch").and_then(|t| t.field_named("from")) else {
             panic!("a reference");
         };
         r.inverse().of(target).to_vec()
     };
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     data.apply(
         Patch::new().set(Table::new("Bus", vec![1_u64, 2, 3])).set(Table::new("Branch", Ids::count(4)).reference(
             "from",
@@ -218,20 +219,22 @@ fn inverses_follow_every_change_and_snapshots_keep_theirs() {
         )),
     )
     .expect("valid");
-    assert_eq!(inverse(&data, 0), vec![0, 2]);
-    assert_eq!(inverse(&data, 2), vec![3]);
-    let before = data.clone();
+    assert_eq!(inverse(&data.snapshot(), 0), vec![0, 2]);
+    assert_eq!(inverse(&data.snapshot(), 2), vec![3]);
+    let before = data.snapshot();
     data.apply(Table::new("Branch", vec![1_u64]).reference("from", "Bus", vec![3_u64])).expect("valid");
-    assert_eq!((inverse(&data, 0), inverse(&data, 2)), (vec![0, 2], vec![1, 3]));
+    let now = data.snapshot();
+    assert_eq!((inverse(&now, 0), inverse(&now, 2)), (vec![0, 2], vec![1, 3]));
     data.apply(Patch::new().remove("Bus", vec![1_u64])).expect("valid");
-    // Bus 1 left: what named it names nothing, and the rest moved up a row.
-    assert_eq!((inverse(&data, 0), inverse(&data, 1)), (vec![], vec![1, 3]));
+    // Bus 1 is gone: the rows that referenced it are unwired, and the later buses moved up a row.
+    let now = data.snapshot();
+    assert_eq!((inverse(&now, 0), inverse(&now, 1)), (vec![], vec![1, 3]));
     assert_eq!(inverse(&before, 0), vec![0, 2]);
 }
 
-/// A dataset of `rows` rows of `Line` with a `flow` sampled over `frames` frames, one a second.
-fn sampled(rows: usize, frames: usize) -> Data {
-    let mut data = Data::new("grid");
+/// A dataset of `rows` rows of `Line` with a `flow` sampled over `frames` frames, one per second.
+fn sampled(rows: usize, frames: usize) -> Snapshot {
+    let data = Data::new("grid");
     let at: Vec<f64> = (0..frames).map(|f| f as f64).collect();
     let flow: Vec<f64> = (0..frames * rows).map(|i| ((i * 7919) % 1000) as f64 - 500.0).collect();
     data.apply(
@@ -239,10 +242,10 @@ fn sampled(rows: usize, frames: usize) -> Data {
             .axis("time", "s")
             .replace(Table::new("Line", Ids::count(rows as u32)).reference("from", "Bus", vec![0_u32; rows]))
             .replace(Table::new("Bus", Ids::count(1)).field("name", vec!["a"]))
-            .append(at, "Line", [("flow", flow)]),
+            .append("Line", at, [("flow", flow)]),
     )
     .expect("valid");
-    data
+    data.snapshot()
 }
 
 #[test]
@@ -263,13 +266,17 @@ fn describe_names_tables_fields_and_spans() {
 }
 
 #[test]
-fn envelopes_read_levels_as_frames_would() {
+fn envelopes_match_a_scan_of_the_frames() {
     let (rows, frames) = (3, 700);
     let data = sampled(rows, frames);
-    let line = data.table("Line").expect("Line");
+    let envelope = |field: &str, range: [f64; 2], spans: usize, ids: Option<Vec<u32>>| {
+        let request =
+            EnvelopeRequest { table: "Line".into(), field: field.into(), range, spans, ids: ids.map(Ids::from) };
+        data.envelope(&request)
+    };
     let value = |row: usize, frame: usize| (((frame * rows + row) * 7919) % 1000) as f32 - 500.0;
     for (range, spans) in [([0.0, 699.0], 1), ([0.0, 699.0], 7), ([13.5, 600.0], 5), ([650.0, 2000.0], 3)] {
-        let envelope = line.envelope("flow", range, spans, None).expect("an envelope");
+        let envelope = envelope("flow", range, spans, None).expect("an envelope");
         assert_eq!(envelope.at.len(), spans + 1);
         for row in 0..rows {
             for s in 0..spans {
@@ -288,45 +295,56 @@ fn envelopes_read_levels_as_frames_would() {
             }
         }
     }
-    let picked = line.envelope("flow", [0.0, 699.0], 2, Some(&vec![2_u32, 0].into())).expect("an envelope");
-    let all = line.envelope("flow", [0.0, 699.0], 2, None).expect("an envelope");
+    let picked = envelope("flow", [0.0, 699.0], 2, Some(vec![2, 0])).expect("an envelope");
+    let all = envelope("flow", [0.0, 699.0], 2, None).expect("an envelope");
     assert_eq!(picked.least, [&all.least[4..6], &all.least[0..2]].concat());
-    assert!(line.envelope("from", [0.0, 1.0], 1, None).is_err());
-    assert!(line.envelope("flow", [0.0, 1.0], 1, Some(&vec![9_u32].into())).is_err());
+    assert!(envelope("from", [0.0, 1.0], 1, None).is_err());
+    assert!(envelope("flow", [0.0, 1.0], 1, Some(vec![9])).is_err());
+    let json: EnvelopeRequest = serde_json::from_value(serde_json::json!({
+        "table": "Line", "field": "flow", "range": [0, 699], "spans": 2, "ids": [2, 0],
+    }))
+    .expect("a request");
+    assert_eq!(data.envelope(&json).expect("an envelope"), picked);
+    let error = data.envelope(&EnvelopeRequest { table: "Nope".into(), ..json }).expect_err("no table");
+    assert_eq!(error.to_string(), "Nope: no such table");
 }
 
 #[cfg(feature = "gpu")]
 #[test]
 fn queries_filter_sort_page_and_select() {
-    use crate::{Order, Query, field};
-    let mut data = Data::new("grid");
+    use crate::{Order, Query, QueryResult, field};
+    let data = Data::new("grid");
     let loading = vec![40.0, 95.0, 120.0, 95.0, 10.0];
     data.apply(
         Table::new("Branch", Ids::count(5)).field("loading", loading).field("name", vec!["a", "b", "c", "d", "e"]),
     )
     .expect("valid");
-    let names = |table: &Table| table.ids().map(|id| table.get(id, "name")).collect::<Vec<_>>();
+    let data = data.snapshot();
+    let names = |read: &QueryResult| read.table.ids().map(|id| read.table.get(id, "name")).collect::<Vec<_>>();
     let text = |s: &str| Some(Value::Text(s.into()));
     let hot = Query::of("Branch").filter(field("loading").gt(90.0)).sort(field("loading"), Order::Descending);
-    let (sorted, kept) = data.query(&hot).expect("a query");
-    assert_eq!((names(&sorted), kept), (vec![text("c"), text("b"), text("d")], 3), "ties keep their order");
-    let (page, kept) = data.query(&hot.clone().offset(1).limit(1)).expect("a query");
-    assert_eq!((names(&page), kept), (vec![text("b")], 3), "the filter kept three, the page one");
-    let (least, _) =
-        data.query(&Query::of("Branch").sort(field("loading"), Order::Ascending).limit(2)).expect("a query");
+    let sorted = data.query(&hot).expect("a query");
+    assert_eq!((names(&sorted), sorted.total), (vec![text("c"), text("b"), text("d")], 3), "ties keep their order");
+    let page = data.query(&hot.clone().offset(1).limit(1)).expect("a query");
+    assert_eq!((names(&page), page.total), (vec![text("b")], 3), "the filter kept three, the page one");
+    let least = data.query(&Query::of("Branch").sort(field("loading"), Order::Ascending).limit(2)).expect("a query");
     assert_eq!(names(&least), [text("e"), text("a")]);
-    let (selected, _) =
-        data.query(&Query::of("Branch").limit(1).select("double", field("loading") * 2.0)).expect("a query");
+    let selected =
+        data.query(&Query::of("Branch").limit(1).select("double", field("loading") * 2.0)).expect("a query").table;
     assert_eq!(selected.fields().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["double"]);
     assert_eq!(selected.get(0_u64, "double"), Some(Value::Number(80.0)));
+    let ids = data.query(&Query::of("Branch").limit(2).ids_alone()).expect("a query").table;
+    assert_eq!((ids.len(), ids.fields().count()), (2, 0), "ids alone");
     let json: Query = serde_json::from_value(serde_json::json!({
-        "of": "Branch", "filter": { "op": "lt", "args": ["loading", 100] }, "sort": [["loading", "descending"]], "limit": 2,
+        "of": "Branch", "filter": { "lt": ["$loading", 100] }, "sort": [["$loading", "descending"]], "limit": 2,
+        "select": { "name": "$name" },
     }))
     .expect("a query");
-    assert_eq!(names(&data.query(&json).expect("a query").0), [text("b"), text("d")]);
-    let (named, _) = data.query(&Query::of("Branch").ids([3_u64, 1, 9])).expect("by ids");
-    assert_eq!(names(&named), [text("d"), text("b")], "in the order named, unknown ids passed over");
-    let (lake, _) = data.query(&Query::of("Branch").filter(field("name").contains("C"))).expect("contains");
+    let read = data.query(&json).expect("a query");
+    assert_eq!(names(&read), [text("b"), text("d")], "a selected field comes back as stored");
+    let named = data.query(&Query::of("Branch").ids([3_u64, 1, 9])).expect("by ids");
+    assert_eq!(names(&named), [text("d"), text("b")], "in the order given, unknown ids skipped");
+    let lake = data.query(&Query::of("Branch").filter(field("name").contains("C"))).expect("contains");
     assert_eq!(names(&lake), [text("c")], "ignoring case");
     assert!(data.query(&Query::of("Nope")).is_err());
 }
@@ -336,65 +354,65 @@ fn queries_filter_sort_page_and_select() {
 fn queries_read_sampled_fields_at_a_coordinate() {
     use crate::{Query, field};
     let data = sampled(2, 4);
-    let (at_two, _) = data.query(&Query::of("Line").at(2.0).select("flow", field("flow"))).expect("a query");
+    let at_two = data.query(&Query::of("Line").at(2.0).select("flow", field("flow"))).expect("a query").table;
     let flow = |row: usize, frame: usize| Value::Number(((((frame * 2 + row) * 7919) % 1000) as f64) - 500.0);
     assert_eq!(at_two.get(1_u64, "flow"), Some(flow(1, 2)));
-    let (last, _) = data.query(&Query::of("Line")).expect("a query");
+    let last = data.query(&Query::of("Line")).expect("a query").table;
     assert_eq!(last.kind("flow"), Some(crate::Kind::Number));
     assert_eq!(last.get(0_u64, "flow"), Some(flow(0, 3)));
 }
 
 #[test]
-fn ids_too_large_for_json_numbers_cross_as_text() {
+fn ids_too_large_for_json_numbers_are_written_as_text() {
     let big = (1_u64 << 53) + 1;
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     data.apply(Table::new("Bus", vec![big, 7]).field("kv", vec![1.0, 2.0])).expect("valid");
     assert_eq!(serde_json::to_string(&Id::Number(big)).expect("an id"), format!("\"{big}\""));
     assert_eq!(serde_json::to_string(&Id::Number(7)).expect("an id"), "7");
-    let bus = data.table("Bus").expect("Bus");
-    assert_eq!(bus.get(Id::from(big.to_string()), "kv"), Some(Value::Number(1.0)), "the text names the row");
-    assert_eq!(bus.get(big, "kv"), Some(Value::Number(1.0)));
-    assert_eq!(bus.values("kv").and_then(|v| v.numbers()), Some(vec![1.0, 2.0]));
+    let now = data.snapshot();
+    let text = Id::from(big.to_string());
+    assert_eq!(now.get("Bus", text, "kv", None), Some(Value::Number(1.0)), "the decimal text finds the row");
+    assert_eq!(now.get("Bus", big, "kv", None), Some(Value::Number(1.0)));
     let counted = Table::new("Count", Ids::count(3)).field("x", vec![0.0, 1.0, 2.0]);
     data.apply(counted).expect("valid");
-    assert_eq!(data.table("Count").expect("Count").get(Id::from("2"), "x"), Some(Value::Number(2.0)));
+    assert_eq!(data.snapshot().get("Count", Id::from("2"), "x", None), Some(Value::Number(2.0)));
 }
 
 #[test]
 fn schema_changes_only_with_fields() {
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     data.apply(Table::new("Bus", Ids::count(2)).field("kv", vec![1.0, 2.0])).expect("valid");
-    let schema = data.schema();
+    let schema = data.snapshot().schema();
     data.apply(Table::new("Bus", Ids::count(3)).field("kv", vec![1.0, 2.0, 3.0])).expect("valid");
-    assert_eq!(data.schema(), schema);
+    assert_eq!(data.snapshot().schema(), schema);
     data.apply(Table::new("Bus", Ids::count(1)).field("name", vec!["a"])).expect("valid");
-    assert_ne!(data.schema(), schema);
+    assert_ne!(data.snapshot().schema(), schema);
 }
 
 #[test]
-fn rows_appended_by_id_leave_the_rest_holding() {
-    let mut data = Data::new("grid");
+fn appending_by_id_keeps_other_rows_last_values() {
+    let data = Data::new("grid");
     data.apply(Patch::new().set(Table::new("Bus", [10_u64, 20, 30])).append(
-        [0.0],
         "Bus",
+        [0.0],
         [("vm", vec![1.0, 1.1, 1.2])],
     ))
     .expect("valid");
-    data.apply(Patch::new().append_rows([1.0], "Bus", [30_u64], [("vm", vec![0.9])])).expect("by id");
-    let vm = |id: u64| data.get_at(&Row::new("grid", "Bus", id), "vm", 1.0);
-    assert_eq!(vm(10), Some(Value::Number(1.0)), "held");
+    data.apply(Patch::new().append_rows("Bus", [1.0], [("vm", vec![0.9])], [30_u64])).expect("by id");
+    let vm = |id: u64| data.snapshot().get("Bus", id, "vm", 1.0);
+    assert_eq!(vm(10), Some(Value::Number(1.0)), "other rows keep their last value");
     assert_eq!(vm(30), Some(Value::Number(f64::from(0.9_f32))), "recorded");
-    let error = data.apply(Patch::new().append_rows([2.0], "Bus", [40_u64], [("vm", vec![1.0])]));
-    assert!(error.is_err_and(|e| e.to_string().contains("no row")), "rows appended to are rows the table holds");
+    let error = data.apply(Patch::new().append_rows("Bus", [2.0], [("vm", vec![1.0])], [40_u64]));
+    assert!(error.is_err_and(|e| e.to_string().contains("no row")), "appending to an unknown id fails");
 }
 
 #[test]
-fn a_patch_to_a_dataset_changes_it_alone() {
-    let mut grid = Data::new("grid");
-    grid.apply(Patch::to("grid").set(Table::new("Bus", Ids::count(1)))).expect("its own");
+fn a_patch_applies_only_to_its_named_dataset() {
+    let grid = Data::new("grid");
+    grid.apply(Patch::to("grid").set(Table::new("Bus", Ids::count(1)))).expect("its own dataset");
     let error = grid.apply(Patch::to("weather").set(Table::new("Cell", Ids::count(1))));
     assert!(error.is_err_and(|e| e.to_string().contains("weather")));
-    let bytes = grid.to_bytes();
+    let bytes = grid.snapshot().to_bytes();
     assert_eq!(Patch::from_bytes(&bytes).expect("a patch").data().map(crate::Name::as_str), Some("grid"));
-    assert!(Data::from_bytes(&Patch::new().to_bytes()).is_err(), "a dataset is a patch to one");
+    assert!(Snapshot::from_bytes(&Patch::new().to_bytes()).is_err(), "dataset bytes must name the dataset");
 }

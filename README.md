@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow cyan">
+  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k grid on a globe as one 765 kV line opens. Buses rise with their frequency, branches that pick up the line's power glow amber, and branches that lose flow glow cyan">
 </p>
 
 <h1 align="center">
@@ -36,39 +36,32 @@ cargo add latkit            # in Rust
 ## In the browser
 
 ```ts
-import { loadLatkit, Patch, field, type Scene } from 'latkit';
+import { Data, View, field, load } from 'latkit';
 
-const { Data, Gpu } = await loadLatkit();
-const data = new Data('grid').apply(
-  new Patch().replace('Bus', [101, 102], { x: [0, 30], y: [0, 20], kv: [230, 115] }),
-);
-const scene: Scene = {
+await load();
+const grid = new Data('grid').set('Bus', [101, 102], { x: [0, 30], y: [0, 20], kv: [230, 115] });
+
+const view = await View.create(document.querySelector('canvas')!, {
   space: 'plane',
   marks: [
     {
-      vertices: {
-        of: ['grid', 'Bus'],
-        position: ['x', 'y'],
-        radius: 6,
-        color: field('kv').colormap('viridis'),
-      },
+      vertices: grid.table('Bus'),
+      position: ['$x', '$y'],
+      radius: 6,
+      color: field('kv').colormap('viridis'),
     },
   ],
-};
+});
 
-const gpu = await Gpu.create();
-const view = gpu.view(scene);
-gpu.canvas(document.querySelector('canvas')!).show([view]);
-view.setData(data);
-view.fit();
+grid.set('Bus', [102], { kv: [345] }); // drawn the next frame
 ```
 
-Scenes, expressions, and patches are plain data, typed from latkit's schema: `latkit/core` builds
-them without loading WebAssembly, in a worker or on a server.
+A scene is plain data, with types from latkit's schema. `JSON.stringify(scene)` writes the JSON the
+command line reads.
 
 ## On the command line
 
-The same scene and data, as JSON, render to a picture, or with `--frames` to video:
+Write the same scene and data as JSON to render a picture, or a video with `--frames`:
 
 ```sh
 latkit render scene.json --data grid.json --output grid.png
@@ -85,12 +78,10 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
   "space": "plane",
   "marks": [
     {
-      "vertices": {
-        "of": ["grid", "Bus"],
-        "position": ["x", "y"],
-        "radius": 6,
-        "color": { "colormap": "viridis", "value": { "field": "kv" } }
-      }
+      "vertices": ["grid", "Bus"],
+      "position": ["$x", "$y"],
+      "radius": 6,
+      "color": { "colormap": "viridis", "value": "$kv" }
     }
   ]
 }
@@ -119,19 +110,19 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
 
 <p align="center">
   <a href="https://latkit.readthedocs.io/en/latest/examples/texas.html"><img src="docs/images/texas.png" width="32%" alt="Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/frequency.html"><img src="docs/images/frequency.png" width="32%" alt="The speed of 1,456 machines over ten seconds after a fault, near ones bright and swinging hardest, far ones dark"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/globe.html"><img src="docs/images/globe.png" width="32%" alt="Routes between forty of the world's great cities, along great circles on a globe, comets flowing on them"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/diagram.html"><img src="docs/images/diagram.png" width="32%" alt="A microgrid controller as blocks in nested groups, wired port to port with routed wires and a feedback loop"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/frequency.html"><img src="docs/images/frequency.png" width="32%" alt="The speed of 1,456 machines over ten seconds after a fault. Machines near the fault are bright and swing hardest, and far ones are dark"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/globe.html"><img src="docs/images/globe.png" width="32%" alt="Great-circle routes between forty of the world's great cities on a globe, with comets flowing along them"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/diagram.html"><img src="docs/images/diagram.png" width="32%" alt="A microgrid controller as blocks in nested groups, with wires routed port to port and a feedback loop"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/torus.html"><img src="docs/images/torus.png" width="32%" alt="Sixty-four filaments in cyan, amber, and coral, twisting around a three-dimensional torus knot"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/clifford.html"><img src="docs/images/clifford.png" width="32%" alt="A Clifford strange attractor of 260,000 translucent points, colored by the way each step turns"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/clifford.html"><img src="docs/images/clifford.png" width="32%" alt="A Clifford strange attractor of 260,000 translucent points, colored by the direction of each step"></a>
 </p>
 
-Every picture is drawn by latkit; [the examples](https://latkit.readthedocs.io/en/latest/examples/) hold them all with the code that draws them.
+latkit drew every picture here. [The examples](https://latkit.readthedocs.io/en/latest/examples/) show the code for each one.
 
 ## Documentation
 
-Guides, examples, and the reference are on [Read the Docs](https://latkit.readthedocs.io); the Rust
-API is on [docs.rs](https://docs.rs/latkit). [Contributing](CONTRIBUTING.md) covers the repository and
-how to build it.
+Guides, examples, and the reference are on [Read the Docs](https://latkit.readthedocs.io), and the
+Rust API is on [docs.rs](https://docs.rs/latkit). [Contributing](CONTRIBUTING.md) covers the
+repository and how to build it.
 
 Created by [Luke Lowery](https://lukelowry.github.io/). [MIT License](LICENSE).

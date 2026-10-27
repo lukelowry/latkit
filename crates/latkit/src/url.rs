@@ -1,9 +1,11 @@
-//! Where what a document names lies: a URL or a path relative to the document's own.
+//! Resolving the URLs and paths a document references, relative to the document's own.
 
-/// `url` resolved against `base`, the URL or path of the document naming it: as it is when absolute
-/// (a scheme, a `data:` URL, a drive or a root of a path), from `base`'s origin when it starts with
-/// `/` and `base` is a URL, else in `base`'s directory. Against a URL it resolves as RFC 3986 says,
-/// its host as written and a template's braces kept.
+/// Resolves `url` against `base`, the URL or path of the document that references it.
+///
+/// An absolute `url` is returned unchanged: one with a scheme (including `data:`), a drive, or a
+/// root path. A `url` starting with `/` resolves from `base`'s origin when `base` is a URL. Any
+/// other `url` resolves in `base`'s directory. Against a URL, resolution follows RFC 3986, except
+/// that the host stays as written and a template's braces are not escaped.
 pub(crate) fn resolve(base: &str, url: &str) -> String {
     let drive = |s: &str| s.as_bytes().get(1) == Some(&b':') && s.as_bytes()[0].is_ascii_alphabetic();
     if drive(url) || url.starts_with('\\') || scheme(url).is_some() {
@@ -38,9 +40,9 @@ pub(crate) fn resolve(base: &str, url: &str) -> String {
     format!("{origin}{}", escaped(&without_dots(&merged)))
 }
 
-/// The path a `file:` URL names, its escapes decoded, as URLs read it: backslashes are slashes, and a
-/// drive where the host goes starts the path. `None` where it names another host's file or is no
-/// file URL.
+/// The local path a `file:` URL names, with percent escapes decoded. Backslashes count as slashes,
+/// and a drive in the host position starts the path. `None` if `url` is not a `file:` URL, names
+/// another host, or has an invalid escape.
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub(crate) fn file_path(url: &str) -> Option<std::path::PathBuf> {
     let rest = url.strip_prefix("file:")?.replace('\\', "/");
@@ -70,7 +72,7 @@ pub(crate) fn file_path(url: &str) -> Option<std::path::PathBuf> {
         }
     }
     let path = String::from_utf8(bytes).ok()?;
-    // A drive's path: `/C:/data` is `C:/data`.
+    // Drop the slash before a drive: `/C:/data` becomes `C:/data`.
     let drive = path.as_bytes();
     if drive.len() >= 3 && drive[0] == b'/' && drive[1].is_ascii_alphabetic() && drive[2] == b':' {
         return Some(path[1..].into());
@@ -78,8 +80,8 @@ pub(crate) fn file_path(url: &str) -> Option<std::path::PathBuf> {
     Some(path.into())
 }
 
-/// `url`'s scheme: two or more letters, digits, `+`, `-`, or `.` from a letter up to a `:`, so a
-/// drive has none.
+/// `url`'s scheme: the text before the first `:`, if it is two or more letters, digits, `+`, `-`,
+/// or `.` starting with a letter. A one-letter drive is not a scheme.
 fn scheme(url: &str) -> Option<&str> {
     let scheme = &url[..url.find(':')?];
     (scheme.len() > 1
@@ -88,7 +90,7 @@ fn scheme(url: &str) -> Option<&str> {
     .then_some(scheme)
 }
 
-/// `path` without its `.` and `..` segments, as RFC 3986 removes them; its query and fragment kept.
+/// Removes `.` and `..` segments from `path` per RFC 3986, keeping its query and fragment.
 fn without_dots(path: &str) -> String {
     let (path, rest) = path.split_at(path.find(['?', '#']).unwrap_or(path.len()));
     let segments: Vec<&str> = path.split('/').collect();
@@ -103,7 +105,7 @@ fn without_dots(path: &str) -> String {
             }
             segment => kept.push(segment),
         }
-        // A last `.` or `..` names a directory.
+        // A trailing `.` or `..` names a directory, so the result ends with a slash.
         if i + 1 == segments.len() && matches!(segment, "." | "..") {
             kept.push("");
         }
@@ -111,8 +113,8 @@ fn without_dots(path: &str) -> String {
     format!("{}{rest}", kept.join("/"))
 }
 
-/// `text` with what a URL cannot hold as written percent-encoded: spaces, quotes, angle brackets,
-/// backticks, controls, and every byte past ASCII. A template's braces stay.
+/// Percent-encodes the bytes of `text` a URL cannot contain literally: spaces, double quotes, angle
+/// brackets, backticks, control characters, and non-ASCII bytes. Template braces are kept.
 fn escaped(text: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(text.len());
@@ -131,7 +133,7 @@ mod tests {
     use super::resolve;
 
     #[test]
-    fn names_resolve_against_their_document() {
+    fn relative_urls_resolve_against_their_document() {
         assert_eq!(resolve("https://a.b/c/d.json", "t/{z}.pbf"), "https://a.b/c/t/{z}.pbf");
         assert_eq!(resolve("https://a.b/c/d.json", "t/%7Bz%7D/{z}.pbf"), "https://a.b/c/t/%7Bz%7D/{z}.pbf");
         assert_eq!(resolve("https://a.b/c/d.json", "/t.pbf"), "https://a.b/t.pbf");
@@ -151,7 +153,7 @@ mod tests {
 
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     #[test]
-    fn file_urls_name_their_paths() {
+    fn file_urls_convert_to_paths() {
         use super::file_path;
         use std::path::PathBuf;
         assert_eq!(file_path("file:///C:/data/a%20b.f32"), Some(PathBuf::from("C:/data/a b.f32")));

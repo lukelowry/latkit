@@ -1,26 +1,28 @@
-//! What every GPU test shares: a device, frames rendered headless on a clock the test steps and
+//! Shared helpers for GPU tests: a device, headless frames rendered on a test-stepped clock and
 //! read back, and plain scenes.
 
 #![allow(dead_code, unreachable_pub, reason = "each test file uses some")]
 
 use std::cell::Cell;
 
-use latkit::{Camera, Color, Diagram, Frame, Gpu, Grid, Plane, Theme, View};
+use latkit::host::{Host, Job, Raster, TextRun};
+use latkit::{Camera, Color, Diagram, Frame, Gpu, Grid, Pending, Plane, Theme, View};
 
-/// Seconds a frame steps the test's clock: frames run as a display's would, however fast they draw.
+/// Seconds each frame advances the test clock, so frames run at display rate regardless of draw
+/// speed.
 pub const TICK: f64 = 1.0 / 60.0;
 
 thread_local! {
-    /// The test's clock: every frame steps it, and inputs read it.
+    /// The test clock. Every frame advances it, and inputs read it.
     static NOW: Cell<f64> = const { Cell::new(0.0) };
 }
 
-/// The test's clock, for inputs.
+/// The test clock's time, for inputs.
 pub fn now() -> f64 {
     NOW.with(Cell::get)
 }
 
-/// Steps the test's clock `seconds` without drawing.
+/// Advances the test clock by `seconds` without drawing.
 pub fn wait(seconds: f64) {
     NOW.with(|now| now.set(now.get() + seconds));
 }
@@ -28,8 +30,23 @@ pub fn wait(seconds: f64) {
 pub const SIZE: u32 = 128;
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// A device, or `None` where the machine has no adapter at all, which only `LATKIT_REQUIRE_GPU`
-/// makes a failure.
+/// A device, or `None` if the machine has no adapter. With `LATKIT_REQUIRE_GPU` set, a missing
+/// adapter panics instead.
+/// A host that runs jobs on separate threads, finishing frames later, as a page's workers do.
+pub struct Threads;
+
+impl Host for Threads {
+    fn rasterize(&self, _: &TextRun) -> latkit::Result<Raster> {
+        Err(latkit::Error::Unsupported("these views draw no text".into()))
+    }
+
+    fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
+        let (pending, resolver) = Pending::new();
+        std::thread::spawn(move || resolver.resolve(Ok(job.run())));
+        pending
+    }
+}
+
 pub fn gpu() -> Option<Gpu> {
     match pollster::block_on(Gpu::new()) {
         Ok(gpu) => Some(gpu),
@@ -43,7 +60,7 @@ pub fn gpu() -> Option<Gpu> {
 
 /// The longest the GPU may take to finish a frame in these tests.
 pub const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-/// The most frames a view may take to settle: uploads, probes, and a transition of two seconds.
+/// The most frames a view may take to settle: uploads, probes, and a two-second transition.
 pub const SETTLE: u32 = 600;
 
 pub fn finish(gpu: &Gpu) {
@@ -51,7 +68,7 @@ pub fn finish(gpu: &Gpu) {
     gpu.device().poll(wait).expect("the GPU finishes within the deadline");
 }
 
-/// Renders frames until the view is settled, transitions included, then reads the target's pixels.
+/// Renders frames until the view settles, including transitions, then returns the target's pixels.
 pub fn frame(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     let mut pixels = step(gpu, view);
     for _ in 0..SETTLE {
@@ -63,7 +80,7 @@ pub fn frame(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     panic!("the view settles within {SETTLE} frames");
 }
 
-/// Steps the test's clock a frame, renders one frame, and reads the target's pixels.
+/// Advances the test clock one tick, renders one frame, and returns the target's pixels.
 pub fn step(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     wait(TICK);
     let device = gpu.device();
@@ -106,7 +123,7 @@ pub fn step(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     bytemuck::cast_slice::<u8, [u8; 4]>(&slice.get_mapped_range().expect("mapped")).to_vec()
 }
 
-/// The errors a view reported since its events were last drained, other events dropped.
+/// The errors a view reported since its events were last drained. Other events are discarded.
 pub fn errors(view: &mut View) -> Vec<latkit::Error> {
     view.events().filter_map(|e| if let latkit::Event::Error(e) = e { Some(e) } else { None }).collect()
 }
@@ -123,11 +140,23 @@ pub fn plain_theme() -> Theme {
     Theme { background: Color::BLACK, ..Theme::dark() }
 }
 
+/// The plain theme with green edges.
+pub fn green_edges() -> Theme {
+    let plain = plain_theme();
+    Theme { edge: latkit::EdgeTheme { color: Some(Color::rgb(0.0, 1.0, 0.0)), ..plain.edge }, ..plain }
+}
+
+/// The plain theme with label halos off.
+pub fn haloless() -> Theme {
+    let plain = plain_theme();
+    Theme { text: latkit::TextTheme { halo: 0.0, ..plain.text.clone() }, ..plain }
+}
+
 pub fn plane() -> Plane {
     Plane { grid: Grid::Off }
 }
 
-/// A diagram without a grid: y runs down, and at zoom 0 a unit is a pixel.
+/// A diagram without a grid. Y points down, and at zoom 0 one unit is one pixel.
 pub fn diagram() -> Diagram {
     Diagram { grid: Grid::Off }
 }

@@ -1,13 +1,13 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
 use super::Shape;
-use super::form::{Presets, preset_or, presets};
+use super::form::{preset_schema, presets};
 use crate::gpu::shaders as wgsl;
 
-/// A vertex's port: where a net its reference field names meets it, on one side of its marker: a
-/// side, or options. An output drives its net: layouts rank a net from its outputs, and its arrows
-/// point away from them.
+/// A port on one side of a vertex's marker, where a net connects: a side name, or options. The
+/// vertex names the net in a reference field. An output drives its net: layouts rank a net from its
+/// outputs, and the net's arrows point away from them.
 ///
 /// ```
 /// # use latkit::{Port, Side, Vertices};
@@ -15,42 +15,31 @@ use crate::gpu::shaders as wgsl;
 /// ```
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = presets::<Port>)]
+#[schemars(transform = preset_schema::<Port>)]
 pub struct Port {
-    /// The side it sits on.
+    /// The side of the marker it sits on.
     pub side: Side,
-    /// Its place among the ports on that side, from the top or the left; in declaration order unless set.
+    /// Its position among the ports on its side, counted from the top or left. Ports without an
+    /// `order` follow those with one, in declaration order.
     #[serde(default)]
     pub order: Option<u32>,
     /// Its name, drawn beside it inside the marker.
     #[serde(default)]
     pub label: Option<String>,
-    /// Its marker.
+    /// Its shape. Defaults to an ellipse.
     #[serde(default)]
     pub shape: Shape,
-    /// Whether it drives the net its reference field names; an input unless set.
+    /// Whether it is an output, which drives its net. Defaults to `false` (an input).
     #[serde(default)]
     pub output: bool,
 }
 
-impl Presets for Port {
-    const NAMES: &'static [&'static str] = &["left", "right", "top", "bottom"];
-
-    fn preset(name: &str) -> Option<Port> {
-        let side = [Side::Left, Side::Right, Side::Top, Side::Bottom];
-        Port::NAMES.iter().position(|n| *n == name).map(|i| Port::new(side[i]))
-    }
-
-    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Port, D::Error> {
-        Port::deserialize(deserializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Port {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Port, D::Error> {
-        preset_or(deserializer)
-    }
-}
+presets!(Port {
+    "left" => Port::new(Side::Left),
+    "right" => Port::new(Side::Right),
+    "top" => Port::new(Side::Top),
+    "bottom" => Port::new(Side::Bottom),
+});
 
 /// A side of a marker.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, JsonSchema)]
@@ -77,16 +66,16 @@ impl Port {
         Port { output: true, ..Port::new(side) }
     }
 
-    /// This port, labeled `label`.
+    /// Sets the port's label.
     #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Port {
         self.label = Some(label.into());
         self
     }
 
-    /// Each of `ports`' codes: its side in two bits, its place among the ports on its side (by their
-    /// order, then as declared) and how many share the side in eight bits each, and whether it is an
-    /// output.
+    /// Each port of `ports` packed into a code: its side in bits 0–1, its place among the ports on
+    /// that side (by `order`, then declaration order) in bits 2–9, the number of ports on that side
+    /// in bits 10–17, and the `PORT_OUTPUT` bit for an output.
     pub(crate) fn codes(ports: &[&Port]) -> Vec<u32> {
         (0..ports.len())
             .map(|i| {
@@ -107,18 +96,4 @@ impl From<Side> for Port {
     }
 }
 
-impl Side {
-    pub(crate) fn code(self) -> u32 {
-        match self {
-            Side::Left => 0,
-            Side::Right => 1,
-            Side::Top => 2,
-            Side::Bottom => 3,
-        }
-    }
-
-    /// The side of `code`, or `None` for any other number.
-    pub(crate) fn from_code(code: u32) -> Option<Side> {
-        [Side::Left, Side::Right, Side::Top, Side::Bottom].get(code as usize).copied()
-    }
-}
+crate::wire::codes!(Side { Left = 0, Right = 1, Top = 2, Bottom = 3 });

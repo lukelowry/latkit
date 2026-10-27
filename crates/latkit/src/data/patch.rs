@@ -1,19 +1,21 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use super::bytes::DecodeLimits;
 use super::column::Column;
-use super::dataset::Inner;
 use super::ids::Ids;
 use super::name::{Name, Version};
 use super::samples::{Run, Samples};
+use super::snapshot::Inner;
 use super::table::{Field, Reference, Table};
 use super::values::Values;
 use crate::{Error, Result};
 
-/// Changes to a dataset, applied in order and all at once by [`Data::apply`](crate::Data::apply).
+/// A list of changes to a dataset. [`Data::apply`](crate::Data::apply) applies them in order, all
+/// at once or not at all.
 ///
-/// Code builds patches and sockets carry them as bytes; every change reaches a dataset the same way.
-/// A patch made by [`Patch::to`] names the dataset it changes, as a stream of several datasets' patches
-/// does: applying it to another dataset is an error.
+/// Patches are built in code or decoded from bytes or JSON. They are the only way to change a
+/// dataset. A patch made by [`Patch::to`] names its dataset, as patches in a stream of several
+/// datasets do. Applying it to another dataset is an error.
 #[derive(Clone, Default, Debug)]
 pub struct Patch {
     pub(crate) data: Option<Name>,
@@ -22,30 +24,31 @@ pub struct Patch {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Op {
-    /// Names the axis sampled fields are recorded over.
+    /// Sets the axis sampled fields are recorded over.
     Axis { name: Name, unit: Name },
     /// Replaces a whole table, sampled fields included.
     Replace(Table),
-    /// Writes the given fields of the given rows; unknown ids add rows, unknown tables are added.
+    /// Writes the given fields of the given rows. Unknown ids add rows, and an unknown table is
+    /// added.
     Set(Table),
-    /// Removes rows by id; ids that name no row are ignored.
+    /// Removes rows by id. Ids that name no row are ignored.
     Remove { table: Name, ids: Ids },
-    /// Records frames of sampled fields, frame-major: of every row, or of the rows `ids` names, the
-    /// rest holding their last values.
+    /// Records frames of sampled fields, with values frame-major. Covers every row, or only the
+    /// rows in `ids`. Other rows keep their last values.
     Append { table: Name, at: Vec<f64>, ids: Option<Ids>, fields: Vec<(Name, Values)> },
     /// Forgets every sampled field's frames before a coordinate.
     Forget { before: f64 },
-    /// Holds a run of a sampled field's entries: their coordinates, and their values entry-major.
+    /// Inserts a run of a sampled field's entries: their coordinates, and their values entry-major.
     Frames { table: Name, field: Name, run: Run, at: Vec<f64>, values: Vec<f32> },
 }
 
 impl Patch {
-    /// An empty patch, for whichever dataset it is applied to.
+    /// An empty patch that applies to any dataset.
     pub fn new() -> Patch {
         Patch::default()
     }
 
-    /// An empty patch to dataset `data`.
+    /// An empty patch for dataset `data` only. Applying it to another dataset is an error.
     pub fn to(data: impl Into<Name>) -> Patch {
         Patch { data: Some(data.into()), ops: Vec::new() }
     }
@@ -55,45 +58,47 @@ impl Patch {
         self.data.as_ref()
     }
 
-    /// Names the axis sampled fields are recorded over, such as `("time", "s")`.
+    /// Sets the axis that sampled fields are recorded over, such as `("time", "s")`.
     #[must_use]
     pub fn axis(mut self, name: impl Into<Name>, unit: impl Into<Name>) -> Patch {
         self.ops.push(Op::Axis { name: name.into(), unit: unit.into() });
         self
     }
 
-    /// Replaces table `table.name()` with `table`, or adds it.
+    /// Replaces table `table.name()` with `table`, sampled fields included, or adds it.
     #[must_use]
     pub fn replace(mut self, table: Table) -> Patch {
         self.ops.push(Op::Replace(table));
         self
     }
 
-    /// Writes `table`'s fields for its rows: rows with known ids change, others are added, and fields
-    /// it leaves out keep their values. Adds the table when there is none of its name.
+    /// Writes the fields of `table` for its rows. Rows with existing ids are updated and new ids
+    /// add rows. Fields that `table` leaves out keep their values, or are missing for added rows.
+    /// Adds the table if no table has its name.
     #[must_use]
     pub fn set(mut self, table: Table) -> Patch {
         self.ops.push(Op::Set(table));
         self
     }
 
-    /// Removes the rows of `table` with `ids`.
+    /// Removes the rows of `table` with `ids`. Ids that match no row are ignored. A missing table
+    /// is an error.
     #[must_use]
     pub fn remove(mut self, table: impl Into<Name>, ids: impl Into<Ids>) -> Patch {
         self.ops.push(Op::Remove { table: table.into(), ids: ids.into() });
         self
     }
 
-    /// Records a frame at each axis coordinate of `at`: for each field, a value per row of `table`
-    /// at every coordinate, frame-major, every row's at the first coordinate, then at the next.
+    /// Records a frame of `table` at each axis coordinate in `at`. Each field gives a value per row
+    /// per coordinate, frame-major: every row's value at the first coordinate, then at the next.
     ///
-    /// A field's first frame makes it sampled. Coordinates never decrease; at equal coordinates the
-    /// last frame reads.
+    /// A field's first frame makes it sampled. Coordinates must be finite and must not decrease. At
+    /// equal coordinates, reads return the last frame.
     #[must_use]
     pub fn append<F, V>(
         mut self,
-        at: impl AsRef<[f64]>,
         table: impl Into<Name>,
+        at: impl AsRef<[f64]>,
         fields: impl IntoIterator<Item = (F, V)>,
     ) -> Patch
     where
@@ -105,16 +110,16 @@ impl Patch {
         self
     }
 
-    /// Records a frame at each axis coordinate of `at` for the rows of `table` that `ids` names, as
-    /// [`append`](Patch::append) does for every row: a value per row named at every coordinate,
-    /// frame-major. Rows left out hold their last value.
+    /// Like [`append`](Patch::append), but records values only for the rows in `ids`, one per row
+    /// per coordinate, frame-major. Other rows keep their last value. An id that names no row is an
+    /// error.
     #[must_use]
     pub fn append_rows<F, V>(
         mut self,
-        at: impl AsRef<[f64]>,
         table: impl Into<Name>,
-        ids: impl Into<Ids>,
+        at: impl AsRef<[f64]>,
         fields: impl IntoIterator<Item = (F, V)>,
+        ids: impl Into<Ids>,
     ) -> Patch
     where
         F: Into<Name>,
@@ -125,30 +130,33 @@ impl Patch {
         self
     }
 
-    /// Forgets every sampled field's frames before axis coordinate `before`. Whole frame pages drop,
-    /// so it costs O(pages); older versions of the dataset keep what they read.
+    /// Forgets every sampled field's frames before axis coordinate `before`. Whole pages are
+    /// dropped, so the cost is O(pages). Later frames keep their numbers, and older snapshots still
+    /// read the forgotten frames.
     #[must_use]
     pub fn forget(mut self, before: f64) -> Patch {
         self.ops.push(Op::Forget { before });
         self
     }
 
-    /// Holds a run of sampled field `field`'s entries of level `level`, numbered from `first`: what a
-    /// time tile holds, as `latkit tile` writes them. At level 0 the entries are frames, each a
-    /// coordinate in `at` and a value per row of `table` in `values`. At level `k` they are buckets of
-    /// `8^k` frames, each its first and last frame's coordinates in `at`, and in `values` each row's
-    /// least value over each bucket, then each row's greatest. NaN is missing.
+    /// Inserts a run of entries of sampled field `field` at level `level`, numbered from `first`,
+    /// in the form time tiles store them (such as the tiles `latkit tile` writes). At level 0 the
+    /// entries are frames, each with one coordinate in `at` and one value per row of `table` in
+    /// `values`. At level `k` they are buckets of `8^k` frames. `at` holds the coordinates of each
+    /// bucket's first and last frame. `values` holds every bucket's least value per row, followed
+    /// by every bucket's greatest. NaN is missing.
     ///
-    /// No entry may be held already; frames past the field's widen it, and those it skips stay missing.
+    /// None of the entries may already be present. Entries outside the field's frame range extend
+    /// it, and frames in any gap stay missing.
     ///
     /// ```
     /// # use latkit::{Data, Ids, Patch, Table};
-    /// let mut grid = Data::new("grid");
+    /// let grid = Data::new("grid");
     /// grid.apply(Patch::new().replace(Table::new("Bus", Ids::count(2))))?;
     /// // Frames 100 and 101, then the bucket of frames 0..8.
     /// grid.apply(Patch::new().frames("Bus", "vm", 0, 100, [100.0, 101.0], [1.0, 0.9, 1.02, 0.98]))?;
     /// grid.apply(Patch::new().frames("Bus", "vm", 1, 0, [0.0, 7.0], [0.95, 0.9, 1.05, 1.0]))?;
-    /// assert_eq!(grid.describe().span, Some([0.0, 101.0]));
+    /// assert_eq!(grid.snapshot().describe().span, Some([0.0, 101.0]));
     /// # Ok::<(), latkit::Error>(())
     /// ```
     #[must_use]
@@ -165,7 +173,7 @@ impl Patch {
         self
     }
 
-    /// This patch followed by `next`'s changes, to this patch's dataset.
+    /// This patch followed by `next`'s changes. The result keeps this patch's dataset.
     #[must_use]
     pub fn extend(mut self, next: Patch) -> Patch {
         self.ops.extend(next.ops);
@@ -177,42 +185,37 @@ impl Patch {
         self.ops.is_empty()
     }
 
-    /// The patch as bytes: one frame, naming its dataset when it has one.
+    /// Encodes the patch as one binary frame, including its dataset's name when it has one.
     pub fn to_bytes(&self) -> Vec<u8> {
         super::bytes::encode(self)
     }
 
-    /// A patch from [`Patch::to_bytes`] or [`Data::to_bytes`](crate::Data::to_bytes).
+    /// Decodes one whole frame written by [`Patch::to_bytes`] or
+    /// [`Snapshot::to_bytes`](crate::Snapshot::to_bytes), with default [`DecodeLimits`]. Returns an
+    /// error if `bytes` are malformed, truncated, or extend past the frame.
     pub fn from_bytes(bytes: &[u8]) -> Result<Patch> {
         super::bytes::decode(bytes)
     }
 
-    /// The patch at the start of `bytes` and how many bytes it takes, or `None` while `bytes` hold
-    /// only its start: frames back to back, as files, pipes, and sockets carry them, decode one by
-    /// one, and each says its length up front, so a partial one costs nothing to wait on. A frame
-    /// longer than `limit` bytes is [`Error::Limit`](crate::Error::Limit) at once, so a stream of
-    /// untrusted bytes never waits on more than `limit`.
+    /// Decodes back-to-back frames from `read`, such as a file, pipe, or socket. Yields each patch
+    /// once its whole frame has arrived. Each frame states its length up front, so a frame longer
+    /// than `limits` allows fails with [`Error::Limit`](crate::Error::Limit) before its body is
+    /// read. An untrusted stream buffers at most one frame at a time. The iterator ends when the
+    /// input ends between frames, or after the first error.
     ///
     /// ```
-    /// # use latkit::{Ids, Patch, Table};
-    /// let mut stream = Patch::to("grid").set(Table::new("Bus", Ids::count(1))).to_bytes();
-    /// stream.extend(Patch::to("grid").remove("Bus", [0_u64]).to_bytes());
-    /// let limit = 1 << 20;
-    /// let (first, used) = Patch::decode(&stream, limit)?.expect("a whole patch");
-    /// let (second, rest) = Patch::decode(&stream[used..], limit)?.expect("a whole patch");
-    /// assert_eq!(used + rest, stream.len());
-    /// assert_eq!(second.data().map(|d| d.as_str()), Some("grid"));
-    /// assert!(Patch::decode(&stream[..used - 1], limit)?.is_none(), "more bytes to come");
-    /// assert!(Patch::decode(&stream, 8).is_err(), "longer than the limit");
+    /// # use latkit::{DecodeLimits, Ids, Patch, Table};
+    /// let mut bytes = Patch::to("grid").set(Table::new("Bus", Ids::count(1))).to_bytes();
+    /// bytes.extend(Patch::to("grid").remove("Bus", [0_u64]).to_bytes());
+    /// let patches = Patch::stream(&bytes[..], DecodeLimits::default()).collect::<latkit::Result<Vec<_>>>()?;
+    /// assert_eq!(patches.len(), 2);
+    /// assert_eq!(patches[1].data().map(|d| d.as_str()), Some("grid"));
+    /// let small = DecodeLimits { frame_bytes: 16, ..DecodeLimits::default() };
+    /// assert!(Patch::stream(&bytes[..], small).all(|patch| patch.is_err()), "longer than the limit");
     /// # Ok::<(), latkit::Error>(())
     /// ```
-    pub fn decode_with_limits(bytes: &[u8], limits: super::bytes::DecodeLimits) -> Result<Option<(Patch, usize)>> {
-        super::bytes::decode_with_limits(bytes, limits)
-    }
-
-    /// Decodes one frame with an encoded byte limit and the default decoded storage budget.
-    pub fn decode(bytes: &[u8], limit: usize) -> Result<Option<(Patch, usize)>> {
-        super::bytes::decode_prefix(bytes, limit)
+    pub fn stream<R: std::io::Read>(read: R, limits: DecodeLimits) -> impl Iterator<Item = Result<Patch>> {
+        super::bytes::stream(read, limits)
     }
 }
 
@@ -222,8 +225,8 @@ impl From<Table> for Patch {
     }
 }
 
-/// Appends to the same fields of every row of one table, one after another: recorded as one, so a
-/// field takes its frames in one write however many changes carried them.
+/// Consecutive appends to the same fields of every row of one table, merged into one append. Each
+/// field is then written once, however many changes carried its frames.
 pub(crate) struct Appends {
     table: Name,
     at: Vec<f64>,
@@ -235,9 +238,10 @@ impl Appends {
         Appends { table, at, fields: fields.into_iter().map(|(name, values)| (name, vec![values])).collect() }
     }
 
-    /// Whether an append of `fields` at `at` to `table`, which has `rows` rows, carries the run on: the
-    /// same fields of the same kinds, a value for every row at each coordinate, coordinates that never
-    /// decrease. One that does not records on its own, so its error names it.
+    /// Whether an append of `fields` at `at` to `table` (with `rows` rows) can join this run: the
+    /// same table, the same fields of the same kinds, a value for every row at each coordinate, and
+    /// finite coordinates that do not decrease. An append that cannot join is applied alone, so its
+    /// error names it.
     pub(crate) fn continues(&self, table: &Name, at: &[f64], fields: &[(Name, Values)], rows: Option<usize>) -> bool {
         let Some(rows) = rows else { return false };
         let last = self.at.last().copied().unwrap_or(f64::NEG_INFINITY);
@@ -277,7 +281,8 @@ impl Appends {
 }
 
 impl Op {
-    /// Holds entries of `level` from `first`, as many as `at` holds coordinates of.
+    /// An [`Op::Frames`] of entries at `level`, numbered from `first`. The number of coordinates in
+    /// `at` sets the entry count.
     pub(crate) fn frames(table: Name, field: Name, level: u32, first: u64, at: Vec<f64>, values: Vec<f32>) -> Op {
         let entries = (at.len() / super::samples::coordinates(level)) as u64;
         let run = Run { level, entries: first..first.saturating_add(entries) };
@@ -303,7 +308,7 @@ impl Op {
                 let name = table.name.clone();
                 table.check().map_err(|e| e.at(&name))?;
                 if let Some((field, _)) = table.fields.iter().find(|(_, f)| matches!(f, Field::Sampled(..))) {
-                    return Err(Error::invalid("set writes values and references; append records samples")
+                    return Err(Error::invalid("sampled fields are written with append, not with set")
                         .at(field)
                         .at(&name));
                 }
@@ -357,7 +362,7 @@ impl Op {
                 let per_row = run.len() * super::samples::sides(run.level);
                 let rows = values.len().checked_div(per_row).unwrap_or(0);
                 if rows > target.len() {
-                    return Err(Error::invalid(format!("values for {rows} rows of {}", target.len()))
+                    return Err(Error::invalid(format!("values for {rows} rows, but the table has {}", target.len()))
                         .at(&field)
                         .at(&table));
                 }
@@ -374,8 +379,8 @@ impl Op {
     }
 }
 
-/// The row of `table` each of `ids` names; an id naming none is an error, as an append records
-/// frames of rows the table holds.
+/// The row of `table` for each id in `ids`. An id that names no row is an error, since an append
+/// records frames only for existing rows.
 fn rows_named(table: &Table, ids: &Ids) -> Result<Vec<usize>> {
     let index = table.index()?;
     (0..ids.len())
@@ -404,7 +409,8 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
     let mut table = existing.clone();
     if !added.is_empty() {
         table.ids = existing.ids.extend(&added).map_err(|e| e.at("ids"))?;
-        table.index = Arc::default();
+        let index = index.extended(&table.ids, existing.len()).map_err(|e| e.at("ids"))?;
+        table.index = Arc::new(OnceLock::from(index));
         table.structure = Version::next();
     }
     for (name, field) in input.fields {
@@ -465,5 +471,7 @@ fn remove(existing: &Table, ids: &Ids) -> Result<Table> {
         return Ok(existing.clone());
     }
     let keep: Vec<usize> = (0..existing.len()).filter(|&r| !doomed[r]).collect();
-    Ok(existing.rows(&keep))
+    let mut table = existing.rows(&keep);
+    table.index = Arc::new(OnceLock::from(index.without(&doomed, &table.ids)?));
+    Ok(table)
 }

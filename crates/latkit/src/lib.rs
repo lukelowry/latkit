@@ -1,15 +1,16 @@
-//! Columnar data drawn as vertices, edges, lines, and areas on the GPU.
+//! Columnar data drawn on the GPU as vertices, edges, lines, and areas.
 //!
-//! A [`Data`] is a named collection of [`Table`]s, changed in place by [`Patch`]es; a clone is an
-//! O(1) snapshot. A [`Scene`] describes what to draw and how it answers input: marks that name tables
-//! of data, in a space, with a theme and controls. A [`View`] draws a scene into any wgpu frame, is
-//! given the data by name, and turns platform [`Input`] into [`Event`]s.
+//! A [`Data`] is a named collection of [`Table`]s, changed in place by [`Patch`]es. A [`Snapshot`]
+//! is one immutable version of a `Data`, taken in O(1). A [`Scene`] describes what to draw and how
+//! it responds to input: marks that reference tables of datasets, a space, a theme, and controls. A
+//! [`View`] draws a scene into any wgpu frame from its [`Source`]s, one per dataset name, and turns
+//! platform [`Input`] into [`Event`]s.
 //!
-//! Every input is plain data that deserializes: [`from_json`] reads one from JSON text, an error
-//! naming the path to what it could not read, and [`schema`] gives its JSON Schema.
+//! Every input is plain data that deserializes. [`from_json`] reads one from JSON text and reports
+//! errors with the path to the part it could not read. [`schema`] returns its JSON Schema.
 
-// Without `gpu`, what only drawing reads of the data, expressions, and sorts has no reader; builds
-// with it, which lint every feature, find what nothing reads.
+// Without `gpu`, the parts of data, expressions, and sorts that only drawing uses are dead code.
+// Builds with `gpu` lint every feature, so they still catch code nothing uses.
 #![cfg_attr(not(feature = "gpu"), allow(dead_code))]
 
 mod data;
@@ -49,16 +50,19 @@ mod video;
 mod view;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub mod web;
+mod wire;
 
+#[cfg(feature = "gpu")]
+pub use data::Source;
 pub use data::{
-    Data, DecodeLimits, Description, Envelope, FieldDescription, Id, Ids, Kind, Name, Patch, Row, Rows, Table,
-    TableDescription, Value, Values,
+    Data, DecodeLimits, Description, Envelope, EnvelopeRequest, FieldDescription, Id, Ids, Kind, Name, Patch, Row,
+    Rows, Snapshot, Table, TableDescription, Value, Values,
 };
-pub use data::{Order, Patches, Query};
+pub use data::{Order, Patches, Query, QueryResult, Reading};
 pub use error::{Error, Path, Result, Step};
 pub use expr::{
-    Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer, selected,
-    units, when, zoom,
+    Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer, px,
+    selected, units, when, zoom,
 };
 pub use image::{Image, ImageFormat};
 pub use json::from_json;
@@ -71,11 +75,12 @@ pub use {
     gpu::{Budget, DeviceEvents, Gpu, work::Work},
     panels::Panels,
     scene::{
-        Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Flow, Format, Grid, Interpolation, Label,
-        Layered, Layout, Lines, Mark, Marker, Motion, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side,
-        Space, Stress, Theme, Vertices, Zoom,
+        AreaTheme, Areas, Axis, Controls, Diagram, DiagramTheme, Direction, Earth, EarthTheme, EdgeTheme, Edges, Faces,
+        FlowTheme, FocusTheme, Format, Grid, Interpolation, Label, Layered, Layout, Length, LineTheme, Lines, Mark,
+        Marker, Motion, Plane, Plot, PlotTheme, Port, Projection, Route, Scene, ShadowTheme, Shape, Side, Space,
+        Stress, TextTheme, Theme, VertexTheme, Vertices, Zoom,
     },
-    shot::Shot,
+    shot::{Capture, Shot},
     tiles::Tiles,
     video::{Encoding, Mp4, Pixels, Sink, Video},
     view::{

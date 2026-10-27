@@ -1,12 +1,15 @@
 /**
- * The browser's H.264 encoder, as latkit's video asks for one: NV12 pictures (BT.709, limited range)
- * in, Annex B units out, each `[time, key, bytes]` in order. WebCodecs encodes, on the GPU's video
- * engine where the device has one; the level is the least that holds the size and frame rate.
+ * The H.264 encoder for latkit's videos in a browser, built on WebCodecs. It takes NV12 pictures
+ * (BT.709, limited range) and returns Annex B units in order, each `[time, key, bytes]`, with
+ * `time` in 90 kHz ticks. It prefers hardware encoding and uses the lowest H.264 level that fits
+ * the size and frame rate.
  */
+
+import { thrown, type LatkitError } from './internal.js';
 
 type Unit = [time: number, key: boolean, bytes: Uint8Array];
 
-/** H.264 levels by the macroblocks a second and a frame they hold, as their codec byte. */
+/** H.264 levels as `[codec byte, max macroblocks per second, max macroblocks per frame]`. */
 const LEVELS: readonly [level: number, perSecond: number, perFrame: number][] = [
   [0x1f, 108_000, 3_600],
   [0x28, 245_760, 8_192],
@@ -19,10 +22,16 @@ const LEVELS: readonly [level: number, perSecond: number, perFrame: number][] = 
   [0x3e, 16_711_680, 139_264],
 ];
 
-/** Constrained Baseline forbids B pictures; the MP4 writer uses equal decode and presentation times. */
+/**
+ * Constrained Baseline only. It has no B-frames, so decode and presentation times are equal, as
+ * the MP4 writer assumes.
+ */
 const PROFILES = ['42e0'];
 
-/** The codec configurations to try for `width`×`height` at `fps`, best first. */
+/**
+ * The encoder configurations to try for `width`×`height` at `fps`, hardware first. The level is
+ * the lowest that fits, or 6.2 when none does.
+ */
 function configurations(
   width: number,
   height: number,
@@ -49,13 +58,18 @@ function configurations(
   );
 }
 
-/** An encoder for `width`×`height` pictures at `fps` and `bitrate` bits a second. */
+/**
+ * Creates an encoder for `width`×`height` pictures at `fps` frames per second and `bitrate` bits
+ * per second. Throws an `unsupported` error when the browser has no `VideoEncoder`. Its methods
+ * reject with an `unsupported` error when the browser cannot encode H.264 at that size and rate,
+ * and with an `io` error when encoding fails.
+ */
 export function encoder(width: number, height: number, fps: number, bitrate: number) {
   if (typeof VideoEncoder !== 'function')
-    throw new Error('this browser has no WebCodecs VideoEncoder');
+    throw thrown({ code: 'unsupported', message: 'this browser has no WebCodecs VideoEncoder' });
   const units: Unit[] = [];
   const times: { timestamp: number; time: number }[] = [];
-  let failure: unknown;
+  let failure: LatkitError | undefined;
   const waiters = new Set<() => void>();
   const wake = () => {
     for (const resolve of waiters) resolve();
@@ -65,7 +79,7 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
     output(chunk) {
       const expected = times.shift();
       if (!expected || chunk.timestamp !== expected.timestamp) {
-        failure = new Error('the encoder reordered or omitted a frame');
+        failure = thrown({ code: 'io', message: 'the encoder reordered or omitted a frame' });
         close();
         return;
       }
@@ -74,7 +88,7 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
       units.push([expected.time, chunk.type === 'key', bytes]);
     },
     error(error) {
-      failure = error;
+      failure = thrown({ code: 'io', message: 'the video encoder failed', cause: error });
       wake();
     },
   });
@@ -89,13 +103,14 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
     for (const config of configurations(width, height, fps, bitrate)) {
       if ((await VideoEncoder.isConfigSupported(config)).supported) return video.configure(config);
     }
-    throw new Error(`this browser encodes no H.264 at ${width}×${height}, ${fps} frames a second`);
+    throw thrown({
+      code: 'unsupported',
+      message: `this browser cannot encode H.264 at ${width}×${height}, ${fps} frames a second`,
+    });
   };
   const failed = () => {
-    if (failure || video.state === 'closed')
-      throw failure instanceof Error
-        ? failure
-        : new Error('the video encoder failed', { cause: failure });
+    if (failure) throw failure;
+    if (video.state === 'closed') throw thrown({ code: 'io', message: 'the video encoder closed' });
   };
   return {
     async encode(nv12: Uint8Array, time: number, key: boolean): Promise<Unit[]> {
@@ -115,7 +130,7 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
       } finally {
         frame.close();
       }
-      // The encoder sets the pace: a frame waits while two others are still being encoded.
+      // Backpressure: wait while more than two frames are queued in the encoder.
       while (video.encodeQueueSize > 2) {
         await new Promise<void>((resolve) => waiters.add(resolve));
         failed();
@@ -129,7 +144,7 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
         failed();
         await video.flush();
         failed();
-        if (times.length) throw new Error('the encoder omitted a frame');
+        if (times.length) throw thrown({ code: 'io', message: 'the encoder omitted a frame' });
         return units.splice(0);
       } finally {
         close();

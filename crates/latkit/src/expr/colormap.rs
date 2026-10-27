@@ -7,10 +7,10 @@ use super::ramp::{self, Spread};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Result};
 
-/// Colors for a range of values: one of the catalog's, or one of your own.
+/// Colors for a range of values: a catalog colormap or a custom one.
 ///
 /// Sequential and diverging maps clamp, cyclic maps wrap, and categorical maps bin values by their
-/// integer part: category `i` takes color `i`, and may be named with [`Colormap::categories`].
+/// integer part: category `i` takes color `i`. [`Colormap::categories`] names the categories.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Colormap(Map);
 
@@ -28,13 +28,14 @@ struct Custom {
     categories: Vec<Arc<str>>,
 }
 
-/// How a colormap spans values.
+/// How a colormap maps values: `sequential` and `diverging` maps clamp, `cyclic` maps wrap, and
+/// `categorical` maps give each integer its own color.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ColormapKind {
     /// Low to high.
     Sequential,
-    /// Below and above a middle.
+    /// Below and above a midpoint.
     Diverging,
     /// Around a circle: values wrap.
     Cyclic,
@@ -51,7 +52,7 @@ impl ColormapKind {
         }
     }
 
-    /// The code shaders read it by.
+    /// The code shaders identify it by.
     #[cfg(feature = "gpu")]
     pub(crate) fn code(self) -> u32 {
         match self {
@@ -63,8 +64,8 @@ impl ColormapKind {
     }
 }
 
-/// A colormap's color, at a place from 0 to 1 or evenly between its neighbors: from a [`Color`] or
-/// a `(place, Color)` pair.
+/// A colormap color stop: a [`Color`], spaced evenly between its neighbors, or a `(place, Color)`
+/// pair with a place from 0 to 1.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Stop {
     at: Option<f32>,
@@ -99,33 +100,35 @@ struct Entry {
 
 include!(concat!(env!("OUT_DIR"), "/colormaps.rs"));
 
-/// The catalog's names, in order.
-pub(crate) fn catalog() -> impl Iterator<Item = &'static str> {
-    CATALOG.iter().map(|e| e.name)
-}
-
 impl Colormap {
-    /// The catalog colormap named `name`, such as `"viridis"`.
+    /// Every catalog colormap, in order.
+    pub fn catalog() -> impl Iterator<Item = Colormap> {
+        (0..CATALOG.len()).map(|i| Colormap(Map::Catalog(i as u8)))
+    }
+
+    /// The catalog colormap named `name`, such as `"viridis"`. `None` if the catalog has none.
     pub fn named(name: &str) -> Option<Colormap> {
         CATALOG.iter().position(|e| e.name == name).map(|i| Colormap(Map::Catalog(i as u8)))
     }
 
-    /// A colormap through `stops`, colors or `(place, color)` pairs: blended in OKLab, so lightness
-    /// runs evenly, a color without a place evenly between its neighbors as in a CSS gradient; or
-    /// for a categorical map, one color per category. Fails without a stop, for places outside
-    /// `0..=1` or out of order, and for a categorical map's places or more than 256 categories.
+    /// A colormap through `stops`, each a color or a `(place, color)` pair. Colors blend in OKLab,
+    /// so lightness changes evenly. A color without a place sits evenly between its neighbors, like
+    /// a CSS gradient. A categorical map takes one color per category.
+    ///
+    /// Errors when `stops` is empty, when places lie outside `0..=1` or out of order, and when a
+    /// categorical map has places or more than 256 colors.
     pub fn new<S: Into<Stop>>(kind: ColormapKind, stops: impl IntoIterator<Item = S>) -> Result<Colormap> {
         let stops: Vec<(Option<f32>, [f32; 4])> =
             stops.into_iter().map(Into::into).map(|s: Stop| (s.at, s.color.to_array())).collect();
         let places = || stops.iter().filter_map(|s| s.0);
         let wrong: Option<Cow<'static, str>> = match kind {
             _ if stops.is_empty() => Some("a colormap needs a color".into()),
-            ColormapKind::Categorical if places().next().is_some() => Some("a category's color has no place".into()),
+            ColormapKind::Categorical if places().next().is_some() => Some("categories cannot have places".into()),
             ColormapKind::Categorical if stops.len() > 256 => {
                 Some(format!("a categorical map has at most 256 colors, not {}", stops.len()).into())
             }
-            _ if places().any(|p| !(0.0..=1.0).contains(&p)) => Some("a color's place is from 0 to 1".into()),
-            _ if !places().is_sorted() => Some("colors' places ascend".into()),
+            _ if places().any(|p| !(0.0..=1.0).contains(&p)) => Some("a color's place must be from 0 to 1".into()),
+            _ if !places().is_sorted() => Some("colors' places must ascend".into()),
             _ => None,
         };
         if let Some(reason) = wrong {
@@ -135,8 +138,8 @@ impl Colormap {
         Ok(Colormap(Map::Custom(Arc::new(Custom { kind, count: stops.len() as u32, texels, categories: Vec::new() }))))
     }
 
-    /// The same categorical map with its categories named in order, from category 0: what its legend
-    /// lists. Panics for a continuous map.
+    /// This categorical map with its categories named in order from category 0, for its legend.
+    /// Panics if the map is not categorical.
     #[must_use]
     pub fn categories<S: Into<Arc<str>>>(&self, names: impl IntoIterator<Item = S>) -> Colormap {
         assert_eq!(self.kind(), ColormapKind::Categorical, "only a categorical map has categories");
@@ -149,7 +152,7 @@ impl Colormap {
         })))
     }
 
-    /// The names of the categories, from category 0; none unless named.
+    /// The names of the categories, from category 0. Empty unless named.
     pub(crate) fn named_categories(&self) -> &[Arc<str>] {
         match &self.0 {
             Map::Catalog(_) => &[],
@@ -157,7 +160,7 @@ impl Colormap {
         }
     }
 
-    /// How the colormap spans values.
+    /// How the colormap maps values.
     pub fn kind(&self) -> ColormapKind {
         match &self.0 {
             Map::Catalog(i) => CATALOG[*i as usize].kind,
@@ -165,7 +168,7 @@ impl Colormap {
         }
     }
 
-    /// The catalog name, or `None` for a colormap of your own.
+    /// The catalog name, or `None` for a custom colormap.
     pub fn name(&self) -> Option<&'static str> {
         match &self.0 {
             Map::Catalog(i) => Some(CATALOG[*i as usize].name),
@@ -173,7 +176,7 @@ impl Colormap {
         }
     }
 
-    /// A readable title, such as `"Red / Blue"`.
+    /// A human-readable title, such as `"Red / Blue"`. `"Custom"` for a custom colormap.
     pub fn label(&self) -> &str {
         match &self.0 {
             Map::Catalog(i) => CATALOG[*i as usize].label,
@@ -199,7 +202,8 @@ impl Colormap {
         Colormap(Map::Custom(Arc::new(Custom { kind: self.kind(), count: self.count(), texels, categories })))
     }
 
-    /// The color at `t` in `0..=1`: clamped, wrapped for cyclic maps, binned for categorical maps.
+    /// The color at `t`. A continuous map takes `t` in `0..=1`, clamping it, or wrapping it for a
+    /// cyclic map. A categorical map takes a category number, binned by its integer part.
     pub fn sample(&self, t: f32) -> Color {
         let texels = self.texels();
         if self.kind() == ColormapKind::Categorical {
@@ -214,7 +218,7 @@ impl Colormap {
         Color::rgba(red, green, blue, alpha)
     }
 
-    /// How many colors it was made from: a categorical map's categories.
+    /// The number of colors the map was made from. For a categorical map, its category count.
     pub fn count(&self) -> u32 {
         match &self.0 {
             Map::Catalog(i) => CATALOG[*i as usize].count,
@@ -229,7 +233,7 @@ impl Colormap {
         }
     }
 
-    /// Identifies the colormap's colors, for sharing one texture layer.
+    /// Identifies the colormap's colors, so maps with the same colors share one texture layer.
     pub(crate) fn key(&self) -> ColormapKey {
         use std::hash::{Hash, Hasher};
         match &self.0 {
@@ -274,7 +278,7 @@ mod tests {
     #[test]
     fn custom_maps_blend_and_reverse() {
         let map = Colormap::new(ColormapKind::Sequential, [Color::BLACK, Color::WHITE]).unwrap();
-        // Blended in OKLab: half lightness, a darker byte than sRGB's middle.
+        // Blended in OKLab, half lightness is a darker byte than sRGB's midpoint.
         assert!((95..105).contains(&map.sample(0.5).to_rgba8()[0]));
         assert_eq!(map.reversed().sample(0.0).to_rgba8(), [255, 255, 255, 255]);
         let placed = Colormap::new(ColormapKind::Sequential, [(0.0, Color::BLACK), (0.5, Color::WHITE)]).unwrap();
@@ -295,7 +299,7 @@ mod tests {
         assert!(Colormap::new(ColormapKind::Sequential, [Color::BLACK; 0]).is_err());
         assert!(wrong(ColormapKind::Sequential, &[(0.5, Color::BLACK), (0.2, Color::WHITE)]).contains("ascend"));
         assert!(wrong(ColormapKind::Cyclic, &[(1.5, Color::BLACK)]).contains("0 to 1"));
-        assert!(wrong(ColormapKind::Categorical, &[(0.0, Color::BLACK)]).contains("no place"));
+        assert!(wrong(ColormapKind::Categorical, &[(0.0, Color::BLACK)]).contains("cannot have places"));
         assert!(Colormap::new(ColormapKind::Categorical, [Color::BLACK; 257]).is_err());
     }
 }

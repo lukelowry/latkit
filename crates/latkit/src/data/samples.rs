@@ -1,14 +1,17 @@
-//! Samples: a field's values over the data's axis. Level 0 holds frames, each row's value at one
-//! coordinate; each level `k` above it holds buckets of `8^k` frames, each row's least and greatest over
-//! them, so a long history draws from as few entries as there are pixels. Every level keeps its
-//! entries in pages, with each entry's coordinates (a frame's own; a bucket's first and last frame's),
-//! so a level draws without the levels below it. Frames are numbered from the first ever written, and
-//! a version reads `start..end`.
+//! Samples: a field's values over the dataset's axis, stored as levels of detail.
 //!
-//! Any entry may be missing. Frames appended grow the newest pages in place and seal each bucket whose
-//! entries below are all held; runs of entries read from bytes or fetched as time tiles fill any span,
-//! whatever lies around them. An entry is held when its level's coordinates hold it: every write writes
-//! an entry's coordinates and every row block's values together.
+//! Level 0 holds frames, each row's value at one axis coordinate. Each level `k` above holds
+//! buckets of `8^k` frames, with each row's least and greatest value over the bucket. A long
+//! history can then be drawn from about as many entries as there are pixels. Each level stores its
+//! entries in pages together with their coordinates (a frame's own, or a bucket's first and last
+//! frame's), so a level can be drawn without the levels below it. Frames are numbered from the
+//! first ever written, and a version reads frames `start..end`.
+//!
+//! Any entry may be missing. Appended frames grow the newest pages in place and write each bucket
+//! whose eight entries one level below are all present. Runs of entries decoded from bytes or
+//! fetched as time tiles can fill any range, whatever surrounds it. An entry is present when its
+//! level's coordinate pages contain it, because every write stores an entry's coordinates and every
+//! row block's values together.
 
 use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
@@ -18,44 +21,46 @@ use super::name::PageId;
 use super::values::Values;
 use crate::{Error, Result};
 
-/// Words in a frame page: entries of one row block, entry-major. An axis page holds as many words on
-/// the GPU, two for each entry.
+/// Words in a frame page, which holds entries of one row block, entry-major. An axis page takes at
+/// most as many words on the GPU, two per entry.
 pub(crate) const FRAME_PAGE_WORDS: usize = 1 << 16;
-/// Levels of detail kept above frames: level `k` holds each row's least and greatest value over buckets
-/// of `8^k` frames.
+/// Levels of detail that appends write above frames. Level `k` holds each row's least and greatest
+/// value over buckets of `8^k` frames. Inserted runs can go higher, up to [`MAX_LEVEL`].
 pub(crate) const LEVELS: u32 = 6;
-/// Highest format level: a bucket spans 2^63 frames and still fits a u64.
+/// The highest level the format allows: a bucket of `8^21 = 2^63` frames still fits a `u64`.
 pub(crate) const MAX_LEVEL: u32 = 21;
 
-/// Frames an entry of level `level` spans: a frame, or a bucket's frames.
+/// The number of frames an entry of `level` covers: `8^level`.
 pub(crate) fn bucket_frames(level: u32) -> u64 {
     1 << (3 * level)
 }
 
-/// The level of detail `frames` frames draw at across `columns` pixel columns: frames while there are
-/// at most two a column, else the finest level whose buckets are no fewer.
+/// The level of detail for drawing `frames` frames across `columns` pixel columns. Uses frames
+/// (level 0) while there are at most two per column, else the finest level with at most two
+/// buckets per column.
 pub(crate) fn detail(frames: u64, columns: u32) -> u32 {
     let needed = frames.div_ceil(2 * u64::from(columns.max(1)));
     if needed <= 1 { 0 } else { (1..=MAX_LEVEL).find(|&k| bucket_frames(k) >= needed).unwrap_or(MAX_LEVEL) }
 }
 
-/// Coordinates an entry of `level` holds: a frame its own, a bucket its first and last frame's.
+/// Coordinates stored per entry of `level`: 1 for a frame, 2 for a bucket (its first and last
+/// frame's).
 pub(crate) fn coordinates(level: u32) -> usize {
     if level == 0 { 1 } else { 2 }
 }
 
-/// Values a row holds of an entry of `level`: a frame's, or a bucket's least and greatest.
+/// Values stored per row per entry of `level`: 1 for a frame, 2 for a bucket (least and greatest).
 pub(crate) fn sides(level: u32) -> usize {
     if level == 0 { 1 } else { 2 }
 }
 
-/// The log of a row block holding `level`'s values of `side`: its frames, or a level's least (0) or
-/// greatest (1).
+/// The index, among a row block's logs, of the log holding `level`'s `side` values: 0 for frames,
+/// then each level's least (`side` 0) and greatest (`side` 1).
 fn slot(level: u32, side: usize) -> usize {
     if level == 0 { 0 } else { 2 * level as usize - 1 + side }
 }
 
-/// Entries `entries` of level `level`.
+/// A range of entries of one level.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Run {
     pub(crate) level: u32,
@@ -63,25 +68,26 @@ pub(crate) struct Run {
 }
 
 impl Run {
-    /// Number of entries; runs in memory always fit the address space.
+    /// The number of entries. A run held in memory always fits in `usize`.
     pub(crate) fn len(&self) -> usize {
         usize::try_from(self.entries.end - self.entries.start).expect("run fits in memory")
     }
 
-    /// The frames its entries span.
+    /// The frames its entries cover.
     pub(crate) fn frames(&self) -> Range<u64> {
         let span = bucket_frames(self.level);
         self.entries.start.saturating_mul(span)..self.entries.end.saturating_mul(span)
     }
 
-    /// How many coordinates it holds, and how many values for `rows` rows.
+    /// Its coordinate count and its value count for `rows` rows, or `None` on overflow.
     pub(crate) fn sizes(&self, rows: usize) -> Option<(usize, usize)> {
         let n = usize::try_from(self.entries.end.checked_sub(self.entries.start)?).ok()?;
         Some((n.checked_mul(coordinates(self.level))?, n.checked_mul(rows)?.checked_mul(sides(self.level))?))
     }
 }
 
-/// Appends `run` to `runs`, joining it to the last where it follows it at the same level.
+/// Appends `run` to `runs`, merging it into the last run when it continues that run at the same
+/// level.
 fn join(runs: &mut Vec<Run>, run: Run) {
     match runs.last_mut() {
         Some(last) if last.level == run.level && last.entries.end == run.entries.start => {
@@ -92,10 +98,10 @@ fn join(runs: &mut Vec<Run>, run: Run) {
 }
 
 /// A list shared between versions. Indices are absolute: a version reads items `start..end`, so
-/// forgetting the oldest never renumbers the rest.
+/// forgetting the oldest items never renumbers the rest.
 ///
-/// A version that appends while it is the newest grows the shared list in place; any other change, an
-/// older version appending, an item put between others or taken out, forks a copy of what it reads.
+/// The newest version appends to the shared list in place. Any other change (an older version
+/// appending, or an item inserted or removed) first copies the items the version reads.
 pub(crate) struct Log<T> {
     items: Arc<RwLock<Vec<T>>>,
     /// The absolute index of `items[0]`.
@@ -129,7 +135,7 @@ impl<T: Clone> Log<T> {
         self.edit(|items| items.push(item));
     }
 
-    /// Changes the items this version reads in a copy of its own.
+    /// Applies `f` to a private copy of the items this version reads.
     fn edit(&mut self, f: impl FnOnce(&mut Vec<T>)) {
         let mut items = self.read(<[T]>::to_vec);
         f(&mut items);
@@ -138,7 +144,7 @@ impl<T: Clone> Log<T> {
         self.base = self.start;
     }
 
-    /// Reads items `start..end`.
+    /// Calls `f` with items `start..end`.
     pub(crate) fn read<R>(&self, f: impl FnOnce(&[T]) -> R) -> R {
         let items = self.items.read().unwrap_or_else(PoisonError::into_inner);
         f(&items[self.start - self.base..self.end - self.base])
@@ -148,8 +154,9 @@ impl<T: Clone> Log<T> {
         self.read(|items| items.last().cloned())
     }
 
-    /// Stops reading items before absolute index `start`. Storage shared with other versions stays
-    /// theirs; this version copies what it keeps once the forgotten part outgrows a quarter of it.
+    /// Stops reading items before absolute index `start`. Shared storage is left to the other
+    /// versions. Once the forgotten prefix exceeds a quarter of the kept items (plus 16), this
+    /// version copies the items it keeps.
     pub(crate) fn forget(&mut self, start: usize) {
         self.start = start.clamp(self.start, self.end);
         if self.start - self.base > (self.end - self.start) / 4 + 16 {
@@ -160,16 +167,17 @@ impl<T: Clone> Log<T> {
     }
 }
 
-/// What a page stores, shared by every version reading it, and whether appends grow it.
+/// A page's storage, shared by every version that reads the page, and whether appends may grow it.
 struct Store<T> {
     grows: bool,
     items: RwLock<Vec<T>>,
 }
 
-/// Consecutive entries of a level, `per` values each, entry-major: a row block's frames or a level's
-/// least or greatest values, `per` its rows; or a level's coordinates, `per` an entry's. A page an
-/// append opened grows in place while it is the newest version's last; a version reads at most `cap`
-/// entries of it, fewer than it stores where a newer version grew it.
+/// Consecutive entries of one level, `per` items each, entry-major. In a frame page the items are
+/// a row block's frames or one side (least or greatest) of a level, and `per` is the block's row
+/// count. In an axis page the items are a level's coordinates, and `per` is the coordinates per
+/// entry. A page opened by an append grows in place while it is the newest version's last page. A
+/// version reads at most `cap` entries, fewer than are stored when a newer version grew the page.
 #[derive(Clone)]
 pub(crate) struct Page<T> {
     pub(crate) id: PageId,
@@ -179,9 +187,11 @@ pub(crate) struct Page<T> {
     store: Arc<Store<T>>,
 }
 
-/// A page of a row block's frames, or of a level's least or greatest values: `per` rows an entry.
+/// A page of a row block's frames, or of a level's least or greatest values, with `per` rows per
+/// entry.
 pub(crate) type FramePage = Page<f32>;
-/// A page of a level's coordinates: `per` an entry, a frame's own or a bucket's first and last.
+/// A page of a level's coordinates, `per` per entry. A frame has its own coordinate, and a bucket
+/// has its first and last frame's.
 pub(crate) type AxisPage = Page<f64>;
 
 impl<T: Copy> Page<T> {
@@ -195,17 +205,18 @@ impl<T: Copy> Page<T> {
         }
     }
 
-    /// Reads the page's stored items.
+    /// Calls `f` with every stored item, which may include items past `cap`.
     pub(crate) fn read<R>(&self, f: impl FnOnce(&[T]) -> R) -> R {
         f(&self.store.items.read().unwrap_or_else(PoisonError::into_inner))
     }
 
-    /// Whether appends grow it: it takes room to grow into on the GPU.
+    /// Whether appends may grow it. The GPU allocates such pages at full size so they can grow in
+    /// place.
     pub(crate) fn grows(&self) -> bool {
         self.store.grows
     }
 
-    /// Entries this version reads of it.
+    /// The number of entries this version reads.
     pub(crate) fn len(&self) -> u32 {
         ((self.read(<[T]>::len) / self.per.max(1) as usize) as u32).min(self.cap)
     }
@@ -214,8 +225,9 @@ impl<T: Copy> Page<T> {
         self.first + u64::from(self.len())
     }
 
-    /// Appends `entry`'s `items` where this version reads the whole page, appends grow it, and the
-    /// entry follows its last and fits within `limit` items.
+    /// Appends `entry`'s `items` in place, returning whether it did. Succeeds only if the page
+    /// grows, this version reads all of it and nothing newer is stored past it, `entry` directly
+    /// follows the last entry, and the page stays within `limit` items.
     fn extend(&self, entry: u64, items: &[T], limit: usize) -> bool {
         if entry != self.end() {
             return false;
@@ -230,14 +242,15 @@ impl<T: Copy> Page<T> {
         true
     }
 
-    /// The page as a version that reads only its first `len` entries sees it.
+    /// A handle to the same page that reads only its first `len` entries.
     fn capped(&self, len: u32) -> Page<T> {
         Page { cap: len, ..self.clone() }
     }
 }
 
 impl AxisPage {
-    /// Coordinate `which` of entry `index`: a frame's own, a bucket's first (0) or last (1) frame's.
+    /// Coordinate `which` of entry `index`: a frame's own, or a bucket's first (0) or last (1)
+    /// frame's.
     fn coordinate(&self, index: u64, which: u32) -> Option<f64> {
         if index < self.first || index >= self.end() {
             return None;
@@ -246,17 +259,17 @@ impl AxisPage {
         self.read(|c| c.get(i).copied())
     }
 
-    /// Where entry `index` draws: a frame at its coordinate, a bucket at its middle.
+    /// The coordinate at which entry `index` is drawn: a frame's own, or a bucket's midpoint.
     fn drawn(&self, index: u64) -> Option<f64> {
         Some(f64::midpoint(self.coordinate(index, 0)?, self.coordinate(index, 1)?))
     }
 
-    /// Words the page takes on the GPU: where each entry draws, as a high and a low `f32`.
+    /// The page's size in GPU words: each entry's drawn coordinate as a high and a low `f32`.
     pub(crate) fn words_len(&self) -> usize {
         2 * (self.read(<[f64]>::len) / self.per as usize)
     }
 
-    /// The page's GPU words from word `from` on: a growing page uploads only its new tail.
+    /// The page's GPU words from word `from` on, so a growing page uploads only its new tail.
     pub(crate) fn words(&self, from: usize) -> Vec<u32> {
         let per = self.per as usize;
         self.read(|c| {
@@ -271,7 +284,7 @@ fn split(x: f64) -> [u32; 2] {
     [hi.to_bits(), ((x - f64::from(hi)) as f32).to_bits()]
 }
 
-/// The page of `log` holding entry `index`, where one does.
+/// The page of `log` containing entry `index`, if any.
 fn holding<T: Copy>(log: &Log<Page<T>>, index: u64) -> Option<Page<T>> {
     log.read(|pages| {
         let i = pages.partition_point(|p| p.first <= index).checked_sub(1)?;
@@ -279,8 +292,9 @@ fn holding<T: Copy>(log: &Log<Page<T>>, index: u64) -> Option<Page<T>> {
     })
 }
 
-/// The pages of `log` holding any of `entries`, in order, each with those it holds. A page that stores
-/// entries past the next page's first, where a version forked, holds them no longer.
+/// The pages of `log` containing any of `entries`, in order, each with the range of `entries` it
+/// contains. A page that stores entries past the next page's first entry (left by a fork) is cut
+/// off at that entry.
 fn held<T: Copy>(log: &Log<Page<T>>, entries: Range<u64>) -> Vec<(Page<T>, Range<u64>)> {
     if entries.is_empty() {
         return Vec::new();
@@ -302,7 +316,7 @@ fn held<T: Copy>(log: &Log<Page<T>>, entries: Range<u64>) -> Vec<(Page<T>, Range
     })
 }
 
-/// The first of `entries` a page of `log` holds.
+/// The first of `entries` that a page of `log` contains.
 fn first_held<T: Copy>(log: &Log<Page<T>>, entries: Range<u64>) -> Option<u64> {
     log.read(|pages| {
         let from = pages.partition_point(|p| p.first <= entries.start).saturating_sub(1);
@@ -320,7 +334,7 @@ fn first_held<T: Copy>(log: &Log<Page<T>>, entries: Range<u64>) -> Option<u64> {
     })
 }
 
-/// Puts `page` in its place in `log`, among pages holding none of its entries.
+/// Inserts `page` into `log` in entry order. No page of `log` may contain its entries.
 fn place<T: Copy>(log: &mut Log<Page<T>>, page: Page<T>) {
     let (at, tip) = log.read(|pages| {
         let at = pages.partition_point(|p| p.first < page.first);
@@ -329,8 +343,8 @@ fn place<T: Copy>(log: &mut Log<Page<T>>, page: Page<T>) {
     if tip { log.push(page) } else { log.edit(|pages| pages.insert(at, page)) }
 }
 
-/// Makes the last page of `log` hold no entry from `end` on, as a version reading entries before `end`
-/// sees it, before the version writes past `end`.
+/// Caps the last page of `log` at entry `end`, so this version no longer reads entries a newer
+/// version appended from `end` on. Called before this version writes past `end`.
 fn cap<T: Copy>(log: &mut Log<Page<T>>, end: u64) {
     if log.last().is_some_and(|page| page.end() > end) {
         log.edit(|pages| {
@@ -340,7 +354,7 @@ fn cap<T: Copy>(log: &mut Log<Page<T>>, end: u64) {
     }
 }
 
-/// Takes the pages of `log` holding only entries of `entries` out of it.
+/// Removes the pages of `log` whose entries all lie within `entries`.
 fn take_out<T: Copy>(log: &mut Log<Page<T>>, entries: &Range<u64>) {
     let (from, to) = log.read(|pages| {
         let from = pages.partition_point(|p| p.first < entries.start);
@@ -358,16 +372,16 @@ fn forget_before<T: Copy>(log: &mut Log<Page<T>>, index: u64) {
     log.forget(start + dropped);
 }
 
-/// Writes entry `entry`, `items` of it, after the last of `log`: into its last page where that grows
-/// and has room within `limit` items, else into a new page that grows.
+/// Writes `entry`'s `items` after the last entry of `log`. They go into the last page if it can
+/// grow and has room within `limit` items, else into a new growable page.
 fn grow<T: Copy>(log: &mut Log<Page<T>>, entry: u64, items: &[T], limit: usize) {
     if !log.last().is_some_and(|page| page.extend(entry, items, limit)) {
         log.push(Page::new(entry, items.len(), items.to_vec(), true));
     }
 }
 
-/// Writes `entries` of a level, `items` of `per` each, as pages placed in order, as many entries to a
-/// page as `limit` items allow.
+/// Writes `entries` of a level, `per` items each, as new fixed-size pages inserted in order, each
+/// holding as many entries as fit in `limit` items.
 fn put<T: Copy>(log: &mut Log<Page<T>>, entries: &Range<u64>, items: &[T], per: usize, limit: usize) {
     let step = (limit / per.max(1)).max(1);
     for (k, chunk) in items.chunks(step * per.max(1)).enumerate() {
@@ -376,30 +390,31 @@ fn put<T: Copy>(log: &mut Log<Page<T>>, entries: &Range<u64>, items: &[T], per: 
     }
 }
 
-/// The logs a write writes into: every level's coordinates, and each row block's logs.
+/// Writable copies of the logs: every level's coordinates, and each row block's value logs.
 struct Logs {
     axes: Vec<Log<AxisPage>>,
     blocks: Vec<Vec<Log<FramePage>>>,
 }
 
-/// A field's samples over the data's axis: frames, and levels of detail above them, with holes.
+/// A sampled field's values over the axis, as frames and the levels of detail above them. Any level
+/// may have gaps. Values are stored per row block of [`PAGE_ROWS`] rows.
 #[derive(Clone, Default)]
 pub(crate) struct Samples {
-    /// Frames this version reads, numbered from the first ever written.
+    /// The frames this version reads, `start..end`, numbered from the first ever written.
     start: u64,
     end: u64,
-    /// Frames before this one were forgotten: pages may still store some, which this version must not
-    /// read again.
+    /// Frames before this were forgotten. Shared pages may still store some, and this version must
+    /// not read them again.
     forgotten: u64,
-    /// Per level from 0: its entries' coordinates; empty until anything is written.
+    /// Per level from 0, its entries' coordinates. Empty until something is written.
     axes: Arc<[Log<AxisPage>]>,
-    /// Per row block: its frames, then each level's least and greatest values.
+    /// Per row block, its frames, then each level's least and greatest values.
     blocks: Arc<[Vec<Log<FramePage>>]>,
 }
 
 impl Samples {
-    /// No frames yet, the first to be appended numbered `first`: what samples read back from bytes or
-    /// gathered from others start from, so their frames keep their numbers.
+    /// Empty samples whose first frame will be numbered `first`. Samples decoded from bytes or
+    /// gathered from others start here, so their frames keep their numbers.
     pub(crate) fn from_frame(first: u64) -> Samples {
         Samples { start: first, end: first, ..Samples::default() }
     }
@@ -414,31 +429,35 @@ impl Samples {
         self.end
     }
 
-    /// Reads frames `frames`: what bytes say, after the runs they hold are put in.
+    /// Sets the frames this version reads to `frames`. Decoding calls it after inserting the runs,
+    /// to restore the encoded frame range.
     pub(crate) fn reads(&mut self, frames: Range<u64>) {
         (self.start, self.end) = (frames.start, frames.end);
     }
 
-    /// The same frames, none of them held: what a dataset written as time tiles starts from.
+    /// Samples with the same frame range but no entries: the base of a dataset written as time
+    /// tiles.
     pub(crate) fn emptied(&self) -> Samples {
         let mut empty = Samples::from_frame(self.start);
         empty.reads(self.start..self.end);
         empty
     }
 
-    /// The entries of `level` this version reads: those whose frames lie before its end, from the one
-    /// holding its first frame.
+    /// The entries of `level` this version reads: from the entry containing frame `start` through
+    /// the last entry that ends by frame `end`.
     fn visible(&self, level: u32) -> Range<u64> {
         let k = 3 * level;
         self.start >> k..self.end >> k
     }
 
-    /// Copies of the logs to write into, with every level's and at least `blocks` row blocks'.
+    /// Writable copies of the logs, covering at least levels 0 through [`LEVELS`] and `blocks` row
+    /// blocks.
     fn logs(&self, blocks: usize) -> Logs {
         self.logs_at(blocks, LEVELS)
     }
 
-    /// Highest level stored; the binary format records it independently of the append policy.
+    /// The highest level with stored pages. The binary format records it rather than assuming
+    /// [`LEVELS`], which only bounds the levels appends write.
     pub(crate) fn levels(&self) -> u32 {
         self.axes.iter().rposition(|log| log.read(|pages| !pages.is_empty())).unwrap_or(0) as u32
     }
@@ -461,12 +480,13 @@ impl Samples {
         self.blocks = logs.blocks.into();
     }
 
-    /// The log of row block `block` holding `level`'s values of `side`.
+    /// The log of row block `block` holding `level`'s `side` values.
     fn log(&self, block: usize, level: u32, side: usize) -> Option<&Log<FramePage>> {
         self.blocks.get(block)?.get(slot(level, side))
     }
 
-    /// The page of `level`'s coordinates holding entry `index`, where this version holds it.
+    /// The coordinate page of `level` containing entry `index`, if this version reads that entry
+    /// and it is present.
     fn axis_page(&self, level: u32, index: u64) -> Option<AxisPage> {
         if !self.visible(level).contains(&index) {
             return None;
@@ -474,32 +494,34 @@ impl Samples {
         holding(self.axes.get(level as usize)?, index)
     }
 
-    /// Whether no entry is held, of any level.
+    /// Whether no entry of any level is present.
     pub(crate) fn is_empty(&self) -> bool {
         self.axes.iter().enumerate().all(|(level, log)| first_held(log, self.visible(level as u32)).is_none())
     }
 
-    /// Whether entry `index` of `level` is held.
+    /// Whether entry `index` of `level` is present.
     pub(crate) fn held(&self, level: u32, index: u64) -> bool {
         self.axis_page(level, index).is_some()
     }
 
-    /// Coordinate `which` of entry `index` of `level`: a frame's own, a bucket's first (0) or last (1).
+    /// Coordinate `which` of entry `index` of `level`: a frame's own, or a bucket's first (0) or
+    /// last (1) frame's.
     pub(crate) fn coordinate(&self, level: u32, index: u64, which: u32) -> Option<f64> {
         self.axis_page(level, index)?.coordinate(index, which)
     }
 
-    /// Where entry `index` of `level` draws: a frame at its coordinate, a bucket at its middle.
+    /// The coordinate at which entry `index` of `level` is drawn: a frame's own, or a bucket's
+    /// midpoint.
     pub(crate) fn drawn_at(&self, level: u32, index: u64) -> Option<f64> {
         self.axis_page(level, index)?.drawn(index)
     }
 
-    /// The coordinate of `frame`, where it is held.
+    /// The coordinate of `frame`, if present.
     pub(crate) fn at(&self, frame: u64) -> Option<f64> {
         self.coordinate(0, frame, 0)
     }
 
-    /// The runs of entries held, level by level, each as long as held entries follow one another.
+    /// The runs of present entries, level by level, each run as long as its entries are contiguous.
     pub(crate) fn runs(&self) -> Vec<Run> {
         let mut runs = Vec::new();
         for (level, log) in self.axes.iter().enumerate() {
@@ -511,8 +533,8 @@ impl Samples {
         runs
     }
 
-    /// The runs bytes hold: every run held but the buckets whose eight entries a level below are all
-    /// held, since those follow from them.
+    /// The runs the binary format stores: every present run, minus the buckets whose eight entries
+    /// one level below are all present, since decoding derives those.
     pub(crate) fn stored_runs(&self) -> Vec<Run> {
         let runs = self.runs();
         let mut stored = Vec::new();
@@ -521,7 +543,7 @@ impl Samples {
                 stored.push(run.clone());
                 continue;
             }
-            // Buckets that follow from the runs below, in order: what this run leaves out.
+            // Buckets derivable from the runs one level below, in order. This run omits them.
             let derived = runs
                 .iter()
                 .filter(|r| r.level + 1 == run.level)
@@ -545,7 +567,7 @@ impl Samples {
         stored
     }
 
-    /// The first and last coordinates of what this version holds, at any level.
+    /// The first and last coordinates of the entries this version reads, across all levels.
     pub(crate) fn span(&self) -> Option<[f64; 2]> {
         let mut span: Option<[f64; 2]> = None;
         for (level, log) in self.axes.iter().enumerate() {
@@ -557,12 +579,14 @@ impl Samples {
         span
     }
 
-    /// The coordinate of the last frame, or of the last entry of any level.
+    /// The coordinate of the last frame, or if that frame is missing, the end of the span across
+    /// all levels.
     fn last_coordinate(&self) -> Option<f64> {
         self.end.checked_sub(1).and_then(|f| self.at(f)).or_else(|| self.span().map(|s| s[1]))
     }
 
-    /// Appends frames: `values` holds `at.len()` frames of `rows` values each, frame-major.
+    /// Appends frames: `values` holds `at.len()` frames of `rows` values each, frame-major. Errors
+    /// on a length mismatch, a non-finite coordinate, or a coordinate below the last one.
     pub(crate) fn append(&mut self, at: &[f64], values: &Values, rows: usize) -> Result<()> {
         if at.len().checked_mul(rows) != Some(values.len()) {
             return Err(Error::invalid(format!("{} values for {} frames of {rows} rows", values.len(), at.len())));
@@ -599,8 +623,9 @@ impl Samples {
         Ok(())
     }
 
-    /// Appends frames of some rows: `values` holds `at.len()` frames of a value per row of `rows`,
-    /// frame-major. The rest of the `total` rows hold their last frame's values, missing before any.
+    /// Appends frames for some rows: `values` holds `at.len()` frames of one value per row in
+    /// `rows`, frame-major. The other rows of `total` repeat their value from the last frame, or
+    /// are missing if there is none.
     pub(crate) fn append_rows(&mut self, at: &[f64], values: &Values, rows: &[usize], total: usize) -> Result<()> {
         let given = rows.len();
         if at.len().checked_mul(given) != Some(values.len()) {
@@ -622,36 +647,40 @@ impl Samples {
         self.append(at, &Values::from(dense), total)
     }
 
-    /// Puts `run`, held nowhere yet, in: its `coordinates` ([`coordinates`] an entry), and its values
-    /// for `rows` rows, entry-major, at level 0 one a row, above each row's least then, after every
-    /// entry's, each row's greatest. What it spans past this version's frames widens them.
+    /// Inserts `run`, none of whose entries may be present yet. `coordinates` holds
+    /// [`coordinates`] per entry, and `values` holds its values for `rows` rows, entry-major. At
+    /// level 0 that is one value per row. Above it, every entry's least values come first, then
+    /// every entry's greatest. Frames the run covers outside this version's range extend the range.
+    ///
+    /// Errors if the level is above [`MAX_LEVEL`], the sizes do not match, the coordinates are not
+    /// finite and non-decreasing, the run starts before forgotten frames, or an entry is present.
     pub(crate) fn insert(&mut self, run: &Run, coordinates: &[f64], values: &[f32], rows: usize) -> Result<()> {
         let level = run.level;
         if level > MAX_LEVEL {
-            return Err(Error::invalid(format!("no level {level}: levels run to {MAX_LEVEL}")));
+            return Err(Error::invalid(format!("level {level} is above the highest level, {MAX_LEVEL}")));
         }
         let (per, sides) = (self::coordinates(level), sides(level));
         if run.entries.is_empty() || run.sizes(rows) != Some((coordinates.len(), values.len())) {
-            return Err(Error::invalid(format!("a run of {} entries of level {level} for {rows} rows", run.len())));
+            return Err(Error::invalid(format!("wrong sizes for {} level-{level} entries and {rows} rows", run.len())));
         }
         if coordinates.iter().any(|c| !c.is_finite()) || coordinates.windows(2).any(|w| w[1] < w[0]) {
             return Err(Error::invalid("a run's coordinates must be finite and must not decrease"));
         }
         let frames = run.frames();
         if run.entries.end.checked_mul(bucket_frames(level)).is_none() {
-            return Err(Error::invalid("a run past the last frame a field numbers"));
+            return Err(Error::invalid("the run ends past the largest frame number"));
         }
         if frames.start < self.forgotten {
-            return Err(Error::invalid("a run before frames the field forgot"));
+            return Err(Error::invalid("the run starts at a forgotten frame"));
         }
         let visible = self.visible(level);
         let within = run.entries.start.max(visible.start)..run.entries.end.min(visible.end);
         if self.axes.get(level as usize).is_some_and(|log| first_held(log, within).is_some()) {
-            return Err(Error::invalid(format!("entries {:?} of level {level} are held already", run.entries)));
+            return Err(Error::invalid(format!("entries {:?} of level {level} are already present", run.entries)));
         }
         let blocks = rows.div_ceil(PAGE_ROWS);
         let mut logs = self.logs_at(blocks, level);
-        // What a newer version grew past this one's frames stays the newer version's.
+        // Entries a newer version appended past this version's frames stay the newer version's.
         cap(&mut logs.axes[level as usize], visible.end);
         put(&mut logs.axes[level as usize], &run.entries, coordinates, per, FRAME_PAGE_WORDS / 2);
         let n = run.len();
@@ -678,7 +707,8 @@ impl Samples {
         Ok(())
     }
 
-    /// Takes the pages holding only entries of `run` out: a span let go of.
+    /// Removes the pages whose entries all lie within `run`, as when a time tile span is no longer
+    /// needed.
     pub(crate) fn remove(&mut self, run: &Run) {
         let mut logs = self.logs(0);
         take_out(&mut logs.axes[run.level as usize], &run.entries);
@@ -690,8 +720,8 @@ impl Samples {
         self.keep(logs);
     }
 
-    /// Writes each bucket of `level` not held whose eight entries a level below are all held: what
-    /// bytes leave out, as they follow from those.
+    /// Writes each missing bucket of `level` whose eight entries one level below are all present.
+    /// Decoding uses it to rebuild the buckets the binary format omits.
     pub(crate) fn derive(&mut self, level: u32) {
         let below: Vec<Run> = self.runs().into_iter().filter(|r| r.level + 1 == level).collect();
         for run in below {
@@ -699,12 +729,12 @@ impl Samples {
             for missing in self.missing(level, buckets) {
                 let (coordinates, values, rows) = self.bucket_values(level, &missing);
                 let run = Run { level, entries: missing };
-                self.insert(&run, &coordinates, &values, rows).expect("buckets held nowhere");
+                self.insert(&run, &coordinates, &values, rows).expect("only missing buckets are inserted");
             }
         }
     }
 
-    /// The parts of `entries` of `level` not held.
+    /// The ranges of `entries` of `level` that are not present.
     fn missing(&self, level: u32, entries: Range<u64>) -> Vec<Range<u64>> {
         let visible = self.visible(level);
         let held_runs = self
@@ -725,8 +755,8 @@ impl Samples {
         out
     }
 
-    /// Buckets `buckets` of `level`, each from its eight entries a level below: their coordinates, and
-    /// their values as [`insert`](Samples::insert) takes them, with how many rows.
+    /// Computes buckets `buckets` of `level` from their eight entries one level below: their
+    /// coordinates, their values in [`insert`](Samples::insert)'s layout, and the row count.
     fn bucket_values(&self, level: u32, buckets: &Range<u64>) -> (Vec<f64>, Vec<f32>, usize) {
         let children = buckets.start * 8..buckets.end * 8;
         let mut coordinates = Vec::with_capacity(2 * (buckets.end - buckets.start) as usize);
@@ -759,7 +789,7 @@ impl Samples {
         (coordinates, values, rows)
     }
 
-    /// Rows the row blocks' pages hold values of.
+    /// The number of rows the row blocks' pages store values for.
     fn rows(&self) -> usize {
         let block_rows = |b: usize| self.blocks[b].iter().filter_map(|log| log.last().map(|p| p.per as usize)).max();
         (0..self.blocks.len())
@@ -768,8 +798,8 @@ impl Samples {
             .unwrap_or(0)
     }
 
-    /// `run`'s coordinates, and its values for rows `rows`, in that order, as
-    /// [`insert`](Samples::insert) takes them.
+    /// `run`'s coordinates, and its values for rows `rows` in that order, in
+    /// [`insert`](Samples::insert)'s layout. Missing entries read as NaN.
     pub(crate) fn read(&self, run: &Run, rows: &[usize]) -> (Vec<f64>, Vec<f32>) {
         let per = coordinates(run.level);
         let n = run.len();
@@ -781,7 +811,7 @@ impl Samples {
         at.resize(n * per, f64::NAN);
         let sides = sides(run.level);
         let mut values = vec![f32::NAN; sides * n * rows.len()];
-        // Rows by block, so each page is read once for all of a block's rows.
+        // Group rows by row block, so each page is read once for all of a block's rows.
         let mut by_block: Vec<(usize, usize)> =
             rows.iter().enumerate().map(|(i, &row)| (row >> PAGE_BITS, i)).collect();
         by_block.sort_unstable();
@@ -806,8 +836,8 @@ impl Samples {
         (at, values)
     }
 
-    /// Forgets frames before coordinate `before`; pages that hold only forgotten entries drop. True
-    /// when anything was forgotten.
+    /// Forgets frames before coordinate `before`, dropping pages that contain only forgotten
+    /// entries. Returns whether anything was forgotten.
     pub(crate) fn forget(&mut self, before: f64) -> bool {
         let first = self.bound(before, false).min(self.end);
         if first <= self.start {
@@ -827,9 +857,10 @@ impl Samples {
         true
     }
 
-    /// How many entries of `level` lie before `at` (with `past`, at it too), each by its coordinate
-    /// `which`: by its last (1), those wholly before; by its first (0), those begun before. Where the
-    /// entries held of the level settle it; else where the hole holding `at` starts.
+    /// Counts the entries of `level` before `at`, or at or before it with `past`. Compares each
+    /// entry's coordinate `which`. The last coordinate (1) counts entries wholly before `at`, and
+    /// the first (0) counts entries begun before it. Returns `Ok(count)` when the present entries
+    /// determine it, or `Err(start)` with the first entry of the gap containing `at`.
     fn locate(&self, level: u32, at: f64, past: bool, which: u32) -> std::result::Result<u64, u64> {
         let before = |t: f64| if past { t <= at } else { t < at };
         let visible = self.visible(level);
@@ -859,9 +890,10 @@ impl Samples {
         if n > 0 || range.start == gap { Ok(range.start + n) } else { Err(gap) }
     }
 
-    /// The frames before `at`, or with `past` at or before it: frames where held, else the whole
-    /// buckets before it of the finest level held there. Where no level settles it, where the hole
-    /// holding it starts.
+    /// The number of frames before `at` (at or before it, with `past`), as an absolute frame index
+    /// clamped to `start..=end`. Counts frames where present, and elsewhere whole buckets of the
+    /// finest level present. If no level determines it, returns where the gap containing `at`
+    /// starts.
     pub(crate) fn bound(&self, at: f64, past: bool) -> u64 {
         let mut hole = None;
         for level in 0..self.axes.len() as u32 {
@@ -876,9 +908,10 @@ impl Samples {
         hole.unwrap_or(self.start).clamp(self.start, self.end)
     }
 
-    /// The frames at or before `at`, as finely as the finest level settling it tells: where frames
-    /// are held, exactly; else the whole buckets at or before it and as far into the next as `at` lies
-    /// between its first and last frame's coordinates.
+    /// The fractional number of frames at or before `at`, as precise as the finest level that
+    /// determines it. Exact where frames are present. Elsewhere it is the whole buckets at or
+    /// before `at`, plus a fraction of the next bucket set by where `at` lies between that bucket's
+    /// first and last frame coordinates.
     fn position(&self, at: f64) -> Option<f64> {
         (0..self.axes.len() as u32).find_map(|level| {
             let n = self.locate(level, at, true, 1).ok()?;
@@ -890,8 +923,9 @@ impl Samples {
         })
     }
 
-    /// The frames a trace across `across` draws: from the last frame at or before its start through
-    /// the first after its end, as finely as what is held tells.
+    /// The frames a trace over coordinates `across` draws. They run from the last frame at or
+    /// before its start through the first frame after its end, as precisely as the present levels
+    /// allow. Returns all frames if either bound cannot be determined.
     pub(crate) fn across(&self, [x0, x1]: [f64; 2]) -> Range<u64> {
         let (Some(a), Some(b)) = (self.position(x0), self.position(x1)) else { return self.start..self.end };
         let first = (a.floor() as u64).saturating_sub(1).max(self.start);
@@ -899,7 +933,7 @@ impl Samples {
         first..last.max(first)
     }
 
-    /// The first frame held from `frame` on, of any level: where a hole ends.
+    /// The first frame from `frame` on that any level has present, which is where a gap ends.
     fn next_held(&self, frame: u64) -> Option<u64> {
         let mut next: Option<u64> = None;
         for (level, log) in self.axes.iter().enumerate() {
@@ -912,9 +946,10 @@ impl Samples {
         next
     }
 
-    /// What covers frames `frames`, left to right: `(level, index)`, the coarsest held bucket that fits
-    /// at each step, or a held frame as level 0; where neither does, the finest held bucket holding the
-    /// frame stands in, reaching past the frames. Frames nothing holds are skipped.
+    /// The entries covering frames `frames`, left to right, as `(level, index)`. Each step takes
+    /// the coarsest present bucket that fits in the remaining frames, or a present frame (level 0).
+    /// If neither exists, it takes the finest present bucket containing the frame, which can extend
+    /// past `frames`. Frames no level has are skipped.
     pub(crate) fn pieces(&self, frames: Range<u64>) -> Vec<(u32, u64)> {
         let mut pieces = Vec::new();
         let (mut f, end) = (frames.start.max(self.start), frames.end.min(self.end));
@@ -941,9 +976,10 @@ impl Samples {
         pieces
     }
 
-    /// What draws frames `frames` at `level`, left to right: runs of that level's entries where held;
-    /// else the nearest coarser level's entry holding them, standing in; else finer levels' entries.
-    /// Frames nothing holds draw nothing.
+    /// The runs that draw frames `frames` at `level`, left to right. Uses that level's entries
+    /// where present. Elsewhere it uses, as a placeholder, the entry of the nearest coarser level
+    /// that contains them, and failing that, entries of finer levels. Frames no level has are not
+    /// drawn.
     pub(crate) fn cover(&self, frames: Range<u64>, level: u32) -> Vec<Run> {
         let mut runs = Vec::new();
         let frames = frames.start.max(self.start)..frames.end.min(self.end);
@@ -983,8 +1019,8 @@ impl Samples {
         }
     }
 
-    /// Folds piece `(level, index)` of row block `block` into `extent`, a least and a greatest value per
-    /// row of the block, NaN until one is read.
+    /// Folds piece `(level, index)` of row block `block` into `extent`, which holds a least and a
+    /// greatest value per row of the block (NaN until a value is read).
     pub(crate) fn fold(&self, block: usize, (level, index): (u32, u64), extent: &mut [[f32; 2]]) {
         if !self.held(level, index) {
             return;
@@ -1005,13 +1041,15 @@ impl Samples {
         }
     }
 
-    /// The last frame held at or before `at`.
+    /// The last frame at or before `at`. `None` if `at` lies before the first frame or in a gap in
+    /// the frames.
     pub(crate) fn frame_at(&self, at: f64) -> Option<u64> {
         let frame = self.locate(0, at, true, 0).ok()?.checked_sub(1)?;
         self.held(0, frame).then_some(frame)
     }
 
-    /// How far `at` lies from `frame` toward the next frame, in `0..=1`.
+    /// How far `at` lies from `frame` toward the next frame, in `0..=1`. 0 if the next frame is
+    /// missing.
     pub(crate) fn t(&self, frame: u64, at: f64) -> f32 {
         match (self.at(frame), self.at(frame + 1)) {
             (Some(a), Some(b)) if b > a => ((at - a) / (b - a)).clamp(0.0, 1.0) as f32,
@@ -1019,7 +1057,8 @@ impl Samples {
         }
     }
 
-    /// The page holding `frame` of `block` and the word where the frame starts in it.
+    /// The frame page of row block `block` containing `frame`, and the word offset where that
+    /// frame starts in it.
     pub(crate) fn cursor(&self, block: usize, frame: u64) -> Option<(FramePage, u32)> {
         if !self.held(0, frame) {
             return None;
@@ -1029,8 +1068,9 @@ impl Samples {
         Some((page, base as u32))
     }
 
-    /// The pages of `block` holding any of `level`'s entries `entries`, each with those it holds:
-    /// frames, or a bucket's least (`side` 0) or greatest (1) values.
+    /// The pages of row block `block` containing any of `level`'s `entries` that this version
+    /// reads, each with the range it contains: frames, or buckets' least (`side` 0) or greatest (1)
+    /// values.
     pub(crate) fn pages(
         &self,
         block: usize,
@@ -1043,7 +1083,8 @@ impl Samples {
         self.log(block, level, side).map_or_else(Vec::new, |log| held(log, entries))
     }
 
-    /// The coordinate pages of `level` holding any of entries `entries`, each with those it holds.
+    /// The coordinate pages of `level` containing any of `entries` that this version reads, each
+    /// with the range it contains.
     pub(crate) fn axis_pages(&self, level: u32, entries: Range<u64>) -> Vec<(AxisPage, Range<u64>)> {
         let visible = self.visible(level);
         let entries = entries.start.max(visible.start)..entries.end.min(visible.end);
@@ -1055,8 +1096,8 @@ impl Samples {
         self.entry(row, 0, 0, frame)
     }
 
-    /// The value of `row` at entry `index` of `level`: a frame's, or a bucket's least (`side` 0) or
-    /// greatest (1); `None` when missing.
+    /// The value of `row` at entry `index` of `level`. That is a frame's value, or a bucket's least
+    /// (`side` 0) or greatest (1). `None` when missing.
     pub(crate) fn entry(&self, row: usize, level: u32, side: usize, index: u64) -> Option<f64> {
         if !self.held(level, index) {
             return None;
@@ -1068,7 +1109,8 @@ impl Samples {
         (!value.is_nan()).then_some(f64::from(value))
     }
 
-    /// `frame`'s values for the first `rows` rows into `out`; rows the frame lacks are NaN.
+    /// Writes `frame`'s values for the first `out.len()` rows into `out`. Rows without a value are
+    /// NaN.
     fn read_frame(&self, frame: u64, out: &mut [f32]) {
         out.fill(f32::NAN);
         let rows = out.len();
@@ -1085,36 +1127,22 @@ impl Samples {
         self.gather_runs(rows, &self.runs(), self.start..self.end)
     }
 
-    /// The samples of rows `rows`, in that order, over the frames of `frames` held: what a table drawn
-    /// in part shows of them about one coordinate.
-    pub(crate) fn gather_frames(&self, rows: &[usize], frames: Range<u64>) -> Samples {
-        let start = frames.start.max(self.start);
-        let frames = start..frames.end.min(self.end).max(start);
-        let runs: Vec<Run> = self
-            .runs()
-            .into_iter()
-            .filter(|r| r.level == 0)
-            .map(|r| Run { level: 0, entries: r.entries.start.max(frames.start)..r.entries.end.min(frames.end) })
-            .filter(|r| !r.entries.is_empty())
-            .collect();
-        self.gather_runs(rows, &runs, frames)
-    }
-
     /// The samples of rows `rows` over `runs`, reading frames `frames`.
     fn gather_runs(&self, rows: &[usize], runs: &[Run], frames: Range<u64>) -> Samples {
         let mut gathered = Samples::from_frame(frames.start);
         for run in runs {
             let (at, values) = self.read(run, rows);
-            gathered.insert(run, &at, &values, rows.len()).expect("runs held apart");
+            gathered.insert(run, &at, &values, rows.len()).expect("runs do not overlap");
         }
         gathered.reads(frames);
         gathered
     }
 }
 
-/// After `frame` is appended to `logs`, writes each bucket it completes whose eight entries a level
-/// below are all held, level by level: its first and last frame's coordinates, and per row block the
-/// least of its entries' least values and the greatest of their greatest.
+/// After `frame` is appended to `logs`, writes each bucket it completes, level by level, while the
+/// bucket's eight entries one level below are all present. A bucket stores its first and last
+/// frame's coordinates and, per row block, the least of its entries' least values and the greatest
+/// of their greatest values.
 fn seal(logs: &mut Logs, frame: u64) {
     let next = frame + 1;
     for level in 1..=LEVELS {
@@ -1165,7 +1193,7 @@ mod tests {
             let v = if t == 70 { -5.0 } else { f64::from(t) };
             samples.append(&[f64::from(t)], &Values::from(vec![v, 2.0 * v]), 2).expect("frame");
         }
-        assert!(samples.held(1, 15) && !samples.held(1, 16), "130 frames seal 16 buckets of 8");
+        assert!(samples.held(1, 15) && !samples.held(1, 16), "130 frames complete 16 buckets of 8");
         assert!(samples.held(2, 1) && !samples.held(2, 2), "and 2 of 64");
         // Bucket 8 spans frames 64..72, where frame 70 dips to -5.
         assert_eq!(samples.entry(0, 1, 0, 8), Some(-5.0));
@@ -1208,12 +1236,13 @@ mod tests {
     }
 
     #[test]
-    fn an_older_version_writing_past_its_end_keeps_the_newer_ones_frames_out() {
+    fn an_older_version_writing_past_its_end_ignores_newer_frames() {
         let mut newest = Samples::default();
         newest.append(&[0.0, 1.0], &Values::from(vec![1.0_f64, 2.0]), 1).expect("frames");
         let mut older = newest.clone();
         newest.append(&[2.0, 3.0], &Values::from(vec![3.0_f64, 4.0]), 1).expect("frames");
-        // The older version holds frames 0 and 1; frames 4 and 5 widen it past a hole at 2 and 3.
+        // The older version has frames 0 and 1. Inserting frames 4 and 5 extends it, leaving a gap
+        // at 2 and 3.
         older.insert(&Run { level: 0, entries: 4..6 }, &[4.0, 5.0], &[5.0, 6.0], 1).expect("a run");
         assert_eq!(older.value(0, 2), None, "the newer version's frame 2 is not the older one's");
         assert_eq!(older.value(0, 4), Some(5.0));
@@ -1240,7 +1269,7 @@ mod tests {
         samples.append(&[100.0], &Values::from(vec![1.0_f32; rows]), rows).expect("frame");
         assert_eq!(samples.end(), 101);
         let run = Run { level: 0, entries: 10..11 };
-        assert!(samples.insert(&run, &[10.0], &vec![0.0; rows], rows).is_err(), "frames forgotten stay so");
+        assert!(samples.insert(&run, &[10.0], &vec![0.0; rows], rows).is_err(), "forgotten frames stay forgotten");
     }
 
     #[test]
@@ -1250,8 +1279,6 @@ mod tests {
         let gathered = samples.gather(&[1]);
         assert_eq!(gathered.value(0, 0), Some(2.0));
         assert_eq!(gathered.value(0, 1), Some(4.0));
-        let one = samples.gather_frames(&[0], 1..2);
-        assert_eq!((one.start(), one.end(), one.value(0, 1), one.value(0, 0)), (1, 2, Some(3.0), None));
     }
 
     /// Level 1 buckets 0..4 (frames 0..32) and the frames of bucket 1, of two rows.
@@ -1270,22 +1297,22 @@ mod tests {
     }
 
     #[test]
-    fn runs_fill_any_span_and_cover_draws_the_finest_held() {
+    fn runs_fill_any_span_and_cover_draws_the_finest_stored() {
         let (mut samples, buckets, frames) = holed();
         assert_eq!((samples.start(), samples.end()), (0, 32));
         let (at, values) = samples.read(&frames, &[0, 1]);
-        assert!(samples.insert(&frames, &at, &values, 2).is_err(), "held already");
+        assert!(samples.insert(&frames, &at, &values, 2).is_err(), "already present");
         assert_eq!(
             samples.cover(0..32, 0),
             vec![Run { level: 1, entries: 0..1 }, Run { level: 0, entries: 8..16 }, Run { level: 1, entries: 2..4 },],
-            "frames where held, else the buckets standing in"
+            "frames where stored, buckets elsewhere"
         );
         assert_eq!(samples.cover(0..32, 1), vec![buckets.clone()]);
         assert_eq!(samples.entry(1, 1, 1, 2), Some(8.0));
         assert_eq!(samples.value(0, 9), Some(9.0));
         assert_eq!(samples.frame_at(12.5), Some(12));
-        assert_eq!(samples.frame_at(20.0), None, "frame 20 is not held");
-        assert_eq!(samples.bound(20.0, false), 16, "past the frames, whole buckets count");
+        assert_eq!(samples.frame_at(20.0), None, "frame 20 is not stored");
+        assert_eq!(samples.bound(20.0, false), 16, "past the stored frames, bounds fall on whole buckets");
         assert_eq!(samples.pieces(0..32), vec![(1, 0), (1, 1), (1, 2), (1, 3)]);
         let read = samples.read(&buckets, &[0, 1]);
         let mut copy = Samples::default();
@@ -1295,7 +1322,7 @@ mod tests {
         let stored = vec![frames.clone(), Run { level: 1, entries: 0..1 }, Run { level: 1, entries: 2..4 }];
         assert_eq!(samples.stored_runs(), stored);
         samples.remove(&frames);
-        assert!(!samples.held(0, 9), "a span let go of");
+        assert!(!samples.held(0, 9), "a removed span is no longer stored");
         assert_eq!(samples.cover(0..32, 0), vec![buckets]);
     }
 
@@ -1323,7 +1350,7 @@ mod tests {
     }
 
     #[test]
-    fn appends_after_a_run_seal_only_whole_buckets() {
+    fn appends_after_a_run_seal_only_complete_buckets() {
         let mut samples = Samples::default();
         let run = Run { level: 0, entries: 4..8 };
         samples.insert(&run, &[4.0, 5.0, 6.0, 7.0], &[1.0, 2.0, 3.0, 4.0], 1).expect("run");

@@ -1,4 +1,5 @@
 use std::hash::BuildHasher;
+use std::ops::Range;
 
 use hashbrown::HashTable;
 use hashbrown::hash_table::Entry;
@@ -9,11 +10,12 @@ use super::name::{Id, IdRef};
 use super::values::{Array, Values};
 use crate::{Error, Result};
 
-/// Row ids, as given to [`Table::new`](crate::Table::new) or [`Patch::remove`](crate::Patch::remove),
-/// and the target ids of a reference.
+/// Row ids, as given to [`Table::new`](crate::Table::new) or
+/// [`Patch::remove`](crate::Patch::remove), or the target ids of a reference.
 ///
 /// [`Ids::count`] names rows `0..n`. Lists convert from vectors, arrays, and slices of numbers or
-/// texts; for a reference, `None` leaves a row unwired. A bare number is never a count.
+/// texts. For a reference, `None` leaves a row unwired. A bare number is never a count. Use
+/// [`Ids::count`], or `{"count": n}` in JSON.
 ///
 /// ```
 /// # use latkit::{Ids, Table};
@@ -29,7 +31,7 @@ pub(crate) enum IdList {
     Listed(Values),
 }
 
-/// Ids are equal when they name the same rows in the same order.
+/// Ids are equal when they list the same ids in the same order, whether counted or listed.
 impl PartialEq for Ids {
     fn eq(&self, other: &Ids) -> bool {
         self.len() == other.len() && (0..self.len()).all(|i| self.key(i) == other.key(i))
@@ -170,10 +172,11 @@ impl RowIds {
         }
     }
 
+    /// The id of row `row`, or `None` past the last row.
     pub(crate) fn key(&self, row: usize) -> Option<IdRef<'_>> {
         match self {
-            RowIds::Count(_) => Some(IdRef::Number(row as u64)),
-            RowIds::Listed(c) => key(&c.pages()[row >> PAGE_BITS].values, row & PAGE_MASK),
+            RowIds::Count(n) => (row < *n as usize).then_some(IdRef::Number(row as u64)),
+            RowIds::Listed(c) => c.at(row).and_then(|(values, i)| key(values, i)),
         }
     }
 
@@ -181,8 +184,8 @@ impl RowIds {
         self.key(row).map(IdRef::to_id)
     }
 
-    /// The ids with `added` appended; a count stays a count while the new ids continue it. Ids of
-    /// another kind than the table's (texts for a table of numbers) are an error.
+    /// The ids with `added` appended. A count stays a count when the new ids continue it. Errors
+    /// if `added` holds another kind of id than the table's, such as texts for a table of numbers.
     pub(crate) fn extend(&self, added: &[Id]) -> Result<RowIds> {
         if added.is_empty() {
             return Ok(self.clone());
@@ -195,29 +198,11 @@ impl RowIds {
         let column = self.listed();
         let IdList::Listed(source) = Ids::from(added.to_vec()).0 else { unreachable!("a list of ids") };
         if source.kind() != column.kind() {
-            return Err(Error::invalid("ids of another kind than the table's: numbers and texts do not mix"));
+            return Err(Error::invalid("ids must be the same kind as the table's ids (numbers or texts)"));
         }
         let len = column.len() + added.len();
         let writes: Vec<(usize, usize)> = (0..added.len()).map(|k| (column.len() + k, k)).collect();
         Ok(RowIds::Listed(column.write(len, &writes, &Column::new(&source))?))
-    }
-
-    /// The ids with `len` rows (at least the current count) and `writes` applied, `(row, row of
-    /// source)` by row, a hole where the row of source is a [`HOLE`](super::values::HOLE). Pages no
-    /// write touches keep their ids.
-    pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &RowIds) -> Result<RowIds> {
-        // The ids written, gathered first, so a count's ids are made only for those.
-        let from: Vec<usize> = writes.iter().map(|&(_, s)| s).collect();
-        let written = match source {
-            RowIds::Count(_) => {
-                let ids: Vec<Option<u64>> =
-                    from.iter().map(|&s| (s != super::values::HOLE).then_some(s as u64)).collect();
-                Column::new(&Values::from(ids))
-            }
-            RowIds::Listed(column) => column.gather(&from),
-        };
-        let at: Vec<(usize, usize)> = writes.iter().enumerate().map(|(k, &(row, _))| (row, k)).collect();
-        Ok(RowIds::Listed(self.listed().write(len, &at, &written)?))
     }
 
     /// The ids of `rows`, in that order.
@@ -238,8 +223,8 @@ impl RowIds {
         }
     }
 
-    /// Every page's numbered ids, when every id is a number: what lookups read without matching each
-    /// id's kind.
+    /// Each page's `u64` ids, when every page stores numbers with none missing. Lookups use them to
+    /// read ids without matching each one's kind.
     pub(crate) fn numbers(&self) -> Option<Vec<&[u64]>> {
         let RowIds::Listed(column) = self else { return None };
         column
@@ -252,8 +237,7 @@ impl RowIds {
             .collect()
     }
 
-    /// The first row without an id: a hole, which only the rows a view draws of a table drawn through
-    /// tiles have.
+    /// The first row with a missing id. Tables must not have one.
     pub(crate) fn hole(&self) -> Option<usize> {
         let RowIds::Listed(column) = self else { return None };
         let mut start = 0;
@@ -268,20 +252,32 @@ impl RowIds {
         None
     }
 
-    /// How many rows are holes, without an id.
-    pub(crate) fn holes(&self) -> usize {
-        let RowIds::Listed(column) = self else { return 0 };
-        column.pages().iter().filter_map(|p| p.values.valid.as_ref().map(|v| p.values.len() - v.count())).sum()
-    }
-
-    /// The id → row index, past holes; an error names a repeated id.
+    /// Builds the id-to-row index, skipping rows without ids. Errors on a repeated id, naming its
+    /// row.
     pub(crate) fn index(&self) -> Result<Index> {
         let RowIds::Listed(_) = self else { return Ok(Index::Identity(self.len() as u32)) };
-        if let Some(pages) = self.numbers() {
-            return numbered(&pages, self.len());
-        }
         let mut table = HashTable::with_capacity(self.len());
-        for row in 0..self.len() {
+        self.insert(&mut table, 0..self.len())?;
+        Ok(Index::Table(table))
+    }
+
+    /// Adds rows `rows` to `table`, skipping rows without ids. Errors on a repeated id. When every
+    /// id is a number, ids are read page by page without matching each one's kind.
+    fn insert(&self, table: &mut HashTable<u32>, rows: Range<usize>) -> Result<()> {
+        if let Some(pages) = self.numbers() {
+            let id = |r: u32| pages[r as usize >> PAGE_BITS][r as usize & PAGE_MASK];
+            for row in rows {
+                let n = id(row as u32);
+                match table.entry(hash(IdRef::Number(n)), |&r| id(r) == n, |&r| hash(IdRef::Number(id(r)))) {
+                    Entry::Occupied(_) => return Err(Error::invalid(format!("id {n} appears twice")).at(row)),
+                    Entry::Vacant(slot) => {
+                        slot.insert(row as u32);
+                    }
+                }
+            }
+            return Ok(());
+        }
+        for row in rows {
             let Some(key) = self.key(row) else { continue };
             let eq = |&r: &u32| self.key(r as usize) == Some(key);
             let rehash = |&r: &u32| hash(self.key(r as usize).expect("indexed rows have ids"));
@@ -292,29 +288,12 @@ impl RowIds {
                 }
             }
         }
-        Ok(Index::Table(table))
+        Ok(())
     }
 }
 
-/// The index of numbered ids, read page by page.
-fn numbered(pages: &[&[u64]], len: usize) -> Result<Index> {
-    let id = |r: u32| pages[r as usize >> PAGE_BITS][r as usize & PAGE_MASK];
-    let mut table = HashTable::with_capacity(len);
-    for (p, page) in pages.iter().enumerate() {
-        for (i, &n) in page.iter().enumerate() {
-            let row = p << PAGE_BITS | i;
-            match table.entry(hash(IdRef::Number(n)), |&r| id(r) == n, |&r| hash(IdRef::Number(id(r)))) {
-                Entry::Occupied(_) => return Err(Error::invalid(format!("id {n} appears twice")).at(row)),
-                Entry::Vacant(slot) => {
-                    slot.insert(row as u32);
-                }
-            }
-        }
-    }
-    Ok(Index::Table(table))
-}
-
-/// Finds a row by id without allocating.
+/// Finds a row by id without allocating. Counted ids are their own row numbers. Other ids use a
+/// hash table of row numbers.
 #[derive(Debug)]
 pub(crate) enum Index {
     Identity(u32),
@@ -326,8 +305,43 @@ pub(crate) fn hash(key: IdRef<'_>) -> u64 {
 }
 
 impl Index {
-    /// The rows numbered ids `ids` name, `unwired` where one names none or is missing, and whether a
-    /// present id named no row: the loop chosen once for the ids' and the rows' kinds.
+    /// The index of `ids`, which are this index's ids followed by new ones from row `from` on.
+    /// Copies this index and adds only the new rows, without rehashing the existing ones. Rebuilds
+    /// it when counted ids became a list.
+    pub(crate) fn extended(&self, ids: &RowIds, from: usize) -> Result<Index> {
+        match (self, ids) {
+            (Index::Identity(_), RowIds::Count(n)) => Ok(Index::Identity(*n)),
+            (Index::Table(table), RowIds::Listed(_)) => {
+                let mut table = table.clone();
+                ids.insert(&mut table, from..ids.len())?;
+                Ok(Index::Table(table))
+            }
+            _ => ids.index(),
+        }
+    }
+
+    /// The index of `ids`, which are this index's ids without the rows flagged in `doomed`. Drops
+    /// those rows and renumbers the rest to close the gaps, without rehashing. Rebuilds it for
+    /// counted ids.
+    pub(crate) fn without(&self, doomed: &[bool], ids: &RowIds) -> Result<Index> {
+        let (Index::Table(table), RowIds::Listed(_)) = (self, ids) else { return ids.index() };
+        let mut moved = Vec::with_capacity(doomed.len());
+        let mut next = 0;
+        for &gone in doomed {
+            moved.push(next);
+            next += u32::from(!gone);
+        }
+        let mut table = table.clone();
+        table.retain(|r| !doomed[*r as usize]);
+        for r in &mut table {
+            *r = moved[*r as usize];
+        }
+        Ok(Index::Table(table))
+    }
+
+    /// The row number each id in `ids` names, or `unwired` where the id is missing or names no row,
+    /// plus whether any present id named no row. Picks one loop for the storage of the ids and rows
+    /// up front, so it does not match storage per id.
     pub(crate) fn resolve(&self, rows: &RowIds, ids: &Values, unwired: u32) -> (Vec<u32>, bool) {
         let valid = |i: usize| ids.valid.as_ref().is_none_or(|v| v.get(i));
         let mut dangling = false;
@@ -360,8 +374,8 @@ impl Index {
         (resolved, dangling)
     }
 
-    /// The row with id `key`. A numbered row is also named by its id in decimal text, as ids too
-    /// large for a JSON or JavaScript number are written.
+    /// The row with id `key`. A numeric id can also be given as its decimal text, which is how ids
+    /// too large for JSON or JavaScript numbers are written.
     pub(crate) fn get(&self, ids: &RowIds, key: IdRef<'_>) -> Option<usize> {
         let number = |text: &str| text.parse::<u64>().ok().and_then(|n| self.get(ids, IdRef::Number(n)));
         match (self, key) {
@@ -389,7 +403,25 @@ mod tests {
         let index = ids.index().expect("unique");
         assert_eq!(index.get(&ids, IdRef::Number(9)), Some(5));
         assert_eq!(index.get(&ids, IdRef::Number(2)), Some(2));
-        assert!(ids.extend(&[Id::from("a")]).is_err(), "texts do not join numbers");
+        assert!(ids.extend(&[Id::from("a")]).is_err(), "text ids cannot extend numeric ids");
+    }
+
+    #[test]
+    fn indexes_follow_rows_added_and_removed() {
+        let ids = RowIds::new(&Ids::from(vec![10_u64, 20, 30]));
+        let index = ids.index().expect("unique");
+        let more = ids.extend(&[Id::Number(40), Id::Number(50)]).expect("numbers");
+        let extended = index.extended(&more, 3).expect("unique");
+        assert_eq!(extended.get(&more, IdRef::Number(50)), Some(4));
+        assert_eq!(extended.get(&more, IdRef::Number(20)), Some(1));
+        assert!(index.extended(&more.extend(&[Id::Number(10)]).expect("numbers"), 5).is_err(), "repeated id");
+        // Remove rows 1 and 3. The others move up to close the gaps.
+        let doomed = [false, true, false, true, false];
+        let kept = more.gather(&[0, 2, 4]);
+        let fewer = extended.without(&doomed, &kept).expect("unique");
+        assert_eq!(fewer.get(&kept, IdRef::Number(50)), Some(2));
+        assert_eq!(fewer.get(&kept, IdRef::Number(30)), Some(1));
+        assert_eq!(fewer.get(&kept, IdRef::Number(20)), None);
     }
 
     #[test]
@@ -403,15 +435,5 @@ mod tests {
         let ids = RowIds::new(&Ids::from(vec!["a", "b", "c"])).gather(&[2, 0]);
         assert_eq!(ids.id(0), Some(Id::from("c")));
         assert_eq!(RowIds::Count(4).gather(&[0, 2]).id(1), Some(Id::Number(2)));
-    }
-
-    #[test]
-    fn holes_have_no_id_and_index_past() {
-        let ids = RowIds::new(&Ids::from(vec!["a", "b", "c"])).gather(&[2, super::super::values::HOLE, 0]);
-        assert_eq!((ids.id(1), ids.hole()), (None, Some(1)));
-        let index = ids.index().expect("unique past the hole");
-        assert_eq!(index.get(&ids, IdRef::Text("a")), Some(2));
-        let numbered = RowIds::Count(3).gather(&[1, super::super::values::HOLE]);
-        assert_eq!(numbered.index().expect("unique").get(&numbered, IdRef::Number(1)), Some(0));
     }
 }

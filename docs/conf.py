@@ -11,7 +11,7 @@ release = json.loads((HERE.parent / "npm/package.json").read_text())["version"]
 
 extensions = ["myst_parser", "sphinx_copybutton"]
 exclude_patterns = ["_build", ".venv", "gallery"]
-myst_enable_extensions = ["colon_fence", "deflist"]
+myst_enable_extensions = ["attrs_block", "attrs_inline", "colon_fence", "deflist"]
 myst_heading_anchors = 3
 
 copybutton_prompt_text = r"^\$ "
@@ -30,25 +30,27 @@ NEUTRAL = {
 
 
 def palette(name):
-    """Furo colors: the brand is the theme's mark color, pages its background and surface."""
+    """Furo colors: the brand is the theme's vertex color, pages its background, and panels the
+    fill a diagram's groups take."""
     theme, dark = THEMES[name], name == "dark"
     n = {role: pair[dark] for role, pair in NEUTRAL.items()}
+    brand, panel = theme["vertex"]["color"], theme["diagram"]["group"]
     return {
-        "color-brand-primary": theme["vertex"],
-        "color-brand-content": theme["vertex"],
-        "color-brand-visited": theme["vertex"],
+        "color-brand-primary": brand,
+        "color-brand-content": brand,
+        "color-brand-visited": brand,
         "color-foreground-primary": n["ink"],
         "color-foreground-secondary": n["secondary"],
         "color-foreground-muted": n["muted"],
         "color-foreground-border": n["border"],
         "color-background-primary": theme["background"],
-        "color-background-secondary": theme["surface"],
+        "color-background-secondary": panel,
         "color-background-border": n["rule"],
         "color-api-name": n["ink"],
         "color-api-pre-name": n["secondary"],
-        "color-code-background": theme["surface"],
-        "color-inline-code-background": theme["surface"],
-        "color-selected": theme["selected"],
+        "color-code-background": panel,
+        "color-inline-code-background": panel,
+        "color-selected": theme["focus"]["selected"],
     }
 
 

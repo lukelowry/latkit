@@ -1,5 +1,5 @@
-//! The graph a view's data holds: the rows joined to a row across edges and nets, the row a reference
-//! names, and which vertex mark an end attaches to.
+//! Graph queries over a view's data: a row's neighbors across edges and nets, the row a reference
+//! names, and the vertex mark an end attaches to.
 
 use rustc_hash::FxHashSet;
 
@@ -18,12 +18,12 @@ fn reference<'t>(table: &'t Table, name: &str) -> Option<&'t Reference> {
 }
 
 impl View {
-    /// The rows joined to `row`: a vertex's neighbors across edges and nets, or an edge's or a net's
-    /// vertices, a set per table. It reads the references' inverses, so it costs what the row's degree
-    /// does.
+    /// The rows joined to `row`: a vertex's neighbors across edges and nets, or an edge's or net's
+    /// vertices, grouped by table. It reads the references' inverses, so its cost is proportional
+    /// to the row's degree.
     pub fn neighbors(&self, row: &Row) -> Vec<Rows> {
         let mut found: Vec<Row> = Vec::new();
-        let Some(data) = self.data(&row.data) else { return Vec::new() };
+        let Some(data) = self.snapshot(&row.data) else { return Vec::new() };
         let Some(index) = data.table(&row.table).and_then(|t| t.row(row.id.as_ref())) else { return Vec::new() };
         let at = |table: &Name, r: u32| {
             let id = data.table(table)?.ids.id(r as usize)?;
@@ -72,10 +72,11 @@ impl View {
         Rows::group(found)
     }
 
-    /// Every vertex mark's port reference field that names rows of net mark `i`'s table.
+    /// Each vertex mark's port reference fields that point at net mark `i`'s table, as
+    /// `(mark, field)`.
     fn ports_naming(&self, i: usize) -> Vec<(usize, Name)> {
         let style = self.marks[i].mark.style();
-        let Some(data) = self.data(&style.data) else { return Vec::new() };
+        let Some(data) = self.snapshot(&style.data) else { return Vec::new() };
         let mut found = Vec::new();
         for (m, shown) in self.marks.iter().enumerate() {
             let s = shown.mark.style();
@@ -95,14 +96,15 @@ impl View {
 
     /// The row `row`'s reference field `field` names.
     pub(super) fn referenced(&self, row: &Row, field: &str) -> Option<Row> {
-        let data = self.data(&row.data)?;
+        let data = self.snapshot(&row.data)?;
         let table = data.table(&row.table)?;
         let r = reference(table, field)?;
         let id = data.table(&r.to)?.ids.id(r.target(table.row(row.id.as_ref())?)? as usize)?;
         Some(Row { data: row.data.clone(), table: r.to.clone(), id })
     }
 
-    /// Marks each edge mark on the earth whose route is not straight as following great circles.
+    /// Whether `shown` follows great circles: an edge mark with ends, on the earth, whose route is
+    /// unset or geodesic.
     pub(super) fn geodesic(&self, shown: &Shown) -> bool {
         let Space::Earth(_) = self.scene.space else { return false };
         match &shown.mark {
@@ -112,7 +114,22 @@ impl View {
     }
 }
 
-/// The vertex mark drawing `table` that ends attach to: the unnamed one, else the first.
+/// For each of `marks`, whether faces sum their normals at its rows: whether it is the vertex mark
+/// some face mark's corners attach to.
+pub(super) fn summing(marks: &[Shown]) -> Vec<bool> {
+    let mut summing = vec![false; marks.len()];
+    for shown in marks.iter().filter(|m| m.kind() == MarkKind::Faces) {
+        let Some(compiled) = &shown.compiled else { continue };
+        for end in &compiled.program.ends {
+            if let Some(m) = end_mark(marks, &shown.mark.style().data, &end.table) {
+                summing[m] = true;
+            }
+        }
+    }
+    summing
+}
+
+/// The vertex mark drawing `table` that ends attach to: the unnamed one, or else the first.
 pub(super) fn end_mark(marks: &[Shown], data: &Name, table: &Name) -> Option<usize> {
     let drawing = |i: &usize| {
         let m = &marks[*i];

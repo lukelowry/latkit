@@ -1,7 +1,7 @@
 /**
- * Vector tiles made on request, so the tiles scenario fetches over HTTP as a map does, the same
- * bytes every run and nothing from the network: `/tiles/<squares>/<z>/<x>/<y>.mvt`, one layer
- * `cells` of that many squares in a grid over the tile.
+ * A Vite plugin that serves vector tiles made on request, so the tiles scenario fetches over HTTP
+ * as a map does, with the same bytes every run and no network. `/tiles/<squares>/<z>/<x>/<y>.mvt`
+ * returns one layer, `cells`, of that many squares in a grid over the tile.
  */
 import type { Plugin } from 'vite';
 
@@ -32,7 +32,8 @@ const bytes = (field: number, payload: number[]) => [
   ...payload,
 ];
 
-/** A tile of `squares` squares, clockwise exterior rings in the tile's 4096 units. */
+/** Encodes a tile of `squares` squares as exterior rings, clockwise in the tile's 4096-unit extent
+ * (y down). */
 function tile(squares: number): Uint8Array {
   const side = Math.ceil(Math.sqrt(squares));
   const step = Math.floor(4096 / side);

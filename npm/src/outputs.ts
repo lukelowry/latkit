@@ -1,26 +1,30 @@
-/** Written by `node npm/build.mjs schema` from `npm/schema.json`, what latkit writes: do not edit. */
+/** The types latkit writes, written by `node npm/build.mjs schema` from `npm/schema.json`. Do not edit. */
 
 import type { Camera, Id, Row, Rows } from './inputs.js';
 
 /**
- * What a dataset holds: its tables, their rows and fields, and the axis its sampled fields are
- * recorded over and span.
+ * A summary of a dataset: its tables with their rows and fields, the axis sampled fields are
+ * recorded over, and the part of the axis they cover.
  */
 export interface Description {
   /** The dataset's name. */
   name: string;
-  /** The axis's name and unit. */
+  /** The axis name and unit, if set. */
   axis: [string, string] | null;
-  /** The first and last coordinates its sampled fields hold. */
+  /** The first and last axis coordinates held by any sampled field, or `null` if no field holds any. */
   span: [number, number] | null;
-  /** Its tables, by name. */
+  /** Its tables, sorted by name. */
   tables: TableDescription[];
 }
 
-/** What the user acts with. */
-export type Device = 'mouse' | 'pen' | 'touch' | 'keyboard';
+/** The input device. */
+export type Device =
+  | /** A mouse or a trackpad. */ 'mouse'
+  | /** A pen. */ 'pen'
+  | /** A finger. Picks find rows up to 8 CSS pixels farther away. */ 'touch'
+  | /** The keyboard. */ 'keyboard';
 
-/** A vertex a connection ends at, and its port when it has the one the connection meets. */
+/** A vertex a connection ends at, and the port the connection meets, if any. */
 export interface End {
   /** The vertex. */
   row: Row;
@@ -28,25 +32,25 @@ export interface End {
   port?: string;
 }
 
-/**
- * What failed: its `code`, the message, and for invalid input the `path` to the part, such as
- * `marks[2].vertices.color`.
- */
+/** A failure as JSON, in the same form as the npm package's `LatkitError`. */
 export interface Failure {
+  /** The kind of failure. See `LatkitError.code`. */
   code: 'invalid' | 'unsupported' | 'limit' | 'io' | 'device-lost' | 'cancelled' | 'timeout';
+  /** A description of what failed. */
   message: string;
+  /** For `invalid` failures, the path of the invalid input, such as `marks[2].color`. */
   path?: string;
 }
 
-/** A field described: what it holds, the table a reference names, the coordinates samples span. */
+/** A summary of one field: its kind, plus its target table or axis span where those apply. */
 export interface FieldDescription {
   /** The field's name. */
   name: string;
-  /** What it holds. */
+  /** The kind of values it holds. */
   kind: Kind;
-  /** The table a reference names. */
+  /** For a reference, the target table. */
   to?: string;
-  /** The first and last coordinates a sampled field holds. */
+  /** For a sampled field, the first and last axis coordinates it holds. */
   span?: [number, number];
 }
 
@@ -54,28 +58,36 @@ export interface FieldDescription {
 export interface Hit {
   /** The row. */
   row: Row;
-  /** The name of the mark that drew it, when it has one: what tells two marks of one table apart. */
+  /** The name of the mark that drew it, if the mark has one. It tells apart two marks of one table. */
   mark?: string;
   /**
-   * The point of the row nearest the probe, CSS pixels from the top left: a vertex's or a port's
-   * middle, the nearest point of a stroke or a triangle.
+   * The row's point nearest the probe, in CSS pixels from the top left: a vertex's or port's middle,
+   * or the nearest point of a stroke or triangle.
    */
   point: [number, number];
   /** That point in the space's coordinates: x, y, and elevation. */
   position: [number, number, number];
   /** CSS pixels from the probe to the row. */
   distance: number;
-  /** The port hit, when a vertex's port was. */
+  /** The port hit, if the hit is on a vertex's port. */
   port?: string;
-  /** The sample hit, when a line tracing a sampled field was. */
+  /** The sample hit, if the hit is on a line tracing a sampled field. */
   sample?: Sample;
 }
 
-/** What a field holds. */
+/** The kind of values a field holds. */
 export type Kind =
-  'number' | 'bool' | 'text' | 'point' | 'path' | 'parts' | 'polygons' | 'reference' | 'sampled';
+  | /** Numbers. */ 'number'
+  | /** Booleans. */ 'bool'
+  | /** Texts. */ 'text'
+  | /** `[x, y]` points. */ 'point'
+  | /** Paths of points. */ 'path'
+  | /** Parts: the rings of a polygon, or the paths of a multi-path. */ 'parts'
+  | /** Polygons of rings. */ 'polygons'
+  | /** Rows of another table, by id. */ 'reference'
+  | /** Numbers sampled over the dataset's axis. */ 'sampled';
 
-/** Keys held during an input. */
+/** Modifier keys held during an input. */
 export interface Modifiers {
   /** Shift. */
   shift: boolean;
@@ -88,7 +100,10 @@ export interface Modifiers {
 }
 
 /** The phase of a `Drag`. */
-export type Phase = 'start' | 'move' | 'end';
+export type Phase =
+  | /** The pointer moved far enough to drag. */ 'start'
+  | /** The pointer moved. */ 'move'
+  | /** The pointer was released, or the drag was cancelled. */ 'end';
 
 /** A sample of a traced field: its frame, the axis coordinate it was recorded at, and its value. */
 export interface Sample {
@@ -100,68 +115,57 @@ export interface Sample {
   value: number;
 }
 
-/** What a view does each frame. */
+/** Counters describing a view's frames. */
 export interface Stats {
   /** Frames rendered. */
   frames: number;
   /** Rows of every mark's table. */
   rows: number;
   /**
-   * Rows every mark draws: every row of a table drawn whole, the rows of the tiles in view of one
-   * drawn through tiles.
+   * Rows the marks draw: every row of a fully drawn table, and the rows in the tiles in view of a
+   * paged table.
    */
   drawn: number;
-  /** Draw calls the last frame recorded, shadows and labels with the marks. */
+  /** Draw calls the last frame recorded, label draws included. */
   draws: number;
   /**
-   * Instances the last frame's draws drew: points, segments, triangles, glyphs; at most, for
-   * segments the GPU culls.
+   * Instances the last frame's draws drew: points, segments, triangles, and glyphs. An upper bound
+   * for segments, which the GPU may cull.
    */
   instances: number;
-  /** Fetched tiles the view draws, of every tile source. */
+  /** Fetched tiles the view draws, across all tile sources. */
   tiles: number;
-  /** Tiles being fetched or decoded, of every tile source. */
+  /** Tiles being fetched or decoded, across all tile sources. */
   tilesLoading: number;
-  /** Bytes of data waiting to upload. */
-  uploading: number;
-  /** Bytes of data pages on the GPU, for every view of its `Gpu`. */
-  resident: number;
-  /** Bytes the GPU's `Budget` lets data take. */
-  budget: number;
-  /**
-   * The work under way the last frame stood in for; nothing when it drew everything as the data,
-   * scene, and camera say: see `View::complete`.
-   */
-  waiting: Waiting;
   /** Milliseconds the last frame took to record on the CPU. */
   cpuMs: number;
   /**
-   * Milliseconds the GPU takes on a frame: the median of the last frames it measured; 0 where the
-   * device cannot measure.
+   * Milliseconds the GPU takes per frame: the median of recently measured frames. 0 if the device
+   * cannot measure GPU time.
    */
   gpuMs: number;
 }
 
-/** A table described: its rows, and its fields by name. */
+/** A summary of one table: its row count and its fields, sorted by name. */
 export interface TableDescription {
   /** The table's name. */
   name: string;
-  /** How many rows it has. */
+  /** The number of rows. */
   rows: number;
-  /** Its fields, by name. */
+  /** Its fields, sorted by name. */
   fields: FieldDescription[];
 }
 
 /**
- * Where, with what keys, and with what the user acted. For keys, the point is the row they point
- * at, else the pointer, else the view's middle.
+ * Where the user acted, with which modifier keys and device. For keyboard input, the point is the
+ * row the keys point at, or else the pointer, or else the view's middle.
  */
 export interface Trigger {
   /** CSS pixels from the top left. */
   point: [number, number];
-  /** The keys held. */
+  /** The modifier keys held. */
   modifiers: Modifiers;
-  /** What acted. */
+  /** The device used. */
   device: Device;
 }
 
@@ -171,9 +175,9 @@ export interface Trigger {
  */
 export type Value = number | boolean | string | null | [number, number] | unknown[][];
 
-/** What happened in a view, for the application to act on. Drain them with `View::events`. */
+/** Something that happened in a view, as `view.on` reports it. */
 export type ViewEvent =
-  | {
+  | /** A row was clicked. */ {
       type: 'click';
       detail: {
         /** The row. */
@@ -182,7 +186,7 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /** A row was double-clicked, or Enter was pressed on the row the keyboard points at. */ {
       type: 'open';
       detail: {
         /** The row. */
@@ -191,16 +195,22 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /**
+     * A context menu was requested: by a secondary click, the menu key, or a touch or pen held still.
+     * Lists the rows under the trigger's point, for a menu of actions on them.
+     */ {
       type: 'menu';
       detail: {
-        /** What lies under the point, nearest first. */
+        /** The rows under the point, nearest first. */
         hits: Hit[];
         /** How the user asked. */
         trigger: Trigger;
       };
     }
-  | {
+  | /**
+     * A row of a draggable mark is dragged. The drag starts once the pointer moves more than 4 CSS
+     * pixels from where it pressed the row.
+     */ {
       type: 'drag';
       detail: {
         /** Whether the drag starts, moves, or ends. */
@@ -208,29 +218,32 @@ export type ViewEvent =
         /** The row dragged, as it was hit. */
         hit: Hit;
         /**
-         * Where the row goes, in the space's coordinates: where it was hit, moved as the pointer moved
-         * since the press, at the depth the drag started; a vertex keeps where it was grabbed. On a
-         * diagram's dots when its grid snaps.
+         * The row's new position in the space's coordinates. It is the hit point moved with the pointer
+         * since the press, at the depth where the drag started, so a vertex keeps its offset from the
+         * pointer. Snapped to a diagram's grid dots when the grid snaps.
          */
         position: [number, number, number];
         /** The pointer. */
         trigger: Trigger;
       };
     }
-  | {
+  | /**
+     * A connection was drawn with `controls.connect` on: from a port, from a vertex with Alt held, or
+     * by dragging an edge's end off it.
+     */ {
       type: 'connect';
       detail: {
-        /** The end it was drawn from: for an edge, the end that stayed. */
+        /** The end it was drawn from. For a dragged edge end, the edge's other end. */
         from: End;
         /** The vertex it was released over, if any. */
         to: End | null;
-        /** The edge whose other end was dragged, which `to` replaces. */
+        /** The edge whose end was dragged off. `to` replaces that end. */
         edge: Row | null;
         /** Where it was released. */
         trigger: Trigger;
       };
     }
-  | {
+  | /** Delete or Backspace was pressed with rows selected and `controls.delete` on. */ {
       type: 'delete';
       detail: {
         /** The rows selected. */
@@ -239,65 +252,97 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
-      type: 'hover';
+  | /** The hovered row changed: `view.hovered`. */ {
+      type: 'hovered';
       detail: {
-        /** The row now pointed at; `null` once it left every row. */
+        /** The row now hovered, or `null` if no row is. */
         hit: Hit | null;
         /** The pointer, or the keys. */
         trigger: Trigger;
       };
     }
-  | {
-      type: 'select';
+  | /** The selection changed: `view.selection`. */ {
+      type: 'selection';
       detail: {
         /** The rows selected now. */
         rows: Rows[];
-        /** How the user changed it; `null` when the data dropped rows from it. */
+        /** How the user changed it, or `null` when the data dropped rows from it. */
         trigger: Trigger | null;
       };
     }
-  | { type: 'camera'; detail: Camera }
-  | { type: 'waiting'; detail: Waiting }
-  | { type: 'error'; detail: Failure };
+  | /**
+     * The camera moved: `view.camera`. A gesture, fit, flight, coast, or orbit moved it, or it moved
+     * back within its zoom and pan limits after the view's size, insets, or space changed.
+     */ { type: 'camera'; detail: Camera }
+  | /** The work the last frame waited on changed: `view.waiting`. Empty once frames are complete. */ {
+      type: 'waiting';
+      detail: Waiting;
+    }
+  | /**
+     * Something failed. Reported once. A mark that no longer fits its data is also listed in
+     * `view.failures`.
+     */ { type: 'error'; detail: Failure };
 
 /**
- * Work under way a frame stands in for: pipelines the scene draws with compiling, until which the
- * view draws nothing new (`compiling`); pages uploading or tables not yet built from them
- * (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or
- * texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again,
- * segment counts, or a transition beginning (`marks`). Empty once a frame is complete.
+ * What a frame still waits on: pipelines the scene draws with, which compile before the view draws
+ * anything new (`compiling`); pages uploading, or tables not yet built from them (`data`);
+ * layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or
+ * not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition
+ * starting (`marks`). Empty once the frame is complete.
  */
 export type Waiting = ('compiling' | 'data' | 'derived' | 'labels' | 'fit' | 'marks')[];
 
-/** What a `Gpu` did since it was made; subtract two for what happened between. */
+/**
+ * Counts of the work a `Gpu` has done since it was created. Subtract two snapshots to get the work
+ * between them.
+ */
 export interface Work {
   /** Bytes of data pages uploaded. */
   uploaded: number;
-  /** Bytes written besides pages: uniforms, programs, label runs, the selection, textures. */
+  /**
+   * Data pages, or pieces of pages, uploaded. A change's uploads count pages here and bytes in
+   * `uploaded`.
+   */
+  uploads: number;
+  /** Bytes written other than pages: uniforms, programs, label runs, the selection, and textures. */
   written: number;
   /** Rows whose channels the GPU evaluated. */
   evaluated: number;
   /**
-   * Reads back from the GPU: probes, queries, fits, label placements, segment counts, pictures; not
-   * the frame timer's, which only some devices have.
+   * Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows that
+   * changed, plus every row of a page that references a vertex now resident elsewhere.
+   */
+  resolved: number;
+  /**
+   * Bytes of per-row word pages the GPU cleared: pages read before anything writes them, and the
+   * normals that faces sum from scratch.
+   */
+  cleared: number;
+  /**
+   * Rows packed into pages of a paged table's draw order. Each page is packed once, the first time a
+   * view draws it, and again only when a write changes its rows.
+   */
+  packed: number;
+  /**
+   * Readbacks from the GPU: probes, queries, fits, label texts, segment counts, and pictures. Frame
+   * timer readbacks, which only some devices support, are not counted.
    */
   readbacks: number;
   /**
-   * Jobs handed out: layouts, routes, lanes, triangulations, pyramids, tiles; to the host's workers,
-   * or done at once without a host.
+   * Jobs started: layouts, routes, lanes, triangulations, pyramids, and tiles. They run on the
+   * host's workers, or immediately without a host.
    */
   jobs: number;
-  /** Label texts the host was asked to set. */
+  /** Label texts the host was asked to rasterize. */
   texts: number;
   /**
-   * Pipelines compiled: in a browser, each as a view or a shot asks for it ahead, off the GPU's
-   * thread; natively, where it is first made.
+   * Pipelines compiled. In a browser, each compiles in the background when a view or shot requests
+   * it ahead of use. Natively, each compiles when first created.
    */
   pipelines: number;
   /**
-   * Pipelines made without being asked for ahead, each compiled where it is first used: in a browser
-   * on the GPU's thread, holding frames back. None, unless a scene uses what it did not ask for.
+   * Pipelines not requested ahead of use, compiled when first used. In a browser they compile on the
+   * GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not request.
    */
   late: number;
 }

@@ -1,4 +1,7 @@
-/** Builds from pinned workspace tools; all release and consumer outputs stay below target/npm. */
+/**
+ * Build steps for the npm package, run with the workspace's pinned tools. Release and consumer
+ * outputs all stay under target/npm.
+ */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -55,7 +58,7 @@ if (mode === 'prepare') {
     assert.equal(
       fs.readFileSync(path.join(stage, `src/${name}.ts`), 'utf8').replaceAll('\r\n', '\n'),
       source,
-      `src/${name}.ts is not what npm/schema.json says: run node npm/build.mjs schema`,
+      `src/${name}.ts is out of date with npm/schema.json: run node npm/build.mjs schema`,
     );
   }
   execFileSync(
@@ -85,7 +88,7 @@ if (mode === 'prepare') {
     format: 'iife',
     platform: 'browser',
     target: 'es2022',
-    // wasm-bindgen's unused async initializer mentions import.meta; initSync doesn't need it.
+    // wasm-bindgen's unused async initializer mentions import.meta, which initSync does not need.
     logOverride: { 'empty-import-meta': 'silent' },
     logLevel: 'warning',
   });

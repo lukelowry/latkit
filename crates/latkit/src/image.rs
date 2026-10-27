@@ -1,12 +1,12 @@
-//! Images: RGBA texels, what an icon marker draws and what a shot reads its picture back as, written
-//! as PNG, JPEG, or lossless WebP and read from PNG.
+//! RGBA images: icon marker textures and the pictures shots read back. Images encode to PNG, JPEG,
+//! or lossless WebP, and decode from PNG.
 
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 
 use crate::{Error, Result};
 
-/// RGBA texels, straight alpha, sRGB, rows top to bottom.
+/// An image of RGBA texels: straight alpha, sRGB, rows top to bottom.
 #[derive(Clone, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[schemars(rename = "Bitmap")]
@@ -17,7 +17,7 @@ pub struct Image {
     pub rgba: Arc<[u8]>,
 }
 
-/// An image reads as `{ size, rgba }`, four bytes a texel.
+/// Deserializes from `{ size, rgba }`, four bytes per texel, and checks the length.
 impl<'de> serde::Deserialize<'de> for Image {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Image, D::Error> {
         let Image { size, rgba } = Image::deserialize(deserializer)?;
@@ -26,7 +26,8 @@ impl<'de> serde::Deserialize<'de> for Image {
 }
 
 impl Image {
-    /// An image of `size` texels holding `rgba`, four bytes a texel.
+    /// An image of `size` texels from `rgba`, four bytes per texel. Fails if a dimension is zero
+    /// or `rgba` has the wrong length.
     pub fn new(size: [u32; 2], rgba: impl Into<Arc<[u8]>>) -> Result<Image> {
         let rgba = rgba.into();
         let expected = u64::from(size[0]).checked_mul(u64::from(size[1])).and_then(|pixels| pixels.checked_mul(4));
@@ -36,14 +37,15 @@ impl Image {
         Ok(Image { size, rgba })
     }
 
-    /// The image written as a file of `format`.
+    /// Encodes the image as a `format` file.
     pub fn encode(&self, format: ImageFormat) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         self.write(format, &mut out)?;
         Ok(out)
     }
 
-    /// Writes the image as a file of `format` to a file or stream, reporting write failures.
+    /// Writes the image as a `format` file to a file or stream. Write failures return
+    /// [`Error::Io`].
     pub fn write(&self, format: ImageFormat, mut output: impl Write) -> Result<()> {
         Self::new(self.size, self.rgba.clone())?;
         let [width, height] = self.size;
@@ -54,7 +56,7 @@ impl Image {
                 encoder.set_color(png::ColorType::Rgba);
                 encoder.set_depth(png::BitDepth::Eight);
                 encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-                // A picture is written far more often than it is stored long.
+                // Favor speed over size: pictures are written often and rarely stored long.
                 encoder.set_compression(png::Compression::Fast);
                 let mut writer = encoder.write_header().map_err(|e| failed(&e))?;
                 writer.write_image_data(&self.rgba).map_err(|e| failed(&e))?;
@@ -62,9 +64,9 @@ impl Image {
             }
             ImageFormat::Jpeg { quality } => {
                 if !(1..=100).contains(&quality) {
-                    return Err(Error::invalid("a JPEG's quality runs from 1 to 100").at("quality"));
+                    return Err(Error::invalid("JPEG quality must be from 1 to 100").at("quality"));
                 }
-                let side = |v: u32| u16::try_from(v).map_err(|_| failed(&"a JPEG is at most 65535 pixels a side"));
+                let side = |v: u32| u16::try_from(v).map_err(|_| failed(&"each side must be at most 65535 pixels"));
                 let mut bytes = Vec::new();
                 jpeg_encoder::Encoder::new(&mut bytes, quality)
                     .encode(&self.rgba, side(width)?, side(height)?, jpeg_encoder::ColorType::Rgba)
@@ -77,13 +79,13 @@ impl Image {
         }
     }
 
-    /// The image a PNG file holds, any color type and depth made eight bit RGBA.
+    /// Decodes a PNG file. Any color type and bit depth converts to 8-bit RGBA.
     pub fn from_png(bytes: &[u8]) -> Result<Image> {
         let failed = |e: png::DecodingError| Error::invalid(format!("not a PNG image: {e}"));
         let mut decoder = png::Decoder::new(Cursor::new(bytes));
         decoder.set_transformations(png::Transformations::normalize_to_color8());
         let mut reader = decoder.read_info().map_err(failed)?;
-        let mut buffer = vec![0; reader.output_buffer_size().ok_or_else(|| Error::invalid("a PNG too large"))?];
+        let mut buffer = vec![0; reader.output_buffer_size().ok_or_else(|| Error::invalid("PNG too large to decode"))?];
         let info = reader.next_frame(&mut buffer).map_err(failed)?;
         let texels = (info.width * info.height) as usize;
         let rgba: Vec<u8> = match info.color_type {
@@ -101,28 +103,49 @@ impl Image {
     }
 }
 
-/// How an image is written as a file.
+/// An image file format.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ImageFormat {
-    /// PNG: lossless, alpha kept, tagged sRGB.
+    /// PNG: lossless, keeps alpha, tagged sRGB.
     #[default]
     Png,
-    /// JPEG at `quality` from 1 to 100: small, its alpha dropped.
+    /// JPEG at `quality` 1 to 100: small files, alpha dropped.
     Jpeg {
-        /// From 1, smallest, to 100, sharpest; 90 is good for pictures of views.
+        /// 1 (smallest) to 100 (sharpest). 90 suits pictures of views.
         quality: u8,
     },
-    /// WebP, lossless: smaller than PNG, alpha kept.
+    /// Lossless WebP: smaller than PNG, keeps alpha.
     WebP,
 }
 
 impl ImageFormat {
-    /// The format a file's `extension` names: `png`, `jpg` or `jpeg` at quality 90, or `webp`.
+    /// The format for a file `extension`, ignoring case: `png`, `jpg` or `jpeg` (quality 90), or
+    /// `webp`.
     pub fn of_extension(extension: &str) -> Option<ImageFormat> {
         match extension.to_ascii_lowercase().as_str() {
             "png" => Some(ImageFormat::Png),
             "jpg" | "jpeg" => Some(ImageFormat::Jpeg { quality: 90 }),
             "webp" => Some(ImageFormat::WebP),
+            _ => None,
+        }
+    }
+
+    /// The code an encoding job writes the format as: 0 for PNG, 1 for WebP, and `0x100` plus the
+    /// quality for JPEG.
+    pub(crate) fn code(self) -> u32 {
+        match self {
+            ImageFormat::Png => 0,
+            ImageFormat::WebP => 1,
+            ImageFormat::Jpeg { quality } => 0x100 | u32::from(quality),
+        }
+    }
+
+    /// The format written as `code`.
+    pub(crate) fn from_code(code: u32) -> Option<ImageFormat> {
+        match code {
+            0 => Some(ImageFormat::Png),
+            1 => Some(ImageFormat::WebP),
+            0x100..=0x1ff => Some(ImageFormat::Jpeg { quality: (code & 0xff) as u8 }),
             _ => None,
         }
     }
@@ -143,9 +166,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn png_holds_what_it_was_given() {
+    fn png_round_trips_losslessly() {
         let rgba: Vec<u8> = (0..3 * 2 * 4).map(|i| (i * 11) as u8).collect();
-        let image = Image::new([3, 2], rgba).expect("whole");
+        let image = Image::new([3, 2], rgba).expect("a valid image");
         let back = Image::from_png(&image.encode(ImageFormat::Png).expect("written")).expect("a PNG");
         assert_eq!(back, image);
     }
@@ -153,7 +176,7 @@ mod tests {
     #[test]
     fn every_format_writes_its_file() {
         let rgba: Vec<u8> = (0..16 * 8 * 4).map(|i| (i * 7) as u8).collect();
-        let image = Image::new([16, 8], rgba).expect("whole");
+        let image = Image::new([16, 8], rgba).expect("a valid image");
         let jpeg = image.encode(ImageFormat::Jpeg { quality: 90 }).expect("written");
         assert_eq!(jpeg[..3], [0xff, 0xd8, 0xff], "a JPEG starts with its marker");
         let webp = image.encode(ImageFormat::WebP).expect("written");
@@ -163,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn an_image_holds_four_bytes_a_texel() {
+    fn images_need_a_positive_size_and_four_bytes_per_texel() {
         assert!(Image::new([2, 2], vec![0; 15]).is_err());
         assert!(Image::from_png(b"not a png").is_err());
         assert!(Image::new([0, 0], Vec::new()).is_err());

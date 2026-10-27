@@ -1,5 +1,6 @@
-//! Markers draw what their inputs say: a gauge filled so far, a pie's slices, an icon, a custom WGSL
-//! marker, and a status ring; a custom marker that does not compile is told, not drawn.
+//! Markers draw from their inputs: a gauge filled to its value, a pie's slices, an icon, a custom
+//! WGSL marker, and a status ring. A custom marker that fails to compile is reported as an error,
+//! not drawn.
 
 #![cfg(feature = "gpu")]
 
@@ -12,15 +13,15 @@ use latkit::{Color, Data, Event, Expr, Ids, Image, Marker, Scene, Shape, Table, 
 
 fn one(marker: Marker) -> (View, latkit::Gpu) {
     let gpu = gpu().expect("a GPU");
-    let mut data = Data::new("d");
+    let data = Data::new("d");
     data.apply(Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("v", vec![0.5]))
         .expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("d", "V").position("x", "y").radius(20.0).color(Color::WHITE).marker(marker));
+        .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(20.0).color(Color::WHITE).marker(marker));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     (view, gpu)
 }
 
@@ -56,7 +57,7 @@ fn a_pie_cuts_slices_in_their_colors() {
 }
 
 #[test]
-fn icons_show_the_image_their_index_picks() {
+fn icons_show_the_image_at_their_index() {
     if common::gpu().is_none() {
         return;
     }
@@ -69,7 +70,7 @@ fn icons_show_the_image_their_index_picks() {
 }
 
 #[test]
-fn custom_markers_draw_their_wgsl_and_bad_ones_are_told() {
+fn custom_markers_draw_their_wgsl_and_bad_ones_are_reported() {
     if common::gpu().is_none() {
         return;
     }
@@ -89,20 +90,24 @@ fn custom_markers_draw_their_wgsl_and_bad_ones_are_told() {
     frame(&gpu, &mut view);
     frame(&gpu, &mut view);
     let told = view.events().any(|e| matches!(e, Event::Error(error) if error.to_string().contains("custom marker")));
-    assert!(told, "the broken marker is told");
+    assert!(told, "the broken marker is reported");
 }
 
 #[test]
 fn status_rings_surround_their_markers() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("d");
+    let data = Data::new("d");
     data.apply(Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
-        Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).ring(Color::rgb(1.0, 0.0, 0.0)),
+        Vertices::of("d", "V")
+            .position(field("x"), field("y"))
+            .radius(10.0)
+            .color(Color::WHITE)
+            .ring(Color::rgb(1.0, 0.0, 0.0)),
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     let c = SIZE / 2;
     let ring = at(&pixels, c + 11, c);
@@ -111,28 +116,28 @@ fn status_rings_surround_their_markers() {
 }
 
 #[test]
-fn a_missing_status_draws_no_ring_whichever_branch_it_is() {
+fn a_missing_status_draws_no_ring_in_either_branch() {
     let Some(gpu) = gpu() else { return };
     let red = Color::rgb(1.0, 0.0, 0.0);
-    // Only the alarmed row on the left rings.
+    // Only the alarmed row, on the left, gets a ring.
     let forms: [Expr; 2] = [
         when(field("alarm").gt(0.5)).then(red).otherwise(Expr::missing()),
         when(field("alarm").lt(0.5)).then(Expr::missing()).otherwise(red),
     ];
     for status in forms {
-        let mut data = Data::new("d");
+        let data = Data::new("d");
         let table = Table::new("V", Ids::count(2)).field("x", vec![-30.0, 30.0]).field("y", vec![0.0, 0.0]);
         data.apply(table.field("alarm", vec![1.0, 0.0])).expect("valid");
-        let scene = Scene::new(plane())
-            .theme(plain_theme())
-            .draw(Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).ring(status));
+        let scene = Scene::new(plane()).theme(plain_theme()).draw(
+            Vertices::of("d", "V").position(field("x"), field("y")).radius(10.0).color(Color::WHITE).ring(status),
+        );
         let mut view = View::new(&gpu, scene).expect("valid scene");
         view.set_camera(camera());
-        view.set_data(data);
+        view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);
         let c = SIZE / 2;
         let alarmed = at(&pixels, c - 30 + 11, c);
-        assert!(alarmed[0] > 200 && alarmed[1] < 80, "the alarmed row rings: {alarmed:?}");
+        assert!(alarmed[0] > 200 && alarmed[1] < 80, "the alarmed row has a ring: {alarmed:?}");
         let quiet = at(&pixels, c + 30 + 11, c);
         assert!(quiet[0] < 80, "the quiet row does not: {quiet:?}");
         assert_eq!(errors(&mut view), Vec::new());

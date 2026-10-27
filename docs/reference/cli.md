@@ -1,366 +1,317 @@
 # Command reference
 
-Generated from Clap. See the [CLI guide](../cli.md) for examples.
+Every command and option of the `latkit` command line, generated from its help. The [command-line guide](../cli.md) shows them in use. `--help` prints a command's help, and `latkit --version` prints the version.
 
-## latkit
+(cli-latkit)=
 
-```text
-Render scenes of JSON or binary data to images and videos
+## `latkit`
 
-Usage: latkit [OPTIONS] <COMMAND>
+{.signature}
+`latkit [OPTIONS] <COMMAND>`
 
-Commands:
-  render    Draw scenes of datasets into an image, image sequence, raw frames, or a video
-  validate  Check everything render reads, frames included, without a GPU
-  inspect   Describe datasets as JSON: tables, rows, fields and their kinds, the axis and its span
-  schema    Print the JSON Schema of what latkit reads: every input, or one of them
-  query     Read rows back as JSON Lines, an object a row: those a query keeps, sorted and paged
-  tile      Write a dataset as time tiles: frames.json, which --tiles opens, the dataset without its sampled fields' histories, and their spans at every level of detail
-  help      Print this message or the help of the given subcommand(s)
+Render scenes of JSON or binary data to images and videos.
 
-Options:
-      --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
-
-          [default: human]
-          [possible values: human, json]
-
-  -h, --help
-          Print help
-
-  -V, --version
-          Print version
+```{rubric} Commands
 ```
 
-## render
+{.member}
+[`latkit render`](#cli-render)
+: Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
-```text
-Draw scenes of datasets into an image, image sequence, raw frames, or a video
+{.member}
+[`latkit validate`](#cli-validate)
+: Check every input render reads, including frames, without a GPU.
 
-Usage: latkit render [OPTIONS] <SCENE>...
+{.member}
+[`latkit inspect`](#cli-inspect)
+: Describe datasets as JSON: tables, row counts, fields with kinds, and the axis and its span.
 
-Arguments:
-  <SCENE>...
-          Scene JSON files, one per panel; - reads stdin
+{.member}
+[`latkit schema`](#cli-schema)
+: Print the JSON Schema of every input latkit reads, or of one input.
 
-Options:
-  -d, --data <[NAME=]FILE>
-          A dataset: JSON document, latkit bytes, or GeoJSON (which needs a NAME); NAME= renames it
+{.member}
+[`latkit query`](#cli-query)
+: Print the rows a query selects, sorted and paged, as JSON Lines with one object per row.
 
-      --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+{.member}
+[`latkit tile`](#cli-tile)
+: Write a dataset as time tiles: `frames.json` (which [`--tiles`](#cli-render-tiles) opens), the dataset without the histories of its sampled fields, and those histories in spans at every level of detail.
 
-          [default: human]
-          [possible values: human, json]
-
-      --tiles <NAME=FILE>
-          Tiles every view fetches as dataset NAME: time tiles' frames.json, or vector tiles' PMTiles file, TileJSON, or {z}/{x}/{y} template
-
-  -o, --output <FILE>
-          Image file, %d pattern for an image sequence, or - for stdout
-
-      --format <FORMAT>
-          What to write; otherwise the output's extension says, or PNG for stdout
-
-          Possible values:
-          - png:  PNG, lossless with alpha: one picture, or one a frame where the output has a %d pattern
-          - jpeg: JPEG at --quality, its alpha dropped: one picture, or one a frame
-          - webp: WebP, lossless with alpha: one picture, or one a frame
-          - rgba: Raw RGBA, straight alpha, frames back to back
-          - y4m:  YUV4MPEG2: 4:2:0 BT.709 limited range, for any encoder
-          - mp4:  H.264 in fragmented MP4, from the platform's encoder
-
-      --quality <QUALITY>
-          A JPEG's quality, from 1, smallest, to 100, sharpest
-
-          [default: 90]
-
-      --size <SIZE>
-          The picture's width and height in pixels, such as 1920x1080
-
-          [default: 1600x900]
-
-      --scale <SCALE>
-          Pixels per CSS pixel: views lay out size / scale CSS pixels, so 2 draws twice as sharp
-
-          [default: 1]
-
-      --panel <X,Y,W,H>
-          A scene's panel of the picture, X,Y,WIDTH,HEIGHT as fractions; one per scene, in order
-
-      --transparent
-          Keep alpha where the themes' backgrounds would be
-
-      --deadline <DEADLINE>
-          The longest a picture, or a video frame, may take, in seconds
-
-          [default: 30]
-
-      --font <FILE>
-          TTF/OTF/TTC file; repeat for fallbacks; replaces system fonts
-
-      --camera <FILE>
-          Camera JSON for a scene, in scene order; a view without one fits
-
-      --fit <FIT>
-          What a view without a camera frames: "all", or a fit as JSON
-
-          [default: all]
-
-      --insets <T,R,B,L>
-          CSS pixels kept clear at the top, right, bottom, and left, T,R,B,L
-
-      --at <AT>
-          The axis coordinate shown; sampled fields read their last frame at or before it
-
-      --elapsed <ELAPSED>
-          A still's effect time in seconds, where elapsed time and flowing comets read it
-
-      --frames <FILE>
-          Frames as JSON Lines, one per output frame, or - for stdin
-
-      --fps <FPS>
-          Output frames a second
-
-          [default: 60]
-
-      --bitrate <BITRATE>
-          MP4 bits a second; about 0.15 bits a pixel a frame otherwise
-
-  -h, --help
-          Print help (see a summary with '-h')
+```{rubric} Options
 ```
 
-## validate
+{#cli-latkit-diagnostics .member}
+**`--diagnostics`** `<DIAGNOSTICS>` [¶](#cli-latkit-diagnostics){.headerlink}
+: Format of errors and render progress on stderr. Defaults to `human`. Every command takes it.
 
-```text
-Check everything render reads, frames included, without a GPU
+  {#cli-latkit-diagnostics-human .member}
+  **`human`** [¶](#cli-latkit-diagnostics-human){.headerlink}
+  : Lines of text, for people.
 
-Usage: latkit validate [OPTIONS] <SCENE>...
+  {#cli-latkit-diagnostics-json .member}
+  **`json`** [¶](#cli-latkit-diagnostics-json){.headerlink}
+  : One JSON object per line, for programs.
 
-Arguments:
-  <SCENE>...
-          Scene JSON files, one per panel; - reads stdin
+(cli-render)=
 
-Options:
-  -d, --data <[NAME=]FILE>
-          A dataset: JSON document, latkit bytes, or GeoJSON (which needs a NAME); NAME= renames it
+## `latkit render`
 
-      --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+{.signature}
+`latkit render [OPTIONS] <SCENE>...`
 
-          [default: human]
-          [possible values: human, json]
+Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
-      --tiles <NAME=FILE>
-          Tiles every view fetches as dataset NAME: time tiles' frames.json, or vector tiles' PMTiles file, TileJSON, or {z}/{x}/{y} template
-
-  -o, --output <FILE>
-          Image file, %d pattern for an image sequence, or - for stdout
-
-      --format <FORMAT>
-          What to write; otherwise the output's extension says, or PNG for stdout
-
-          Possible values:
-          - png:  PNG, lossless with alpha: one picture, or one a frame where the output has a %d pattern
-          - jpeg: JPEG at --quality, its alpha dropped: one picture, or one a frame
-          - webp: WebP, lossless with alpha: one picture, or one a frame
-          - rgba: Raw RGBA, straight alpha, frames back to back
-          - y4m:  YUV4MPEG2: 4:2:0 BT.709 limited range, for any encoder
-          - mp4:  H.264 in fragmented MP4, from the platform's encoder
-
-      --quality <QUALITY>
-          A JPEG's quality, from 1, smallest, to 100, sharpest
-
-          [default: 90]
-
-      --size <SIZE>
-          The picture's width and height in pixels, such as 1920x1080
-
-          [default: 1600x900]
-
-      --scale <SCALE>
-          Pixels per CSS pixel: views lay out size / scale CSS pixels, so 2 draws twice as sharp
-
-          [default: 1]
-
-      --panel <X,Y,W,H>
-          A scene's panel of the picture, X,Y,WIDTH,HEIGHT as fractions; one per scene, in order
-
-      --transparent
-          Keep alpha where the themes' backgrounds would be
-
-      --deadline <DEADLINE>
-          The longest a picture, or a video frame, may take, in seconds
-
-          [default: 30]
-
-      --font <FILE>
-          TTF/OTF/TTC file; repeat for fallbacks; replaces system fonts
-
-      --camera <FILE>
-          Camera JSON for a scene, in scene order; a view without one fits
-
-      --fit <FIT>
-          What a view without a camera frames: "all", or a fit as JSON
-
-          [default: all]
-
-      --insets <T,R,B,L>
-          CSS pixels kept clear at the top, right, bottom, and left, T,R,B,L
-
-      --at <AT>
-          The axis coordinate shown; sampled fields read their last frame at or before it
-
-      --elapsed <ELAPSED>
-          A still's effect time in seconds, where elapsed time and flowing comets read it
-
-      --frames <FILE>
-          Frames as JSON Lines, one per output frame, or - for stdin
-
-      --fps <FPS>
-          Output frames a second
-
-          [default: 60]
-
-      --bitrate <BITRATE>
-          MP4 bits a second; about 0.15 bits a pixel a frame otherwise
-
-  -h, --help
-          Print help (see a summary with '-h')
+```{rubric} Arguments
 ```
 
-## inspect
+{#cli-render-scenes .member}
+**`<SCENE>...`** [¶](#cli-render-scenes){.headerlink}
+: Scene JSON files, one per panel (`-` reads stdin).
 
-```text
-Describe datasets as JSON: tables, rows, fields and their kinds, the axis and its span
-
-Usage: latkit inspect [OPTIONS] <[NAME=]FILE>...
-
-Arguments:
-  <[NAME=]FILE>...
-          Dataset files, each [NAME=]FILE; - reads stdin
-
-Options:
-      --deadline <DEADLINE>
-          The longest a dataset may take to load, in seconds
-
-          [default: 30]
-
-      --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
-
-          [default: human]
-          [possible values: human, json]
-
-  -h, --help
-          Print help
+```{rubric} Options
 ```
 
-## schema
+{#cli-render-data .member}
+`-d,` **`--data`** `<[NAME=]FILE>` [¶](#cli-render-data){.headerlink}
+: A dataset file: a JSON document, latkit bytes, or GeoJSON. `NAME=` sets its name, which GeoJSON requires.
 
-```text
-Print the JSON Schema of what latkit reads: every input, or one of them
+{#cli-render-tiles .member}
+**`--tiles`** `<NAME=FILE>` [¶](#cli-render-tiles){.headerlink}
+: Tiles every view fetches as dataset `NAME`: a time tiles `frames.json`, or a vector tiles PMTiles file, TileJSON, or `{z}/{x}/{y}` template.
 
-Usage: latkit schema [OPTIONS] [INPUT]
+{#cli-render-output .member}
+`-o,` **`--output`** `<FILE>` [¶](#cli-render-output){.headerlink}
+: Output file, `%d` pattern for an image sequence, or `-` for stdout.
 
-Arguments:
-  [INPUT]
-          One input's schema
+{#cli-render-format .member}
+**`--format`** `<FORMAT>` [¶](#cli-render-format){.headerlink}
+: Output format. Defaults to the format of the output's extension, or PNG.
 
-          Possible values:
-          - scene:  A scene
-          - data:   A dataset's JSON document
-          - patch:  A patch's JSON
-          - query:  A query of `latkit query`
-          - camera: A camera of `--camera`
-          - fit:    A fit of `--fit`
-          - frames: A line of `--frames`
+  {#cli-render-format-png .member}
+  **`png`** [¶](#cli-render-format-png){.headerlink}
+  : PNG, lossless with alpha. One picture, or one per frame with a `%d` output pattern.
 
-Options:
-      --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+  {#cli-render-format-jpeg .member}
+  **`jpeg`** [¶](#cli-render-format-jpeg){.headerlink}
+  : JPEG at [`--quality`](#cli-render-quality), without alpha. One picture, or one per frame.
 
-          [default: human]
-          [possible values: human, json]
+  {#cli-render-format-webp .member}
+  **`webp`** [¶](#cli-render-format-webp){.headerlink}
+  : Lossless WebP with alpha. One picture, or one per frame.
 
-  -h, --help
-          Print help (see a summary with '-h')
+  {#cli-render-format-rgba .member}
+  **`rgba`** [¶](#cli-render-format-rgba){.headerlink}
+  : Raw RGBA with straight alpha, frames back to back.
+
+  {#cli-render-format-y4m .member}
+  **`y4m`** [¶](#cli-render-format-y4m){.headerlink}
+  : YUV4MPEG2 (4:2:0, BT.709 limited range), which any encoder reads.
+
+  {#cli-render-format-mp4 .member}
+  **`mp4`** [¶](#cli-render-format-mp4){.headerlink}
+  : H.264 in fragmented MP4, from the platform's encoder.
+
+{#cli-render-quality .member}
+**`--quality`** `<QUALITY>` [¶](#cli-render-quality){.headerlink}
+: JPEG quality, from 1 (smallest) to 100 (sharpest). Defaults to `90`.
+
+{#cli-render-size .member}
+**`--size`** `<SIZE>` [¶](#cli-render-size){.headerlink}
+: The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down to a multiple of 4 and its height to an even number. Defaults to `1600x900`.
+
+{#cli-render-scale .member}
+**`--scale`** `<SCALE>` [¶](#cli-render-scale){.headerlink}
+: Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp. Defaults to `1`.
+
+{#cli-render-panel .member}
+**`--panel`** `<X,Y,W,H>` [¶](#cli-render-panel){.headerlink}
+: A scene's panel of the picture: its x, y, width, and height, as fractions. Give one per scene, in order.
+
+{#cli-render-transparent .member}
+**`--transparent`** [¶](#cli-render-transparent){.headerlink}
+: Keep alpha where the themes' backgrounds would be.
+
+{#cli-render-deadline .member}
+**`--deadline`** `<DEADLINE>` [¶](#cli-render-deadline){.headerlink}
+: The longest a picture or video frame may take, in seconds. Defaults to `30`.
+
+{#cli-render-font .member}
+**`--font`** `<FILE>` [¶](#cli-render-font){.headerlink}
+: A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts.
+
+{#cli-render-camera .member}
+**`--camera`** `<CAMERA>` [¶](#cli-render-camera){.headerlink}
+: A camera per scene, in scene order: JSON, or a file of it (`-` reads stdin). Views without one use [`--fit`](#cli-render-fit).
+
+{#cli-render-fit .member}
+**`--fit`** `<FIT>` [¶](#cli-render-fit){.headerlink}
+: What views without a camera frame: `all`, or a fit as JSON. Defaults to `all`.
+
+{#cli-render-insets .member}
+**`--insets`** `<T,R,B,L>` [¶](#cli-render-insets){.headerlink}
+: CSS pixels to keep clear at the top, right, bottom, and left.
+
+{#cli-render-at .member}
+**`--at`** `<AT>` [¶](#cli-render-at){.headerlink}
+: The axis coordinate to show. Sampled fields show their last frame at or before it.
+
+{#cli-render-elapsed .member}
+**`--elapsed`** `<ELAPSED>` [¶](#cli-render-elapsed){.headerlink}
+: A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets.
+
+{#cli-render-frames .member}
+**`--frames`** `<FILE>` [¶](#cli-render-frames){.headerlink}
+: Frames as JSON Lines (`-` reads stdin): one per output frame, or with [`--span`](#cli-render-span), at their `at`.
+
+{#cli-render-span .member}
+**`--span`** `<FROM,TO>` [¶](#cli-render-span){.headerlink}
+: The axis interval to play. A video or image sequence without [`--frames`](#cli-render-frames) plays the datasets' span.
+
+{#cli-render-rate .member}
+**`--rate`** `<RATE>` [¶](#cli-render-rate){.headerlink}
+: Axis units played per second. Defaults to 1.
+
+{#cli-render-fps .member}
+**`--fps`** `<FPS>` [¶](#cli-render-fps){.headerlink}
+: Output frames per second. Defaults to `60`.
+
+{#cli-render-bitrate .member}
+**`--bitrate`** `<BITRATE>` [¶](#cli-render-bitrate){.headerlink}
+: MP4 bitrate in bits per second. Defaults to about 0.15 bits per pixel per frame.
+
+(cli-validate)=
+
+## `latkit validate`
+
+{.signature}
+`latkit validate [OPTIONS] <SCENE>...`
+
+Check every input render reads, including frames, without a GPU.
+
+Takes [`latkit render`](#cli-render)'s arguments and options.
+
+(cli-inspect)=
+
+## `latkit inspect`
+
+{.signature}
+`latkit inspect [OPTIONS] <[NAME=]FILE>...`
+
+Describe datasets as JSON: tables, row counts, fields with kinds, and the axis and its span.
+
+```{rubric} Arguments
 ```
 
-## query
+{#cli-inspect-data .member}
+**`<[NAME=]FILE>...`** [¶](#cli-inspect-data){.headerlink}
+: Dataset files, each `[NAME=]FILE` (`-` reads stdin).
 
-```text
-Read rows back as JSON Lines, an object a row: those a query keeps, sorted and paged
-
-Usage: latkit query [OPTIONS] <[NAME=]FILE> <QUERY>
-
-Arguments:
-  <[NAME=]FILE>
-          The dataset, [NAME=]FILE; - reads stdin
-
-  <QUERY>
-          The query: JSON such as {"of":"Branch","filter":{"op":"gt","args":["loading",90]}}, or a file of it
-
-Options:
-      --deadline <DEADLINE>
-          The longest the dataset may take to load, in seconds
-
-          [default: 30]
-
-      --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
-
-          [default: human]
-          [possible values: human, json]
-
-  -h, --help
-          Print help
+```{rubric} Options
 ```
 
-## tile
+{#cli-inspect-deadline .member}
+**`--deadline`** `<DEADLINE>` [¶](#cli-inspect-deadline){.headerlink}
+: The longest a dataset may take to load, in seconds. Defaults to `30`.
 
-```text
-Write a dataset as time tiles: frames.json, which --tiles opens, the dataset without its sampled fields' histories, and their spans at every level of detail
+(cli-schema)=
 
-Usage: latkit tile [OPTIONS] --output <DIR> <[NAME=]FILE>
+## `latkit schema`
 
-Arguments:
-  <[NAME=]FILE>
-          The dataset, [NAME=]FILE; - reads stdin
+{.signature}
+`latkit schema [OPTIONS] [INPUT]`
 
-Options:
-      --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+Print the JSON Schema of every input latkit reads, or of one input.
 
-          [default: human]
-          [possible values: human, json]
-
-  -o, --output <DIR>
-          The directory the tiles go in
-
-      --chunk <CHUNK>
-          Entries a span holds: frames, or buckets of a level of detail; a multiple of 8
-
-          [default: 256]
-
-      --deadline <DEADLINE>
-          The longest the dataset may take to load, in seconds
-
-          [default: 30]
-
-  -h, --help
-          Print help
+```{rubric} Arguments
 ```
 
-## help
+{#cli-schema-input .member}
+**`[INPUT]`** [¶](#cli-schema-input){.headerlink}
+: Print only this input's schema.
 
-```text
-Print this message or the help of the given subcommand(s)
+  {#cli-schema-input-scene .member}
+  **`scene`** [¶](#cli-schema-input-scene){.headerlink}
+  : A scene.
 
-Usage: latkit help [COMMAND]...
+  {#cli-schema-input-data .member}
+  **`data`** [¶](#cli-schema-input-data){.headerlink}
+  : A dataset's JSON document.
 
-Arguments:
-  [COMMAND]...
-          Print help for the subcommand(s)
+  {#cli-schema-input-patch .member}
+  **`patch`** [¶](#cli-schema-input-patch){.headerlink}
+  : A patch.
+
+  {#cli-schema-input-query .member}
+  **`query`** [¶](#cli-schema-input-query){.headerlink}
+  : A query for [`latkit query`](#cli-query).
+
+  {#cli-schema-input-camera .member}
+  **`camera`** [¶](#cli-schema-input-camera){.headerlink}
+  : A camera for [`--camera`](#cli-render-camera).
+
+  {#cli-schema-input-fit .member}
+  **`fit`** [¶](#cli-schema-input-fit){.headerlink}
+  : A fit for [`--fit`](#cli-render-fit).
+
+  {#cli-schema-input-frames .member}
+  **`frames`** [¶](#cli-schema-input-frames){.headerlink}
+  : One line of a [`--frames`](#cli-render-frames) file.
+
+(cli-query)=
+
+## `latkit query`
+
+{.signature}
+`latkit query [OPTIONS] <[NAME=]FILE> <QUERY>`
+
+Print the rows a query selects, sorted and paged, as JSON Lines with one object per row.
+
+```{rubric} Arguments
 ```
+
+{#cli-query-data .member}
+**`<[NAME=]FILE>`** [¶](#cli-query-data){.headerlink}
+: The dataset, `[NAME=]FILE` (`-` reads stdin).
+
+{#cli-query-query .member}
+**`<QUERY>`** [¶](#cli-query-query){.headerlink}
+: The query: JSON, such as `{"of":"Branch","filter":{"gt":["$loading",90]}}`, or a file of it (`-` reads stdin).
+
+```{rubric} Options
+```
+
+{#cli-query-deadline .member}
+**`--deadline`** `<DEADLINE>` [¶](#cli-query-deadline){.headerlink}
+: The longest the dataset may take to load, in seconds. Defaults to `30`.
+
+(cli-tile)=
+
+## `latkit tile`
+
+{.signature}
+`latkit tile [OPTIONS] --output <DIR> <[NAME=]FILE>`
+
+Write a dataset as time tiles: `frames.json` (which [`--tiles`](#cli-render-tiles) opens), the dataset without the histories of its sampled fields, and those histories in spans at every level of detail.
+
+```{rubric} Arguments
+```
+
+{#cli-tile-data .member}
+**`<[NAME=]FILE>`** [¶](#cli-tile-data){.headerlink}
+: The dataset, `[NAME=]FILE` (`-` reads stdin).
+
+```{rubric} Options
+```
+
+{#cli-tile-output .member}
+`-o,` **`--output`** `<DIR>` [¶](#cli-tile-output){.headerlink}
+: Directory to write the tiles to.
+
+{#cli-tile-chunk .member}
+**`--chunk`** `<CHUNK>` [¶](#cli-tile-chunk){.headerlink}
+: Entries per span: frames at full detail, buckets at coarser levels. A multiple of 8. Defaults to `256`.
+
+{#cli-tile-deadline .member}
+**`--deadline`** `<DEADLINE>` [¶](#cli-tile-deadline){.headerlink}
+: The longest the dataset may take to load, in seconds. Defaults to `30`.

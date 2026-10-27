@@ -1,4 +1,5 @@
-/** One retryable release: verify or publish each artifact, then create the Changesets tags. */
+/** Runs a release that can be retried. It verifies or publishes each artifact, then creates the
+ * Changesets tags. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -14,7 +15,8 @@ const run = (command, args, options = {}) =>
 const hash = (file, algorithm, encoding = 'hex') =>
   createHash(algorithm).update(fs.readFileSync(file)).digest(encoding);
 
-/** Only an explicit 404 means absent. Authentication, rate limits, and network failures stop release. */
+/** Fetches registry metadata from `url`. Returns undefined only on a 404. Any other failure, such
+ * as authentication, rate limits, or the network, throws and stops the release. */
 export async function registry(url) {
   const response = await fetch(url, {
     headers: { 'User-Agent': 'latkit-release (github.com/lukelowry/latkit)' },
@@ -24,7 +26,8 @@ export async function registry(url) {
   return response.json();
 }
 
-/** Successful registry responses must contain a digest, never count as absent. */
+/** Returns the digest that `select` reads from the registry metadata at `url`, or undefined if the
+ * version is absent. A successful response without a digest throws rather than count as absent. */
 async function digest(url, select) {
   const metadata = await registry(url);
   if (metadata === undefined) return undefined;
@@ -33,7 +36,11 @@ async function digest(url, select) {
   return value;
 }
 
-/** Existing versions must contain the expected artifact; retries resume after the last completed publish. */
+/**
+ * Publishes each artifact its registry does not have yet, waiting up to 2 minutes for it to appear,
+ * then checks that the registry's digest matches the verified build. A retry resumes after the last
+ * completed publish.
+ */
 export async function ensureArtifacts(artifacts) {
   for (const artifact of artifacts) {
     let seen = await artifact.lookup();
@@ -58,7 +65,8 @@ async function release() {
   const report = read('target/npm/package.json');
   const { name, version } = read('npm/package.json');
   const git = (args) => run('git', args, { stdio: 'pipe', encoding: 'utf8' }).trim();
-  // Tags follow a complete release, so later commits at the same version have nothing to publish.
+  // Tags are created only after a complete release, so later commits at the same version publish
+  // nothing.
   if (git(['tag', '--list', `${name}@${version}`]) !== '') {
     console.log(`${name}@${version}: released`);
     return;

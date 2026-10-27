@@ -1,24 +1,26 @@
-//! Ear clipping: a polygon with holes cut into triangles, after Mapbox's earcut 3.2. Holes join the
-//! outer ring through bridges; ears are clipped from a doubly linked ring, found by z-order hashing
-//! on large polygons; where none clips, the ring is filtered while that removes points, cured once
-//! of local self-intersections, then split in two.
+//! Polygon triangulation by ear clipping, ported from Mapbox's earcut 3.2.
+//!
+//! Each hole is joined to the outer ring by a bridge. Ears are clipped from a doubly linked ring.
+//! Large polygons use a z-order index to find points that block an ear. When no ear can be
+//! clipped, the ring is filtered while that removes points, then cured of local self-intersections
+//! once, then split in two.
 
-/// No node.
+/// The null node index.
 const NIL: u32 = u32::MAX;
 
 #[derive(Clone, Copy)]
 struct Node {
-    /// The vertex index.
+    /// Index into the input points.
     i: u32,
     x: f64,
     y: f64,
     prev: u32,
     next: u32,
-    /// Z-order of the vertex, and its neighbors in z-order.
+    /// Z-order code of the vertex. `prev_z` and `next_z` link the ring sorted by it.
     z: u32,
     prev_z: u32,
     next_z: u32,
-    /// Whether the vertex is a lone hole point, which may stay in the ring.
+    /// Whether the vertex is a single-point hole (a Steiner point), which filtering never removes.
     steiner: bool,
 }
 
@@ -30,8 +32,8 @@ struct Rings<'a> {
     filtered: bool,
 }
 
-/// The triangles of the polygon whose points are `points`: the outer ring first, then each hole from
-/// where `holes` starts it. Each triangle is three indices into `points`.
+/// Triangulates a polygon. `points` holds the outer ring, then each hole. `holes` lists the index
+/// where each hole starts. Returns triangles as index triples into `points`.
 pub(crate) fn earcut(points: &[[f64; 2]], holes: &[usize]) -> Vec<[u32; 3]> {
     let nodes = Vec::with_capacity(points.len() * 3 / 2);
     let mut rings = Rings { nodes, points, triangles: Vec::new(), filtered: false };
@@ -43,7 +45,7 @@ pub(crate) fn earcut(points: &[[f64; 2]], holes: &[usize]) -> Vec<[u32; 3]> {
     if !holes.is_empty() {
         outer = rings.eliminate_holes(holes, outer);
     }
-    // Large polygons find ears through z-order hashing.
+    // Polygons over 80 points index their ring in z-order to speed up ear tests.
     let (mut min, mut size) = ([0.0; 2], 0.0);
     if points.len() > 80 {
         let mut max = [f64::NEG_INFINITY; 2];
@@ -75,7 +77,8 @@ impl Rings<'_> {
         (n.x, n.y)
     }
 
-    /// A circular list of points `start..end`, wound as `clockwise` asks.
+    /// Links points `start..end` into a circular list, reversed if needed so its winding matches
+    /// `clockwise`. Drops a closing point equal to the first. Returns the last node, or `NIL`.
     fn linked(&mut self, start: usize, end: usize, clockwise: bool) -> u32 {
         let mut last = NIL;
         if clockwise == (signed_area(&self.points[start..end]) > 0.0) {
@@ -128,15 +131,17 @@ impl Rings<'_> {
         self.xy(a) == self.xy(b)
     }
 
-    /// Twice the signed area of the triangle `p q r`: negative turning one way.
+    /// Twice the signed area of triangle `p q r`. Negative where the ring turns convexly at `q`,
+    /// positive at a reflex turn.
     fn area(&self, p: u32, q: u32, r: u32) -> f64 {
         let ((px, py), (qx, qy), (rx, ry)) = (self.xy(p), self.xy(q), self.xy(r));
         (qy - py) * (rx - qx) - (qx - px) * (ry - qy)
     }
 
-    /// Removes repeated points and straight runs: around the whole ring from `start` until none is
-    /// left when `end` is `NIL`; else from `start` to `end`, healing the cut between them. Answers a
-    /// point still in the ring.
+    /// Removes repeated and collinear points, except Steiner points. When `end` is `NIL` or
+    /// `start`, it circles the whole ring until a full pass removes nothing. Otherwise it checks
+    /// only the nodes from `start` through `end`, as around a new diagonal. Returns a node still in
+    /// the ring.
     fn filter(&mut self, start: u32, end: u32) -> u32 {
         if start == NIL {
             return start;
@@ -165,8 +170,9 @@ impl Rings<'_> {
         }
     }
 
-    /// Clips ears from the ring at `ear`. Where none clips, filters while that removes points, cures
-    /// local self-intersections once, then splits the ring in two.
+    /// Clips ears from the ring starting at `ear`, adding their triangles. When a full pass finds
+    /// no ear, it filters the ring and retries while that removes points, then cures local
+    /// self-intersections once, then splits the ring in two.
     fn clip(&mut self, mut ear: u32, min: [f64; 2], size: f64) {
         if ear == NIL {
             return;
@@ -274,7 +280,7 @@ impl Rings<'_> {
         true
     }
 
-    /// Clips the triangles of local self-intersections, returning the ring left.
+    /// Clips a triangle at each local self-intersection and returns a node of the remaining ring.
     fn cure(&mut self, start: u32) -> u32 {
         let (mut p, mut start, mut cured) = (start, start, false);
         loop {
@@ -337,12 +343,13 @@ impl Rings<'_> {
             }
             queue.push(self.leftmost(list));
         }
-        // Holes whose leftmost points meet go around that point, so each bridges to where they meet.
+        // Holes whose leftmost points coincide are ordered by the slope of their first edge, so
+        // each one bridges to the shared point.
         let slope = |p: u32| {
             let (n, next) = (self.n(p), self.n(self.n(p).next));
             (next.y - n.y) / (next.x - n.x)
         };
-        // By x, then y, then slope: the last key first, as each sort keeps the order of ties.
+        // Order by x, then y, then slope. The sorts are stable, so the last key sorts first.
         crate::order::by_key(&mut queue, |&p| crate::order::number(slope(p)));
         crate::order::by_wide_key(&mut queue, |&p| {
             let n = self.n(p);
@@ -351,7 +358,7 @@ impl Rings<'_> {
         for hole in queue {
             outer = self.eliminate_hole(hole, outer);
         }
-        // Points made collinear or repeated across the merged ring go before clipping.
+        // Remove points the bridges made repeated or collinear before clipping.
         self.filter(outer, NIL)
     }
 
@@ -362,13 +369,14 @@ impl Rings<'_> {
         self.filter(bridge, self.n(bridge).next)
     }
 
-    /// The outer ring's point a hole joins it at: seen from the hole's leftmost point, nothing between.
+    /// Finds the outer ring node to bridge a hole to: one visible from `hole`, the hole's leftmost
+    /// point. `None` if no ring edge lies to its left.
     fn hole_bridge(&self, hole: u32, outer: u32) -> Option<u32> {
         let (hx, hy) = self.xy(hole);
         let mut qx = f64::NEG_INFINITY;
         let mut m = NIL;
         let mut p = outer;
-        // A hole touching the outer ring at a point joins it there.
+        // A hole that touches the outer ring at a point bridges there.
         if self.equals(hole, p) {
             return Some(p);
         }
@@ -407,8 +415,8 @@ impl Rings<'_> {
             if hx >= px && px >= mx && hx != px && inside_triangle([ax, hy], [mx, my], [cx, hy], [px, py]) {
                 let tan = (hy - py).abs() / (hx - px);
                 let (bx, _) = self.xy(m);
-                // The hole's point on `p`'s level edge, a T touch: a bridge along that edge is valid,
-                // though not locally inside.
+                // When the hole point lies on `p`'s horizontal edge (a T junction), a bridge along
+                // that edge is valid although `locally_inside` rejects it.
                 let (nx, ny) = self.xy(self.n(p).next);
                 let along = py == hy && ny == hy && nx > hx;
                 if (self.locally_inside(p, hole) || along)
@@ -445,7 +453,7 @@ impl Rings<'_> {
         left
     }
 
-    /// Links the ring in z-order, sorted.
+    /// Computes each node's z-order code and links the ring in z-order.
     fn index(&mut self, start: u32, min: [f64; 2], size: f64) {
         let mut p = start;
         loop {
@@ -464,7 +472,7 @@ impl Rings<'_> {
         self.sort(p);
     }
 
-    /// Merge-sorts the z-order list from `list`.
+    /// Merge-sorts the z-order list starting at `list`.
     fn sort(&mut self, mut list: u32) {
         let mut in_size = 1;
         loop {
@@ -515,9 +523,10 @@ impl Rings<'_> {
         }
     }
 
-    /// Whether diagonal `a b` lies inside the polygon: locally visible from both ends, crossing no
-    /// edge, its middle inside, and making no opposite-facing sectors; or of no length between two
-    /// convex corners.
+    /// Whether diagonal `a b` lies inside the polygon. `b` must not be the node after `a`, and the
+    /// diagonal must be locally inside at both ends, cross no edge, have its midpoint inside, and
+    /// create no opposite-facing sectors. A zero-length diagonal between two reflex corners is also
+    /// valid.
     fn valid_diagonal(&self, a: u32, b: u32) -> bool {
         let (na, nb) = (self.n(a), self.n(b));
         let zero_length =
@@ -531,14 +540,14 @@ impl Rings<'_> {
             && (zero_length || self.middle_inside(a, b))
     }
 
-    /// Whether segments `p1 q1` and `p2 q2` cross, not counting a touch.
+    /// Whether segments `p1 q1` and `p2 q2` cross. Touching does not count.
     fn crosses(&self, p1: u32, q1: u32, p2: u32, q2: u32) -> bool {
         let (o1, o2) = (sign(self.area(p1, q1, p2)), sign(self.area(p1, q1, q2)));
         let (o3, o4) = (sign(self.area(p2, q2, p1)), sign(self.area(p2, q2, q1)));
         o1 * o2 < 0 && o3 * o4 < 0
     }
 
-    /// Whether segments `p1 q1` and `p2 q2` meet, touches included.
+    /// Whether segments `p1 q1` and `p2 q2` intersect, including touching.
     fn intersects(&self, p1: u32, q1: u32, p2: u32, q2: u32) -> bool {
         let o1 = sign(self.area(p1, q1, p2));
         let o2 = sign(self.area(p1, q1, q2));
@@ -551,13 +560,13 @@ impl Rings<'_> {
             || (o4 == 0 && self.on_segment(p2, q1, q2))
     }
 
-    /// Whether `q` lies within the box of segment `p r`, on which it lies.
+    /// For `q` collinear with segment `p r`, whether it lies on the segment, within its box.
     fn on_segment(&self, p: u32, q: u32, r: u32) -> bool {
         let ((px, py), (qx, qy), (rx, ry)) = (self.xy(p), self.xy(q), self.xy(r));
         qx <= px.max(rx) && qx >= px.min(rx) && qy <= py.max(ry) && qy >= py.min(ry)
     }
 
-    /// Whether diagonal `a b` meets an edge of the ring, other than those at its ends.
+    /// Whether diagonal `a b` intersects a ring edge not incident to `a` or `b`.
     fn intersects_polygon(&self, a: u32, b: u32) -> bool {
         let (ia, ib) = (self.n(a).i, self.n(b).i);
         let ((ax, ay), (bx, by)) = (self.xy(a), self.xy(b));
@@ -566,7 +575,7 @@ impl Rings<'_> {
         loop {
             let next = self.n(p).next;
             let ((px, py), (nx, ny)) = (self.xy(p), self.xy(next));
-            // An edge beside the diagonal's box cannot meet it.
+            // Skip edges entirely outside the diagonal's bounding box.
             let apart = (px > x1 && nx > x1) || (px < x0 && nx < x0) || (py > y1 && ny > y1) || (py < y0 && ny < y0);
             let (ip, inext) = (self.n(p).i, self.n(next).i);
             if !apart && ip != ia && inext != ia && ip != ib && inext != ib && self.intersects(p, next, a, b) {
@@ -607,7 +616,8 @@ impl Rings<'_> {
         }
     }
 
-    /// Splits the ring along the diagonal `a b` into two; returns the new copy of `b`.
+    /// Splits the ring in two along diagonal `a b` by duplicating both nodes. Returns the copy of
+    /// `b`, which lies in the second ring.
     fn split_polygon(&mut self, a: u32, b: u32) -> u32 {
         let (na, nb) = (*self.n(a), *self.n(b));
         let a2 = self.nodes.len() as u32;
@@ -628,7 +638,7 @@ impl Rings<'_> {
     }
 }
 
-/// Twice the signed area of a ring, by the shoelace sum as earcut takes it.
+/// Twice the signed area of a ring by the shoelace formula, with earcut's sign convention.
 fn signed_area(points: &[[f64; 2]]) -> f64 {
     let Some(&last) = points.last() else { return 0.0 };
     let mut sum = 0.0;
@@ -640,7 +650,7 @@ fn signed_area(points: &[[f64; 2]]) -> f64 {
     sum
 }
 
-/// The z-order of point `(x, y)` in a box from `min` scaled by `size` to 15 bits a side.
+/// The z-order (Morton) code of `(x, y)`, offset by `min` and scaled by `size` to 15 bits per axis.
 fn z_order(x: f64, y: f64, min: [f64; 2], size: f64) -> u32 {
     let spread = |v: f64| {
         let mut v = (v * size) as u32 & 0x7fff;
@@ -658,8 +668,8 @@ fn inside_triangle(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]) -> bool {
         && (b[0] - p[0]) * (c[1] - p[1]) >= (c[0] - p[0]) * (b[1] - p[1])
 }
 
-/// Whether `p` lies in the triangle, other than at its first corner: a point where a bridge doubled
-/// that corner blocks no ear.
+/// Whether `p` lies in triangle `a b c` and is not at `a`. Bridges duplicate points, and a copy of
+/// `a` must not block the ear.
 fn inside_except_first(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]) -> bool {
     a != p && inside_triangle(a, b, c, p)
 }
@@ -678,7 +688,7 @@ fn sign(v: f64) -> i8 {
 mod tests {
     use super::*;
 
-    /// Twice the area the triangles cover.
+    /// Twice the total area of `triangles`.
     fn covered(points: &[[f64; 2]], triangles: &[[u32; 3]]) -> f64 {
         triangles
             .iter()
@@ -708,15 +718,15 @@ mod tests {
 
     #[test]
     fn holes_touching_the_ring_or_each_other_are_left_out() {
-        /// Holes, where each starts, and the area left.
+        /// Hole points, the index where each hole starts, and the expected area.
         type Case<'a> = (&'a [[f64; 2]], &'a [usize], f64);
         let outer = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
         let cases: [Case<'_>; 3] = [
             // A hole touching the outer ring at its corner.
             (&[[0.0, 0.0], [3.0, 1.0], [1.0, 3.0]], &[4], 96.0),
-            // One touching its edge.
+            // A hole touching the outer ring's edge.
             (&[[0.0, 5.0], [3.0, 4.0], [3.0, 6.0]], &[4], 97.0),
-            // Two meeting at their leftmost point.
+            // Two holes sharing their leftmost point.
             (&[[5.0, 5.0], [7.0, 4.0], [7.0, 6.0], [5.0, 5.0], [7.0, 7.0], [6.0, 9.0]], &[4, 7], 95.0),
         ];
         for (holes, starts, area) in cases {
@@ -728,7 +738,7 @@ mod tests {
 
     #[test]
     fn large_rings_hash_their_ears() {
-        // A star of 200 points: concave everywhere, so ear finding matters.
+        // A 200-point star: every other corner is reflex, which exercises the hashed ear test.
         let points: Vec<[f64; 2]> = (0..200)
             .map(|k| {
                 let a = f64::from(k) / 200.0 * std::f64::consts::TAU;
@@ -743,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_rings_answer_nothing() {
+    fn degenerate_rings_give_no_triangles() {
         let none: Vec<[u32; 3]> = Vec::new();
         assert_eq!(earcut(&[[0.0, 0.0], [1.0, 1.0]], &[]), none);
         assert_eq!(earcut(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], &[]), none, "collinear");
