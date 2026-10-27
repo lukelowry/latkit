@@ -24,7 +24,8 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # What a pull request touched; a push to main checks everything.
+  # What a pull request touched; a push to main checks everything. The version pull request changes
+  # only versions and the changelog, and main's run after it merges tests what the release publishes.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -32,9 +33,9 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' }}
-      npm: ${{ github.event_name != 'pull_request' || steps.filter.outputs.npm == 'true' }}
-      docs: ${{ github.event_name != 'pull_request' || steps.filter.outputs.docs == 'true' }}
+      rust: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true') }}
+      npm: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.npm == 'true') }}
+      docs: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.docs == 'true') }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter

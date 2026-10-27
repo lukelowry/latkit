@@ -70,6 +70,8 @@ jobs:
       pull-requests: write
     env:
       PUBLISH: ${{ needs.plan.outputs.step == 'publish' }}
+      # The runner's Chrome draws the consumer test.
+      LATKIT_CHROME: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@v6
         with:
@@ -101,8 +103,6 @@ jobs:
       - name: Install the matching WASM bindings generator
         if: env.PUBLISH == 'true' && steps.bindgen-cache.outputs.cache-hit != 'true'
         run: cargo install wasm-bindgen-cli --version "${{ steps.bindgen.outputs.version }}" --locked
-      - if: env.PUBLISH == 'true'
-        run: pnpm --dir npm/examples exec playwright-core install --with-deps chromium
       # The tarball a consumer installs, checked in Chrome; `pnpm release` publishes this file.
       - if: env.PUBLISH == 'true'
         run: cargo xtask package
