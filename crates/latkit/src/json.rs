@@ -26,8 +26,7 @@ pub fn from_json<T: DeserializeOwned>(text: &str) -> Result<T> {
     Ok(value)
 }
 
-/// Deserializes JSON `bytes` as `T`, as [`from_json`] reads text. Bytes that are not UTF-8 are
-/// invalid too.
+/// Deserializes JSON `bytes` as `T`, like [`from_json`]. Bytes that are not UTF-8 are invalid.
 pub(crate) fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     from_json(std::str::from_utf8(bytes).map_err(|e| Error::invalid(format!("not UTF-8: {e}")))?)
 }
@@ -60,9 +59,9 @@ thread_local! {
     static WITHIN: std::cell::Cell<Option<Path>> = const { std::cell::Cell::new(None) };
 }
 
-/// Deserializes `T` from `value`, a part of the input [`read`] is reading that was buffered first,
-/// such as a mark, whose key naming its kind may come after its options. An error's path continues
-/// from the value's own.
+/// Deserializes `T` from `value`, a buffered part of the input [`read`] is reading. Marks are
+/// buffered, since the key naming a mark's kind may come after its options. An error's path
+/// continues from the value's own path.
 pub(crate) fn nested<T: DeserializeOwned, E: serde::de::Error>(value: serde_json::Value) -> std::result::Result<T, E> {
     read(value).map_err(|error| match error {
         Error::Invalid { path, reason } => {

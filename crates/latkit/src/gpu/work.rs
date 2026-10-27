@@ -1,10 +1,10 @@
 //! Exact counts of the work a `Gpu` does. Unlike timings, the counts repeat across runs and
-//! machines for the same budget, device limits, and frames drawn, so the benchmark gates on them
-//! and tests assert them.
+//! machines for the same budget, device limits, and frames drawn. The benchmark gates on them and
+//! tests assert them.
 //!
-//! Every write to the GPU goes through [`Queue`], which counts it; clippy forbids the raw queue's
-//! writes anywhere else. Other counted parts hold the counters themselves: the pipelines, the
-//! readback pool, the atlas, and each frame's jobs and evaluations through the `Gpu`.
+//! Every write to the GPU goes through [`Queue`], which counts it. Clippy forbids the raw queue's
+//! writes anywhere else. The pipelines, the readback pool, and the atlas hold the counters
+//! themselves, and views count each frame's jobs and evaluations through the `Gpu`.
 
 use std::ops::{Deref, Sub};
 use std::sync::Arc;
@@ -66,7 +66,7 @@ work! {
     written: Written,
     /// Rows whose channels the GPU evaluated.
     evaluated: Evaluated,
-    /// Edge and face rows whose endpoints the GPU resolved to their vertices' resident rows: rows
+    /// Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows
     /// that changed, plus every row of a page that references a vertex now resident elsewhere.
     resolved: Resolved,
     /// Bytes of per-row word pages the GPU cleared: pages read before anything writes them, and the
@@ -111,9 +111,9 @@ impl Queue {
         self.raw.write_buffer(buffer, offset, bytes);
     }
 
-    /// Writes `bytes` into `buffer` at `offset` in command order, through a copy recorded in
-    /// `encoder`, counted as written. So a reused scratch buffer keeps earlier passes' inputs
-    /// intact, and the write takes effect after any copy recorded before it.
+    /// Writes `bytes` into `buffer` at `offset` through a copy recorded in `encoder`, counted as
+    /// written. The write lands in command order, so a reused scratch buffer keeps earlier passes'
+    /// inputs intact, and the write takes effect after any copy recorded before it.
     pub(crate) fn write_buffer_in(
         &self,
         device: &wgpu::Device,
@@ -144,8 +144,8 @@ impl Queue {
         encoder.clear_buffer(buffer, offset, Some(size));
     }
 
-    /// Writes `bytes`, the words of `pages` adjacent data pages or pieces of pages, into `buffer`
-    /// at `offset`, counted as uploaded.
+    /// Writes `bytes` into `buffer` at `offset`, counted as uploaded. The bytes are the words of
+    /// `pages` adjacent data pages or pieces of pages.
     #[expect(clippy::disallowed_methods, reason = "the counted upload")]
     pub(crate) fn upload(&self, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8], pages: u64) {
         self.counters.add(Count::Uploaded, bytes.len() as u64);

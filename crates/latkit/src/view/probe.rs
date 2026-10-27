@@ -1,8 +1,8 @@
 //! Probes: the nearest row and the nearest drawn depth under a point.
 //!
 //! A compute pass runs over what the frame drew, and its result is read back a frame or two later.
-//! One probe is in flight at a time; a newer point waits for it. The answer is decoded against the
-//! frame that drew it (its marks' held rows and its camera), regardless of changes since.
+//! One probe is in flight at a time, and a newer point waits for it. The answer is decoded against
+//! the frame that drew it (its marks' held rows and its camera), regardless of changes since.
 
 use std::sync::Arc;
 
@@ -31,7 +31,7 @@ pub(crate) struct Probed {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Answer {
     pub(crate) hit: Option<Probed>,
-    /// The nearest depth drawn around the point; 0 where nothing was drawn.
+    /// The nearest depth drawn around the point. 0 where nothing was drawn.
     pub(crate) under: f32,
 }
 
@@ -43,8 +43,8 @@ pub(crate) struct Drew {
     projected: Projected,
 }
 
-/// One mark as its frame drew it: its dataset, table, and name; whether its rows are vertices and
-/// whether selection picks them; the rows its state held; its port names; and for a line tracing a
+/// One mark as its frame drew it: its dataset, table, and name, whether its rows are vertices,
+/// whether selection picks them, the rows its state held, its port names, and, for a line tracing a
 /// field, the field and its trace plan.
 struct Held {
     data: Name,
@@ -97,7 +97,7 @@ impl Drew {
         self.marks.get(i).is_some_and(|m| m.selects)
     }
 
-    /// The name of port `number` of vertex mark `i`, numbered from 1; `None` for 0, the marker.
+    /// The name of port `number` of vertex mark `i`, numbered from 1. `None` for 0, the marker.
     fn port(&self, i: usize, number: u32) -> Option<Name> {
         let mark = self.marks.get(i)?;
         if !mark.vertices || number == 0 {
@@ -113,7 +113,7 @@ impl Drew {
         let (level, index, side) = plan.entry(point)?;
         let table = &mark.holding.as_ref()?.table;
         let crate::data::Field::Sampled(samples, _) = table.field_named(field)? else { return None };
-        // A bucket's two points show its middle frame, with its least or greatest value.
+        // A bucket's two points show its middle frame, with its minimum or maximum value.
         let span = crate::data::bucket_frames(level);
         let frame = index * span + span / 2;
         let value = samples.entry(row, level, side, index)?;
@@ -218,8 +218,9 @@ impl View {
         self.landed(point, answer);
     }
 
-    /// The position gestures pivot on under screen point `point`: what the frame drew there, else
-    /// the ground level the camera looks at, else a point as far away as the camera's center.
+    /// The position gestures pivot on under screen point `point`: what the frame drew there, or
+    /// else the ground level the camera looks at, or else a point as far away as the camera's
+    /// center.
     pub(super) fn anchor(&self, point: [f32; 2], answer: Option<&Answer>) -> [f64; 3] {
         let view = self.projected();
         let p = point.map(f64::from);
@@ -260,7 +261,7 @@ fn hit(word: &impl Fn(u32) -> u32, drew: &Drew) -> Option<Probed> {
 }
 
 impl super::marks::Shown {
-    /// Whether probes reach this mark's rows.
+    /// Whether probes cover this mark's rows.
     pub(crate) fn probed(&self) -> bool {
         self.drawable() && self.mark.picks() && self.rows > 0
     }

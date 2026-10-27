@@ -23,8 +23,8 @@ pub(crate) struct KeptTable(Arc<[[u32; 2]]>);
 
 impl KeptTable {
     /// The table of `rows`, each `[place, held row]`, updated from `before`. If `before`'s size
-    /// suits `rows`, its buckets are reused with places `gone` removed and rows `came` inserted;
-    /// otherwise the table is rebuilt.
+    /// suits `rows`, its buckets are reused with places `gone` removed and rows `came` inserted.
+    /// Otherwise the table is rebuilt.
     pub(crate) fn laid(before: &KeptTable, rows: &[[u32; 2]], gone: &[u32], came: &[[u32; 2]]) -> KeptTable {
         let buckets = before.0.len();
         // A table of the fewest buckets is updated in place however few rows it keeps.

@@ -1,8 +1,10 @@
 type Child = Node | string | null | undefined | false;
 type Attributes = Record<string, string | number | boolean | undefined>;
 
-/** Creates an element with `attributes` and `children`. Attributes that are `false` or `undefined`
- * are omitted, `true` sets an empty attribute, and falsy children are skipped. */
+/**
+ * Creates an element with `attributes` and `children`. Attributes that are `false` or `undefined`
+ * are omitted, `true` sets an empty attribute, and falsy children are skipped.
+ */
 export function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   attributes: Attributes = {},

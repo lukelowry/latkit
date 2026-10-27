@@ -11,7 +11,7 @@ export interface Description {
   name: string;
   /** The axis name and unit, if set. */
   axis: [string, string] | null;
-  /** The first and last axis coordinates held by any sampled field; `null` when none holds any. */
+  /** The first and last axis coordinates held by any sampled field, or `null` if no field holds any. */
   span: [number, number] | null;
   /** Its tables, sorted by name. */
   tables: TableDescription[];
@@ -21,7 +21,7 @@ export interface Description {
 export type Device =
   | /** A mouse or a trackpad. */ 'mouse'
   | /** A pen. */ 'pen'
-  | /** A finger: picks reach 8 CSS pixels farther. */ 'touch'
+  | /** A finger. Picks find rows up to 8 CSS pixels farther away. */ 'touch'
   | /** The keyboard. */ 'keyboard';
 
 /** A vertex a connection ends at, and the port the connection meets, if any. */
@@ -32,13 +32,13 @@ export interface End {
   port?: string;
 }
 
-/** What failed, as JSON: the form of the npm package's `LatkitError`. */
+/** A failure as JSON, in the same form as the npm package's `LatkitError`. */
 export interface Failure {
-  /** The kind of failure, as `LatkitError.code` describes it. */
+  /** The kind of failure. See `LatkitError.code`. */
   code: 'invalid' | 'unsupported' | 'limit' | 'io' | 'device-lost' | 'cancelled' | 'timeout';
-  /** What failed, in words. */
+  /** A description of what failed. */
   message: string;
-  /** The invalid part of the input, such as `marks[2].color`, on `invalid` failures. */
+  /** For `invalid` failures, the path of the invalid input, such as `marks[2].color`. */
   path?: string;
 }
 
@@ -58,7 +58,7 @@ export interface FieldDescription {
 export interface Hit {
   /** The row. */
   row: Row;
-  /** The name of the mark that drew it, if named. It tells two marks of one table apart. */
+  /** The name of the mark that drew it, if the mark has one. It tells apart two marks of one table. */
   mark?: string;
   /**
    * The row's point nearest the probe, in CSS pixels from the top left: a vertex's or port's middle,
@@ -69,9 +69,9 @@ export interface Hit {
   position: [number, number, number];
   /** CSS pixels from the probe to the row. */
   distance: number;
-  /** The port hit, when a vertex's port was. */
+  /** The port hit, if the hit is on a vertex's port. */
   port?: string;
-  /** The sample hit, when a line tracing a sampled field was. */
+  /** The sample hit, if the hit is on a line tracing a sampled field. */
   sample?: Sample;
 }
 
@@ -122,7 +122,7 @@ export interface Stats {
   /** Rows of every mark's table. */
   rows: number;
   /**
-   * Rows every mark draws: every row of a table drawn whole, and the rows of the tiles in view of a
+   * Rows the marks draw: every row of a fully drawn table, and the rows in the tiles in view of a
    * paged table.
    */
   drawn: number;
@@ -133,15 +133,15 @@ export interface Stats {
    * for segments, which the GPU may cull.
    */
   instances: number;
-  /** Fetched tiles the view draws, of every tile source. */
+  /** Fetched tiles the view draws, across all tile sources. */
   tiles: number;
-  /** Tiles being fetched or decoded, of every tile source. */
+  /** Tiles being fetched or decoded, across all tile sources. */
   tilesLoading: number;
   /** Milliseconds the last frame took to record on the CPU. */
   cpuMs: number;
   /**
-   * Milliseconds the GPU takes per frame: the median of recently measured frames; 0 if the device
-   * cannot measure.
+   * Milliseconds the GPU takes per frame: the median of recently measured frames. 0 if the device
+   * cannot measure GPU time.
    */
   gpuMs: number;
 }
@@ -157,8 +157,8 @@ export interface TableDescription {
 }
 
 /**
- * Where the user acted, with which modifier keys, and with which device. For keyboard input, the
- * point is the row the keys point at, else the pointer, else the view's middle.
+ * Where the user acted, with which modifier keys and device. For keyboard input, the point is the
+ * row the keys point at, or else the pointer, or else the view's middle.
  */
 export interface Trigger {
   /** CSS pixels from the top left. */
@@ -218,9 +218,9 @@ export type ViewEvent =
         /** The row dragged, as it was hit. */
         hit: Hit;
         /**
-         * The row's new position in the space's coordinates: the hit point moved with the pointer since
-         * the press, at the depth where the drag started, so a vertex keeps its grab offset. Snapped to a
-         * diagram's dots when its grid snaps.
+         * The row's new position in the space's coordinates. It is the hit point moved with the pointer
+         * since the press, at the depth where the drag started, so a vertex keeps its offset from the
+         * pointer. Snapped to a diagram's grid dots when the grid snaps.
          */
         position: [number, number, number];
         /** The pointer. */
@@ -233,11 +233,11 @@ export type ViewEvent =
      */ {
       type: 'connect';
       detail: {
-        /** The end it was drawn from: for an edge, the end that stayed. */
+        /** The end it was drawn from. For a dragged edge end, the edge's other end. */
         from: End;
         /** The vertex it was released over, if any. */
         to: End | null;
-        /** The edge whose end was dragged off; `to` replaces that end. */
+        /** The edge whose end was dragged off. `to` replaces that end. */
         edge: Row | null;
         /** Where it was released. */
         trigger: Trigger;
@@ -255,7 +255,7 @@ export type ViewEvent =
   | /** The hovered row changed: `view.hovered`. */ {
       type: 'hovered';
       detail: {
-        /** The row now hovered; `null` once no row is. */
+        /** The row now hovered, or `null` if no row is. */
         hit: Hit | null;
         /** The pointer, or the keys. */
         trigger: Trigger;
@@ -266,20 +266,20 @@ export type ViewEvent =
       detail: {
         /** The rows selected now. */
         rows: Rows[];
-        /** How the user changed it; `null` when the data dropped rows from it. */
+        /** How the user changed it, or `null` when the data dropped rows from it. */
         trigger: Trigger | null;
       };
     }
   | /**
-     * The camera moved by a gesture, fit, flight, coast, or orbit, or back within reach as the view's
-     * size, insets, or space changed: `view.camera`.
+     * The camera moved: `view.camera`. A gesture, fit, flight, coast, or orbit moved it, or it moved
+     * back within its zoom and pan limits after the view's size, insets, or space changed.
      */ { type: 'camera'; detail: Camera }
-  | /** The work the last frame waited on changed; empty once frames are complete: `view.waiting`. */ {
+  | /** The work the last frame waited on changed: `view.waiting`. Empty once frames are complete. */ {
       type: 'waiting';
       detail: Waiting;
     }
   | /**
-     * Something failed; reported once. A mark that no longer fits its data is also listed in
+     * Something failed. Reported once. A mark that no longer fits its data is also listed in
      * `view.failures`.
      */ { type: 'error'; detail: Failure };
 
@@ -309,7 +309,7 @@ export interface Work {
   /** Rows whose channels the GPU evaluated. */
   evaluated: number;
   /**
-   * Edge and face rows whose endpoints the GPU resolved to their vertices' resident rows: rows that
+   * Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows that
    * changed, plus every row of a page that references a vertex now resident elsewhere.
    */
   resolved: number;

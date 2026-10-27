@@ -146,7 +146,7 @@ impl Sequence<'_> {
             let at = |error: Error| Failure::at(error.at(index).at("frames"), path);
             apply(&self.inputs.data, &self.inputs.scenes, &frame, patches).map_err(at)?;
             steer(self.views, &frame);
-            // Only invalid input is the frame's fault; an output that fails names itself.
+            // Only invalid input is the frame's fault. An output that fails names itself.
             let drawn = block(job.deadline, video.frame(&mut self.views.iter_mut().collect::<Vec<_>>()));
             drawn.map_err(|error| if let Error::Invalid { .. } = error { at(error) } else { error.into() })?;
             self.report.progress(video.frames(), video.time());

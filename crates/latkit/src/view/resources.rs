@@ -18,7 +18,7 @@ use crate::gpu::{Inner, Shared};
 /// Bytes between marks' uniforms: the dynamic offset alignment every device supports.
 pub(crate) const MARK_STRIDE: u64 = 256;
 const _: () = assert!(size_of::<wgsl::Mark>() as u64 <= MARK_STRIDE, "a mark's uniform fits its stride");
-/// The depth format; depth is reversed, nearer is greater.
+/// The depth format. Depth is reversed: nearer is greater.
 pub(crate) const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// The dynamic offset of the probe's step `step`, one of the `STEP_` codes.
 pub(crate) fn step(step: u32) -> u32 {
@@ -168,7 +168,8 @@ impl Resources {
         }
     }
 
-    /// Makes room for `words` of program; true when the buffer was replaced and must be rewritten.
+    /// Makes room for `words` of program. Returns true when the buffer was replaced and must be
+    /// rewritten.
     pub(crate) fn fit_program(&mut self, device: &wgpu::Device, words: u64) -> bool {
         let replaced = self.program.ensure(device, (words + 1) * 4);
         if replaced {

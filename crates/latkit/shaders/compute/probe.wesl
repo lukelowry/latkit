@@ -4,16 +4,16 @@
 // the step needs.
 //
 // The hover takes three steps over every mark it reaches. `nearest` keeps the least key over all
-// instances within reach of the probe: the distance in 1/64 pixel, then the mark drawn last.
+// instances within the probe's radius: the distance in 1/64 pixel, then the mark drawn last.
 // `topmost` keeps the last instance of that mark at that key, and `describe` writes where that hit
-// lies. Rows hidden behind other drawn marks are not reached. `under` writes the nearest depth
-// drawn around the probe, which gestures rotate and zoom about.
+// lies. Rows hidden behind other drawn marks are not hit. `under` writes the nearest depth drawn
+// around the probe, which gestures rotate and zoom about.
 //
 // Queries write after the probe's words, each mark from the word its `query` names. `hits` appends
-// every instance within reach of the query's point while the mark has room. `boxed` sets a bit for
-// every row with an instance in the query's box, whether or not something drawn covers it. `locate`
-// writes where one drawn row lies on screen. Every row an answer names is a held row, which the
-// view maps to a table row using its record of that frame.
+// every instance within the query's radius of its point while the mark has space for hits. `boxed`
+// sets a bit for every row with an instance in the query's box, whether or not something drawn
+// covers it. `locate` writes where one drawn row lies on screen. Every row an answer names is a
+// held row, which the view maps to a table row using its record of that frame.
 
 import package::lib::types::{
     NONE, FADE_OUT, POINTS, STROKES, MARK_EDGES, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH, PROBE_X, PROBE_Y,
@@ -191,7 +191,7 @@ fn reach(s: Seen, p: vec2f) -> Reach {
         }
         case STROKES: {
             let q = nearest_on(p, s.a, s.b);
-            // The nearer end gives the sample a trace's hit is at; for an edge, which of its ends.
+            // The nearer end gives the sample a trace's hit is at. For an edge, it gives which end.
             var end = select(s.part, s.part + 1u, length(q.xy - s.b.xy) < length(q.xy - s.a.xy));
             if mark.kind == MARK_EDGES {
                 end = u32(2u * end >= path_count(s.item));

@@ -9,10 +9,10 @@ const ROUNDS: usize = 40;
 /// within `clearance` of each other. Pinned boxes never move, and two pinned boxes may still
 /// overlap.
 ///
-/// First come rounds of pushing: a pair too close parts along the axis where it overlaps least,
-/// each box moving half the overlap, or the free box all of it when the other is pinned. This
+/// First come rounds of pushing. A pair too close parts along the axis where it overlaps least.
+/// Each box moves half the overlap, or the free box moves all of it when the other is pinned. This
 /// moves boxes least, but a crowd can jam. If overlaps remain after `ROUNDS`, a sweep places the
-/// free boxes in order of x after the pinned ones, each pushed right past any placed box it
+/// free boxes in order of x after the pinned ones. Each is pushed right past any placed box it
 /// overlaps. Pairs are found in a grid of cells as wide as the widest box, so each round and the
 /// sweep are linear in the number of boxes when their sizes are similar.
 pub(crate) fn separate(boxes: &[[f64; 4]], pinned: &[bool], clearance: f64) -> Vec<[f64; 2]> {

@@ -61,7 +61,7 @@ impl End {
         self.mark != before.mark || self.order != before.order
     }
 
-    /// The places its drawing moved since `before` was attached; empty if none moved.
+    /// The places its drawing moved since `before` was attached. Empty if none moved.
     fn moved_since(&self, before: &End) -> &[u32] {
         match (&self.moved, &before.moved) {
             (Some((version, places)), Some((was, _))) if version != was => places,
@@ -171,8 +171,8 @@ impl View {
     }
 
     /// The row blocks of mark `i` whose rows end at any of `places` in the attached vertex table,
-    /// ascending: the slots of its drawing whose endpoints include them. `None` for a table drawn
-    /// whole, which keeps no per-page endpoints, so every block resolves.
+    /// ascending: the slots of its drawing whose endpoints include them. `None` for a fully drawn
+    /// table, which keeps no per-page endpoints, so every block resolves.
     fn naming(&self, i: usize, places: &[u32]) -> Option<Vec<u32>> {
         let shown = &self.marks[i];
         let style = shown.mark.style();
@@ -216,8 +216,8 @@ impl View {
 
 /// Where each of mark `i`'s ends finds its vertices: the vertex mark it attaches to, that mark's
 /// state and normals pages, and for a paged table, its drawing's page slots and kept rows. An end
-/// attaches to the unnamed vertex mark drawing its table, else the first one, but only while that
-/// mark has word pages for all its held rows.
+/// attaches to the unnamed vertex mark drawing its table, otherwise the first one, but only while
+/// that mark has word pages for all its held rows.
 fn ends(marks: &[Shown], i: usize) -> Vec<End> {
     let Some(compiled) = &marks[i].compiled else { return Vec::new() };
     let data = &marks[i].mark.style().data;
@@ -226,7 +226,7 @@ fn ends(marks: &[Shown], i: usize) -> Vec<End> {
         .ends
         .iter()
         .map(|end| match super::graph::end_mark(marks, data, &end.table) {
-            // A vertex mark without word pages for its rows draws nothing; nothing attaches to it.
+            // A vertex mark without word pages for its rows draws nothing. Nothing attaches to it.
             Some(m) if marks[m].pages_held() => {
                 let (state, normals) = (marks[m].words.pages(Kept::State), marks[m].words.pages(Kept::Normals));
                 End {

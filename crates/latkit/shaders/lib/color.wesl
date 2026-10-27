@@ -14,7 +14,7 @@ fn scale(x: f32, domain: vec2f, range: vec2f) -> f32 {
     return mix(range.x, range.y, clamp(t, 0.0, 1.0));
 }
 
-// `x` through colormap `layer` over `domain`, packed RGBA8; the theme's missing color if `x` is
+// `x` through colormap `layer` over `domain`, packed RGBA8. The theme's missing color if `x` is
 // missing.
 fn colormap(layer: u32, kind: u32, x: f32, domain: vec2f) -> u32 {
     if missing(x) {

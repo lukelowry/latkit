@@ -63,9 +63,9 @@ const COLUMN_FLAGS: u32 = 0u;
 const COLUMN_ROWS: u32 = 1u;
 // Where the column's page table starts in the program. A sampled column has cursors here instead.
 const COLUMN_TABLE: u32 = 2u;
-// Where the page table of an f64 column's low words starts; NONE for an f32 column.
+// Where the page table of an f64 column's low words starts. NONE for an f32 column.
 const COLUMN_LOW: u32 = 3u;
-// The bits column mapping each row to a row of another table; NONE when it reads its own table.
+// The bits column mapping each row to a row of another table. NONE when it reads its own table.
 const COLUMN_JOIN: u32 = 4u;
 // A sampled column's f32 interpolation fraction from the frame at the shown coordinate to the next.
 const COLUMN_T: u32 = 5u;
@@ -131,7 +131,7 @@ const PATH_PAGE_WORDS: u32 = 4u;
 //   its words per row.
 // SLOTS: the end table, which maps a place to a held row (see `held_of`). NONE unless the table is
 //   paged.
-// NORMALS: the page table of the face normals summed at its rows; NONE when no face sums them.
+// NORMALS: the page table of the face normals summed at its rows. NONE when no face sums them.
 // COLUMN: the program column of the reference field naming the end's rows; NONE when the end is the
 //   row's own vertex, as for a pole.
 // The end pass writes the held row of end `k` into the row's kind word `k`.
@@ -242,7 +242,7 @@ const FIELD_WORDS: u32 = 6u;
 // Most text codes a mark asks the host to set per texts pass.
 const WANTED: u32 = 64u;
 // Labels claim the screen cells their text covers, `LABEL_CELL` CSS pixels square, over the view
-// and `LABEL_MARGIN` of its size beyond each side. Until its text is set, a label claims room for
+// and `LABEL_MARGIN` of its size beyond each side. Until its text is set, a label claims space for
 // text `LABEL_GUESS` times its size wide.
 const LABEL_CELL: f32 = 8.0;
 const LABEL_MARGIN: f32 = 0.25;
@@ -277,7 +277,7 @@ const TRIANGLES: u32 = 2u;
 
 // Path kinds, the source of a stroke's points. ENDS: two vertices, joined straight, along a great
 // circle, or through bends. TRACE: samples across the axis. GEOMETRY: a geometry column's points.
-// Faces use ENDS for their three vertices; areas use GEOMETRY, three points per triangle.
+// Faces use ENDS for their three vertices. Areas use GEOMETRY, three points per triangle.
 const PATH_ENDS: u32 = 0u;
 const PATH_TRACE: u32 = 1u;
 const PATH_GEOMETRY: u32 = 2u;
@@ -488,7 +488,7 @@ struct Frame {
     // Direction toward the sun in earth-fixed coordinates (x toward 0° longitude on the equator, z
     // toward the north pole), with night's brightness in w. All zero when daylight is off.
     sun: vec4f,
-    // Color of the atmosphere around the globe; clear when the earth has none.
+    // Color of the atmosphere around the globe. Clear when the earth has none.
     atmosphere: vec4f,
     // Shadow color of a diagram's blocks and groups.
     shadow: vec4f,
@@ -533,7 +533,7 @@ struct Mark {
     stride: u32,
     extras: u32,
     // During a transition, the page tables of each row's words as shown when it began (`frozen`)
-    // and as its channels now evaluate them (`settled`); NONE otherwise. `motion` is its eased
+    // and as its channels now evaluate them (`settled`). NONE otherwise. `motion` is its eased
     // progress, from 0 to 1.
     frozen: u32,
     settled: u32,
@@ -568,7 +568,7 @@ struct Mark {
     palette: u32,
     // The program column a line traces, or NONE.
     trace: u32,
-    // Segments per row when every row has the same count; NONE when the segment list numbers them.
+    // Segments per row when every row has the same count. NONE when the segment list numbers them.
     per_row: u32,
     // Where the mark's segment list header starts in the lists buffer, and where the running
     // query's results for the mark start in the probe buffer.
@@ -590,10 +590,11 @@ struct Mark {
     // Where the program lists the mark's ports (`PORT_WORDS` each), and how many each row has.
     port_info: u32,
     ports: u32,
-    // `label`: the extra word holding the label's code, or NONE. In the labels buffer: `runs`, the
-    // run table (two corner words per code, both 0 until the text is set); `wanted`, a count
-    // followed by the codes to set, each once; `seen`, a bit per code the texts pass met: a set
-    // text shown in view, or one not set that it asked for. The two sizes are in length units.
+    // `label`: the extra word holding the label's code, or NONE. The next three are offsets in the
+    // labels buffer. `runs` is the run table: two corner words per code, both 0 until the text is
+    // set. `wanted` is a count followed by the codes to set, each once. `seen` holds a bit per code
+    // the texts pass met: a set text shown in view, or an unset text it asked for. The two sizes
+    // are in length units.
     label: u32,
     runs: u32,
     wanted: u32,
@@ -604,7 +605,7 @@ struct Mark {
     // stroke's width.
     size_min: f32,
     size_max: f32,
-    // A vertex mark's page table of the face normals summed at its rows; NONE when no face reads
+    // A vertex mark's page table of the face normals summed at its rows. NONE when no face reads
     // them.
     normals: u32,
 }

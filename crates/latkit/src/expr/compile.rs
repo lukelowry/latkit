@@ -72,7 +72,7 @@ pub(crate) struct ColumnUse {
     pub(crate) step: bool,
     /// Also read the low part that `f32` loses from an `f64`, for full-precision positions.
     pub(crate) low: bool,
-    /// Read at every frame in view, as a line tracing the field does.
+    /// Read at every frame in view, like a line that traces the field.
     pub(crate) trace: bool,
 }
 
@@ -98,14 +98,14 @@ impl ColumnUse {
 }
 
 /// One end of each row of a mark: the vertex table it references, and the program column of the
-/// reference field, or `NONE` when the end is the row's own vertex, as for a pole.
+/// reference field. The column is `NONE` when the end is the row's own vertex, as for a pole.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct EndUse {
     pub(crate) table: Name,
     pub(crate) column: u32,
 }
 
-/// A constant that holds `text`'s dictionary code in `column`; the view fills it in.
+/// A constant that holds `text`'s dictionary code in `column`. The view fills it in.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct TextUse {
     pub(crate) constant: u32,
@@ -128,7 +128,7 @@ pub(crate) struct Program {
     pub(crate) fitted: Vec<Expr>,
     pub(crate) columns: Vec<ColumnUse>,
     pub(crate) texts: Vec<TextUse>,
-    /// Each colormap op's index in `code`, with its colormap; the view writes the op's texture
+    /// Each colormap op's index in `code`, with its colormap. The view writes the op's texture
     /// layer.
     pub(crate) colormaps: Vec<(u32, Colormap)>,
     /// Each row's ends, in order. The end pass writes the GPU row holding end `i` into kind word
@@ -142,7 +142,7 @@ pub(crate) struct Program {
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct Reads {
     pub(crate) deps: Deps,
-    /// Bit `i` for column `i`; bit 63 also covers every column after it.
+    /// Bit `i` for column `i`. Bit 63 also covers every column after it.
     pub(crate) columns: u64,
 }
 
@@ -340,15 +340,15 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Adds the next end of each row: the row's own vertex, as placed by the vertex mark that draws
-    /// `table`, the mark's own table. A pole stands on it.
+    /// Adds the next end of each row: the row's own vertex, where the vertex mark of `table` (the
+    /// mark's own table) places it. A pole stands on it.
     pub(crate) fn own_end(&mut self, table: &Name) {
         self.program.ends.push(EndUse { table: table.clone(), column: wgsl::NONE });
     }
 
-    /// Compiles channel `name`, storing at `word` the dictionary code of text field `expr`, or of a
-    /// `when` whose values are each that field or missing. A missing code draws no label. Returns
-    /// the program column whose dictionary decodes the codes.
+    /// Compiles channel `name`, which stores at `word` the dictionary code of text field `expr`.
+    /// `expr` can also be a `when` that returns that field or missing. A missing code draws no
+    /// label. Returns the program column whose dictionary decodes the codes.
     pub(crate) fn text(&mut self, name: &str, expr: &Expr, word: u32) -> Result<u32> {
         let Some(f) = text_field(expr, None).map_err(|e| e.at(name))? else {
             return Err(invalid("a label's text needs a text field").at(name));
@@ -357,7 +357,7 @@ impl<'a> Compiler<'a> {
             return Err(invalid("not a text field").at(&f.name).at(name));
         }
         let start = self.begin();
-        // The values compile as any conditional's do, a missing one as the missing code.
+        // The values compile like any conditional's, and a missing value as the missing code.
         self.expect(expr, Ty::Text).map_err(|e| e.at(name))?;
         let column = self.field_column(f, Words::Codes, false);
         self.op(wgsl::OP_STORE_CODE, word, 0, 0, 1, 0)?;
@@ -662,7 +662,7 @@ impl<'a> Compiler<'a> {
                 self.program.domains.push(Reads::default());
                 self.program.fitted.push(input.clone());
                 self.program.constants.extend([1, 0, 0, index]);
-                // Compile the input again as a reduction; `finish` places it after the channels.
+                // Compile the input again as a reduction. `finish` places it after the channels.
                 let saved = (std::mem::take(&mut self.program.code), self.depth, self.deps, self.columns_read);
                 self.depth = 0;
                 self.deps = Deps::default();
@@ -764,9 +764,9 @@ fn binary_name(op: Binary) -> &'static str {
     }
 }
 
-/// The one text field a label's text shows: `expr` itself, or the field each value of a `when`
-/// gives, where every value is that field (the same name and table) or missing. `seen` is the field
-/// found so far; `None` when every value is missing.
+/// The one text field a label's text shows. It is `expr` itself, or the field a `when` returns when
+/// every value is that field (same name and table) or missing. `seen` is the field found so far.
+/// Returns `None` when every value is missing.
 fn text_field<'e>(expr: &'e Expr, seen: Option<&'e FieldRef>) -> Result<Option<&'e FieldRef>> {
     match &*expr.0 {
         Node::Missing => Ok(seen),

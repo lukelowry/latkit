@@ -1,9 +1,9 @@
-//! Packed pages of paged tables. A column of a paged table is packed one page of its draw order at
-//! a time, the first time a view draws that page, as the words its marks read. Packed pages are
-//! keyed by their source, so views drawing a table the same way share its pages, a page the camera
-//! returns to is the same page, and a write repacks only the pages its rows draw in. A table drawn
-//! in its own order reads its data's pages directly, except for a reference to a table drawn in
-//! another order, whose pages are packed through that order's ranks.
+//! Packed pages of paged tables. A paged table's column is packed into the words its marks read,
+//! one page of its draw order at a time, the first time a view draws that page. Packed pages are
+//! keyed by their source. So views that draw a table the same way share its pages, a page the
+//! camera returns to is the same page, and a write repacks only the pages its rows draw in. A table
+//! drawn in its own order reads its data's pages directly. The exception is a reference to a table
+//! drawn in another order: its pages are packed through that order's ranks.
 
 use std::sync::Arc;
 
@@ -47,8 +47,8 @@ struct Pages {
 pub(crate) struct Packed {
     counters: Arc<Counters>,
     columns: FxHashMap<Packing, Pages>,
-    /// Reference pages of tables drawn in their own order, packed through the ranks of the order
-    /// their target table draws in, keyed by page and that order.
+    /// Reference pages of tables drawn in their own order, packed through the ranks of the target
+    /// table's draw order. Keyed by page and that order.
     ranked: FxHashMap<(PageId, u64), (PageId, u64)>,
     uses: u64,
 }
@@ -69,7 +69,7 @@ impl Packed {
     }
 
     /// The pages of `packing`, packed from the current `source`. A page is kept while none of its
-    /// rows was written since; `page_of` maps a row to its page. Without a source, pages are kept
+    /// rows was written since. `page_of` maps a row to its page. Without a source, pages are kept
     /// as long as `packing` matches.
     fn pages(
         &mut self,
@@ -164,7 +164,7 @@ impl Packed {
     }
 
     /// The id of reference page `page` of a table drawn in its own order, packed through the ranks
-    /// of order `order`, which its target draws in.
+    /// of `order`, the target table's draw order.
     pub(crate) fn ranked(&mut self, page: PageId, order: u64) -> PageId {
         self.uses += 1;
         if self.ranked.len() >= KEPT && !self.ranked.contains_key(&(page, order)) {
@@ -192,9 +192,9 @@ pub(crate) fn values(column: &Column, rows: &[u32], words: Words, low: bool) -> 
     out
 }
 
-/// A page of the target rows `reference` gives for rows `rows`: each target's place in `rank`, its
-/// table's draw order, or the row itself when that table is drawn whole. `NONE` where a row
-/// references nothing.
+/// A page of the target rows that `reference` gives for rows `rows`. Each target is its place in
+/// `rank` (its table's draw order), or the row itself when that table is drawn whole. `NONE` where
+/// a row references nothing.
 pub(crate) fn targets(reference: &Reference, rows: &[u32], rank: Option<&Order>) -> Vec<u32> {
     let mut out: Vec<u32> = rows
         .iter()
@@ -207,8 +207,8 @@ pub(crate) fn targets(reference: &Reference, rows: &[u32], rank: Option<&Order>)
     out
 }
 
-/// The words of reference page `page` of a table drawn in its own order: each target row's place
-/// in `rank`, its table's draw order.
+/// The words of reference page `page` of a table drawn in its own order. Each word is the target
+/// row's place in `rank`, the target table's draw order.
 pub(crate) fn ranked_page(reference: &Reference, page: usize, rank: &Order) -> Vec<u32> {
     let start = page * PAGE_ROWS as usize;
     let len = reference.rows.pages().get(page).map_or(0, |p| p.values.len());

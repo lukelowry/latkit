@@ -67,7 +67,7 @@ pub(crate) fn frame(
     frame.glow = theme.focus.glow;
     frame.dim = theme.focus.dim;
     frame.dash = theme.dash * unit;
-    // Comet spacing and length keep their own unit; a stroke converts them to pixels as it draws.
+    // Comet spacing and length keep their own unit. A stroke converts them to pixels as it draws.
     frame.flow_spacing = theme.flow.spacing.value();
     frame.flow_length = theme.flow.length.value();
     frame.flow_width = theme.flow.width * unit;
@@ -77,7 +77,7 @@ pub(crate) fn frame(
         Length::Px(_) => wgsl::FLOW_PX,
     };
     frame.bow = theme.edge.bow;
-    // Hover is tracked either way; the controls only decide whether it glows.
+    // Hover is tracked either way. The controls only decide whether it glows.
     let glows = scene.controls.hover;
     frame.grow = if glows { theme.focus.grow } else { 1.0 };
     frame.shading = theme.shading;

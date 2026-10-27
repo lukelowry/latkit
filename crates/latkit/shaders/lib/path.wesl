@@ -26,7 +26,7 @@ import package::lib::drawn::drawn_row;
 override PATH: u32 = PATH_ENDS;
 
 // One segment of a row's path. `along` is the distance along the path where it starts, in position
-// units (degrees on the earth). The segment list stores it; without a list it is 0. `row` is the
+// units (degrees on the earth). The segment list stores it. Without a list it is 0. `row` is the
 // held row, whose state and columns it reads. `item` is the drawn row, which the mark's list
 // numbers. While its tile fades in or out, the segment shows with opacity `presence` and scale
 // `growth`, and a leaving segment ignores the pointer.
@@ -46,8 +46,9 @@ fn path_segment(item: u32, index: u32, along: f32) -> Segment {
     return Segment(d.row, item, index, along, d.presence, d.growth, d.leaving);
 }
 
-// A point on a path: its position as high and low parts plus elevation, set by its source; the
-// same point in world and position units, set by `placed_point`; its color; and whether it shows.
+// A point on a path. Its source sets its position as high and low parts plus elevation, and
+// `placed_point` sets the same point in world and position units. It also has a color and whether
+// it shows.
 struct PathPoint {
     hi: vec2f,
     lo: vec2f,
@@ -55,7 +56,7 @@ struct PathPoint {
     world: vec3f,
     position: vec3f,
     color: vec4f,
-    // For a vertex, its half size in CSS pixels and whether it is a box (has its own height); zero
+    // For a vertex, its half size in CSS pixels and whether it is a box (has its own height). Zero
     // elsewhere.
     half: vec2f,
     boxed: bool,
@@ -468,8 +469,8 @@ fn ends_part(s: Segment) -> bool {
     return s.index + 1u == path_count(s.item);
 }
 
-// A row's lane in its family, the edges joining the same two vertices: its offset from the middle,
-// in lanes of the theme's bow; its index in the family, counted from one side; and the step between
+// A row's lane in its family (the edges joining the same two vertices): its offset from the middle
+// in lanes of the theme's bow, its index in the family counted from one side, and the step between
 // lanes. A family spreads at most `FAMILY_LANES` lanes wide, so a larger family packs its lanes
 // closer, `step` apart.
 struct Lane {
@@ -517,7 +518,7 @@ fn segment_screen(s: Segment) -> OnScreen {
     let ca = clip_of(ends[0].world);
     let cb = clip_of(ends[1].world);
     let cut = in_front(ca, cb);
-    // A segment reaching past the globe's edge still draws; the globe's depth clips it there.
+    // A segment reaching past the globe's edge still draws. The globe's depth clips it there.
     let ahead = ends[0].ahead || ends[1].ahead;
     out.shown = ends[0].shown && ends[1].shown && ahead && cut.x < cut.y;
     out.ca = mix(ca, cb, cut.x);
@@ -548,7 +549,7 @@ fn stroke_style(row: u32) -> Style {
     if mark.kind == MARK_EDGES {
         let e = edge_at(row_at(row));
         s.width = clamp(px(e.width, EDGE_WIDTH), mark.size_min, mark.size_max) * growth(e.flags);
-        // An edge colored by its ends gets their colors in the draw; here it only fades.
+        // An edge colored by its ends gets their colors in the draw. Here it only fades.
         s.color = select(unpack4x8unorm(e.color), vec4f(1.0), ends_colored());
         s.color.a *= faded(row, e.flags);
         s.flow = e.flow;

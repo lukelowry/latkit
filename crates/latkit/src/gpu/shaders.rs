@@ -1,5 +1,5 @@
-//! The GPU contract generated from the WESL shaders by `build/shaders.rs`: constants, `#[repr(C)]`
-//! mirrors of shared structs, bind group layouts, and each shader's text.
+//! Code that `build/shaders.rs` generates from the WESL shaders: constants, `#[repr(C)]` mirrors of
+//! shared structs, bind group layouts, and each shader's text.
 
 #![allow(clippy::unreadable_literal)]
 
@@ -41,8 +41,8 @@ impl ShaderSource {
         out
     }
 
-    /// Bytes of its WGSL, which a browser compiles for each of its pipelines: a rough measure of
-    /// compile time.
+    /// The size of its WGSL in bytes, a rough measure of compile time. A browser compiles the WGSL
+    /// once per pipeline.
     pub(crate) fn size(&self) -> usize {
         self.pieces
             .iter()
@@ -116,6 +116,6 @@ impl Binding {
 
 include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 
-// The data, a table's draw order, and a mark's evaluation all use the same page of rows.
+// Data, draw order, and mark evaluation all use the same number of rows per page.
 const _: () =
     assert!(1 << PAGE_BITS == PAGE_ROWS && PAGE_MASK + 1 == PAGE_ROWS && PAGE_ROWS as usize == crate::data::PAGE_ROWS);

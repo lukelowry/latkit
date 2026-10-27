@@ -1,6 +1,6 @@
 /// Packs boxes (each `[width, height]`) in the given order into rows `gap` apart, so the result's
 /// width over height approaches `aspect`. Returns each box's top-left corner, with y up (top is the
-/// greater y); the first box's top left is at the origin.
+/// greater y). The first box's top left is at the origin.
 pub(crate) fn pack(boxes: &[[f64; 2]], gap: f64, aspect: f64) -> Vec<[f64; 2]> {
     rows(boxes, gap, span(boxes, gap, aspect))
 }

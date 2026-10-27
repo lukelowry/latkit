@@ -1,10 +1,10 @@
 //! Events a view reports to the application.
 //!
 //! An intent asks the application to act: a click, open, menu, drag, connection, or deletion. Each
-//! is reported once, in the order the user acted. A change reports that view state moved and is
+//! is reported once, in the order the user acted. A change reports that view state changed and is
 //! named after that state: `hovered`, `selection`, `camera`, `waiting`. Only the latest change of
 //! each is reported, and the state can always be read, so a late listener can catch up. A view
-//! reports only what the application did not do itself: its setters change state silently.
+//! reports only what the application did not do itself. Its setters change state silently.
 
 use std::collections::VecDeque;
 
@@ -47,9 +47,9 @@ pub enum Event {
         phase: Phase,
         /// The row dragged, as it was hit.
         hit: Hit,
-        /// The row's new position in the space's coordinates: the hit point moved with the pointer
-        /// since the press, at the depth where the drag started, so a vertex keeps its grab offset.
-        /// Snapped to a diagram's dots when its grid snaps.
+        /// The row's new position in the space's coordinates. It is the hit point moved with the
+        /// pointer since the press, at the depth where the drag started, so a vertex keeps its
+        /// offset from the pointer. Snapped to a diagram's grid dots when the grid snaps.
         position: [f64; 3],
         /// The pointer.
         trigger: Trigger,
@@ -57,11 +57,11 @@ pub enum Event {
     /// A connection was drawn with [`Controls::connect`](crate::Controls) on: from a port, from a
     /// vertex with Alt held, or by dragging an edge's end off it.
     Connect {
-        /// The end it was drawn from: for an edge, the end that stayed.
+        /// The end it was drawn from. For a dragged edge end, the edge's other end.
         from: End,
         /// The vertex it was released over, if any.
         to: Option<End>,
-        /// The edge whose end was dragged off; `to` replaces that end.
+        /// The edge whose end was dragged off. `to` replaces that end.
         edge: Option<Row>,
         /// Where it was released.
         trigger: Trigger,
@@ -76,7 +76,7 @@ pub enum Event {
     },
     /// The hovered row changed: [`View::hovered`](crate::View::hovered).
     Hovered {
-        /// The row now hovered; `None` once no row is.
+        /// The row now hovered, or `None` if no row is.
         hit: Option<Hit>,
         /// The pointer, or the keys.
         trigger: Trigger,
@@ -85,22 +85,23 @@ pub enum Event {
     Selection {
         /// The rows selected now.
         rows: Vec<Rows>,
-        /// How the user changed it; `None` when the data dropped rows from it.
+        /// How the user changed it, or `None` when the data dropped rows from it.
         trigger: Option<Trigger>,
     },
-    /// The camera moved by a gesture, fit, flight, coast, or orbit, or back within reach as the
-    /// view's size, insets, or space changed: [`View::camera`](crate::View::camera).
+    /// The camera moved: [`View::camera`](crate::View::camera). A gesture, fit, flight, coast, or
+    /// orbit moved it, or it moved back within its zoom and pan limits after the view's size,
+    /// insets, or space changed.
     Camera(Camera),
-    /// The work the last frame waited on changed; empty once frames are complete:
-    /// [`View::waiting`](crate::View::waiting).
+    /// The work the last frame waited on changed: [`View::waiting`](crate::View::waiting). Empty
+    /// once frames are complete.
     Waiting(Waiting),
-    /// Something failed; reported once. A mark that no longer fits its data is also listed in
+    /// Something failed. Reported once. A mark that no longer fits its data is also listed in
     /// [`View::failures`](crate::View::failures).
     Error(Error),
 }
 
-/// Where the user acted, with which modifier keys, and with which device. For keyboard input, the
-/// point is the row the keys point at, else the pointer, else the view's middle.
+/// Where the user acted, with which modifier keys and device. For keyboard input, the point is the
+/// row the keys point at, or else the pointer, or else the view's middle.
 #[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 pub struct Trigger {
     /// CSS pixels from the top left.
@@ -139,8 +140,8 @@ impl Event {
     }
 }
 
-/// The events a view has yet to report, in order. An intent waiting on a pick holds its place, and
-/// later intents wait behind it; changes and errors never wait.
+/// The events a view has yet to report, in order. An intent waiting on a pick keeps its place, and
+/// later intents wait behind it. Changes and errors never wait.
 #[derive(Default)]
 pub(crate) struct Events(VecDeque<Slot>);
 
@@ -244,7 +245,8 @@ pub struct End {
 pub struct Hit {
     /// The row.
     pub row: Row,
-    /// The name of the mark that drew it, if named. It tells two marks of one table apart.
+    /// The name of the mark that drew it, if the mark has one. It tells apart two marks of one
+    /// table.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mark: Option<Name>,
     /// The index of the mark in the scene the frame drew.
@@ -257,10 +259,10 @@ pub struct Hit {
     pub position: [f64; 3],
     /// CSS pixels from the probe to the row.
     pub distance: f32,
-    /// The port hit, when a vertex's port was.
+    /// The port hit, if the hit is on a vertex's port.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<Name>,
-    /// The sample hit, when a line tracing a sampled field was.
+    /// The sample hit, if the hit is on a line tracing a sampled field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sample>,
 }
@@ -303,9 +305,9 @@ pub enum Fit {
     Reveal(Row),
     /// The box from `min` to `max`: x, y, and elevation.
     Bounds {
-        /// The least corner.
+        /// The minimum corner.
         min: [f64; 3],
-        /// The greatest corner.
+        /// The maximum corner.
         max: [f64; 3],
     },
 }
@@ -334,34 +336,34 @@ pub struct Stats {
     pub frames: u64,
     /// Rows of every mark's table.
     pub rows: u64,
-    /// Rows every mark draws: every row of a table drawn whole, and the rows of the tiles in view
-    /// of a paged table.
+    /// Rows the marks draw: every row of a fully drawn table, and the rows in the tiles in view of
+    /// a paged table.
     pub drawn: u64,
     /// Draw calls the last frame recorded, label draws included.
     pub draws: u64,
     /// Instances the last frame's draws drew: points, segments, triangles, and glyphs. An upper
     /// bound for segments, which the GPU may cull.
     pub instances: u64,
-    /// Fetched tiles the view draws, of every tile source.
+    /// Fetched tiles the view draws, across all tile sources.
     pub tiles: u64,
-    /// Tiles being fetched or decoded, of every tile source.
+    /// Tiles being fetched or decoded, across all tile sources.
     pub tiles_loading: u64,
     /// Milliseconds the last frame took to record on the CPU.
     pub cpu_ms: f32,
-    /// Milliseconds the GPU takes per frame: the median of recently measured frames; 0 if the
-    /// device cannot measure.
+    /// Milliseconds the GPU takes per frame: the median of recently measured frames. 0 if the
+    /// device cannot measure GPU time.
     pub gpu_ms: f32,
 }
 
-/// The work a frame was still waiting on, by kind; empty when the frame was complete.
+/// The work a frame was still waiting on, by kind. Empty when the frame was complete.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Waiting {
-    /// Pipelines the view uses are still compiling. Until those it draws with finish, the view
+    /// Pipelines the view uses are still compiling. Until its draw pipelines finish, the view
     /// draws nothing new.
     pub compiling: bool,
     /// Pages its marks draw are still uploading, or tables are not yet built from them.
     pub data: bool,
-    /// Layouts, routes, lanes, shapes, tiles, or pyramids under way.
+    /// Layouts, routes, lanes, shapes, tiles, or pyramids in progress.
     pub derived: bool,
     /// The label texts in view being read back, or texts requested and not yet set.
     pub labels: bool,

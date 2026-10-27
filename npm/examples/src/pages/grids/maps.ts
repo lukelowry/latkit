@@ -1,8 +1,11 @@
 /**
- * The maps drawn beneath a grid: Natural Earth's coasts and borders, shipped with the page; Natural
- * Earth's states and provinces, downloaded from its repository; and OpenStreetMap's planet as
- * OpenFreeMap's vector tiles, fetched as the camera needs them. GeoJSON, plain or gzip-compressed,
- * is read in a worker.
+ * The maps drawn beneath a grid:
+ *
+ * - Natural Earth's coasts and borders, shipped with the page.
+ * - Natural Earth's states and provinces, downloaded from its repository.
+ * - OpenStreetMap's planet as OpenFreeMap's vector tiles, fetched as the camera needs them.
+ *
+ * GeoJSON, plain or gzip-compressed, is read in a worker.
  */
 import { Data, Tiles, field, when, zoom, type Mark } from 'latkit';
 import { download } from './cases.js';

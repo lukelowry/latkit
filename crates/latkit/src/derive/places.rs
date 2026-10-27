@@ -3,9 +3,9 @@
 //! On a plane or the earth, the scene's layout places the vertex rows that have no position. Rows
 //! with positions are pinned, and edges are the layout's links, so an unpositioned row ends up
 //! among its neighbors. Gaps are in the space's units. As on a diagram's sheet, places persist by
-//! row, and the layout (a host job) places only rows without a place until `arrange` lays out
-//! every unpositioned row again. The result is a table beside each vertex table, holding its rows'
-//! positions, given or laid out, which the vertex marks read.
+//! row. The layout (a host job) places only rows without a place, until `arrange` lays out every
+//! unpositioned row again. The result is a table beside each vertex table that holds its rows'
+//! positions, given or laid out. The vertex marks read it.
 
 use std::hash::Hash;
 

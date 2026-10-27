@@ -1,10 +1,10 @@
-// The labels that show, and the texts they need. `claim` writes each labeled row's claim into the
-// cells its label covers, each cell keeping the greatest; `texts` then asks the host to set the
-// text of each label that keeps its room, while the atlas lacks it and its anchor is near the view
-// (and, in a diagram, its text is large enough to read), and marks a set text in view as seen, so
-// the atlas keeps it. Rows whose tile is leaving claim nothing. `draw/glyphs.wesl` decides from the
-// same claims whether each label shows. Each pipeline is made for one primitive and compiles only
-// that primitive's anchors.
+// The labels that show, and the texts they need. `claim` writes each labeled row's key into the
+// grid cells its label covers. Each cell keeps the largest key. `texts` then asks the host to set
+// the text of each label that is not crowded out, when the atlas lacks the text and the label's
+// anchor is near the view (and, in a diagram, its text is large enough to read). It also marks a
+// set text in view as seen, so the atlas keeps it. Rows whose tile is leaving claim nothing.
+// `draw/glyphs.wesl` decides from the same claims whether each label shows. Each pipeline is made
+// for one primitive and compiles only that primitive's anchors.
 
 import package::lib::types::{NONE, VISIBLE, LABEL_CODE, WANTED, item};
 import package::lib::bind::{eye, mark, word};
@@ -22,7 +22,8 @@ import package::lib::drawn::drawn_row;
 @group(2) @binding(14) var<storage, read_write> cells: array<atomic<u32>>;
 
 // A labeled row as the texts passes see it: its text code (NONE without a label to show), its
-// anchor, and its run table entry: both words 0 until the text is set, NONE when it draws nothing.
+// anchor, and its run table entry. The entry's words are both 0 until the text is set, and NONE
+// when it draws nothing.
 struct Labeled {
     code: u32,
     a: Anchor,

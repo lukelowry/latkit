@@ -1,10 +1,10 @@
 //! A mark's per-row words, in pages of the arena. For each page of held rows, the mark has one
 //! arena block per kind of words, sized for the page's rows. A row's state is its kind words, then
-//! its extra words. Beside the state are the row's focus word, the normals faces sum at a vertex,
-//! and while the mark eases, its frozen state (as shown when the transition began) and its settled
-//! state. A page keeps its blocks while the mark holds rows there, so rows keep their words as the
-//! camera moves, and holding more rows moves none. Every kind counts toward the GPU budget along
-//! with the data.
+//! its extra words. Alongside the state are the row's focus word, the normals faces sum at a
+//! vertex, and while the mark eases, its frozen state (as shown when the transition began) and its
+//! settled state. A page keeps its blocks while the mark holds rows there, so rows keep their words
+//! as the camera moves, and adding held rows moves none. Every kind counts toward the GPU budget
+//! along with the data.
 
 use std::sync::Arc;
 
@@ -77,10 +77,10 @@ impl Words {
         self.before = None;
     }
 
-    /// Fits `kept`'s pages to hold `rows[p]` rows on page `p`, at `width` words per row; `width` 0
-    /// frees them all. A page whose block is too small gets a new block, as does every page when
-    /// the width changes. Blocks no longer used are freed. Returns what changed, or `None` (with
-    /// nothing changed) when the arena has no room now.
+    /// Fits `kept`'s pages to hold `rows[p]` rows on page `p`, at `width` words per row. A `width`
+    /// of 0 frees them all. A page whose block is too small gets a new block, as does every page
+    /// when the width changes. Unused blocks are freed. Returns what changed, or `None` (with
+    /// nothing changed) when the arena has no space now.
     pub(crate) fn fit(
         &mut self,
         kept: Kept,

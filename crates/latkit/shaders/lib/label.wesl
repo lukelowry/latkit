@@ -1,8 +1,8 @@
-// Labels: where a labeled row's text is anchored, its size, the room it claims, and whether it can
+// Labels: where a labeled row's text is anchored, its size, the space it claims, and whether it can
 // show. Draws place every label from its anchor each frame, so labels track the camera and their
-// rows exactly; the label passes measure the same boxes to claim room and find the texts in view. Text is a distance field set at
-// `TEXT_BASE` and drawn at any size: in CSS pixels, or in a diagram in length units, where text
-// scales with the sheet and fades out once too small to read.
+// rows exactly. The label passes measure the same boxes to claim space and find the visible texts.
+// Text is a distance field set at `TEXT_BASE` and drawn at any size: in CSS pixels, or in a diagram
+// in length units. In a diagram, text scales with the sheet and fades out once too small to read.
 
 import package::lib::types::{
     POINTS, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, HEADER_BAND, SPACE_DIAGRAM,
@@ -75,7 +75,7 @@ fn legibility(px: f32) -> f32 {
 }
 
 // A run of text placed on screen: the text's box and its quad, which extends over the distance
-// field's spread (both in CSS pixels); its atlas corners in texels; and CSS pixels per texel.
+// field's spread (both in CSS pixels), its atlas corners in texels, and CSS pixels per texel.
 struct Text {
     lo: vec2f,
     hi: vec2f,
@@ -117,23 +117,24 @@ fn in_view(lo: vec2f, hi: vec2f) -> bool {
     return all(hi > vec2f(0.0)) && all(lo < eye.size);
 }
 
-// Labels beside their rows compete for room. Each claims the cells its box covers, each cell keeps
-// the greatest claim, and a label shows only where it keeps every cell it covers: where labels
-// would overlap, the label of the row drawn on top shows. The claims depend on this frame alone.
-// A label inside its row (a block's, or a group's title) or in a diagram has its own room.
+// Labels beside their rows compete for space. Each label writes its claim key into the cells its
+// box covers, and each cell keeps the largest key. A label shows only if it keeps every cell it
+// covers, so where labels would overlap, the label of the row drawn on top shows. The claims depend
+// on this frame alone. A label inside its row (a block's label, or a group's title) or in a diagram
+// does not compete.
 
-// Whether the label anchored at `a` competes for room with other labels.
+// Whether the label anchored at `a` competes for space with other labels.
 fn claims_room(a: Anchor) -> bool {
     return a.room.x <= 0.0 && frame.space != SPACE_DIAGRAM;
 }
 
-// The claim of drawn row `i`: later marks, then later rows, draw on top, so they claim more. Never
-// 0, which marks a cell no label claimed.
+// The claim key of drawn row `i`. Later marks, then later rows, draw on top, so their keys are
+// larger. Never 0, which marks a cell no label claimed.
 fn claim_key(i: u32) -> u32 {
     return (min(mark.index, 255u) << 24u) | min(i + 1u, 0xffffffu);
 }
 
-// The box a label claims: its text's box once set, else room for a short text at its anchor.
+// The box a label claims: its text's box once set, else space for a short text at its anchor.
 fn claimed(a: Anchor, uv0: u32, uv1: u32, size: f32) -> Text {
     if uv0 != 0u || uv1 != 0u {
         return text_at(uv0, uv1, size, a.at, a.align);

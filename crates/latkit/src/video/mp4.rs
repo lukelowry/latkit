@@ -99,8 +99,8 @@ impl Muxer {
         Ok(out)
     }
 
-    /// Ends the video at `end` ticks; the last frame lasts until then, at least one tick. Returns
-    /// the last fragment's bytes, or nothing if no frame is pending.
+    /// Ends the video at `end` ticks. The last frame lasts until then, and at least one tick.
+    /// Returns the last fragment's bytes, or nothing if no frame is pending.
     pub(crate) fn finish(&mut self, end: u64) -> Vec<u8> {
         let mut out = Vec::new();
         if let Some(last) = self.run.last().map(|sample| sample.time) {

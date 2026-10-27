@@ -1,6 +1,6 @@
-//! Output destinations: an output written whole or not at all, and the video sinks besides the
-//! library's MP4: image files, raw RGBA, and YUV4MPEG2. An output's errors name it in their message,
-//! whoever writes it, since they reach the command through the library's video.
+//! Output destinations: an output written all at once or not at all, and the video sinks other than
+//! the library's MP4: image files, raw RGBA, and YUV4MPEG2. An output's errors name the output in
+//! their message, whoever writes it, since they reach the command through the library's video.
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -117,8 +117,8 @@ impl Commit for Mp4<Output> {
 }
 
 /// Pictures as image files, encoded a few at a time on the host's workers. Either one file per
-/// frame, numbered by the output's pattern and each written whole and in order, or one file for a
-/// single frame. A held frame (where nothing moved) repeats the previous frame's file.
+/// frame, numbered by the output's pattern and each written complete and in order, or one file for
+/// a single frame. A held frame (where nothing moved) repeats the previous frame's file.
 pub(crate) struct Images {
     to: To,
     format: ImageFormat,

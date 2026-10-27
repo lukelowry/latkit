@@ -1,5 +1,5 @@
 //! Little-endian bytes: the encoding of latkit's byte format, of the jobs it hands its host, and of
-//! the binary formats it reads. [`Out`] writes values; [`In`] reads them back, returning `None`
+//! the binary formats it reads. [`Out`] writes values. [`In`] reads them back, returning `None`
 //! past the end.
 
 #[cfg(target_endian = "big")]
@@ -61,7 +61,7 @@ macro_rules! codes {
                 }
             }
 
-            /// The value written as `code`; `None` for a code no value has.
+            /// The value written as `code`. `None` for a code no value has.
             pub(crate) fn from_code(code: u32) -> Option<Self> {
                 match code {
                     $($code => Some(Self::$variant),)+
@@ -125,7 +125,7 @@ impl<'a> In<'a> {
         self.take().map(f64::from_le_bytes)
     }
 
-    /// A text written by [`Out::str`]; `None` unless it is UTF-8.
+    /// A text written by [`Out::str`]. `None` unless it is UTF-8.
     pub(crate) fn str(&mut self) -> Option<&'a str> {
         let n = self.u32()? as usize;
         std::str::from_utf8(self.bytes(n)?).ok()

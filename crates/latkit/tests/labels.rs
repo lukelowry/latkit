@@ -1,9 +1,8 @@
 //! Labels show beside their rows once the host rasterizes their text, or inside a block while they
-//! fit. Where labels would overlap, the label of the row drawn on top shows, an empty text gives no
-//! label, and only labels that
-//! show near the view have their text rasterized, so a dense view settles. A conditional text labels
-//! only the rows it names, and a label keeps showing while its mark gains texts. A diagram's labels
-//! scale with the sheet and fade out once too small to read.
+//! fit. Where labels would overlap, the label of the row drawn on top shows. An empty text gives no
+//! label. Only labels that show near the view have their text rasterized, so a dense view settles.
+//! A conditional text labels only the rows it names, and a label keeps showing while its mark gains
+//! texts. A diagram's labels scale with the sheet and fade out once too small to read.
 
 #![cfg(feature = "gpu")]
 

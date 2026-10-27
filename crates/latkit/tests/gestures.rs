@@ -488,15 +488,15 @@ fn reduced_motion_applies_every_move_at_once() {
 fn a_flat_map_keeps_the_camera_over_its_one_world() {
     let Some(gpu) = gpu() else { return };
     let mut view = View::new(&gpu, Scene::new(latkit::Earth::default()).theme(plain_theme())).expect("valid scene");
-    // Set before the first frame gives the view its size, the camera moves within reach on that
-    // frame, which reports it. At zoom 4 the world is 4096 pixels across, and the center keeps half
-    // the view's width from the antimeridian.
+    // Set before the first frame gives the view its size, the camera moves within its limits on
+    // that frame, which reports it. At zoom 4 the world is 4096 pixels across, and the center keeps
+    // half the view's width from the antimeridian.
     view.set_camera(Camera::Map { center: [180.0, 0.0, 0.0], zoom: 4.0, pitch: 0.0, bearing: 0.0 });
     frame(&gpu, &mut view);
     let Camera::Map { center, .. } = *view.camera() else { panic!("a map camera") };
     assert!((center[0] - 180.0 * (1.0 - f64::from(SIZE) / 4096.0)).abs() < 1e-9, "{center:?}");
     assert!(view.events().any(|e| matches!(e, Event::Camera(_))), "the frame reports the move");
-    // Once the view has its size, a camera set past the reach is kept within it at once: zoomed
+    // Once the view has its size, a camera set past its limits is kept within them at once. Zoomed
     // all the way out, the whole world just fits the view, centered.
     view.set_camera(Camera::Map { center: [90.0, 60.0, 0.0], zoom: -3.0, pitch: 0.0, bearing: 0.0 });
     let Camera::Map { center, zoom, .. } = *view.camera() else { panic!("a map camera") };

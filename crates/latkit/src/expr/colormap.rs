@@ -106,14 +106,14 @@ impl Colormap {
         (0..CATALOG.len()).map(|i| Colormap(Map::Catalog(i as u8)))
     }
 
-    /// The catalog colormap named `name`, such as `"viridis"`; `None` if the catalog has none.
+    /// The catalog colormap named `name`, such as `"viridis"`. `None` if the catalog has none.
     pub fn named(name: &str) -> Option<Colormap> {
         CATALOG.iter().position(|e| e.name == name).map(|i| Colormap(Map::Catalog(i as u8)))
     }
 
     /// A colormap through `stops`, each a color or a `(place, color)` pair. Colors blend in OKLab,
-    /// so lightness changes evenly; a color without a place sits evenly between its neighbors, as
-    /// in a CSS gradient. A categorical map takes one color per category instead.
+    /// so lightness changes evenly. A color without a place sits evenly between its neighbors, like
+    /// a CSS gradient. A categorical map takes one color per category.
     ///
     /// Errors when `stops` is empty, when places lie outside `0..=1` or out of order, and when a
     /// categorical map has places or more than 256 colors.
@@ -152,7 +152,7 @@ impl Colormap {
         })))
     }
 
-    /// The names of the categories, from category 0; none unless named.
+    /// The names of the categories, from category 0. Empty unless named.
     pub(crate) fn named_categories(&self) -> &[Arc<str>] {
         match &self.0 {
             Map::Catalog(_) => &[],
@@ -176,7 +176,7 @@ impl Colormap {
         }
     }
 
-    /// A human-readable title, such as `"Red / Blue"`; `"Custom"` for a custom colormap.
+    /// A human-readable title, such as `"Red / Blue"`. `"Custom"` for a custom colormap.
     pub fn label(&self) -> &str {
         match &self.0 {
             Map::Catalog(i) => CATALOG[*i as usize].label,
@@ -218,7 +218,7 @@ impl Colormap {
         Color::rgba(red, green, blue, alpha)
     }
 
-    /// The number of colors the map was made from; for a categorical map, its category count.
+    /// The number of colors the map was made from. For a categorical map, its category count.
     pub fn count(&self) -> u32 {
         match &self.0 {
             Map::Catalog(i) => CATALOG[*i as usize].count,

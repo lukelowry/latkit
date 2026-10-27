@@ -32,7 +32,7 @@ pub(crate) const GRID_BITS: u32 = 7;
 pub(crate) const MAX_LEVEL: u8 = 24;
 /// Marks a row not yet assigned a level.
 const NEVER: u8 = u8::MAX;
-/// The most tiles a camera request splits into per level; past it, the tiles drawn largest split
+/// The most tiles a camera request splits into per level. Past it, the tiles drawn largest split
 /// and the rest stop splitting.
 const MAX_TILES: usize = 1024;
 /// Log2 of the sub-cells across a large tile. Each sub-cell is a range of the order that the camera
@@ -64,13 +64,14 @@ pub(crate) enum Places {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Placing {
     pub(crate) rows: u32,
-    /// Whether its rows are assigned to tiles by level; else they form one tile in priority order.
+    /// Whether its rows are assigned to tiles by level. If not, they form one tile in priority
+    /// order.
     pub(crate) leveled: bool,
     /// Whether the answer includes its pyramid. A table placed only to anchor the edges ending at
     /// it is not answered.
     pub(crate) answered: bool,
     pub(crate) places: Places,
-    /// Each row's priority, higher first; empty when all rows are equal.
+    /// Each row's priority, higher first. Empty when all rows are equal.
     pub(crate) priority: Arc<[f32]>,
     /// For an edge table placed by its endpoints: the index of the table they reference, and each
     /// endpoint reference's target rows.
@@ -79,7 +80,7 @@ pub(crate) struct Placing {
 
 /// Each row's anchor in `domain`'s square in `u32` fixed point (the full `u32` range spans the
 /// square, from the west and from the north), and for boxes, half the box's larger side in the same
-/// units. Unplaced rows anchor at the origin with no extent; `Places::None` gives nothing.
+/// units. Unplaced rows anchor at the origin with no extent. `Places::None` gives nothing.
 fn anchored(places: &Places, domain: &Domain) -> (Vec<[u32; 2]>, Vec<u32>) {
     let fixed = |u: f64| (u.clamp(0.0, 1.0) * 4_294_967_295.0) as u32;
     match places {
@@ -235,7 +236,7 @@ fn by_ends(ends: &[Arc<[u32]>], at: &[[u32; 2]], wraps: bool, n: usize) -> (Vec<
     (anchors, extents)
 }
 
-/// For each row, the next row joining the same two vertices, forming one cycle per pair; a row
+/// For each row, the next row joining the same two vertices, so each pair forms one cycle. A row
 /// with no parallel rows maps to itself. Parallel rows share an anchor, so they are adjacent in
 /// curve order.
 fn mates(sorted: &[(u64, u32)], pairs: &[u64]) -> Vec<u32> {
@@ -274,8 +275,8 @@ fn tie(row: u32) -> u32 {
     (u64::from(row).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as u32
 }
 
-/// Each of `n` rows' rank, higher first: its priority (missing or NaN lowest), then a hash of its
-/// row index, so equal priorities spread evenly.
+/// The rank of each of `n` rows, higher first: its priority (missing or NaN lowest), then a hash
+/// of its row index, so equal priorities spread evenly.
 fn ranks(priority: &[f32], n: usize) -> Vec<u64> {
     (0..n)
         .map(|r| {
@@ -333,11 +334,11 @@ fn unpack(key: u64) -> TileKey {
 /// The level each row is assigned. At each level, coarsest first, each cell takes the
 /// highest-ranked row left in it, so a row is assigned at the first level where it outranks every
 /// other row left in its cell. Rows with a nonzero `floor` are never chosen by rank. A row is never
-/// assigned finer than its size or `ceiling` allows; if no cell took it by then, it is forced
-/// in at that level. Rows `pairs` marks as parallel are assigned together. Rows left over go to the
+/// assigned finer than its size or `ceiling` allows. If no cell took it by then, it is forced in at
+/// that level. Rows `pairs` marks as parallel are assigned together. Rows left over go to the
 /// finest level.
 ///
-/// Rows are processed in runs along the curve, each run the rows left in one cell. While a run
+/// Rows are processed in runs along the curve. Each run is the rows left in one cell. While a run
 /// stays within one cell for several levels, those levels take its top rows in rank order in one
 /// pass, using a heap. Where a run spreads over several cells, each cell's rows continue as a run
 /// of their own. So a crowd in one cell for many levels costs its size once, not once per level.
@@ -411,7 +412,7 @@ fn place(
                 );
                 let mut heap = std::collections::BinaryHeap::from(std::mem::take(&mut scratch));
                 for l in z..=deepest {
-                    // Skip rows too large for this level; the forcing step below assigns them.
+                    // Skip rows too large for this level. The forcing step below assigns them.
                     while let Some((_, r)) = heap.pop() {
                         if level[r as usize] == NEVER && fits[r as usize] >= l {
                             land(r, l, &mut level);
@@ -453,7 +454,7 @@ fn place(
 }
 
 /// Orders rows by tile, coarsest level first, and returns the order with the tiles. Each tile's
-/// rows are in priority order, highest last; a large tile's rows are grouped by sub-cell, each
+/// rows are in priority order, highest last. A large tile's rows are grouped by sub-cell, each
 /// sub-cell in priority order. `sorted` holds the rows along the curve.
 fn tiled(
     sorted: &[(u64, u32)],
@@ -493,7 +494,7 @@ fn tiled(
             }
             let start = order.len();
             let members = &rows[i..j];
-            // Sort by priority only, without the tie hash; equal rows keep their curve order.
+            // Sort by priority only, without the tie hash. Equal rows keep their curve order.
             let by_priority = |order: &mut Vec<u32>, from: usize| {
                 crate::order::by_key(&mut order[from..], |&r| ranks[r as usize] >> 32);
             };
@@ -586,7 +587,7 @@ pub(crate) struct Pyramid {
     pub(crate) order: Vec<u32>,
     pub(crate) rank: Vec<u32>,
     pub(crate) tiles: Vec<Tile>,
-    /// Identifies this pyramid among all others; pages packed in its order are keyed by it.
+    /// Identifies this pyramid among all others. Pages packed in its order are keyed by it.
     pub(crate) made: Version,
     /// Each tile's index in `tiles`, by key.
     index: FxHashMap<TileKey, u32>,
@@ -623,14 +624,14 @@ impl Pyramid {
     /// The ranges of the order the camera needs, coarsest level first, each with its level, and
     /// whether the `rows` budget dropped any of them.
     ///
-    /// At each level it takes every tile whose rows reach into the region in sight (for a large
-    /// tile, only the sub-cells that do), and splits a tile into its children while it draws larger
-    /// than `SPLIT_PX` near the camera's focus. When more tiles would split than a level allows,
-    /// those drawn largest split first, and the next level lists their children in that order. A
-    /// drawing holds whole pages of the order, so once a level's pages would exceed `rows` rows,
-    /// that level and all finer ones are dropped and the coarser levels draw instead. If the first
-    /// level in sight exceeds the budget alone (for example, edges spanning the square, which
-    /// cannot go finer), as many of its first rows as fit are drawn.
+    /// At each level it takes every tile whose rows reach into the visible region (for a large
+    /// tile, only the sub-cells that do). It splits a tile into its children while the tile draws
+    /// larger than `SPLIT_PX` near the camera's focus. When more tiles would split than a level
+    /// allows, those drawn largest split first, and the next level lists their children in that
+    /// order. A drawing holds whole pages of the order. So once a level's pages would exceed `rows`
+    /// rows, that level and all finer ones are dropped and the coarser levels draw. If the first
+    /// visible level exceeds the budget alone (for example, edges spanning the square, which cannot
+    /// go finer), as many of its first rows as fit are drawn.
     pub(crate) fn wanted(&self, sight: &Sight<'_>, domain: &Domain, rows: u32) -> (Vec<(u8, Range<u32>)>, bool) {
         let fit = rows.div_ceil(PAGE_ROWS);
         if let [tile] = &self.tiles[..]
@@ -686,7 +687,7 @@ impl Pyramid {
             // The tiles drawn largest split first, a quarter of `MAX_TILES` at most.
             crate::order::by_key(&mut large, |&(_, size)| !crate::order::number(size));
             let next: Vec<TileKey> = large.iter().take(MAX_TILES / 4).flat_map(|(key, _)| key.children()).collect();
-            // If this level's pages exceed the budget, drop it; coarser levels draw instead.
+            // If this level's pages exceed the budget, drop it, and the coarser levels draw.
             let (pages, reached) = pages_past(&found, last);
             if held + pages > fit {
                 if out.is_empty() {
@@ -732,9 +733,9 @@ impl Pyramid {
 }
 
 /// Encodes `pyramids` as a job's answer, in little-endian `u32` words. Per pyramid: its table's
-/// index among those asked, its row count, its order, and its tile count; then per tile: its packed
-/// key (two words), the end of its rows, its reach, its sub-cell count, and where each sub-cell's
-/// rows end.
+/// index among those asked, its row count, its order, and its tile count. Then per tile: its
+/// packed key (two words), the end of its rows, its reach, its sub-cell count, and where each
+/// sub-cell's rows end.
 pub(crate) fn encode(pyramids: &[(u32, Pyramid)]) -> Vec<u8> {
     let mut words: Vec<u32> = Vec::new();
     for (table, pyramid) in pyramids {

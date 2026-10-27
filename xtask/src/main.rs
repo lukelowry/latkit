@@ -8,8 +8,8 @@
 //!   - `rust`: formats, lints, tests (with GPU tests required), documents, and packages the crates,
 //!     and checks that `native` stays out of browser builds.
 //!   - `native-cli`: tests the CLI's native code, which CI runs on macOS and Windows.
-//!   - `npm`: builds the npm package with `wasm --dev`; lints, documents, type-checks, and tests
-//!     it; runs the browser gate over that build; then `package` and `package-test`.
+//!   - `npm`: builds the npm package with `wasm --dev`, then lints, documents, type-checks, and
+//!     tests it. Runs the browser gate over that build, then `package` and `package-test`.
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`. Checks
 //!   that every shader variant's pipelines compile in Chrome within budget, and that every example
 //!   page draws and responds to the pointer without errors or stalls. On `SwiftShader`, which Linux
@@ -23,8 +23,8 @@
 //! - `wasm [--dev]`: builds `latkit-js`, binds it with the `wasm-bindgen` CLI version in
 //!   `Cargo.lock`, and compiles the npm wrapper. `--dev` builds faster, without link-time
 //!   optimization.
-//! - `bindgen-version`: prints the `wasm-bindgen` version in `Cargo.lock`, which CI installs the
-//!   CLI at.
+//! - `bindgen-version`: prints the `wasm-bindgen` version in `Cargo.lock`. CI installs that version
+//!   of the CLI.
 //! - `version`: sets the crates' version to the npm package's, as changesets set it.
 //! - `package`: builds an isolated, optimized npm tarball, the one `pnpm release` publishes, and
 //!   reports its sizes and hashes.

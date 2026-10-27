@@ -1,7 +1,7 @@
-//! A spatial index of boxes that change: a packed R-tree whose leaves refit as their boxes change,
-//! plus a list of items given boxes since packing, which every query also scans until there are
-//! enough to repack. Queries and changes take about O(log n), and the root holds the extent of all
-//! boxes, so keeping the index current never walks every box (except when repacking).
+//! A spatial index of boxes that change. It is a packed R-tree whose leaves refit as their boxes
+//! change, plus a list of items given boxes since packing. Every query also scans that list until
+//! it is long enough to repack. Queries and changes take about O(log n). The root holds the extent
+//! of all boxes, so keeping the index current never walks every box, except when repacking.
 
 use super::rect::{EMPTY, Rect, meets, union, valid};
 
@@ -15,9 +15,9 @@ const FRESH: usize = 64;
 pub(crate) struct Boxes {
     rects: Vec<Rect>,
     index: Index,
-    /// Each item's leaf; `usize::MAX` for an item that had no box when packed.
+    /// Each item's leaf, or `usize::MAX` for an item that had no box when packed.
     leaves: Vec<usize>,
-    /// Items given a box since packing; they have no leaf.
+    /// Items given a box since packing. They have no leaf.
     fresh: Vec<usize>,
 }
 
@@ -90,7 +90,7 @@ struct Index {
     items: Vec<usize>,
     /// Each node's box: the leaves, then each level up to the root.
     nodes: Vec<Rect>,
-    /// Where each level's nodes start, leaves first; the last is the node count.
+    /// Where each level's nodes start, leaves first. The last is the node count.
     starts: Vec<usize>,
 }
 

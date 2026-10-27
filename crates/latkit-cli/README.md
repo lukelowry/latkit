@@ -2,7 +2,7 @@
 
 Renders latkit scenes to images, image sequences, raw frames, and video on the machine's GPU, with
 the same renderer as the browser package. Inputs are latkit's JSON, so any language can write them.
-The package is `latkit-cli`; the executable is `latkit`.
+The package is `latkit-cli` and the executable is `latkit`.
 
 ```sh
 cargo install latkit-cli
@@ -15,8 +15,7 @@ latkit schema scene > scene.schema.json
 ```
 
 [The documentation](https://latkit.readthedocs.io/en/latest/cli.html) covers commands, inputs,
-frames, outputs, and diagnostics, and this CLI draws all of
-[its examples](https://latkit.readthedocs.io/en/latest/examples/).
-[The 70,000-bus fault](examples/bus-fault/README.md) and
-[the WECC240 fault](examples/wecc240-fault/README.md) videos are made with Python and this CLI
-alone.
+frames, outputs, and diagnostics. This CLI draws all of
+[its examples](https://latkit.readthedocs.io/en/latest/examples/). The
+[70,000-bus fault](examples/bus-fault/README.md) and
+[WECC240 fault](examples/wecc240-fault/README.md) videos are made with only Python and this CLI.

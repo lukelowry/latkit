@@ -41,7 +41,7 @@ fn theme_text() -> vec3f {
     return unpack4x8unorm(theme_word(THEME_TEXT)).rgb;
 }
 
-// The border color of a diagram's blocks and groups; clear for none.
+// The border color of a diagram's blocks and groups. Clear for none.
 fn theme_outline() -> vec4f {
     return unpack4x8unorm(theme_word(THEME_OUTLINE));
 }

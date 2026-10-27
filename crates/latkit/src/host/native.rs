@@ -18,9 +18,9 @@ use crate::{Error, Pending, Resolver, Result};
 
 /// Native platform services: shaped text, background jobs, local files, and video.
 ///
-/// `Native` is a handle; clones share its fonts and workers. System fonts are discovered on the
-/// first text request, while [`from_fonts`](Self::from_fonts) uses only the supplied font bytes. A
-/// pool of at most four workers starts on the first job or fetch. A fetch reads a file path or a
+/// `Native` is a handle, and clones share its fonts and workers. System fonts are discovered on the
+/// first text request. [`from_fonts`](Self::from_fonts) uses only the supplied font bytes instead.
+/// A pool of at most four workers starts on the first job or fetch. A fetch reads a file path or a
 /// `file://` URL on a worker. Video is encoded with Media Foundation on Windows, in hardware where
 /// the machine has it. Other platforms encode no video.
 #[derive(Clone, Default)]

@@ -129,7 +129,7 @@ pub(super) fn summing(marks: &[Shown]) -> Vec<bool> {
     summing
 }
 
-/// The vertex mark drawing `table` that ends attach to: the unnamed one, else the first.
+/// The vertex mark drawing `table` that ends attach to: the unnamed one, or else the first.
 pub(super) fn end_mark(marks: &[Shown], data: &Name, table: &Name) -> Option<usize> {
     let drawing = |i: &usize| {
         let m = &marks[*i];

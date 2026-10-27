@@ -4,11 +4,11 @@ use serde::Deserialize;
 use super::form::{preset_schema, presets};
 
 /// How the view places vertex rows that have no position: a name, or
-/// `{ stress | layered: options }`. In a diagram it places blocks; on a plane or the earth it
+/// `{ stress | layered: options }`. In a diagram it places blocks. On a plane or the earth it
 /// places points among the rows they link to. Gaps are in position units: diagram units, plane
 /// units, or degrees on the earth.
 ///
-/// A row keeps its place once placed: rows added later are placed around the others, and
+/// A placed row keeps its place. Rows added later are placed around the others, and
 /// [`View::arrange`](crate::View::arrange) lays out every row again.
 #[derive(Clone, Copy, PartialEq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
@@ -29,12 +29,12 @@ presets!(Layout {
     "layered" => Layout::Layered(Layered::default()),
 });
 
-/// Stress majorization: vertices move until drawn distances match graph distances, then overlapping
-/// boxes separate, keeping a quarter of `gap` between them.
+/// Stress majorization: vertices move until drawn distances match graph distances. Then
+/// overlapping boxes separate, keeping a quarter of `gap` between them.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Stress {
-    /// Distance between the centers of linked vertices, in position units. Default 40.
+    /// Distance between the centers of linked vertices, in position units. Defaults to 40.
     #[schemars(range(min = 0))]
     pub gap: f64,
 }
@@ -50,11 +50,11 @@ impl Default for Stress {
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Layered {
-    /// The direction edges point; `right` by default.
+    /// The direction edges point. Defaults to `right`.
     pub direction: Direction,
-    /// Distance between vertices within a rank, in position units. Default 30.
+    /// Distance between vertices within a rank, in position units. Defaults to 30.
     pub gap: f64,
-    /// Distance between ranks, in position units. Default 80.
+    /// Distance between ranks, in position units. Defaults to 80.
     pub rank_gap: f64,
 }
 

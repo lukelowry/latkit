@@ -5,10 +5,10 @@
 //! the level holding it. Links between members of different groups are lifted to the groups that
 //! share a level. Every layout places one level at a time, so all layouts nest the same way.
 
-/// A graph to lay out, in plane units with y up: each vertex's width and height, its pinned center
-/// if any, the group holding it, and its padding as a group (how far its box reaches past its
-/// members: left, bottom, right, top); and links between vertices, directed where a layout reads
-/// direction.
+/// A graph to lay out, in plane units with y up. It holds each vertex's width and height, its
+/// pinned center if any, the group holding it, and its padding as a group (how far its box reaches
+/// past its members: left, bottom, right, top). It also holds the links between vertices, directed
+/// where a layout reads direction.
 pub(crate) struct Graph<'a> {
     pub(crate) sizes: &'a [[f64; 2]],
     pub(crate) links: &'a [[u32; 2]],
@@ -26,7 +26,7 @@ pub(crate) struct Level {
 
 /// Every vertex's center, with `place` laying out each level. A group's center is the middle of
 /// its box: its members' bounds grown by its pads. A group with a pinned member is pinned where its
-/// members settled; a group's own pin moves its members only when none of them is pinned. Group
+/// members settled. A group's own pin moves its members only when none of them is pinned. Group
 /// references out of range, to the vertex itself, or closing a cycle are ignored. Panics unless
 /// `pinned`, `groups`, and `pads` have an entry per vertex.
 pub(crate) fn nested(graph: &Graph<'_>, mut place: impl FnMut(&Level) -> Vec<[f64; 2]>) -> Vec<[f64; 2]> {
@@ -194,7 +194,7 @@ pub(crate) fn frame(center: [f64; 2], size: [f64; 2]) -> [f64; 4] {
     [center[0] - half[0], center[1] - half[1], center[0] + half[0], center[1] + half[1]]
 }
 
-/// The box holding `boxes`; a point at the origin for none.
+/// The box holding `boxes`, or a point at the origin for none.
 pub(crate) fn bounds(boxes: impl Iterator<Item = [f64; 4]>) -> [f64; 4] {
     boxes.reduce(super::rect::union).unwrap_or([0.0; 4])
 }
@@ -208,7 +208,7 @@ pub(crate) struct Runs<T> {
 }
 
 impl<T: Copy + Default> Runs<T> {
-    /// Buckets `keyed` items into `buckets` buckets; each key must be below `buckets`.
+    /// Buckets `keyed` items into `buckets` buckets. Each key must be below `buckets`.
     pub(crate) fn new(buckets: usize, keyed: impl Iterator<Item = (usize, T)> + Clone) -> Runs<T> {
         let mut offsets = vec![0; buckets + 1];
         for (key, _) in keyed.clone() {

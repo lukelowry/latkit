@@ -140,8 +140,8 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
     Ok(out.commit()?)
 }
 
-/// Writes the dataset as time tiles in directory `output`: the manifest, the dataset without its
-/// sampled fields' histories, and those histories in spans of `chunk` entries.
+/// Writes the dataset as time tiles in directory `output`: the manifest, the dataset without the
+/// histories of its sampled fields, and those histories in spans of `chunk` entries.
 fn tile(source: &Source, output: &Path, chunk: u32, deadline: Duration) -> Result<(), Failure> {
     let data = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.snapshot();
     let tiled = data.to_tiles(chunk, |path, bytes| {

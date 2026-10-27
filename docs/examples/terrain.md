@@ -8,7 +8,7 @@
 Ridged mountains in three dimensions, as faces over a grid of vertices. Each face blends its corners' colors and is lit by normals the GPU computes.
 
 The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. `node docs/gallery/render.ts terrain` draws it again.
+with `Data` and returns its scene. Run `node docs/gallery/render.ts terrain` to draw it again.
 
 ```{literalinclude} ../gallery/terrain.ts
 :language: typescript

@@ -1,7 +1,7 @@
-//! The tile cache: each tile source a GPU's views draw, by URL. A source is opened once, its pieces
-//! are fetched and decoded once for every set drawing them, and it is released once no set draws
-//! it. Work finishing for a source wakes every set drawing it, so a piece one view fetched draws in
-//! all of them.
+//! The tile cache holds each tile source a GPU's views draw, by URL. A source is opened once, and
+//! its pieces are fetched and decoded once for every set drawing them. It is released once no set
+//! draws it. When work for a source finishes, it wakes every set drawing the source, so a piece one
+//! view fetched draws in all of them.
 
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
@@ -16,8 +16,8 @@ use crate::host::Request;
 use crate::pending::Watchers;
 use crate::{Error, Pending};
 
-/// Bytes first read from an archive source (a URL ending in `.pmtiles`): its header, and in most
-/// archives the root directory after it. Other sources are read whole.
+/// Bytes first read from an archive source (a URL ending in `.pmtiles`). They hold its header and,
+/// in most archives, the root directory after it. Other sources are read whole.
 const ARCHIVE_FIRST: u64 = 16_384;
 
 /// Every tile source a GPU's views draw, by URL.
@@ -26,8 +26,8 @@ pub(crate) struct Cache {
     sources: FxHashMap<Arc<str>, Fetched>,
 }
 
-/// One tile source: its open state, the sets drawing it, and the waker that wakes them all, which
-/// its work wakes as it finishes.
+/// One tile source: its open state, the sets drawing it, and the waker that wakes them all as the
+/// source's work finishes.
 pub(crate) struct Fetched {
     pub(crate) state: State,
     sets: Arc<Watchers>,
@@ -36,7 +36,7 @@ pub(crate) struct Fetched {
 
 /// A source's open state.
 pub(crate) enum State {
-    /// Its first bytes are being fetched; they determine what it holds.
+    /// Its first bytes are being fetched. They determine what it holds.
     Opening(Pending<Vec<u8>>),
     Open(Holds),
     /// It could not be opened, with the reason.
@@ -50,9 +50,9 @@ pub(crate) enum Holds {
 }
 
 impl Cache {
-    /// The source at `url`, registering set `set` as drawing it, to be woken by `jobs`'s waker as
-    /// the source's work finishes. Starts opening the source if no set drew it before, and opens it
-    /// as far as finished work allows.
+    /// The source at `url`, with set `set` registered as drawing it. `jobs`'s waker wakes the set
+    /// as the source's work finishes. Starts opening the source if no set drew it before, and opens
+    /// it as far as finished work allows.
     pub(crate) fn open(&mut self, url: &Arc<str>, set: u64, jobs: &Jobs<'_>) -> &mut Fetched {
         let fetched = match self.sources.entry(url.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),

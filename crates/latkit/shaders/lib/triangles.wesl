@@ -89,8 +89,8 @@ fn face_corner(row: u32, corner: u32) -> Corner {
     return c;
 }
 
-// Point `offset` of triangle `t.index` of area row `t.row`. Offset 0 is the area's label anchor;
-// 1 to 3 are the triangle's corners.
+// Point `offset` of triangle `t.index` of area row `t.row`. Offset 0 is the area's label anchor.
+// Offsets 1 to 3 are the triangle's corners.
 fn area_point(t: Segment, offset: u32) -> Corner {
     var c: Corner;
     c.row = t.row;

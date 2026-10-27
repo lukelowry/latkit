@@ -4,10 +4,10 @@
 //! tiles fading out, then the camera's tiles in the order chosen, then pinned rows (selected,
 //! framed by a fit, or ends of kept edges) that no tile covers. A page keeps its slot while
 //! resident, so panning never moves rows. Idle pages stay resident while the budget allows, so
-//! returning to them is free; a page made resident again only needs its words evaluated again.
+//! returning to them is free. A page made resident again only needs its words evaluated again.
 //!
 //! Resident edges need their endpoints resident. A vertex page that many edges end in is made
-//! resident whole; scattered endpoints become kept rows, so far-apart edges cost one row per
+//! resident as a whole. Scattered endpoints become kept rows, so far-apart edges cost one row per
 //! endpoint rather than one page. Kept rows live in pages of their own, each at a fixed position
 //! while kept.
 
@@ -25,11 +25,11 @@ use crate::derive::tiled::{Chosen, Draw, Place};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::shaders::PAGE_ROWS;
 
-/// Flag bit of a slot holding a page of kept rows; the low bits are that page's number.
+/// Flag bit of a slot holding a page of kept rows. The low bits are that page's number.
 const KEPT: u32 = 1 << 31;
 
-/// Endpoints in one vertex page at which the page is made resident whole; with fewer, they are kept
-/// individually. So endpoints never take more than twice the rows they reference.
+/// The number of endpoints in one vertex page at which the whole page is made resident. Fewer are
+/// kept individually, so endpoints never take more than twice the rows they reference.
 const DENSE: u32 = PAGE_ROWS / 2;
 
 /// The contents of a slot.
@@ -93,7 +93,7 @@ pub(crate) struct Drawing {
     pub(crate) items: u32,
     pub(crate) leaving_items: u32,
     /// The layout count at which each slot's page was last needed. Idle pages stay resident while
-    /// there is room, most recently needed first.
+    /// there is space, most recently needed first.
     asked: Arc<[u64]>,
     /// How many layouts led to it, its own included.
     lays: u64,
@@ -106,13 +106,13 @@ pub(crate) struct Drawing {
     /// Unique to this drawing. Lists of its rows are keyed by it.
     pub(crate) made: Version,
     /// The endpoint or pinned places the previous drawing held elsewhere, ascending. Edge rows that
-    /// reference them resolve their endpoints again. The version identifies this set of moves; it
+    /// reference them resolve their endpoints again. The version identifies this set of moves. It
     /// carries over from the previous drawing when nothing moved.
     pub(crate) moved: (Version, Arc<[u32]>),
     /// A stamp of the kept rows' inputs: pinned rows, endpoint needs, and resident pages. A drawing
     /// with the same stamp reuses its predecessor's kept rows unchanged.
     kept_from: u64,
-    /// A stamp of how it holds rows; see [`Drawing::layout`].
+    /// A stamp of how it holds rows. See [`Drawing::layout`].
     layout: u64,
 }
 
@@ -130,10 +130,11 @@ pub(crate) struct Lay<'a> {
     /// Rows drawn regardless of tiles: selected rows, rows framed by a fit, and endpoints of kept
     /// edges.
     pub(crate) pinned: &'a Pinned,
-    /// What resident edges need resident without drawing: whole pages, and individual rows.
+    /// The vertex rows resident edges need resident without drawing them: whole pages and
+    /// individual rows.
     pub(crate) ends: &'a Ending,
-    /// How many pages it may keep resident in all. Needed pages are always resident; idle pages
-    /// fill whatever room is left.
+    /// The most pages it may keep resident. Needed pages are always resident. Idle pages fill
+    /// whatever is left.
     pub(crate) room: u32,
     /// The scene version its rows' words are evaluated in. Idle pages are released when it changes.
     pub(crate) scene: u64,
@@ -200,7 +201,7 @@ impl Written {
 }
 
 impl Lay<'_> {
-    /// A stamp of the order, ranges, pinned rows, endpoint needs, and room. Excludes `scene` and
+    /// A stamp of the order, ranges, pinned rows, endpoint needs, and `room`. Excludes `scene` and
     /// `written`, which only affect idle pages.
     pub(crate) fn stamp(&self) -> u64 {
         let chosen = self.chosen;
@@ -226,8 +227,8 @@ impl Drawing {
             if fading { ranges.iter().filter(|r| !has(was, r)).cloned().collect() } else { Vec::new() };
         let leaving: Vec<Range<u32>> =
             if fading { was.iter().filter(|r| !has(&ranges, r)).cloned().collect() } else { Vec::new() };
-        // Resident pages: those drawn or fading out, and dense endpoint pages; idle pages of
-        // `before` while there is room and their words are still valid; and pages of kept rows.
+        // Resident pages: those drawn or fading out, dense endpoint pages, idle pages of `before`
+        // while there is space and their words are still valid, and pages of kept rows.
         let count = order.pages() as usize;
         let asked_now = asked(count, ranges.iter().chain(&leaving), &lay.ends.pages);
         let mut held = asked_now.clone();
@@ -302,8 +303,8 @@ impl Drawing {
         Drawing::lay(Some(self), lay, false)
     }
 
-    /// Builds the runs: tiles fading out first, so they draw underneath; then the drawn ranges in
-    /// the order chosen, with `entering` fading in; then `pinned` rows no range covers.
+    /// Builds the runs. Tiles fading out come first, so they draw underneath. Then come the drawn
+    /// ranges in the order chosen, with `entering` fading in, then `pinned` rows no range covers.
     fn run(&mut self, entering: &[Range<u32>], pinned: &[u32]) {
         let covered = |list: &[Range<u32>], row: u32| list.iter().any(|r| r.contains(&row));
         let kept: Vec<u32> = pinned
@@ -401,7 +402,7 @@ impl Drawing {
         }
     }
 
-    /// The held row of order place `d`, from its resident page or the kept rows; `None` if not
+    /// The held row of order place `d`, from its resident page or the kept rows. `None` if not
     /// resident.
     pub(crate) fn held_of(&self, d: u32) -> Option<u32> {
         let slot = *self.pages.get((d / PAGE_ROWS) as usize)?;
@@ -501,9 +502,9 @@ fn keep_table(before: Option<&Drawing>, kept: &[u32], kept_slots: &[u32]) -> Kep
 /// The places in `ends` or `pinned` that `before` held and `now` holds elsewhere or not at all,
 /// ascending. Edge rows that reference them resolve their endpoints again. A page resident in both
 /// keeps its slot, and a row kept in both keeps its kept position, so only rows of a page resident
-/// in just one drawing move: listed rows of pages `before` held and `now` does not, and rows
-/// `before` kept whose pages `now` holds. A row `before` did not hold is referenced only by edge
-/// rows new to the edge drawing, which resolve their endpoints when they arrive.
+/// in just one drawing move. Those are the listed rows of pages `before` held and `now` does not,
+/// and the rows `before` kept whose pages `now` holds. A row `before` did not hold is referenced
+/// only by edge rows new to the edge drawing, which resolve their endpoints when they arrive.
 fn moved(before: &Drawing, now: &Drawing, ends: &Ending, pinned: &[u32]) -> Vec<u32> {
     /// The subslice of ascending `places` that lies in page `p`.
     fn within(places: &[u32], p: u32) -> &[u32] {
@@ -532,7 +533,7 @@ fn moved(before: &Drawing, now: &Drawing, ends: &Ending, pinned: &[u32]) -> Vec<
 }
 
 /// Keeps idle pages resident: pages `before` held that are no longer `asked` for and have no
-/// `written` row, most recently needed first, up to `room` resident pages in all. Marks them in
+/// `written` row, most recently needed first, up to `room` resident pages in total. Marks them in
 /// `held` and returns them ascending.
 fn linger(before: &Drawing, asked: &[bool], room: u32, written: &Written, held: &mut [bool]) -> Vec<u32> {
     let wanted = asked.iter().filter(|&&a| a).count() as u32;
@@ -555,7 +556,7 @@ fn linger(before: &Drawing, asked: &[bool], room: u32, written: &Written, held: 
 
 /// The kept rows: the places in `order` from `pinned` and `ends` whose pages are not `held`,
 /// indexed by kept position, `NONE` for a free position. Rows already kept in `before` keep their
-/// positions; the rest take the first free ones.
+/// positions, and the rest take the first free ones.
 fn keep(before: Option<&Drawing>, pinned: &[u32], ends: &[u32], held: &[bool], order: &Order) -> Vec<u32> {
     let mut out: Vec<u32> =
         pinned.iter().chain(ends).copied().filter(|&d| d < order.len() && !held[(d / PAGE_ROWS) as usize]).collect();
@@ -585,7 +586,7 @@ fn keep(before: Option<&Drawing>, pinned: &[u32], ends: &[u32], held: &[bool], o
 }
 
 /// Assigns slots to the `held` pages and to `kept_pages` pages of kept rows. Each keeps its slot
-/// from `before`; the rest take the first free slots. Returns each slot's contents, each page's
+/// from `before`, and the rest take the first free slots. Returns each slot's contents, each page's
 /// slot, and each kept page's slot.
 fn place(before: Option<&Drawing>, held: &[bool], kept_pages: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let mut slots: Vec<u32> = before.map_or_else(Vec::new, |b| b.slots.to_vec());
@@ -645,11 +646,12 @@ struct Places {
 }
 
 impl Ends {
-    /// What the edges resident in `drawing` need of the vertex table they reference through `ends`,
-    /// which draws in `target`: dense pages, sparse endpoint rows, and the endpoints of kept edges.
-    /// Recomputed only when the drawing's layout or the vertex table's length changes. Each edge
-    /// page counts its distinct endpoints once toward their vertex page, so a vertex page that many
-    /// edge pages share may be made resident whole with fewer than `DENSE` distinct rows in use.
+    /// What the edges resident in `drawing` need from the vertex table they reference through
+    /// `ends`, which draws in `target`: dense pages, sparse endpoint rows, and the endpoints of
+    /// kept edges. Recomputed only when the drawing's layout or the vertex table's length changes.
+    /// Each edge page counts its distinct endpoints once toward their vertex page, so a vertex page
+    /// that many edge pages share may be made resident as a whole with fewer than `DENSE` distinct
+    /// rows in use.
     fn ending(&mut self, drawing: &Drawing, target: &Order, ends: &[&Reference]) -> Arc<Ending> {
         let stamp = stamp_of((drawing.order.id(), target.id(), ends.iter().map(|r| r.version).collect::<Vec<_>>()));
         if stamp != self.stamp {
@@ -736,9 +738,9 @@ impl Ends {
     }
 }
 
-/// What resident edges need of the vertex table, as places in its order, ascending: dense `pages`
-/// to make resident whole and the remaining endpoint `rows` to keep individually, neither drawn;
-/// and the endpoints of `kept` edges, drawn regardless of their pages.
+/// What resident edges need from the vertex table, as places in its order, ascending. Dense `pages`
+/// are made resident as a whole and the remaining endpoint `rows` are kept individually, and
+/// neither is drawn. The endpoints of `kept` edges are drawn regardless of their pages.
 #[derive(Default, Debug)]
 pub(crate) struct Ending {
     pages: Vec<u32>,
@@ -768,7 +770,7 @@ impl Ending {
 
 /// The drawing state of one paged table: the `current` drawing, the `next` one that replaces it
 /// once every page it needs is on the GPU, and the view-clock time `since` the current one first
-/// drew. Also caches its edges' needs of their vertex table (`ends`), the merged needs of edge
+/// drew. Also caches what its edges need from their vertex table (`ends`), the merged needs of edge
 /// tables ending at this table (`ending`), and its pinned rows.
 #[derive(Default)]
 pub(crate) struct Drawn {
@@ -834,8 +836,8 @@ impl Drawn {
 
 impl View {
     /// Lays out each paged table's drawing from the camera's choices. A new drawing replaces the
-    /// current one when its inputs changed, or when the current one finished fading. A table no
-    /// longer paged loses its drawing and draws whole, in its own order.
+    /// current one when its inputs changed, or when the current one finished fading. A table that
+    /// stops being paged loses its drawing and draws all its rows, in its own order.
     pub(super) fn lay_out_drawings(&mut self) {
         let choices = std::mem::take(&mut self.choices);
         self.drawings.retain(|key, _| choices.contains_key(key));
@@ -902,7 +904,7 @@ impl View {
     }
 
     /// Sets each mark's `reveal` for this frame: how far its paged table's tiles have faded in or
-    /// out, from 0 to 1; 1 when they are not fading.
+    /// out, from 0 to 1. 1 when they are not fading.
     pub(super) fn reveal(&mut self) {
         let ease = self.ease().as_secs_f64();
         for shown in &mut self.marks {
@@ -941,8 +943,8 @@ impl View {
         paged
     }
 
-    /// How many pages `key`'s drawing may keep resident in all: for a table drawn by tiles, as many
-    /// as the plan's rows fill; otherwise 0, so no idle page stays.
+    /// The most pages `key`'s drawing may keep resident. For a table drawn by tiles, as many as the
+    /// plan's rows fill. Otherwise 0, so no idle page stays.
     fn room(&self, key: &(Name, Name)) -> u32 {
         match self.planning.plans().get(key).map(|p| p.draw) {
             Some(Draw::Tiles { rows }) => rows.div_ceil(PAGE_ROWS),

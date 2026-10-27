@@ -4,7 +4,7 @@ import { framed } from './look.ts';
 import type { Picture } from './render.ts';
 
 export default function (): Picture {
-  // Just under 2^18 = 262,144 rows, past which a view pages a table instead of drawing it whole.
+  // Just under 2^18 = 262,144 rows. Past that, a view pages a table rather than drawing all of it.
   const n = 260_000;
   const [a, b, c, d] = [-1.4, 1.6, 1.0, 0.7];
   const x = new Float32Array(n);

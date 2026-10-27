@@ -1,5 +1,5 @@
 //! A diagram's groups. A group's box surrounds its members, padded, with its title band across the
-//! top; a group with no placed members is centered at its own place. Each group keeps its members'
+//! top. A group with no placed members is centered at its own place. Each group keeps its members'
 //! boxes indexed, so an edit refits only the groups above the vertices it moved.
 
 use std::cmp::Reverse;
@@ -108,8 +108,8 @@ impl Groups {
     }
 }
 
-/// Group `group`'s box around `held`, its members' extent, y down; at its own place when `held` is
-/// empty. `None` when it has neither.
+/// Group `group`'s box around `held`, its members' extent, y down. When `held` is empty, the box is
+/// at the group's own place. `None` when it has neither.
 fn stand(group: &Vertex, held: Rect, framing: &Framing<'_>) -> Option<Rect> {
     if valid(&held) {
         let (top, padding) = (framing.header[group.mark], framing.padding);
@@ -119,7 +119,7 @@ fn stand(group: &Vertex, held: Rect, framing: &Framing<'_>) -> Option<Rect> {
     center.map(|c| around(c, group.half))
 }
 
-/// A y-down box flipped to y up for routing; `EMPTY` for none.
+/// A y-down box flipped to y up for routing. `EMPTY` for none.
 fn up(bounds: Option<Rect>) -> Rect {
     bounds.map_or(EMPTY, |b| [b[0], -b[3], b[2], -b[1]])
 }

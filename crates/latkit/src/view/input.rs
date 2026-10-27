@@ -13,7 +13,7 @@ pub enum Input {
         button: Button,
         /// Modifier keys held.
         modifiers: Modifiers,
-        /// The device that pressed; a finger's picks reach farther.
+        /// The device that pressed. A finger picks rows from farther away.
         device: Device,
     },
     /// A pointer moved.
@@ -83,7 +83,7 @@ pub enum Device {
     Mouse,
     /// A pen.
     Pen,
-    /// A finger: picks reach 8 CSS pixels farther.
+    /// A finger. Picks find rows up to 8 CSS pixels farther away.
     Touch,
     /// The keyboard.
     Keyboard,
@@ -103,7 +103,7 @@ pub struct Modifiers {
 }
 
 impl Modifiers {
-    /// Whether a click adds its row to the selection or takes it out: Shift, Control, or Meta held.
+    /// Whether a click toggles its row in the selection: Shift, Control, or Meta is held.
     pub fn toggles(self) -> bool {
         self.shift || self.control || self.meta
     }

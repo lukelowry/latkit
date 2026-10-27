@@ -1,17 +1,17 @@
-//! Derived data: tables the view computes from the scene and data instead of receiving them.
+//! Derived data: tables the view computes from the scene and data.
 //!
-//! Every derivation follows one lifecycle. It stamps its inputs and recomputes only when the stamp
+//! Every derivation works the same way. It stamps its inputs and recomputes only when the stamp
 //! changes. Small work runs on the frame, within one budget ([`FRAME_WORK`]) that all derivations
 //! share. Larger work runs as a host job, and its result is kept only while its inputs are
-//! unchanged. Results are tables beside the tables marks draw, row for row, which marks read like
-//! data. Values the GPU computes (normals, segment counts, the texts labels need) use the same
-//! stamps and are read back.
+//! unchanged. Results are tables that stand beside the drawn tables, row for row, and marks read
+//! them like data. Values the GPU computes (normals, segment counts, the texts labels need) use the
+//! same stamps and are read back.
 //!
-//! The derivations: a diagram's sheet (places, sizes, group boxes, wires). Outside diagrams:
-//! lanes of edges sharing both endpoints, stars of nets, and, when the scene has a layout, places
-//! of vertex rows without positions. Everywhere: shapes of geometry fields (every area's
-//! triangles), text matches for `contains`, the pieces of given tile sets the camera needs, and
-//! what each paged table draws.
+//! In a diagram, the sheet derives places, sizes, group boxes, and wires. Outside diagrams, the
+//! derivations are lanes of edges that share both endpoints, stars of nets, and, when the scene has
+//! a layout, places of vertex rows without positions. In every space they also derive shapes of
+//! geometry fields (every area's triangles), text matches for `contains`, the pieces of given tile
+//! sets the camera needs, and what each paged table draws.
 
 pub(crate) mod graph;
 mod lanes;
@@ -55,7 +55,7 @@ pub(crate) fn stamp_with(hash: impl FnOnce(&mut FxHasher)) -> u64 {
 
 /// Work whose bytes arrive later: a GPU readback, or a host job or fetch.
 pub(crate) trait Answer {
-    /// Takes the bytes once they arrive; `None` until then.
+    /// Takes the bytes once they arrive. `None` until then.
     fn take(&self) -> Option<Result<Vec<u8>>>;
 }
 
@@ -73,11 +73,11 @@ impl Answer for Pending<Vec<u8>> {
 
 /// Work under way: its answer, the stamp of the inputs it was started for, and the context its
 /// answer is read with. Work that lands counts as done for its stamp, whether it succeeded or
-/// failed, so no work for that stamp starts again: a job runs once for each set of inputs. Stamp 0
-/// is for work started on request rather than for inputs, which this does not track.
+/// failed, so no work for that stamp starts again. A job runs once for each set of inputs. Stamp 0
+/// is for work started on request, not for inputs, and is not tracked.
 pub(crate) struct Working<C, A: Answer = Pending<Vec<u8>>> {
     pending: Option<(u64, A, C)>,
-    /// The stamp of the work that landed last; 0 for none.
+    /// The stamp of the work that landed last, or 0 for none.
     done: u64,
 }
 
@@ -113,7 +113,7 @@ impl<C, A: Answer> Working<C, A> {
         self.pending = Some((stamp, answer, context));
     }
 
-    /// Drops the pending work; its answer is ignored.
+    /// Drops the pending work. Its answer is ignored.
     pub(crate) fn cancel(&mut self) {
         self.pending = None;
     }
@@ -141,7 +141,7 @@ impl<T: Default, A: Answer> Default for Derived<T, A> {
 }
 
 impl<T, A: Answer> Derived<T, A> {
-    /// The stamp the value was made from; 0 before the first value.
+    /// The stamp the value was made from, or 0 before the first value.
     pub(crate) fn stamp(&self) -> u64 {
         self.stamp
     }
@@ -213,7 +213,7 @@ impl<'a> Jobs<'a> {
         Jobs { errors, host, waker, counters, left }
     }
 
-    /// Whether `cost` microseconds fit the rest of the frame's budget; spends them if so.
+    /// Whether `cost` microseconds fit the rest of the frame's budget. Spends them if so.
     pub(crate) fn fits(&mut self, cost: u64) -> bool {
         let fits = cost <= u64::from(self.left);
         if fits {
@@ -244,7 +244,7 @@ impl<'a> Jobs<'a> {
         self.left = self.left.saturating_sub(cost.min(u64::from(u32::MAX)) as u32);
     }
 
-    /// Runs `job` on the host, off the frame; without a host, runs it immediately.
+    /// Runs `job` on the host, off the frame. Without a host, runs it immediately.
     pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         self.counters.add(Count::Jobs, 1);
         let pending = match self.host {
@@ -350,9 +350,9 @@ impl Input<'_> {
         }
     }
 
-    /// Calls `read` with every field that `expr`, of a mark drawing `table`, reads. When `own` is
-    /// set, a field of `table` itself is reported as `own` (it sizes or places each row by that
-    /// row's value), unless a domain fits `expr` to every row's values.
+    /// Calls `read` with every field that `expr` reads, for a mark drawing `table`. When `own` is
+    /// set, a field of `table` itself is reported as `own`, since it sizes or places each row by
+    /// that row's value. The exception is when a domain fits `expr` to every row's values.
     fn read_expr<'a>(
         &'a self,
         table: (&'a Name, &'a Name),
@@ -435,8 +435,8 @@ pub(crate) struct Derivations {
     pub(crate) tiled: tiled::Tiled,
 }
 
-/// The derived tables beside one drawn table: the first of the sheet's, places', stars', or lanes',
-/// then the shapes', then the matches'.
+/// The derived tables beside one drawn table: the first found of the sheet's, places', stars', or
+/// lanes' tables, then the shapes' table, then the matches' table.
 pub(crate) type Beside<'a> = [Option<&'a Table>; 3];
 
 impl Derivations {
@@ -509,8 +509,8 @@ impl Derivations {
         [first, self.shapes.tables().get(&key), self.matches.tables().get(&key)]
     }
 
-    /// The shapes of paged table `table` of dataset `data`, made per page of its order, by the
-    /// derived field each is written as.
+    /// The shapes of paged table `table` of dataset `data`, made per page of its order, keyed by
+    /// the derived field each is written as.
     pub(crate) fn paged(&self, data: &Name, table: &Name) -> Vec<(Name, &shapes::PagedShapes)> {
         self.shapes.paged(data, table)
     }

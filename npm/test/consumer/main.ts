@@ -28,7 +28,7 @@ async function until(condition: () => boolean): Promise<void> {
   }
 }
 
-// The scene names its dataset by name, so each view draws the `grid` its sources give.
+// The scene names its dataset, so each view draws the `grid` in its own sources.
 const scene: Scene = {
   space: { plane: { grid: 'off' } },
   theme: 'dark',

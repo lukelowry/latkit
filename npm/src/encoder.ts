@@ -1,5 +1,5 @@
 /**
- * The H.264 encoder latkit's videos use in a browser, built on WebCodecs. It takes NV12 pictures
+ * The H.264 encoder for latkit's videos in a browser, built on WebCodecs. It takes NV12 pictures
  * (BT.709, limited range) and returns Annex B units in order, each `[time, key, bytes]`, with
  * `time` in 90 kHz ticks. It prefers hardware encoding and uses the lowest H.264 level that fits
  * the size and frame rate.
@@ -60,9 +60,9 @@ function configurations(
 
 /**
  * Creates an encoder for `width`×`height` pictures at `fps` frames per second and `bitrate` bits
- * per second. Throws an `unsupported` error when the browser has no `VideoEncoder`. Its calls
- * reject with an `unsupported` error when the browser encodes no H.264 at that size and rate, and
- * with an `io` error when encoding fails.
+ * per second. Throws an `unsupported` error when the browser has no `VideoEncoder`. Its methods
+ * reject with an `unsupported` error when the browser cannot encode H.264 at that size and rate,
+ * and with an `io` error when encoding fails.
  */
 export function encoder(width: number, height: number, fps: number, bitrate: number) {
   if (typeof VideoEncoder !== 'function')

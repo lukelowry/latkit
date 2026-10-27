@@ -96,7 +96,7 @@
         "required": false,
         "many": false,
         "global": false,
-        "help": "Output format. Defaults to the one the output's extension names, else PNG",
+        "help": "Output format. Defaults to the format of the output's extension, or PNG",
         "defaults": [],
         "values": [
           {
@@ -400,7 +400,7 @@
         "required": false,
         "many": false,
         "global": false,
-        "help": "Output format. Defaults to the one the output's extension names, else PNG",
+        "help": "Output format. Defaults to the format of the output's extension, or PNG",
         "defaults": [],
         "values": [
           {
@@ -773,7 +773,7 @@
   {
     "name": "latkit tile",
     "usage": "latkit tile [OPTIONS] --output <DIR> <[NAME=]FILE>",
-    "about": "Write a dataset as time tiles: `frames.json` (which `--tiles` opens), the dataset without its sampled fields' histories, and those histories in spans at every level of detail",
+    "about": "Write a dataset as time tiles: `frames.json` (which `--tiles` opens), the dataset without the histories of its sampled fields, and those histories in spans at every level of detail",
     "args": [
       {
         "id": "data",

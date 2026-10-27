@@ -21,7 +21,7 @@ use crate::Name;
 
 /// A per-row value of a mark: a constant, a color, a field, view state, or arithmetic on them.
 /// Color options take an expression that computes a color: a [`Color`], a value through a
-/// colormap, or a conditional choosing between colors.
+/// colormap, or a conditional that picks between colors.
 ///
 /// ```
 /// # use latkit::{field, when, selected, Colormap, Color};
@@ -76,7 +76,7 @@ pub(crate) enum State {
     Zoom,
 }
 
-/// An operation on one value. `sin` and `cos` take radians; `not` treats values above 0.5 as
+/// An operation on one value. `sin` and `cos` take radians. `not` treats values above 0.5 as
 /// true.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Unary {
@@ -162,24 +162,24 @@ pub fn pointer() -> Expr {
     node(Node::State(State::Pointer))
 }
 
-/// Seconds since the view was created; a mark that reads it redraws every frame.
+/// Seconds since the view was created. A mark that reads it redraws every frame.
 pub fn elapsed() -> Expr {
     node(Node::State(State::Elapsed))
 }
 
-/// The camera's zoom: the web mercator zoom level on the earth, log₂ of CSS pixels per unit
-/// elsewhere. Options that read it update as the camera zooms, as levels of detail do.
+/// The camera's zoom: the web mercator zoom level on the earth, and log₂ of CSS pixels per unit
+/// elsewhere. Options that read it update as the camera zooms, like levels of detail.
 pub fn zoom() -> Expr {
     node(Node::State(State::Zoom))
 }
 
-/// A size in position units (degrees on the earth), regardless of the space's unit. It scales as
-/// the view zooms; [`Size::at_least`] and [`Size::at_most`] bound it in CSS pixels.
+/// A size in position units (degrees on the earth), regardless of the space's unit. It scales with
+/// the zoom. [`Size::at_least`] and [`Size::at_most`] bound it in CSS pixels.
 pub fn units(size: impl Into<Expr>) -> Size {
     Size { expr: size.into(), unit: Some(Unit::Units), px: Size::ANY }
 }
 
-/// A size in CSS pixels, regardless of the space's unit, so it keeps its on-screen size as the view
+/// A size in CSS pixels, regardless of the space's unit. It keeps its size on screen as the view
 /// zooms. In a diagram, this keeps a stroke's width constant on screen.
 pub fn px(size: impl Into<Expr>) -> Size {
     Size { expr: size.into(), unit: Some(Unit::Px), px: Size::ANY }
@@ -270,7 +270,7 @@ impl Expr {
     }
 
     /// Whether a text field contains `text`, ignoring case. In a mark, the field must belong to the
-    /// mark's own table; the view recomputes matches on the CPU when the field changes.
+    /// mark's own table. The view recomputes matches on the CPU when the field changes.
     #[must_use]
     pub fn contains(self, text: &str) -> Expr {
         node(Node::Contains(self, text.into()))
@@ -290,14 +290,15 @@ impl Expr {
         self.map_fields(&|f| FieldRef { step: true, ..f.clone() })
     }
 
-    /// The value mapped through `colormap`. The domain fits the values shown unless set with
-    /// [`Mapped::domain`]; a categorical map ignores it and bins values by their integer part.
+    /// The value mapped through `colormap`. The domain defaults to the extent of the values shown.
+    /// Set it with [`Mapped::domain`]. A categorical map ignores the domain and bins values by
+    /// their integer part.
     pub fn colormap(self, colormap: impl Into<Colormap>) -> Mapped {
         Mapped(node(Node::Colormap { input: self, colormap: colormap.into(), domain: Domain::Fit }))
     }
 
-    /// The value mapped linearly onto `range`, clamped. The domain fits the values shown unless set
-    /// with [`Mapped::domain`].
+    /// The value mapped linearly onto `range`, clamped. The domain defaults to the extent of the
+    /// values shown. Set it with [`Mapped::domain`].
     pub fn scale(self, range: RangeInclusive<f64>) -> Mapped {
         let range = [*range.start(), *range.end()];
         Mapped(node(Node::Scale { input: self, domain: Domain::Fit, range }))
@@ -381,7 +382,7 @@ impl Expr {
         }
     }
 
-    /// The first colormap the expression maps through, with its domain when fixed; a legend shows
+    /// The first colormap the expression maps through, with its domain when fixed. A legend shows
     /// it. A conditional's `otherwise` is searched before its cases, since it is the general case.
     pub(crate) fn colormap_of(&self) -> Option<(&Colormap, Option<[f64; 2]>)> {
         match &*self.0 {
@@ -397,7 +398,7 @@ impl Expr {
     }
 }
 
-/// A value mapped through a colormap or onto a range, whose domain can be set.
+/// A value mapped through a colormap or onto a range. Its domain can be set.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Mapped(Expr);
 
@@ -457,13 +458,13 @@ impl Then {
     }
 }
 
-/// A size. A bare value is in the space's unit: units in a diagram, CSS pixels elsewhere. [`px`]
-/// makes it CSS pixels and [`units`] makes it position units, which scale as the view zooms.
+/// A size. A bare value is in the space's unit: CSS pixels, or units in a diagram. [`px`] makes it
+/// CSS pixels, and [`units`] makes it position units, which scale with the zoom.
 /// [`Size::at_least`] and [`Size::at_most`] bound it in CSS pixels.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Size {
     pub(crate) expr: Expr,
-    /// Its explicit unit; `None` for the space's unit.
+    /// Its explicit unit. `None` means the space's unit.
     pub(crate) unit: Option<Unit>,
     /// The CSS pixel bounds it stays within at any zoom.
     pub(crate) px: [f32; 2],
@@ -488,9 +489,10 @@ impl Size {
         self.unit.map_or(space_units, |unit| unit == Unit::Units)
     }
 
-    /// Sets a minimum on-screen size of `px` CSS pixels, however far the view zooms out:
-    /// `units(field("r")).at_least(2.0)` scales with the map but never shrinks below 2 pixels. A
-    /// marker is bounded on its larger side and keeps its proportions. Negative values count as 0.
+    /// Sets a minimum size of `px` CSS pixels on screen, however far the view zooms out. For
+    /// example, `units(field("r")).at_least(2.0)` scales with the map but never shrinks below 2
+    /// pixels. A marker is bounded on its larger side and keeps its proportions. Negative values
+    /// count as 0.
     #[must_use]
     pub fn at_least(mut self, px: f32) -> Size {
         self.px[0] = px.max(0.0);

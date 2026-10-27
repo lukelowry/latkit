@@ -1,6 +1,6 @@
 //! Serde forms for data written as JSON: a patch's changes, a table's fields, values, and ids.
-//! Everything decodes in one pass except a slice of a binary file, which [`Patch::read`] fetches
-//! through a host afterwards. JavaScript sends the binary frames instead of JSON.
+//! Everything decodes in one pass except slices of binary files, which [`Patch::read`] fetches
+//! through a host afterwards. JavaScript sends binary frames, not JSON.
 
 use std::fmt;
 use std::sync::Arc;
@@ -42,11 +42,11 @@ pub(crate) enum OpForm {
     /// Writes fields for these rows. Rows with existing ids are updated, new ids add rows, and
     /// fields left out keep their values. A missing table is added.
     Set(TableForm),
-    /// Removes the rows with these ids; ids that match no row are ignored.
+    /// Removes the rows with these ids. Ids that match no row are ignored.
     Remove { table: String, ids: IdsForm },
     /// Records a frame at each axis coordinate in `at`. Each field gives one value per row per
-    /// coordinate, frame-major. Covers every row, or only the rows `ids` names; other rows keep
-    /// their last values.
+    /// coordinate, frame-major. Covers every row, or only the rows in `ids`. Other rows keep their
+    /// last values.
     Append {
         at: At,
         table: String,
@@ -57,10 +57,10 @@ pub(crate) enum OpForm {
     /// Forgets every sampled field's frames before axis coordinate `before`.
     Forget { before: f64 },
     /// Inserts a run of entries of sampled field `field` at level `level`, numbered from `first`,
-    /// as time tiles store them. At level 0 each entry is a frame: one coordinate in `at` and one
-    /// value per row in `values`. At level `k` each entry is a bucket of `8^k` frames: its first
-    /// and last frame's coordinates in `at`, and in `values` every bucket's least value per row,
-    /// followed by every bucket's greatest. Null is missing.
+    /// in the form time tiles store them. At level 0 each entry is a frame, with one coordinate in
+    /// `at` and one value per row in `values`. At level `k` each entry is a bucket of `8^k` frames.
+    /// `at` holds the coordinates of each bucket's first and last frame. `values` holds every
+    /// bucket's least value per row, followed by every bucket's greatest. Null is missing.
     Frames {
         table: String,
         field: String,
@@ -217,7 +217,7 @@ impl JsonSchema for Geometry {
 }
 
 /// Deserializes a patch from its JSON form. A field given as a slice of a binary file is an error
-/// here; [`Patch::read`] fetches those.
+/// here, since only [`Patch::read`] fetches slices.
 impl<'de> Deserialize<'de> for Patch {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Patch, D::Error> {
         patch(Vec::<OpForm>::deserialize(deserializer)?).map_err(de::Error::custom)
@@ -254,7 +254,7 @@ impl<'de> Deserialize<'de> for Id {
 }
 
 impl OpForm {
-    /// The field columns of a replace, set, or append; empty for other changes.
+    /// The field columns of a replace, set, or append, or empty for other changes.
     pub(crate) fn columns(&mut self) -> &mut [(Name, Column)] {
         match self {
             OpForm::Replace(TableForm { fields, .. })
@@ -266,7 +266,7 @@ impl OpForm {
 }
 
 /// Builds the patch for `ops`. Every slice of a file must already be replaced by its values. Errors
-/// name the part as JSON reading does, such as `[2].set.fields.x`.
+/// name the part like JSON reading, such as `[2].set.fields.x`.
 pub(crate) fn patch(ops: Vec<OpForm>) -> Result<Patch> {
     let mut patch = Patch::new();
     for (i, op) in ops.into_iter().enumerate() {
@@ -345,7 +345,7 @@ impl Slice {
         self.offset.checked_add(length).ok_or_else(|| Error::invalid("the slice's end offset overflows"))
     }
 
-    /// Decodes the slice's fetched `bytes`. Errors unless exactly the slice's length arrived.
+    /// Decodes the slice's fetched `bytes`. Errors if their length is not the slice's length.
     pub(crate) fn read(&self, bytes: &[u8]) -> Result<Values> {
         let length = self.end()? - self.offset;
         if bytes.len() as u64 != length {
@@ -356,7 +356,7 @@ impl Slice {
     }
 }
 
-/// The value type of a slice's bytes. Numbers are little endian; `bool` is one byte each, nonzero
+/// The value type of a slice's bytes. Numbers are little endian. `bool` is one byte each, nonzero
 /// meaning true.
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
 enum Dtype {
@@ -417,7 +417,7 @@ impl Column {
     }
 }
 
-/// A table's fields in the order written, each name once.
+/// A table's fields in the order written. Each name appears once.
 #[derive(Default, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct Fields(Ordered<Column>);
@@ -432,7 +432,7 @@ impl Fields {
     }
 }
 
-/// Reads a column. Errors name only what is wrong; reading names the field in the error's path.
+/// Reads a column. Errors say only what is wrong. The caller adds the field to the error's path.
 impl<'de> Deserialize<'de> for Column {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Column, D::Error> {
         deserializer.deserialize_any(ColumnVisitor)
@@ -561,7 +561,7 @@ impl Geometry {
         }
     }
 
-    /// The geometry as a [`Value`]; `None` when it is empty. Errors when nested deeper than
+    /// The geometry as a [`Value`], or `None` when it is empty. Errors when nested deeper than
     /// polygons.
     fn value(self) -> std::result::Result<Option<Value>, &'static str> {
         if matches!(&self, Geometry::List(items) if items.is_empty()) {
@@ -678,7 +678,7 @@ impl<'de> Deserialize<'de> for IdsForm {
     }
 }
 
-/// One id as written in JSON; `null` is `None`.
+/// One id as written in JSON, with `null` as `None`.
 struct Key(Option<Id>);
 
 impl<'de> Deserialize<'de> for Key {

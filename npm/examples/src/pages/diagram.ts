@@ -1,7 +1,7 @@
 /**
  * A block diagram on a sheet: blocks with ports, wires routed around them, and groups drawn around
- * their members. Each block kind is a table whose reference fields name the signal on each port, and
- * an edges mark of the signals draws them as wires. Drag blocks, draw wires from an output to an
+ * their members. Each block kind is a table. Its reference fields name the signal on each port, and
+ * an edges mark over the signals draws them as wires. Drag blocks, draw wires from an output to an
  * input, delete with the Delete key, arrange, and undo.
  */
 import {
@@ -169,8 +169,8 @@ export default page({
       ],
     }));
 
-    // Every edit can be undone: each one keeps the version before it, which shares its pages with
-    // the data, so the history costs only what changed.
+    // Every edit can be undone. Each edit keeps the version before it, which shares pages with the
+    // data, so the history costs only what changed.
     const undo: Snapshot[] = [];
     const redo: Snapshot[] = [];
     const edit = (change: () => void) => {

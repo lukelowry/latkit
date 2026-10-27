@@ -67,7 +67,7 @@ impl Kind {
         }
     }
 
-    /// A geometry kind's nesting depth; `None` for other kinds.
+    /// A geometry kind's nesting depth, or `None` for other kinds.
     pub(crate) fn depth(self) -> Option<u8> {
         match self {
             Kind::Point => Some(0),
@@ -100,8 +100,8 @@ pub enum Value {
     Row(Row),
 }
 
-/// Serializes as JSON: a number (`null` when not finite), boolean, or text; a geometry as nested
-/// `[x, y]` points; a reference as its target row's id.
+/// Serializes as JSON. Numbers, booleans, and texts are written as is, with non-finite numbers as
+/// `null`. A geometry is nested `[x, y]` points, and a reference is its target row's id.
 impl serde::Serialize for Value {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
@@ -136,9 +136,9 @@ impl schemars::JsonSchema for Value {
     }
 }
 
-/// Where each output value of [`Values::assemble`] comes from. Source 0 is the first source; the
-/// sources after it are pages of [`PAGE_ROWS`](super::column::PAGE_ROWS) rows, addressed by row. A
-/// concrete type rather than a closure, so [`Values::assemble`] is compiled only once.
+/// Where each output value of [`Values::assemble`] comes from. Source 0 is the first source. The
+/// sources after it are pages of [`PAGE_ROWS`](super::column::PAGE_ROWS) rows, addressed by row.
+/// It is a concrete type, not a closure, so [`Values::assemble`] is compiled only once.
 #[derive(Clone, Copy)]
 pub(crate) enum Picks<'a> {
     /// Value `i` is row `rows[i]` of the pages.
@@ -148,8 +148,8 @@ pub(crate) enum Picks<'a> {
     Writes { from: &'a [Option<usize>], kept: usize },
 }
 
-/// A run of values to copy: a source and its first row (consecutive rows follow), or `None` for
-/// missing values, with the run's length.
+/// A run of values to copy, and its length. The run is a source and its first row, with
+/// consecutive rows following, or `None` for missing values.
 type Run = (Option<(usize, usize)>, usize);
 
 impl Picks<'_> {
@@ -236,13 +236,13 @@ impl Values {
         })
     }
 
-    /// Value `i` as a row id: `None` when missing, or when the values are not stored as `u64`
+    /// Value `i` as a row id. `None` when missing, or when the values are not stored as `u64`
     /// numbers or texts.
     pub fn id(&self, i: usize) -> Option<super::name::Id> {
         super::ids::key(self, i).map(super::name::IdRef::to_id)
     }
 
-    /// Every value as a number, missing as NaN: `None` unless the values are numbers.
+    /// Every value as a number, with NaN for missing values. `None` if the values are not numbers.
     pub fn numbers(&self) -> Option<Vec<f64>> {
         (self.kind() == Kind::Number).then(|| self.map_numbers(|x| x.unwrap_or(f64::NAN)))
     }
@@ -263,15 +263,16 @@ impl Values {
         Values { array, valid: self.valid.as_ref().map(|v| v.slice(range)) }
     }
 
-    /// Maps every value, read as by `number` (`None` where missing), through `f`.
+    /// Maps every value through `f`. Values are read like `number`, with `None` where missing.
     pub(crate) fn map_numbers<T>(&self, f: impl FnMut(Option<f64>) -> T) -> Vec<T> {
         let mut out = Vec::with_capacity(self.len());
         self.extend_numbers(&mut out, f);
         out
     }
 
-    /// Appends every value to `out`, read as by `number` (`None` where missing) and mapped through
-    /// `f`. One loop per storage type, so the storage is matched once rather than per value.
+    /// Appends every value to `out`, mapped through `f`. Values are read like `number`, with `None`
+    /// where missing. Each storage type has its own loop, so the storage is matched once, not per
+    /// value.
     pub(crate) fn extend_numbers<T>(&self, out: &mut Vec<T>, mut f: impl FnMut(Option<f64>) -> T) {
         macro_rules! each {
             ($v:expr, $number:expr) => {
@@ -291,7 +292,7 @@ impl Values {
         }
     }
 
-    /// Value `i` as a number; booleans are 0 or 1, texts and geometries NaN.
+    /// Value `i` as a number. Booleans are 0 or 1, and texts and geometries are NaN.
     pub(crate) fn number(&self, i: usize) -> f64 {
         match &self.array {
             Array::F64(v) => v[i],
@@ -318,8 +319,8 @@ impl Values {
         }
     }
 
-    /// The number of points shaders read for the present geometries: every coordinate, plus one
-    /// break between a row's parts or rings. 0 for values that are not geometries.
+    /// The number of points shaders read for the present geometries. That is every coordinate,
+    /// plus one break between a row's parts or rings. 0 for values that are not geometries.
     pub(crate) fn points(&self) -> usize {
         let Some(geometry) = self.geometry() else { return 0 };
         (0..self.len()).filter(|&row| self.is_valid(row)).map(|row| geometry.row_points(row)).sum()
@@ -330,8 +331,8 @@ impl Values {
         Values { array: Array::Geometry(geometry), valid: None }
     }
 
-    /// Geometry of `depth` copying each of `rows`: a row of a geometry, or `None` for an empty row,
-    /// which draws nothing.
+    /// Geometry of `depth` that copies each of `rows`. Each is a row of a geometry, or `None` for
+    /// an empty row, which draws nothing.
     pub(crate) fn of_rows<'g>(depth: u8, rows: impl IntoIterator<Item = Option<(&'g Geometry, usize)>>) -> Values {
         let mut builder = GeometryBuilder::new(depth);
         for row in rows {
@@ -343,9 +344,9 @@ impl Values {
         Values::of_geometry(builder.finish())
     }
 
-    /// A field of `values` typed by what is present: numbers if every present value is a number,
-    /// booleans if every one is a boolean, and texts otherwise, with other values written as text.
-    /// GeoJSON and vector tiles type their properties so.
+    /// A field of `values`, typed by the values present. It is numbers if every present value is a
+    /// number, booleans if every one is a boolean, and texts otherwise, with other values written
+    /// as text. GeoJSON and vector tile properties are typed this way.
     pub(crate) fn infer(values: &[Option<Value>]) -> Values {
         let present = || values.iter().flatten();
         if present().all(|v| matches!(v, Value::Number(_))) {
@@ -367,8 +368,8 @@ impl Values {
 
     /// The values `picks` names among `sources`, missing where it names none.
     ///
-    /// The result keeps the first source's storage; numbers from other sources convert to it. A
-    /// source of another kind is an error.
+    /// The result keeps the first source's storage, and numbers from other sources convert to it.
+    /// A source of another kind is an error.
     pub(crate) fn assemble(sources: &[&Values], picks: Picks<'_>) -> Result<Values> {
         let kind = sources.first().expect("a source").kind();
         if let Some(other) = sources.iter().find(|s| s.kind() != kind) {
@@ -379,14 +380,15 @@ impl Values {
     }
 
     /// `parts` concatenated in the first part's storage, converting numbers from other storages.
-    /// Joins a column's pages by copying each part whole. Every part must have the first's kind.
+    /// Joins a column's pages by copying each part whole. Every part must have the same kind as the
+    /// first.
     pub(crate) fn concat(parts: &[&Values]) -> Values {
         debug_assert!(parts.iter().all(|p| p.kind() == parts[0].kind()));
         let runs: Vec<Run> = parts.iter().enumerate().map(|(s, part)| (Some((s, 0)), part.len())).collect();
         Values::of_runs(parts, &runs)
     }
 
-    /// The values `runs` copy from `sources`, in the first source's storage; numbers from other
+    /// The values `runs` copy from `sources`, in the first source's storage. Numbers from other
     /// sources convert to it.
     fn of_runs(sources: &[&Values], runs: &[Run]) -> Values {
         let len = runs.iter().map(|&(_, n)| n).sum();
@@ -462,8 +464,8 @@ impl Values {
         Values { array, valid: (!all).then(|| bits.finish()) }
     }
 
-    /// Whether `other` holds exactly these values in the same storage. Compares the stored
-    /// representation without building any [`Value`]: floats by their bits, so NaN equals itself.
+    /// Whether `other` holds exactly these values in the same storage. Compares the stored form
+    /// without building any [`Value`]. Floats compare by their bits, so NaN equals itself.
     pub(crate) fn same(&self, other: &Values) -> bool {
         let len = self.len();
         if other.len() != len || (0..len).any(|i| self.is_valid(i) != other.is_valid(i)) {
@@ -483,8 +485,8 @@ impl Values {
         }
     }
 
-    /// Whether value `i` equals `other`'s value `j` as stored: floats by their bits, so NaN equals
-    /// itself. Two missing values are equal; values in different storages differ.
+    /// Whether value `i` equals value `j` of `other` as stored. Floats compare by their bits, so
+    /// NaN equals itself. Two missing values are equal, and values in different storages differ.
     pub(crate) fn same_row(&self, i: usize, other: &Values, j: usize) -> bool {
         let valid = self.is_valid(i);
         if valid != other.is_valid(j) {
@@ -506,7 +508,7 @@ impl Values {
         }
     }
 
-    /// Numbers converted to `store`; other kinds unchanged.
+    /// Numbers converted to `store`. Other kinds are unchanged.
     fn cast<T: Copy>(&self, convert: impl Fn(f64) -> T, store: Store) -> Values
     where
         Buffer<T>: Into<Array>,

@@ -1,7 +1,7 @@
 // Points: one instanced quad per vertex row, shaded by its marker. A group's rows draw as
 // containers. A quad covers its marker and any status ring or shadow, plus one pixel of antialiased
-// edge. The focus variant redraws the lit rows over everything, with quads enlarged for their glow;
-// a group glows only around its border, so its contents stay visible. The ports variant draws one
+// edge. The focus variant redraws the lit rows over everything, with quads enlarged for their glow.
+// A group glows only around its border, so its contents stay visible. The ports variant draws one
 // quad per port of every row, on its side of the row's marker.
 
 import package::lib::types::{STATUS, MARKER_ICON, MARKER_SHAPE, MARKER_BLOCK, GROUP, SHADOW, SPACE_DIAGRAM};
@@ -27,7 +27,7 @@ struct Varyings {
     @location(3) @interpolate(flat) half: vec2f,
     @location(4) @interpolate(flat) status: vec4f,
     @location(5) @interpolate(flat) shape: u32,
-    // A group's depth; for a port, 1 when its reference names a net.
+    // A group's depth. For a port, 1 when its reference names a net.
     @location(6) @interpolate(flat) extra: f32,
     // The row's focus bits, which choose the focus draw's glow.
     @location(7) @interpolate(flat) focus: u32,

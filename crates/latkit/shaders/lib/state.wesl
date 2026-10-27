@@ -150,7 +150,7 @@ fn line_at(at: u32) -> Line {
     );
 }
 
-// The current mark's word indices for a stroke row's comet travel and its flow; NONE for a mark
+// The current mark's word indices for a stroke row's comet travel and its flow. NONE for a mark
 // that draws no strokes.
 fn travel_words() -> vec2u {
     switch mark.kind {

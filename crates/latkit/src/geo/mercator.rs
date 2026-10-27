@@ -12,7 +12,7 @@ pub(crate) fn y(latitude: f64) -> f64 {
     (FRAC_PI_4 + lat / 2.0).tan().ln()
 }
 
-/// The latitude in degrees at projected y `y`; the inverse of [`y`].
+/// The latitude in degrees at projected y `y`, the inverse of [`y`].
 pub(crate) fn latitude(y: f64) -> f64 {
     y.sinh().atan().to_degrees()
 }
@@ -22,7 +22,7 @@ pub(crate) fn down(latitude: f64) -> f64 {
     0.5 - y(latitude) / TAU
 }
 
-/// The latitude `t` of the way down the square; the inverse of [`down`].
+/// The latitude `t` of the way down the square, the inverse of [`down`].
 pub(crate) fn latitude_down(t: f64) -> f64 {
     latitude(PI * (1.0 - 2.0 * t))
 }

@@ -2,7 +2,7 @@
 
 The `latkit` executable draws [scenes](guide.md#scenes) of datasets to images, image sequences, raw
 frames, and video on the machine's GPU, with the same renderer as the browser. Its inputs are
-latkit's JSON, so any language can write them: a dataset is a [JSON document](guide.md#json),
+latkit's JSON, so any language can write them. A dataset can be a [JSON document](guide.md#json),
 latkit's [bytes](guide.md#bytes), or GeoJSON named with `NAME=`. The
 [command reference](reference/cli.md) documents every command and option.
 
@@ -22,11 +22,11 @@ latkit render plot.json --tiles grid=history/frames.json -o year.png
 latkit schema scene > scene.schema.json
 ```
 
-At most one input reads stdin (`-`).
+At most one input can read stdin (`-`).
 
 ## Frames
 
-`--frames` is a JSON Lines file with one line per output frame; line `n` shows at `n / --fps`
+`--frames` is a JSON Lines file with one line per output frame. Line `n` shows at `n / --fps`
 seconds. Every key is optional:
 
 ```json
@@ -59,9 +59,10 @@ seconds. Every key is optional:
 | `insets` | CSS pixels each view keeps clear                                               |
 | `orbit`  | degrees per second a map or plane turns                                        |
 
-`camera`, `fly`, and `fit` take one value for every view, or a list with one per view (`null`
-leaves that view unchanged). The CLI reads and loads up to two frames ahead of the one drawing.
-Changes ease over each scene's `ease`; set `"ease": 0` to show each frame's data without easing.
+`camera`, `fly`, and `fit` take one value for every view, or a list with one value per view (`null`
+leaves that view unchanged). The CLI reads and loads up to two frames ahead of the one it is
+drawing. Changes ease over each scene's `ease`. Set `"ease": 0` to show each frame's data without
+easing.
 
 ## Outputs
 
@@ -73,17 +74,17 @@ Changes ease over each scene's `ease`; set `"ease": 0` to show each frame's data
 | `.y4m`                   | YUV4MPEG2, 4:2:0 BT.709, for any encoder (`--frames`)            |
 | `.mp4`                   | H.264 in fragmented MP4 from the platform's encoder (`--frames`) |
 
-A still waits until every view is complete and motion has settled; `--elapsed` sets the time its
-animated effects show. A video frame where nothing moved repeats the frame before. An output file is
-replaced only once it is completely written. MP4 needs Windows (Media Foundation); elsewhere, pipe
-Y4M to an encoder. `--deadline` limits how long each picture or video frame may take (30 seconds by
-default).
+A still picture waits until every view is complete and motion has settled. `--elapsed` sets the
+time its animated effects show. A video frame where nothing moved repeats the frame before. An
+output file is replaced only once the new file is completely written. MP4 needs Windows (Media
+Foundation). On other systems, pipe Y4M to an encoder. `--deadline` limits how long each picture or
+video frame may take, and defaults to 30 seconds.
 
 ## Diagnostics
 
-Exit codes: 0 success, 1 failure, 2 usage error. Errors print as `latkit: SOURCE: message`, where
-`SOURCE` is the input file at fault; for invalid input, the message starts with the path to the
-invalid part, such as `frames[3].patch.grid[0].Bus.x`. An output that cannot be written is named in
-the message. `--diagnostics json` writes one JSON object per line to stderr, `{ type, detail }`:
-`progress` after each frame, `stats` when done, and `error` with its `code`, `message`, `path`, and
-`source`.
+Exit codes are 0 for success, 1 for failure, and 2 for a usage error. Errors print as
+`latkit: SOURCE: message`, where `SOURCE` is the input file at fault. For invalid input, the
+message starts with the path to the invalid part, such as `frames[3].patch.grid[0].Bus.x`. When an
+output cannot be written, the message names it. `--diagnostics json` writes one JSON object per
+line to stderr, `{ type, detail }`. The `type` is `progress` after each frame, `stats` when done,
+or `error` with its `code`, `message`, `path`, and `source`.

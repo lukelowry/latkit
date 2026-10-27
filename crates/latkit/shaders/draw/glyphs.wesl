@@ -1,11 +1,10 @@
-// Glyphs: every labeled row's text, placed from its anchor each frame. A label shows where its text
-// is set, its row shows, and it fits the room its anchor gives, fading with its row's tile and, in a
-// diagram, once too small to read. A label beside its row also shows only where it kept its claim
-// on the cells it covers this frame (`compute/texts.wesl`), so labels never overlap; nothing
-// depends on an earlier frame. A halo of the background color keeps text readable over anything
-// below it. The ports variant draws each port's label beside it, inside its marker. Text is a
-// distance field, so edges stay crisp at any size, and the halo is a wider threshold of the same
-// field.
+// Glyphs: every labeled row's text, placed from its anchor each frame. A label shows when its text
+// is set, its row shows, and it fits its anchor's `room`. It fades with its row's tile and, in a
+// diagram, once too small to read. A label beside its row also shows only if it kept its claim on
+// every cell it covers this frame (`compute/texts.wesl`), so labels never overlap. Nothing depends
+// on an earlier frame. A halo of the background color keeps text readable over anything below it.
+// The ports variant draws each port's label beside it, inside its marker. Text is a distance field,
+// so edges stay crisp at any size, and the halo is a wider threshold of the same field.
 
 import package::lib::types::{
     NONE, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD,
@@ -51,7 +50,7 @@ struct Varyings {
 fn quad(t: Text, corner: u32, color: vec4f) -> Varyings {
     var out: Varyings;
     let q = vec2f(f32(corner & 1u), f32(corner >> 1u));
-    // Outside a diagram, text has a fixed size; snapping to whole target pixels keeps it crisp.
+    // Outside a diagram, text has a fixed size. Snapping to whole target pixels keeps it crisp.
     var p = mix(t.quad_lo, t.quad_hi, q);
     if frame.space != SPACE_DIAGRAM {
         p = round(p * eye.pixel_ratio) / eye.pixel_ratio;
@@ -91,8 +90,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let a = anchor(instance);
     let size = length_px(mark.label_size);
     let t = text_at(uv0, uv1, size, a.at, a.align);
-    // A label shows while its row shows, it fits, and it kept its room, as legible as its size
-    // allows, and fades with its row's tile.
+    // A label shows while its row shows, it fits, and it kept its claimed cells. Its opacity
+    // follows its legibility at this size and its row's tile fade.
     let room = fits(t.hi - t.lo, a.room) && (!claims_room(a) || keeps(cells_of(t), claim_key(instance)));
     let alpha = f32(a.shown && room) * legibility(size) * drawn.presence;
     if !(alpha > 0.0) {

@@ -8,7 +8,7 @@ import { canvasOf, type View } from './view.js';
 /** Options for a {@link Shot}. */
 export interface ShotOptions {
   /**
-   * Pixels per CSS pixel, 1 by default. Views lay out at `size / scale` CSS pixels, so 2 draws the
+   * Pixels per CSS pixel. Defaults to 1. Views lay out at `size / scale` CSS pixels, so 2 draws the
    * same layout twice as sharp.
    */
   scale?: number;
@@ -21,16 +21,16 @@ export interface ShotOptions {
    */
   capture?: 'still' | 'now';
   /**
-   * The time in seconds that `elapsed()` expressions and flowing comets show in a still picture. By
-   * default they follow the view's clock.
+   * The time in seconds that `elapsed()` expressions and flowing comets show in a still picture.
+   * Defaults to the view's clock.
    */
   elapsed?: number;
 }
 
 /**
- * A picture of views, `size` pixels in all, each view drawn in its region. While a shot draws a
- * view, its canvas keeps its last frame. An image draws each view's data as it was when the
- * picture began. `Shot.of(view)` makes a shot of what a view's canvas shows.
+ * A picture of views, `size` pixels in all, with each view drawn in its region. While a shot draws
+ * a view, the view's canvas keeps its last frame. An image draws each view's data as it was when
+ * the picture began. `Shot.of(view)` makes a shot of what a view's canvas shows.
  *
  * ```ts
  * const png = await (await Shot.of(view, { scale: 2 }).image()).encode('png');
@@ -47,8 +47,8 @@ export class Shot {
     size: readonly [number, number],
     options: ShotOptions & {
       /**
-       * The views drawn, later views over earlier ones: each in its own region, or, given as
-       * `{ view, region }`, in that region of the picture.
+       * The views drawn, later views over earlier ones. Each draws in its own region, or in
+       * `region` when given as `{ view, region }`.
        */
       views?: readonly Placed[];
     } = {},
@@ -58,9 +58,9 @@ export class Shot {
   }
 
   /**
-   * A shot of exactly what the canvas showing `view` shows: its views in their regions, at the
-   * canvas's CSS size times `options.scale` in pixels. Throws an `invalid` error for a view on no
-   * canvas, which a shot must be given a size for.
+   * Returns a shot of exactly what the canvas showing `view` shows: its views in their regions, at
+   * the canvas's CSS size times `options.scale` in pixels. Throws an `invalid` error for a view on
+   * no canvas. Give such a shot a size with the constructor.
    */
   static of(view: View, options: ShotOptions = {}): Shot {
     const canvas = canvasOf(view);
@@ -87,7 +87,7 @@ export class Shot {
    * Starts a video of this shot: H.264 in MP4, written to `options.output` as frames are drawn. The
    * width is rounded down to a multiple of 4 and the height to an even number, as the encoder
    * requires. Canvases showing the views keep their last frame until the video finishes or aborts.
-   * Aborting `options.signal` aborts the video and its output; frames have no other time limit.
+   * Aborting `options.signal` aborts the video and its output. Frames have no other time limit.
    */
   video(
     options: {
@@ -95,7 +95,7 @@ export class Shot {
       fps: number;
       /** Where the file's bytes go, locked until the video finishes or aborts. */
       output: WritableStream<Uint8Array>;
-      /** Bits per second; about 0.15 bits per pixel per frame by default. */
+      /** Bits per second. Defaults to about 0.15 bits per pixel per frame. */
       bitrate?: number;
     } & Wait,
   ): Video {
@@ -111,7 +111,7 @@ export class Shot {
     }
   }
 
-  /** The shot as JSON for the bindings, with times in seconds; the views cross on their own. */
+  /** The shot as JSON for the bindings, with times in seconds. The views are passed separately. */
   #json(): string {
     const { scale = 1, transparent = false, capture = 'still', elapsed } = this.options;
     return JSON.stringify({ size: [...this.size], scale, transparent, capture, elapsed });
@@ -151,7 +151,7 @@ export class Image extends Handle {
   encode(
     format: ImageFormat,
     options: {
-      /** JPEG quality, from 1 (smallest) to 100 (sharpest); 90 by default. */
+      /** JPEG quality, from 1 (smallest) to 100 (sharpest). Defaults to 90. */
       quality?: number;
     } & Wait = {},
   ): Promise<Uint8Array> {
@@ -164,7 +164,7 @@ export class Image extends Handle {
 export type ImageFormat = 'png' | 'jpeg' | 'webp';
 
 /**
- * A video being drawn, encoded, and written; created by {@link Shot.video}. Draw frames with
+ * A video being drawn, encoded, and written. Create one with {@link Shot.video}. Draw frames with
  * {@link Video.frame} or {@link Video.record}, then call {@link Video.finish}.
  */
 export class Video {
@@ -222,9 +222,9 @@ export class Video {
   }
 
   /**
-   * Draws the next frame once its views are complete, and writes its bytes, waiting on the
-   * output's backpressure. Calls must not overlap: a call made before the previous one resolves,
-   * or after `finish()`, rejects with an `invalid` error, and a call after `abort()` with a
+   * Draws the next frame once its views are complete, then writes its bytes, waiting on the
+   * output's backpressure. Calls must not overlap. A call made before the previous one resolves,
+   * or after `finish()`, rejects with an `invalid` error. A call after `abort()` rejects with a
    * `cancelled` error. A failure aborts the video.
    */
   frame(): Promise<void> {
@@ -329,7 +329,7 @@ export class Video {
     }
   }
 
-  /** The bindings video while the video is open or finishing; else throws why it ended. */
+  /** Returns the bindings video while it is open or finishing. Otherwise throws why it ended. */
   #open(): bindings.Video {
     const open = this.#state === 'open' || this.#state === 'finishing';
     if (!open || !this.#video) throw this.#ended();

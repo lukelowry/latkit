@@ -19,7 +19,7 @@ import package::lib::daylight::daylight;
 import package::lib::color::output;
 
 struct Varyings {
-    // The corner in clip space; in the fragment, the target pixel, which `pixel` reads.
+    // The corner in clip space. In the fragment, the target pixel, which `pixel` reads.
     @builtin(position) clip: vec4f,
     @location(0) @interpolate(flat) a: vec2f,
     @location(1) @interpolate(flat) b: vec2f,
@@ -106,9 +106,9 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
 }
 
 // The fragment's position in CSS pixels, in the same screen space as `a` and `b`. It comes from the
-// fragment's own position, never an interpolated value: interpolation skews across a quad whose
-// ends lie at very different depths, and a renderer that clips the quad at the screen's edge, as
-// lavapipe does, shifts it.
+// fragment's own position, never an interpolated value. Interpolation skews across a quad whose
+// ends lie at very different depths, and a renderer that clips the quad at the screen's edge (as
+// lavapipe does) shifts it.
 fn pixel(v: Varyings) -> vec2f {
     return v.clip.xy / eye.pixel_ratio;
 }

@@ -85,7 +85,7 @@ fn areas_triangulated_in_a_job_ease_in_with_each_row_s_color() {
     let mut view = view(&gpu, Scene::new(plane()).draw(Areas::of("map", "Zone").color(color)), &data);
     let middle = f64::from(side) / 2.0;
     view.set_camera(Camera::Map { center: [middle, middle, 0.0], zoom: 0.75, pitch: 0.0, bearing: 0.0 });
-    // The triangles landing start a transition; once it settles, each row shows its own color.
+    // The triangles landing start a transition. Once it settles, each row shows its own color.
     let pixels = frame(&gpu, &mut view);
     let cell = |x: f64, y: f64| {
         let [px, py] = view.screen([x + 0.5, y + 0.5, 0.0]).expect("in view");

@@ -74,8 +74,8 @@ impl View {
         Ok(())
     }
 
-    /// Lays out every vertex row without a position again, using the scene's layout. Resolves to
-    /// one patch per dataset, as bytes, that writes the computed positions into the data.
+    /// Runs the scene's layout again on every vertex row without a position. Resolves to one patch
+    /// per dataset, as bytes, that writes the computed positions into the data.
     pub fn arrange(&self) -> Task {
         let pending = self.view.with(latkit::View::arrange);
         task(async move {

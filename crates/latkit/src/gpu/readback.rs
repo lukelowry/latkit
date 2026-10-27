@@ -9,9 +9,8 @@ use std::task::Waker;
 use super::work::{Count, Counters};
 use crate::{Error, Result};
 
-/// A pool of free map buffers, with the counters for readbacks made from it and how many are still
-/// mapping. Each pool is created explicitly as counted or uncounted, so none skips counting by
-/// default.
+/// A pool of free map buffers. It also holds the counters for its readbacks and the number still
+/// mapping. Each pool is created as counted or uncounted, so no pool skips counting by default.
 #[derive(Clone)]
 pub(crate) struct Readbacks {
     free: Arc<Mutex<Vec<wgpu::Buffer>>>,
@@ -20,7 +19,7 @@ pub(crate) struct Readbacks {
 }
 
 impl Readbacks {
-    /// A pool whose readbacks `counters` counts, as the `Gpu`'s pool does.
+    /// A pool whose readbacks are counted in `counters`, like the `Gpu`'s pool.
     pub(crate) fn counted(counters: Arc<Counters>) -> Readbacks {
         Readbacks { free: Arc::default(), counters: Some(counters), mapping: Arc::default() }
     }

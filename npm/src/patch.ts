@@ -1,6 +1,6 @@
 /**
- * Patches written directly as latkit's bytes, without WebAssembly, so a page, a worker, or a
- * server can build them. The format matches `crates/latkit/src/data/bytes.rs`: a frame with a
+ * Patches, written directly as latkit's bytes without WebAssembly so a page, worker, or server can
+ * build them. The format matches `crates/latkit/src/data/bytes.rs`: a frame with a
  * 12-byte header (the magic `LATK` and the frame's length), the name of the dataset it changes, an
  * operation count, and the operations, all little endian.
  */
@@ -32,8 +32,9 @@ export type Geometry = readonly number[] | readonly Geometry[];
 
 /**
  * One field's values, one per row, with `null` for a missing value. Numbers come as a typed array
- * or an array. A `Uint8Array` holds booleans, nonzero being true. Booleans, strings, and geometries
- * also come as arrays. Values are copied when passed, so the arrays can be reused at once.
+ * or an array. A `Uint8Array` holds booleans, where nonzero is true. Booleans, strings, and
+ * geometries also come as arrays. Values are copied when passed, so the arrays can be reused right
+ * away.
  */
 export type Values =
   | Float64Array
@@ -54,7 +55,7 @@ export interface Reference {
   ids: RowIds;
 }
 
-/** Builds a {@link Reference} field: for each row, the id of the row of `table` it references. */
+/** Builds a {@link Reference} field: for each row, the id of the row it references in `table`. */
 export function reference(table: string, ids: RowIds): Reference {
   return { reference: table, ids };
 }
@@ -62,17 +63,20 @@ export function reference(table: string, ids: RowIds): Reference {
 /** A table's fields by name: values, or a {@link Reference}. */
 export type Fields = Readonly<Record<string, Values | Reference>>;
 
-/** A run of a sampled field's entries at one level of detail, as {@link Patch.frames} stores. */
+/** A run of entries of a sampled field at one level of detail, for {@link Patch.frames}. */
 export interface Run {
-  /** The level of detail, from 0 to 21; 0 by default. */
+  /** The level of detail, from 0 to 21. Defaults to 0. */
   level?: number;
-  /** The first entry's number: a safe nonnegative integer. */
+  /** The index of the first entry, a safe nonnegative integer. */
   first: number;
-  /** Each frame's coordinate, or each bucket's first and last frames' coordinates. */
+  /**
+   * Each frame's coordinate. At a bucket level, the coordinates of each bucket's first and last
+   * frames.
+   */
   at: Float64Array | readonly number[];
   /**
-   * A value per row, entry by entry; at a bucket level, every bucket's per-row minimums, then every
-   * bucket's per-row maximums. NaN marks a missing value.
+   * One value per row for each entry, entry by entry. At a bucket level, the per-row minimums of
+   * every bucket, then the per-row maximums of every bucket. NaN marks a missing value.
    */
   values: Float32Array | readonly number[];
 }
@@ -96,9 +100,9 @@ const utf8 = new TextEncoder();
 export let framed: (patch: Patch) => Uint8Array;
 
 /**
- * A list of changes to a dataset, which `Data.apply` applies in order, all or none. It is written
- * as latkit's bytes as it is built, without WebAssembly; each method adds a change and returns the
- * patch.
+ * A list of changes to a dataset. `Data.apply` applies them in order, all or none. The patch is
+ * written as latkit's bytes as it is built, without WebAssembly. Each method adds a change and
+ * returns the patch.
  *
  * ```ts
  * const patch = new Patch('grid')
@@ -117,8 +121,8 @@ export class Patch {
   /** Byte offset of the first operation: after the header, dataset name, and operation count. */
   #ops: number;
   /**
-   * Consecutive appends of float frames to the same fields of every row of one table, not yet
-   * written. They are written as one append, so each field records all their frames in one write.
+   * Unwritten consecutive appends of float frames to the same fields of every row of one table.
+   * They are written as one append, so each field records all their frames in one write.
    */
   #run: Appends | undefined;
 
@@ -142,19 +146,21 @@ export class Patch {
   }
 
   /**
-   * Reads a patch from `source`: latkit's bytes, one frame as `toBytes()` writes it, or JSON that
+   * Reads a patch from `source`: latkit's bytes (one frame, as `toBytes()` writes it), or JSON that
    * any language can write without latkit. The JSON is a list of changes. Each change is keyed by
    * its method name and holds the method's parameters by name, such as
    * `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`. A field may be a slice of a
-   * binary file, `{file, dtype, offset, count}`, fetched at once. Bytes are read without
-   * WebAssembly.
+   * binary file, `{file, dtype, offset, count}`, which is fetched right away. Bytes are read
+   * without WebAssembly.
    */
   static async read(
     source: ByteSource | object,
     options: {
-      /** The URL the JSON's file slices are relative to; by default, the one it came from. */
+      /** The URL that the JSON's file slices are relative to. Defaults to the JSON's URL. */
       base?: string;
-      /** The longest frame in bytes, 256 MiB by default; a longer one fails with a `limit` error. */
+      /**
+       * The longest frame in bytes. Defaults to 256 MiB. A longer frame fails with a `limit` error.
+       */
       limit?: number;
     } & Wait = {},
   ): Promise<Patch> {
@@ -195,9 +201,9 @@ export class Patch {
 
   /**
    * Yields each patch in `stream` as soon as its last byte arrives. The stream carries frames back
-   * to back, such as a response body, a file, or a socket's messages. Besides the current chunk
-   * and the patches the caller keeps, at most one frame is buffered. Breaking out of the loop
-   * cancels the stream. Throws an `invalid` error for a stream that ends inside a frame.
+   * to back, such as a response body, a file, or a socket's messages. At most one frame is
+   * buffered, besides the current chunk and any patches the caller keeps. Breaking out of the loop
+   * cancels the stream. Throws an `invalid` error if the stream ends inside a frame.
    *
    * ```ts
    * for await (const patch of Patch.stream((await fetch('/feed')).body!)) data.apply(patch);
@@ -207,8 +213,8 @@ export class Patch {
     stream: ReadableBytes | AsyncIterable<Uint8Array>,
     options: {
       /**
-       * The longest frame in bytes, at least 12; 256 MiB by default. Each frame states its length
-       * up front, so a longer one fails with a `limit` error before its body is allocated.
+       * The longest frame in bytes, at least 12. Defaults to 256 MiB. Each frame states its length
+       * up front, so a longer frame fails with a `limit` error before its body is allocated.
        */
       limit?: number;
     } = {},
@@ -257,7 +263,7 @@ export class Patch {
 
   /**
    * Replaces table `table` with rows `ids` and `fields`, adding the table if it does not exist.
-   * Without ids, the rows are `0` to `n - 1`, `n` being the length of each field's values.
+   * Without ids, the rows are `0` to `n - 1`, where `n` is the length of each field's values.
    */
   replace(table: string, fields: Fields): this;
   replace(table: string, ids: RowIds, fields?: Fields): this;
@@ -268,7 +274,7 @@ export class Patch {
   /**
    * Writes `fields` for rows `ids` of `table`. Rows with existing ids change, new ids add rows, and
    * omitted fields keep their values. Adds the table if it does not exist. Without ids, the rows
-   * are `0` to `n - 1`, `n` being the length of each field's values.
+   * are `0` to `n - 1`, where `n` is the length of each field's values.
    */
   set(table: string, fields: Fields): this;
   set(table: string, ids: RowIds, fields?: Fields): this;
@@ -285,17 +291,17 @@ export class Patch {
   }
 
   /**
-   * Records a frame of `table` at each axis coordinate in `at`. Each field gives a value per row
-   * per frame, frame by frame. A field's first frame makes it a sampled field. Consecutive appends
-   * of typed float arrays to the same fields of every row write as one change, so a frame per call
-   * costs no more than one call with every frame.
+   * Records a frame of `table` at each axis coordinate in `at`. Each field gives one value per row
+   * for each frame, frame by frame. A field becomes a sampled field at its first frame. Consecutive
+   * appends of typed float arrays to the same fields of every row are written as one change, so
+   * appending one frame per call costs no more than one call with every frame.
    */
   append(
     table: string,
     at: number | readonly number[],
     fields: Readonly<Record<string, Values>>,
     options: {
-      /** The rows the frames cover, every row by default; other rows keep their last values. */
+      /** The rows the frames cover. Defaults to every row. Other rows keep their last values. */
       ids?: RowIds;
     } = {},
   ): this {
@@ -337,9 +343,9 @@ export class Patch {
   }
 
   /**
-   * Stores a run of entries of sampled field `field` of `table`, at one level of detail. This is
-   * what a time tile holds, as `latkit tile` writes it. At level 0 each entry is a frame; at level
-   * `k`, a bucket of `8^k` frames. None of the entries may be stored already. Entries past the
+   * Stores a run of entries of sampled field `field` in `table`, at one level of detail. This is
+   * what a time tile from `latkit tile` holds. At level 0 each entry is a frame. At level `k` each
+   * entry is a bucket of `8^k` frames. None of the entries may already be stored. Entries past the
    * field's last frame extend it.
    */
   frames(table: string, field: string, run: Run): this {
@@ -384,7 +390,7 @@ export class Patch {
     return this;
   }
 
-  /** A copy of the patch as latkit's bytes: one frame, naming the dataset if the patch does. */
+  /** Returns a copy of the patch as latkit's bytes: one frame, naming the dataset if it has one. */
   toBytes(): Uint8Array {
     return this.#frame().slice();
   }
@@ -501,8 +507,8 @@ function isReference(field: Values | Reference): field is Reference {
 }
 
 /**
- * The ids and fields of `replace` or `set`, given as `(ids, fields)`, or as `(fields)` whose rows
- * are `0` to `n - 1`, `n` being the length of the first field's values.
+ * Returns the ids and fields of `replace` or `set`, given as `(ids, fields)` or as `(fields)`. With
+ * `(fields)` the rows are `0` to `n - 1`, where `n` is the length of the first field's values.
  */
 function rows(ids: RowIds | Fields, fields: Fields | undefined): [RowIds, Fields] {
   if (fields !== undefined || isIds(ids)) return [ids as RowIds, fields ?? {}];

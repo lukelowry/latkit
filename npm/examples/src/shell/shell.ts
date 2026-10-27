@@ -1,8 +1,8 @@
 /**
  * The examples' shell: the layout every page shares, and everything a page does not declare
- * itself. It shows a page's settings as controls and draws each view's scene again when one
- * changes, runs the page's frames and timeline, and gives every page an inspector, a performance
- * readout, and picture and video export.
+ * itself. It shows a page's settings as controls and redraws each view's scene when one changes.
+ * It runs the page's frames and timeline, and gives every page an inspector, a performance readout,
+ * and picture and video export.
  */
 import {
   Shot,
@@ -108,8 +108,8 @@ export function start(pages: readonly Entry[]): void {
     );
     console.error(error);
   };
-  // Settings keep the URL in step without firing this, so a change here comes from a link or the
-  // address bar: the page opens again with the settings it gives.
+  // Settings update the URL without firing this, so a change here comes from a link or the address
+  // bar. The page reopens with the settings in the URL.
   addEventListener('hashchange', () => void show());
   void show();
 }
@@ -344,7 +344,7 @@ class OpenPage implements Context<Record<string, unknown>> {
     );
   }
 
-  /** Sets `name` to `value`, keeps the URL in step, and draws every view's scene again. */
+  /** Sets `name` to `value`, updates the URL, and redraws every view's scene. */
   async #change(name: string, value: unknown): Promise<void> {
     this.settings[name] = value;
     const query = new URLSearchParams();
@@ -361,7 +361,7 @@ class OpenPage implements Context<Record<string, unknown>> {
     }
   }
 
-  /** A view's region, its axes swapped on narrow screens so side-by-side views stack. */
+  /** A view's region, with its axes swapped on narrow screens so side-by-side views stack. */
   #fitted(region: Rect): Rect {
     const [x, y, width, height] = region;
     return matchMedia('(max-width: 700px)').matches ? [y, x, height, width] : region;
@@ -529,8 +529,10 @@ function valueFrom(setting: Setting<unknown>, given: string | null): unknown {
   return setting.options.find(([, v]) => String(v) === given)?.[1];
 }
 
-/** A field's value for the inspector: a number, a text, a point, or the word for a longer geometry. A
- * reference reads as the id of the row it references. */
+/**
+ * A field's value for the inspector: a number, a text, a point, or the word `geometry` for a longer
+ * geometry. A reference shows as the id of the row it references.
+ */
 function format(value: Value): string {
   if (typeof value === 'number')
     return Number.isInteger(value) ? value.toLocaleString() : value.toPrecision(4);

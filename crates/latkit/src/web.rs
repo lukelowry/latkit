@@ -879,7 +879,7 @@ impl Views for Lending<'_> {
     }
 }
 
-/// Takes `shot`'s picture of `views`, one per panel, once they are complete as its
+/// Takes `shot`'s picture of `views`, one per panel, when they are complete, as its
 /// [`Capture`](crate::Capture) says. Canvases showing them keep their last frames meanwhile.
 pub async fn image(shot: &Shot, views: &[PageView]) -> Result<Image> {
     shot.image_of(&mut Lending::of(views)?).await

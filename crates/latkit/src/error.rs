@@ -73,8 +73,8 @@ impl Error {
         }
     }
 
-    /// This error, of the same kind, naming `source` as where it happened: the first step of an
-    /// invalid input's path, or the start of another error's message.
+    /// This error, of the same kind, with `source` named as where it happened. `source` becomes the
+    /// first step of an invalid input's path, or the start of another error's message.
     #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) fn within(self, source: &str) -> Error {
@@ -111,16 +111,16 @@ impl schemars::JsonSchema for Error {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "What failed, as JSON: the form of the npm package's `LatkitError`.",
+            "description": "A failure as JSON, in the same form as the npm package's `LatkitError`.",
             "type": "object",
             "properties": {
                 "code": {
-                    "description": "The kind of failure, as `LatkitError.code` describes it.",
+                    "description": "The kind of failure. See `LatkitError.code`.",
                     "enum": Error::CODES,
                 },
-                "message": { "description": "What failed, in words.", "type": "string" },
+                "message": { "description": "A description of what failed.", "type": "string" },
                 "path": {
-                    "description": "The invalid part of the input, such as `marks[2].color`, on `invalid` failures.",
+                    "description": "For `invalid` failures, the path of the invalid input, such as `marks[2].color`.",
                     "type": "string",
                 },
             },

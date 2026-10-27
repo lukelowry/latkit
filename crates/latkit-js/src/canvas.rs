@@ -9,7 +9,7 @@ use crate::Error;
 #[wasm_bindgen]
 pub struct Handle(pub(crate) PageView);
 
-/// Pairs each of `views` with its panel, the one encoding of a canvas's or a shot's layout. `at`
+/// Pairs each of `views` with its panel. Canvases and shots both encode their layout this way. `at`
 /// holds four fractions per view, `[x, y, width, height]`, in order. Fails unless `at` has four
 /// values per view.
 pub(crate) fn layout(views: Vec<Handle>, at: &[f32]) -> Result<Vec<Panel>, Error> {

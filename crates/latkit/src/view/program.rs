@@ -1,11 +1,11 @@
 //! The program buffer: each mark's column descriptors and tables, ranges, code, constants, end
 //! tables, and ports, in a region of its own.
 //!
-//! When a mark changes, only its region is rewritten, and only the words that differ. A region that
-//! outgrows its room moves to the end of the buffer. If the buffer is too small, it grows and the
-//! GPU copies its contents over, so no other region is rewritten. Once moved regions leave more of
-//! the buffer unused than the regions take, every region is laid out again from the start, each
-//! writing only its own words.
+//! When a mark changes, only its region is rewritten, and only the words that differ. A region
+//! that outgrows its capacity moves to the end of the buffer. If the buffer is too small, it grows
+//! and the GPU copies its contents over, so no other region is rewritten. Once moved regions leave
+//! more of the buffer unused than the regions take, every region is laid out again from the start,
+//! each writing only its own words.
 
 use super::{Event, View};
 use crate::gpu::Inner;
@@ -20,7 +20,7 @@ pub(crate) struct Regions {
 /// Changed words separated by fewer unchanged words than this are written in one span.
 const GAP: usize = 16;
 
-/// The room given to a region of `len` words, with slack to grow in place.
+/// The capacity given to a region of `len` words, with slack to grow in place.
 fn room(len: u32) -> u32 {
     len + len / 4 + 16
 }
@@ -75,7 +75,8 @@ impl View {
                 }
             };
         if !self.regions.relayout {
-            // The room the regions take. Moved regions left the rest of the buffer, up to `end`.
+            // The space the regions take. Moved regions left the rest of the buffer unused, up to
+            // `end`.
             let mut live: u32 = self.marks.iter().filter_map(|m| m.region).map(|[_, room]| room).sum();
             for shown in self.marks.iter_mut().filter(|m| !m.packed && m.compiled.is_some()) {
                 let len = shown.packed_len();
@@ -119,8 +120,8 @@ impl View {
         if std::mem::take(&mut self.regions.relayout) {
             let total: u64 = self.marks.iter().map(|m| u64::from(room(m.packed_len()))).sum();
             resources.fit_program(device, total);
-            // Write each region's words at the start of its room. The slack after them is not
-            // written: nothing reads it until the region grows into it and writes it.
+            // Write each region's words at its start. The slack after them is not written: nothing
+            // reads it until the region grows into it and writes it.
             let mut start = 0;
             for shown in self.marks.iter_mut().filter(|m| m.compiled.is_some()) {
                 let len = shown.packed_len();

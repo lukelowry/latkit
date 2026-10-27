@@ -1,5 +1,5 @@
-//! JSON reading for scenes. Each type deserializes and derives its schema from its own definition;
-//! a type with presets also accepts a preset's name, such as `"inspect"`, `"earth"`, or `"stress"`.
+//! JSON reading for scenes. Each type deserializes and takes its schema from its own definition. A
+//! type with presets also accepts a preset's name, such as `"inspect"`, `"earth"`, or `"stress"`.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -80,12 +80,12 @@ macro_rules! presets {
 
 pub(crate) use presets;
 
-/// Rewrites `T`'s derived schema to accept a preset name or the derived form, moving the
-/// description to the whole.
+/// Rewrites `T`'s derived schema to accept a preset name or the derived form. The description
+/// moves to the combined schema.
 pub(crate) fn preset_schema<T: Presets>(schema: &mut Schema) {
     let mut derived = std::mem::replace(schema, json_schema!({}));
     let description = derived.remove("description");
-    // Drop unit variants that a preset already names; the preset's name covers them.
+    // Drop unit variants that a preset already names, since the preset's name covers them.
     for key in ["oneOf", "anyOf"] {
         if let Some(variants) = derived.get_mut(key).and_then(Value::as_array_mut) {
             variants.retain(|v| !v.get("const").and_then(Value::as_str).is_some_and(|name| T::NAMES.contains(&name)));
@@ -97,7 +97,7 @@ pub(crate) fn preset_schema<T: Presets>(schema: &mut Schema) {
     }
 }
 
-/// Reads a duration in seconds; errors on negative or out-of-range values.
+/// Reads a duration in seconds. Errors on negative or out-of-range values.
 pub(crate) fn seconds<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
     let seconds = f64::deserialize(deserializer)?;
     Duration::try_from_secs_f64(seconds).map_err(|_| de::Error::custom("seconds must be finite and not negative"))

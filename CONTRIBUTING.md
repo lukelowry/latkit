@@ -19,7 +19,7 @@ the [`npm/js`](https://github.com/lukelowry/latkit/tree/npm/js) branch.
 
 ## Develop
 
-Requires Rust (pinned in `rust-toolchain.toml`), Node.js 24, pnpm 10.30, and uv for the docs.
+You need Rust (pinned in `rust-toolchain.toml`), Node.js 24, pnpm 10.30, and uv for the docs.
 
 ```sh
 pnpm install
@@ -30,8 +30,8 @@ cargo xtask bench --quick     # every benchmark scenario once, at its smallest s
 
 ## Documentation
 
-The site builds with Python alone from checked-in files. These commands rebuild the site and
-regenerate its generated parts:
+The site builds with Python alone, from checked-in files. To rebuild the site and its generated
+parts:
 
 ```sh
 uv run --project docs --group docs sphinx-build -W -b html docs target/docs   # the site
@@ -43,6 +43,6 @@ node docs/gallery/render.ts [name...]                # the pictures, drawn by th
 node benchmark/docs.ts                               # the performance table, from a baseline
 ```
 
-Drawing the pictures also needs the npm package built (`cargo xtask wasm`).
+Drawing the pictures also needs the npm package, built with `cargo xtask wasm`.
 
 [Releasing](RELEASING.md) covers versions and publishing.

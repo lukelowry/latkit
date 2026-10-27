@@ -47,7 +47,7 @@ export default page({
     const body = new Body(mesh);
     const { burst } = body;
     const pieces = burst.chunks.length;
-    // The mesh, its pieces once popped, and the room are set once; each recorded frame then
+    // The mesh, its pieces once popped, and the room are set once. Each recorded frame then
     // appends every vertex, the shadows, and the body as a whole.
     const data = new Data('bunny')
       .axis('time', 's')

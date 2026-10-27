@@ -1,6 +1,6 @@
 /**
  * Builders for the expressions that scene options take. A scene is plain data, typed in
- * `inputs.ts`; nothing here needs WebAssembly.
+ * `inputs.ts`. Nothing here needs WebAssembly.
  */
 
 import type { TableInput } from './data.js';
@@ -23,9 +23,9 @@ import type {
 export type Color = string;
 
 /**
- * An option's value: an {@link Expr}, or its JSON form. In the JSON form, `null` is a missing
- * value, a string starting with `$` reads a field (`'$kv'` reads field `kv`), and any other string
- * is a CSS color. Color options take a value that computes a color.
+ * An option's value: an {@link Expr} or its JSON form. In JSON, `null` is a missing value, a string
+ * starting with `$` reads a field (`'$kv'` reads field `kv`), and any other string is a CSS color.
+ * Color options take a value that computes a color.
  */
 export type ExprInput = Expr | ExprNode;
 
@@ -33,8 +33,8 @@ const nodeOf = (input: ExprInput): ExprNode => (input instanceof Expr ? input.no
 
 /**
  * A value for every row of a mark: a constant, a color, a field, view state, or arithmetic on them.
- * Color options take one that computes a color: a CSS color, a value through a colormap, or a
- * conditional choosing between colors.
+ * Color options take one that computes a color: a CSS color, a value mapped through a colormap, or
+ * a conditional that chooses between colors.
  */
 export class Expr {
   /** The expression's JSON form. */
@@ -45,22 +45,22 @@ export class Expr {
     this.node = node;
   }
 
-  /** The JSON form, which `JSON.stringify` writes for the expression. */
+  /** Returns the JSON form. `JSON.stringify` calls it. */
   toJSON(): ExprNode {
     return this.node;
   }
 
   /**
    * Reads this expression's fields from `table`, such as `weather.table('Station')`, joined by row
-   * id. A view draws the table's dataset too.
+   * id. The view also loads that table's dataset.
    */
   from(table: TableInput): Expr {
     return new Expr(mapFields(this.node, (f) => ({ ...f, from: table })));
   }
 
   /**
-   * Reads this expression's sampled fields at the last frame at or before the view's `at`, instead
-   * of interpolating toward the next frame.
+   * Reads this expression's sampled fields at the last frame at or before the view's `at`, without
+   * interpolating toward the next frame.
    */
   step(): Expr {
     return new Expr(mapFields(this.node, (f) => ({ ...f, step: true })));
@@ -171,13 +171,13 @@ export class Expr {
     return new Expr({ exp: [this.node] });
   }
 
-  /** Whether a text field equals `text`, a plain text that is neither a field nor a color. */
+  /** Whether a text field equals `text`, plain text read as neither a field nor a color. */
   is(text: string): Expr {
     return new Expr({ is: [this.node, text] });
   }
 
   /**
-   * Whether a text field contains `text`, a plain text, ignoring case. In a mark, the field must be
+   * Whether a text field contains `text` (plain text), ignoring case. In a mark, the field must be
    * in the mark's own table.
    */
   contains(text: string): Expr {
@@ -185,8 +185,8 @@ export class Expr {
   }
 
   /**
-   * Maps the value to a color for every row through `map`, a catalog name or custom colors. The
-   * domain fits the values shown unless set with {@link Mapped.domain}.
+   * Maps the value to a color through `map`, a catalog name or custom colors. The domain fits the
+   * values shown unless set with {@link Mapped.domain}.
    */
   colormap(map: Colormap): Mapped {
     return new Mapped({ colormap: map, value: this.node });
@@ -201,11 +201,11 @@ export class Expr {
   }
 }
 
-/** A value mapped through a colormap or onto a range, with an input domain that can be set. */
+/** A value mapped through a colormap or onto a range. Its input domain can be set. */
 export class Mapped extends Expr {
   /**
-   * Sets the input values that map to the colormap's or the range's ends, instead of fitting the
-   * values shown.
+   * Sets the input values that map to the ends of the colormap or range. Without it, the domain
+   * fits the values shown.
    */
   domain(low: number, high: number): Mapped {
     return new Mapped({ ...(this.node as ScaleNode | ColormapNode), domain: [low, high] });
@@ -234,8 +234,8 @@ function mapFields(input: ExprInput, f: (field: FieldNode) => FieldNode): ExprNo
 const state = (name: State): Expr => new Expr({ state: name });
 
 /**
- * Reads field `name` of each row, written `'$name'` in JSON. `from()` and `step()` give it its
- * `{ field }` form.
+ * Reads field `name` of each row. In JSON it is `'$name'`, or the `{ field }` form after `from()`
+ * or `step()`.
  */
 export const field = (name: string): Expr => new Expr(`$${name}`);
 /** Whether the row is selected. */
@@ -250,9 +250,9 @@ export const elapsed = (): Expr => state('elapsed');
 export const zoom = (): Expr => state('zoom');
 
 /**
- * A size in CSS pixels regardless of the space's unit, so it stays the same on screen as the view
- * zooms: `px(1)` keeps a diagram's stroke 1 pixel wide at any zoom. Given a number, the result also
- * works as a theme length.
+ * A size in CSS pixels in any space, so it stays the same on screen as the view zooms. `px(1)`
+ * keeps a diagram's stroke 1 pixel wide at any zoom. Given a number, the result also works as a
+ * theme length.
  */
 export function px(size: number): { px: number };
 export function px(size: ExprInput): Px;
@@ -261,10 +261,10 @@ export function px(size: ExprInput): Px {
 }
 
 /**
- * A size in position units (degrees on the earth) regardless of the space's unit, so it scales as
- * the view zooms. `limits` bound its on-screen size in CSS pixels: `units('$r', { atLeast: 2 })`
- * grows with the map and never shrinks below 2 pixels. A marker keeps its proportions, with the
- * limits applied to its larger side. Given only a number, the result also works as a theme length.
+ * A size in position units (degrees on the earth) in any space, so it scales as the view zooms.
+ * `limits` bound its size on screen in CSS pixels: `units('$r', { atLeast: 2 })` grows with the
+ * map and never shrinks below 2 pixels. A marker keeps its proportions, and the limits apply to its
+ * larger side. Given only a number, the result also works as a theme length.
  */
 export function units(size: number): { units: number };
 export function units(size: ExprInput, limits?: Omit<Units, 'units'>): Units;
@@ -278,13 +278,13 @@ type Case = [condition: ExprNode, value: ExprNode];
 /**
  * Starts a conditional. `when(c).then(a).when(d).then(b).otherwise(e)` takes the value of the first
  * case whose condition holds, else `e`. The values may be numbers, colors, or a text field and
- * `null`, as the option takes.
+ * `null`, whichever the option takes.
  */
 export function when(condition: ExprInput): When {
   return new When(nodeOf(condition));
 }
 
-/** A conditional's first condition, awaiting its value from `then`. */
+/** A conditional's first condition. `then` gives its value. */
 class When {
   /** @internal */
   constructor(private readonly condition: ExprNode) {}
@@ -295,7 +295,7 @@ class When {
   }
 }
 
-/** A conditional's cases so far, awaiting another `when` case or the `otherwise` fallback. */
+/** A conditional's cases so far. Add a case with `when`, or finish with `otherwise`. */
 class Then {
   /** @internal */
   constructor(private readonly cases: readonly Case[]) {}
@@ -311,7 +311,7 @@ class Then {
   }
 }
 
-/** A conditional's next condition, awaiting its value from `then`. */
+/** A conditional's next condition. `then` gives its value. */
 class Next {
   /** @internal */
   constructor(

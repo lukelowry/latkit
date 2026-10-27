@@ -1,10 +1,10 @@
-//! The camera's view as tiles; the only place derivations read the camera.
+//! The camera's view as tiles. This is the only place derivations read the camera.
 //!
 //! Tiles split a square of the space four ways per level: the earth's Web Mercator square, or a
-//! square of a plane. The earth's square wraps at the antimeridian on the globe, and ends there on
-//! a flat map, which is one world. A tile is needed where it meets the region in sight, and splits
-//! while it draws larger than its nominal size (`TILE_PX`) where it lies nearest the camera's
-//! focus. How large a tile draws is the area it covers on screen there, as a side, so a tile
+//! square of a plane. On the globe, the earth's square wraps at the antimeridian. On a flat map it
+//! ends there, so the map is one world. A tile is needed where it meets the visible region. It
+//! splits while it draws larger than its nominal size (`TILE_PX`) at its point nearest the camera's
+//! focus. A tile's drawn size is the square root of the screen area it covers there, so a tile
 //! foreshortened toward the globe's limb or a tilted horizon stays coarse. When a budget limits how
 //! many tiles split, the tiles drawn largest split first.
 
@@ -66,7 +66,7 @@ impl Domain {
         }
     }
 
-    /// The position at `u` in the square; the inverse of `unit`.
+    /// The position at `u` in the square. The inverse of `unit`.
     pub(crate) fn position(&self, u: [f64; 2]) -> [f64; 2] {
         match *self {
             Domain::Earth => [u[0] * 360.0 - 180.0, mercator::latitude_down(u[1])],
@@ -97,12 +97,12 @@ pub(crate) struct Sight<'a> {
     pub(crate) earth: bool,
 }
 
-/// The region in sight as west, south, east, north boxes in position units: one box, or on the
-/// globe two where the region crosses the antimeridian.
+/// The visible region as west, south, east, north boxes in position units: one box, or on the
+/// globe two boxes where the region crosses the antimeridian.
 pub(crate) type Region = Vec<[f64; 4]>;
 
 impl Sight<'_> {
-    /// Where position `p` appears on screen; `None` when it does not show.
+    /// Where position `p` appears on screen. `None` when it does not show.
     fn project(&self, p: [f64; 2]) -> Option<[f64; 2]> {
         let w = self.projected.world([p[0], p[1], 0.0]);
         if !self.facing(w) {
@@ -128,8 +128,8 @@ impl Sight<'_> {
         self.earth && self.projected.globe >= 0.5
     }
 
-    /// Whether world point `w` faces the camera: always on a flat map; on the globe, only on the
-    /// near side.
+    /// Whether world point `w` faces the camera: always on a flat map, and only on the near side on
+    /// the globe.
     fn facing(&self, w: DVec3) -> bool {
         if !self.globe() {
             return true;
@@ -156,8 +156,8 @@ impl Sight<'_> {
         std::iter::once(center).chain(near).collect()
     }
 
-    /// The ground in sight, sampled on a grid of points across the view. On a flat map it ends at
-    /// the world's edges; on the globe it wraps the antimeridian.
+    /// The visible ground, sampled on a grid of points across the view. On a flat map it ends at
+    /// the world's edges. On the globe it wraps the antimeridian.
     pub(crate) fn region(&self) -> Region {
         const SAMPLES: usize = 7;
         let globe = self.globe();
@@ -239,14 +239,15 @@ impl Sight<'_> {
         boxes(lon - half, lon + half, south, north)
     }
 
-    /// How large tile `key` of `domain`'s square draws, in CSS pixels, at its point nearest each
-    /// focus (the largest of those), and how far that point is from the view's center. Its size is
-    /// the area it would cover at the scale there, as a side: the area that steps of at most a
-    /// pixel along its two edges span on screen, scaled up to the whole tile. So a tile
-    /// foreshortened toward the globe's limb or a tilted horizon measures less than its longer
-    /// side. A longer step from a large tile could pass the globe's horizon, where nothing
-    /// projects, once the camera is close to the ground. On a flat map seen from above, every tile
-    /// of a level measures the same wherever it lies.
+    /// How large tile `key` of `domain`'s square draws, in CSS pixels, and how far from the view's
+    /// center the measured point is. The size is measured at the tile's point nearest each focus,
+    /// and the largest is kept. It is the square root of the screen area the tile would cover at
+    /// the scale there: the area spanned by steps of at most a pixel along its two edges, scaled up
+    /// to the whole tile. So a tile foreshortened toward the globe's limb or a tilted horizon
+    /// measures less than its longer side. Steps are short because a longer step from a large tile
+    /// could pass the globe's horizon, where nothing projects, once the camera is close to the
+    /// ground. On a flat map seen from above, every tile of a level measures the same wherever it
+    /// lies.
     pub(crate) fn measure(&self, focus: &[[f64; 2]], domain: &Domain, key: TileKey) -> (f64, f64) {
         let side = 1.0 / f64::from(1_u32 << key.z);
         let (west, north) = (f64::from(key.x) * side, f64::from(key.y) * side);
@@ -264,7 +265,8 @@ impl Sight<'_> {
             };
             let at = [fx.clamp(west, west + side - step), fy.clamp(north, north + side - step)];
             let Some(p) = self.project(domain.position(at)) else { continue };
-            // Where a step along each edge moves on screen; nowhere past the globe's horizon.
+            // Where a step along each edge moves on screen. A step past the globe's horizon counts
+            // as no move.
             let moved = |q: [f64; 2]| self.project(domain.position(q)).map_or([0.0; 2], |q| [q[0] - p[0], q[1] - p[1]]);
             let ([ax, ay], [bx, by]) = (moved([at[0] + step, at[1]]), moved([at[0], at[1] + step]));
             size = size.max(side / step * (ax * by - ay * bx).abs().sqrt());
@@ -291,7 +293,7 @@ fn boxes(west: f64, east: f64, south: f64, north: f64) -> Region {
     if e <= 180.0 { vec![[w, s, e, n]] } else { vec![[w, s, 180.0, n], [-180.0, s, e - 360.0, n]] }
 }
 
-/// Whether box `b` meets the region in sight.
+/// Whether box `b` meets the visible region.
 pub(crate) fn meets(region: &Region, b: [f64; 4]) -> bool {
     region.iter().any(|r| b[0] <= r[2] && b[2] >= r[0] && b[1] <= r[3] && b[3] >= r[1])
 }

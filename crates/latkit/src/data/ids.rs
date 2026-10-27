@@ -14,7 +14,7 @@ use crate::{Error, Result};
 /// [`Patch::remove`](crate::Patch::remove), or the target ids of a reference.
 ///
 /// [`Ids::count`] names rows `0..n`. Lists convert from vectors, arrays, and slices of numbers or
-/// texts; for a reference, `None` leaves a row unwired. A bare number is never a count: use
+/// texts. For a reference, `None` leaves a row unwired. A bare number is never a count. Use
 /// [`Ids::count`], or `{"count": n}` in JSON.
 ///
 /// ```
@@ -172,7 +172,7 @@ impl RowIds {
         }
     }
 
-    /// The id of row `row`, `None` past the rows.
+    /// The id of row `row`, or `None` past the last row.
     pub(crate) fn key(&self, row: usize) -> Option<IdRef<'_>> {
         match self {
             RowIds::Count(n) => (row < *n as usize).then_some(IdRef::Number(row as u64)),
@@ -292,8 +292,8 @@ impl RowIds {
     }
 }
 
-/// Finds a row by id without allocating: the identity for counted ids, else a hash table of row
-/// numbers.
+/// Finds a row by id without allocating. Counted ids are their own row numbers. Other ids use a
+/// hash table of row numbers.
 #[derive(Debug)]
 pub(crate) enum Index {
     Identity(u32),
@@ -340,8 +340,8 @@ impl Index {
     }
 
     /// The row number each id in `ids` names, or `unwired` where the id is missing or names no row,
-    /// plus whether any present id named no row. Chooses one loop for the ids' and rows' storage
-    /// up front instead of matching per id.
+    /// plus whether any present id named no row. Picks one loop for the storage of the ids and rows
+    /// up front, so it does not match storage per id.
     pub(crate) fn resolve(&self, rows: &RowIds, ids: &Values, unwired: u32) -> (Vec<u32>, bool) {
         let valid = |i: usize| ids.valid.as_ref().is_none_or(|v| v.get(i));
         let mut dangling = false;
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(extended.get(&more, IdRef::Number(50)), Some(4));
         assert_eq!(extended.get(&more, IdRef::Number(20)), Some(1));
         assert!(index.extended(&more.extend(&[Id::Number(10)]).expect("numbers"), 5).is_err(), "repeated id");
-        // Remove rows 1 and 3; the others move up to close the gaps.
+        // Remove rows 1 and 3. The others move up to close the gaps.
         let doomed = [false, true, false, true, false];
         let kept = more.gather(&[0, 2, 4]);
         let fewer = extended.without(&doomed, &kept).expect("unique");

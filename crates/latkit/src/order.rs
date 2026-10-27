@@ -65,7 +65,7 @@ pub(crate) fn number32(x: f32) -> u32 {
     if bits >> 31 == 1 { !bits } else { bits | 1 << 31 }
 }
 
-/// The value whose key is `key`; the inverse of [`number32`].
+/// The value whose key is `key`. The inverse of [`number32`].
 #[cfg(feature = "gpu")]
 pub(crate) fn from_number32(key: u32) -> f32 {
     f32::from_bits(if key >> 31 == 1 { key & !(1 << 31) } else { !key })

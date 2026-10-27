@@ -1,6 +1,6 @@
-//! Queries: reading a page of a table's rows, filtered and sorted, with their fields or computed
-//! values. Queries evaluate on the CPU with the same expressions marks draw with (a plain field is
-//! read page by page) and return a table, so the result has the same shape as the input.
+//! Queries read a page of a table's rows, filtered and sorted, with their fields or computed
+//! values. They evaluate on the CPU with the same expressions marks draw with, reading a plain
+//! field a page at a time. The result is a table, so it has the same shape as the input.
 
 use std::cmp::Ordering;
 
@@ -14,11 +14,11 @@ use crate::expr::Expr;
 use crate::expr::cpu::Rows;
 use crate::{Error, Result};
 
-/// A request to read rows of a table. Starts from the rows `ids` names (every row by default),
-/// keeps those `filter` accepts, sorts them by `sort`, and returns up to `limit` of them starting
-/// at `offset`. Each row comes with the fields `select` names or computes (every field by default).
-/// Sampled fields are read at axis coordinate `at`, or at their last frame by default. Plain data
-/// that deserializes from JSON, like a scene.
+/// A request to read rows of a table. It starts from the rows in `ids` (default: every row), keeps
+/// the rows `filter` accepts, sorts them by `sort`, and returns up to `limit` of them starting at
+/// `offset`. Each row comes with the fields `select` names or computes (default: every field).
+/// Sampled fields are read at axis coordinate `at` (default: their last frame). Like a scene, it is
+/// plain data that deserializes from JSON.
 ///
 /// ```
 /// use latkit::{Data, Ids, Order, Query, Table, field};
@@ -35,15 +35,15 @@ use crate::{Error, Result};
 pub struct Query {
     /// The table to read.
     of: Name,
-    /// The rows to read, in this order unless sorted; every row when unset. Ids that name no row
+    /// The rows to read, in this order unless sorted. Defaults to every row. Ids that name no row
     /// are skipped.
     #[serde(default)]
     ids: Option<Ids>,
     /// Keeps only the rows for which this is true.
     #[serde(default)]
     filter: Option<Expr>,
-    /// Keys to sort by, each breaking ties left by the keys before it. Rows where a key has no
-    /// value sort last; rows equal on every key keep their order.
+    /// Keys to sort by. Each key breaks ties left by the keys before it. Rows where a key has no
+    /// value sort last, and rows equal on every key keep their order.
     #[serde(default)]
     sort: Vec<(Expr, Order)>,
     /// How many of the kept rows to skip.
@@ -52,11 +52,11 @@ pub struct Query {
     /// The most rows to return. When sorting with a limit, the first `offset + limit` rows are
     /// selected in linear time and only those are sorted.
     limit: Option<usize>,
-    /// Fields to return, by output name. A plain field returns that field as stored; any other
-    /// expression returns numbers. Every field when unset; an empty object returns the ids alone.
+    /// Fields to return, by output name. A plain field returns that field as stored, and any other
+    /// expression returns numbers. Defaults to every field. An empty object returns the ids alone.
     #[serde(default)]
     select: Option<Ordered<Expr>>,
-    /// The axis coordinate at which sampled fields are read; their last frame when unset.
+    /// The axis coordinate at which sampled fields are read. Defaults to their last frame.
     at: Option<f64>,
 }
 
@@ -102,7 +102,7 @@ impl Query {
     }
 
     /// Sorts by `key`, breaking ties left by earlier keys. Rows equal on every key keep their
-    /// order; rows where `key` has no value sort last.
+    /// order, and rows where `key` has no value sort last.
     #[must_use]
     pub fn sort(mut self, key: impl Into<Expr>, order: Order) -> Query {
         self.sort.push((key.into(), order));
@@ -123,8 +123,8 @@ impl Query {
         self
     }
 
-    /// Adds output field `name`, computed by `value`. A plain field returns that field as stored;
-    /// any other expression returns numbers. Without any `select`, every field is returned.
+    /// Adds output field `name`, computed by `value`. A plain field returns that field as stored,
+    /// and any other expression returns numbers. Without any `select`, every field is returned.
     #[must_use]
     pub fn select(mut self, name: impl Into<Name>, value: impl Into<Expr>) -> Query {
         self.select.get_or_insert_with(Ordered::default).0.push((name.into(), value.into()));
@@ -150,17 +150,17 @@ impl Query {
 /// passed the filter.
 #[derive(Clone, Debug)]
 pub struct QueryResult {
-    /// The page of rows, as a table with the source table's name: their ids, and their selected
-    /// fields or computed values. Sampled fields come back as plain values read at the query's
-    /// coordinate.
+    /// The page of rows, as a table with the source table's name. It holds their ids and their
+    /// selected fields or computed values. Sampled fields come back as plain values read at the
+    /// query's coordinate.
     pub table: Table,
     /// The number of rows that passed the filter, before `offset` and `limit`.
     pub total: usize,
 }
 
 impl Snapshot {
-    /// Runs `query`, returning the page of rows it describes as a table and the number of rows
-    /// that passed the filter. When sorting with a limit, the rows are selected in linear time and
+    /// Returns the page of rows `query` describes, as a table, and the number of rows that passed
+    /// the filter. When sorting with a limit, the rows are selected in linear time and
     /// only those are sorted. Errors if the table or a selected field does not exist.
     pub fn query(&self, query: &Query) -> Result<QueryResult> {
         let table = self.table(&query.of).ok_or_else(|| Error::invalid("no such table").at(query.of.as_str()))?;

@@ -9,10 +9,10 @@ use super::snapshot::Snapshot;
 use crate::pending::Watchers;
 use crate::{Error, Result};
 
-/// A dataset that changes in place: named tables of columns, changed only by patches. Clones share
-/// the same dataset. A view drawing it shows the latest version from the frame after a patch
-/// applies. A [`Snapshot`] keeps one version unchanged, costing only the pages that later versions
-/// rewrite.
+/// A dataset that changes in place. It holds named tables of columns, and only patches change it.
+/// Clones share the same dataset. A view drawing it shows the latest version from the frame after a
+/// patch applies. A [`Snapshot`] keeps one version unchanged and costs only the pages that later
+/// versions rewrite.
 ///
 /// ```
 /// # use latkit::{Data, Ids, Patch, Table};
@@ -67,7 +67,7 @@ impl Data {
         self.current().clone()
     }
 
-    /// Makes `snapshot`, a version of this dataset, the current version, as an undo does. Views
+    /// Makes `snapshot`, a version of this dataset, the current version, like an undo. Views
     /// drawing the dataset show it from their next frame. A snapshot of another dataset (by name)
     /// is an error.
     pub fn restore(&self, snapshot: &Snapshot) -> Result<()> {
@@ -91,7 +91,7 @@ impl Data {
 }
 
 impl From<Snapshot> for Data {
-    /// A dataset whose current version is `snapshot`; patches apply from there.
+    /// A dataset whose current version is `snapshot`. Patches apply from there.
     fn from(snapshot: Snapshot) -> Data {
         Data(Arc::new(Shared {
             name: snapshot.name().clone(),
@@ -107,9 +107,9 @@ impl std::fmt::Debug for Data {
     }
 }
 
-/// Where a view gets a dataset, matched by the dataset's name: a [`Data`], drawn as it changes; a
-/// [`Snapshot`], drawn unchanged; or [`Tiles`](crate::Tiles), fetched in pieces as the view needs
-/// them.
+/// Where a view gets a dataset, matched by the dataset's name. A [`Data`] is drawn as it changes, a
+/// [`Snapshot`] is drawn unchanged, and [`Tiles`](crate::Tiles) are fetched in pieces as the view
+/// needs them.
 #[cfg(feature = "gpu")]
 #[derive(Clone, Debug)]
 pub enum Source {

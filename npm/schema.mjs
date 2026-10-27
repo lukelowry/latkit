@@ -1,15 +1,16 @@
 /**
  * Generates npm's types from `schema.json`. The types latkit reads (`$defs`) become `inputs.ts`,
  * and the types it writes (`outputs`) become `outputs.ts`. Each definition reachable from the roots
- * becomes a type, documented with its schema description; one that extends shared options becomes
- * an interface extending them. An output that an input already declares uses that input's type. A
- * schema's `tsType` names a hand-written type to use instead, such as `ExprInput`.
+ * becomes a type, documented with its schema description. A definition that extends shared options
+ * becomes an interface that extends them. An output that an input already declares uses the
+ * input's type. A schema's `tsType` names a hand-written type to use in its place, such as
+ * `ExprInput`.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import prettier from 'prettier';
 
-/** Root types npm takes as plain data. Every type they are built from is generated too. */
+/** Root types npm takes as plain data. The types they are built from are generated too. */
 const INPUTS = ['Scene', 'Query', 'EnvelopeRequest', 'Camera', 'Fit', 'Budget', 'ColormapKind'];
 
 /** Root types npm reads back from latkit. */
@@ -28,8 +29,10 @@ const OUTPUTS = [
 /** Hand-written types that a `tsType` names, keyed by the module that declares them. */
 const IMPORTS = { './data.js': ['TableInput'], './scene.js': ['Color', 'ExprInput'] };
 
-/** Returns the sources of `inputs.ts` and `outputs.ts` for the schema at `file`, formatted with the
- * repository's Prettier config. */
+/**
+ * Returns the sources of `inputs.ts` and `outputs.ts` for the schema at `file`, formatted with the
+ * repository's Prettier config.
+ */
 export async function typescript(file) {
   const schema = JSON.parse(fs.readFileSync(file, 'utf8'));
   const inputs = declare(schema.$defs, '#/$defs/', INPUTS, new Set());
@@ -60,9 +63,9 @@ export async function typescript(file) {
 }
 
 /**
- * Declares the definitions in `defs` that `roots` reach, where refs to them start with `prefix`.
- * Names in `declared` are declared by another module. They are not declared again, and those used
- * are returned as `borrowed` for import.
+ * Declares the definitions in `defs` that `roots` reach. Refs to them start with `prefix`. Names
+ * in `declared` belong to another module. They are not declared again, and the ones used are
+ * returned as `borrowed` for import.
  */
 function declare(defs, prefix, roots, declared) {
   const output = prefix === '#/outputs/';
@@ -115,8 +118,9 @@ function declare(defs, prefix, roots, declared) {
     }
   };
   // A union member's description moves onto the single key of a tagged variant, where editors show
-  // it. Any other member keeps its description as a doc comment before it, which the reference
-  // pages read: what each value of an enumeration means, and each form of a type with several.
+  // it. Any other member keeps its description as a doc comment before it, for the reference pages
+  // to read. That covers what each value of an enumeration means, and each form of a type with
+  // several.
   const members = (schemas) => {
     const parts = schemas.map((s) => {
       const keys = Object.keys(s.properties ?? {});
@@ -148,8 +152,8 @@ function declare(defs, prefix, roots, declared) {
     }
     return /[|&]/.test(item) ? `(${item})[]` : `${item}[]`;
   };
-  // latkit omits absent values from its output rather than writing null, so optional output
-  // fields drop their null.
+  // latkit leaves absent values out of its output and never writes null for them, so optional
+  // output fields drop their null.
   const absent = (schema) => {
     if (Array.isArray(schema.type))
       return { ...schema, type: schema.type.filter((t) => t !== 'null') };
@@ -174,8 +178,8 @@ function declare(defs, prefix, roots, declared) {
     return `{ ${lines.join('\n')} }`;
   };
 
-  // An object that extends shared options, `allOf` references and its own object, is an interface
-  // extending theirs.
+  // An object that extends shared options (`allOf` of references and its own object) becomes an
+  // interface that extends theirs.
   const extending = (schema) => {
     const parts = schema.allOf ?? [];
     const own = parts.filter((p) => ref(p) === undefined);
@@ -227,8 +231,8 @@ function named(code) {
 
 /**
  * Converts a schema description into a doc comment. It keeps paragraphs, rewraps lines to at most
- * 96 columns, turns Rust's intra-doc links into plain code spans, renames Rust names to npm's,
- * writes `None` as `null` (as JSON does), and drops code blocks, which are Rust examples.
+ * 96 columns, turns Rust's intra-doc links into plain code spans, renames Rust names to npm's, and
+ * writes `None` as `null` (as JSON does). It drops code blocks, since they are Rust examples.
  */
 function doc(text) {
   const lines = [];

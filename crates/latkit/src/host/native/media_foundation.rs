@@ -46,7 +46,7 @@ struct MediaFoundation {
 }
 
 /// Work for the encoder's thread: a picture, whose `room` resolves once the encoder can take
-/// another; or the request to finish.
+/// another, or the request to finish.
 enum Work {
     Picture { nv12: Vec<u8>, time: u64, key: bool, room: Resolver<Vec<Unit>> },
     Finish(Resolver<Vec<Unit>>),
@@ -263,7 +263,7 @@ impl Transform {
                 (transform.input, transform.output) = (inputs[0], outputs[0]);
             }
             if let Some(codec) = &transform.codec {
-                // Settings an encoder rejects are skipped; they only tune its output.
+                // Settings an encoder rejects are skipped. They only tune its output.
                 let gop = (encoding.fps * KEYFRAMES).round().max(1.0) as u32;
                 let rate = eAVEncCommonRateControlMode_UnconstrainedVBR.0 as u32;
                 for (api, value) in [

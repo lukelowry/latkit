@@ -1,4 +1,4 @@
-//! Evaluates expressions on the CPU, for work done from the data alone: a diagram's sheet
+//! Evaluates expressions on the CPU, for work that needs only data: a diagram's sheet
 //! (positions, sizes, and block label texts), layouts, row priorities, fitted domains of paged
 //! tables, and queries (filters, sort keys, and selections). The GPU evaluates the same expressions
 //! for drawing. Here they read only fields, with sampled fields read at one axis coordinate.
@@ -16,8 +16,8 @@ use crate::data::{Field, Geometry, Snapshot, Table, Value};
 pub(crate) struct Rows<'a> {
     pub(crate) table: &'a Table,
     pub(crate) all: &'a [Snapshot],
-    /// The axis coordinate at which sampled fields are read; infinity, their last frame, by
-    /// default.
+    /// The axis coordinate at which sampled fields are read. Defaults to infinity, which reads
+    /// their last frame.
     at: f64,
     /// Fitted domains already computed, keyed by their input node.
     fitted: RefCell<FxHashMap<*const Node, [f64; 2]>>,
@@ -41,15 +41,15 @@ impl<'a> Rows<'a> {
         self
     }
 
-    /// `expr` evaluated for `row`; `None` where the result is missing or not a finite number.
+    /// `expr` evaluated for `row`. `None` where the result is missing or not a finite number.
     pub(crate) fn number(&self, expr: &Expr, row: usize) -> Option<f64> {
         let v = self.eval(expr, row);
         v.is_finite().then_some(v)
     }
 
     /// `expr` evaluated for every row and converted by `make`, with NaN for missing values. A
-    /// constant fills every row, and a plain field of the table is read page by page; anything else
-    /// is evaluated for each row individually.
+    /// constant fills every row, and a plain field of the table is read page by page. Anything else
+    /// is evaluated row by row.
     pub(crate) fn numbers<T>(&self, expr: &Expr, mut make: impl FnMut(f64) -> T) -> Vec<T> {
         let n = self.table.len();
         let mut out = Vec::with_capacity(n);
@@ -86,8 +86,8 @@ impl<'a> Rows<'a> {
         out
     }
 
-    /// The text `expr` gives `row`: a text field's value, or the value a `when` chooses; `None`
-    /// where it is missing.
+    /// The text `expr` gives `row`: a text field's value, or the value a `when` picks. `None` where
+    /// it is missing.
     pub(crate) fn text(&self, expr: &Expr, row: usize) -> Option<Arc<str>> {
         match &*expr.0 {
             Node::Field(f) => match self.value(f, row)? {
@@ -161,7 +161,7 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// The extent of `input` over every row, as a fitted domain computes it; `[0, 1]` when no row
+    /// The extent of `input` over every row, as a fitted domain computes it. `[0, 1]` when no row
     /// has a value.
     fn fit(&self, input: &Expr) -> [f64; 2] {
         let key = Arc::as_ptr(&input.0);

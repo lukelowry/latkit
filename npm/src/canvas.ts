@@ -1,4 +1,4 @@
-/** Canvases, which views create: the views shown in one `<canvas>` or `OffscreenCanvas`. */
+/** Canvases. A canvas shows views in one `<canvas>` or `OffscreenCanvas`. Views create them. */
 
 import type * as bindings from '../pkg/latkit.js';
 import { Handle, inner } from './internal.js';
@@ -11,11 +11,11 @@ export type Rect = readonly [x: number, y: number, width: number, height: number
 export type Target = HTMLCanvasElement | OffscreenCanvas;
 
 /**
- * @internal Shows views in a `<canvas>` element or an `OffscreenCanvas`, each in its region, later
- * views over earlier ones. A `<canvas>` element sizes itself to its CSS box at the device pixel
- * ratio and passes pointer, wheel, and key input to the view under the pointer. A frame redraws
- * only the views that need it, or every view after a resize or a change of views. It is destroyed
- * with its last view, and the element keeps its last frame.
+ * @internal Shows views in a `<canvas>` element or an `OffscreenCanvas`, each in its region, with
+ * later views over earlier ones. A `<canvas>` element sizes itself to its CSS box at the device
+ * pixel ratio and passes pointer, wheel, and key input to the view under the pointer. A frame
+ * redraws only the views that need it, or every view after a resize or a change of views. The
+ * canvas is destroyed with its last view, and the element keeps its last frame.
  */
 export class Canvas extends Handle {
   #views: View[] = [];
@@ -31,7 +31,7 @@ export class Canvas extends Handle {
     this.#released = released;
   }
 
-  /** Creates a canvas of `device` in `target`; `released` runs once it is destroyed. */
+  /** Creates a canvas on `device` in `target`. `released` runs when the canvas is destroyed. */
   static made(
     device: bindings.Gpu,
     target: Target,
@@ -58,7 +58,7 @@ export class Canvas extends Handle {
     this.relayout();
   }
 
-  /** Stops showing `view`; with no view left, destroys the canvas. */
+  /** Stops showing `view`. Destroys the canvas when no view is left. */
   remove(view: View): void {
     this.#views = this.#views.filter((shown) => shown !== view);
     if (this.#views.length) this.relayout();
@@ -82,13 +82,13 @@ export type Placed =
   | {
       /** The view drawn. */
       readonly view: View;
-      /** Where it draws in the picture, in place of its own region. */
+      /** Where it draws in the picture, overriding its own region. */
       readonly region: Rect;
     };
 
 /**
- * @internal Views as the bindings take them: each view's handle, and its region's four fractions
- * in one array.
+ * @internal Encodes views for the bindings: their handles, and their regions as four fractions
+ * each in one array.
  */
 export function encoded(views: readonly Placed[]): [bindings.Handle[], Float32Array] {
   const placed = views.map((v) => ('view' in v ? v : { view: v, region: v.region }));

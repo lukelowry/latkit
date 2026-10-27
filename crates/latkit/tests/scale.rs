@@ -1,6 +1,6 @@
-//! Scale: a view's drawing always fits its budget. Paged tables draw the tiles in view, traces too
-//! large thin in time, higher-priority rows draw on top, a path longer than an arena chunk still
-//! draws whole, and a view sleeps while it waits.
+//! Scale: a view's drawing always fits its budget. Paged tables draw the tiles in view, traces that
+//! are too large thin in time, and higher-priority rows draw on top. A path longer than an arena
+//! chunk still draws in full, and a view sleeps while it waits.
 
 #![cfg(feature = "gpu")]
 
@@ -577,7 +577,7 @@ fn a_change_to_one_row_of_a_paged_table_updates_only_its_page() {
     let work = gpu.work() - before;
     let center = SIZE / 2;
     assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "{:?}", at(&pixels, center, center));
-    // A page is 4,096 rows; the field takes 8 bytes a row.
+    // A page is 4,096 rows, and the field takes 8 bytes a row.
     assert!(work.evaluated <= 4096, "only one page evaluates: {}", work.evaluated);
     assert!(work.uploaded <= 8 * 4096, "only one page of the field uploads: {} bytes", work.uploaded);
 }

@@ -8,9 +8,8 @@ use crate::{Error, Kind, Name, Result, Space};
 
 mark!(
 /// Rows drawn as lines along a path field (roads, rivers, borders) or a polygon field's rings (area
-/// outlines). On a plot, each row instead traces a sampled field's history across the data's axis,
-/// as a monitor does. On the earth, paths follow the globe's curve and stay whole across the
-/// antimeridian.
+/// outlines). On a plot, each row traces a sampled field's history across the data's axis, like a
+/// monitor. On the earth, paths follow the globe's curve and stay unbroken across the antimeridian.
 ///
 /// ```
 /// # use latkit::Lines;
@@ -18,13 +17,13 @@ mark!(
 /// let height = Lines::of("body", "Body").trace("height");
 /// ```
 Lines("lines") + stroke {
-    /// The path or polygon field each row runs along; the field named `geometry` by default. Not
+    /// The path or polygon field each row runs along. Defaults to the field named `geometry`. Not
     /// allowed on a plot.
     geometry: Option<Name>,
-    /// The sampled field each row traces across the data's axis; plots only, where it is required.
-    /// A field with no frames yet draws nothing until its first frame arrives.
+    /// The sampled field each row traces across the data's axis. Required on a plot, and allowed
+    /// only there. A field with no frames yet draws nothing until its first frame arrives.
     trace: Option<Name>,
-    /// How each row runs between its samples on a plot; `linear` by default.
+    /// How each row runs between its samples on a plot. Defaults to `linear`.
     interpolation: Interpolation,
 });
 
@@ -40,7 +39,7 @@ impl Lines {
         }
     }
 
-    /// Sets the path or polygon field each row runs along; the field named `geometry` by default.
+    /// Sets the path or polygon field each row runs along. Defaults to the field named `geometry`.
     /// Not allowed on a plot.
     #[must_use]
     pub fn geometry(mut self, field: impl Into<Name>) -> Lines {
@@ -48,7 +47,7 @@ impl Lines {
         self
     }
 
-    /// Sets the sampled field each row traces across the data's axis; plots only. Unless the mark
+    /// Sets the sampled field each row traces across the data's axis. Plots only. Unless the mark
     /// is [named](Lines::named), the field's name identifies it across scenes.
     #[must_use]
     pub fn trace(mut self, field: impl Into<Name>) -> Lines {
@@ -56,7 +55,7 @@ impl Lines {
         self
     }
 
-    /// Sets how each row runs between its samples on a plot; linear by default.
+    /// Sets how each row runs between its samples on a plot. Defaults to linear.
     #[must_use]
     pub fn interpolation(mut self, interpolation: Interpolation) -> Lines {
         self.interpolation = interpolation;
@@ -79,7 +78,7 @@ impl Lines {
                 return Err(Error::invalid("name the sampled field each row traces").at("trace"));
             };
             drawing.trace = match c.kind(field) {
-                // Streamed data may not have its first frame yet; the mark recompiles when it
+                // Streamed data may not have its first frame yet. The mark recompiles when it
                 // arrives.
                 None => wgsl::NONE,
                 _ => c.trace(field).map_err(|e| e.at("trace"))?,

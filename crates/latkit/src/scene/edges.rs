@@ -5,9 +5,9 @@ use crate::gpu::shaders as wgsl;
 use crate::{Error, Kind, Name, Result};
 
 mark!(
-/// Rows drawn as strokes between the vertices named by two reference fields: branches, links,
-/// wires. In a diagram, a row without ends is a net, joining every vertex port whose reference
-/// field names it.
+/// Rows drawn as strokes between two vertices named by reference fields: branches, links, wires.
+/// In a diagram, a row without ends is a net. It joins every vertex port whose reference field
+/// names it.
 ///
 /// ```
 /// # use latkit::{field, Edges};
@@ -18,17 +18,17 @@ Edges("edges") + stroke {
     ends: Option<(Name, Name)> as "[from: string, to: string]",
     /// A path field whose points each row passes through between its ends.
     bends: Option<Name>,
-    /// How each row runs between its ends: geodesic on the earth and straight elsewhere unless set.
-    /// `orthogonal` routes around blocks with rounded bends, in diagrams only.
+    /// How each row runs between its ends. Defaults to geodesic on the earth and straight
+    /// elsewhere. `orthogonal` routes around blocks with rounded bends, in diagrams only.
     route: Option<Route>,
-    /// Whether each row has an arrowhead at its second end; a net has one at each input it reaches.
-    /// Default `false`.
+    /// Whether each row has an arrowhead at its second end. A net has one at each input it
+    /// reaches. Defaults to `false`.
     arrows: bool,
     /// Draws each row as a pole from its own vertex down to the ground, on a plane or the earth.
-    /// Poles take no `ends`, `bends`, or `joins`. Default `false`.
+    /// Poles take no `ends`, `bends`, or `joins`. Defaults to `false`.
     poles: bool,
-    /// Draws each row as a net on a plane or the earth, joining the vertex rows of `table` whose
-    /// `reference` field names it: a star from their center to each member.
+    /// Draws each row as a net on a plane or the earth. The net joins the vertex rows of `table`
+    /// whose `reference` field names it, as a star from their center to each member.
     joins: Option<(Name, Name)> as "[table: string, reference: string]",
 });
 
@@ -47,17 +47,17 @@ impl Edges {
         }
     }
 
-    /// Draws each row as a net on a plane or the earth, joining the vertex rows of `table` whose
-    /// field `reference` names it: a star from their center to each member. In a diagram, nets join
-    /// vertex ports instead.
+    /// Draws each row as a net on a plane or the earth. The net joins the vertex rows of `table`
+    /// whose field `reference` names it, as a star from their center to each member. In a diagram,
+    /// nets join vertex ports.
     #[must_use]
     pub fn joins(mut self, table: impl Into<Name>, reference: impl Into<Name>) -> Edges {
         self.joins = Some((table.into(), reference.into()));
         self
     }
 
-    /// Draws each row as a pole: a stroke from the row's own vertex, as placed by the vertex mark
-    /// that draws the same table, down to the ground, on a plane or the earth. Dashes, comets,
+    /// Draws each row as a pole on a plane or the earth: a stroke from the row's own vertex down to
+    /// the ground. The vertex is where the vertex mark of the same table places it. Dashes, comets,
     /// picking, and labels work as on any edge.
     #[must_use]
     pub fn poles(mut self) -> Edges {
@@ -72,15 +72,15 @@ impl Edges {
         self
     }
 
-    /// Sets how each row runs between its ends: geodesic on the earth and straight elsewhere unless
-    /// set.
+    /// Sets how each row runs between its ends. Defaults to geodesic on the earth and straight
+    /// elsewhere.
     #[must_use]
     pub fn route(mut self, route: Route) -> Edges {
         self.route = Some(route);
         self
     }
 
-    /// Sets whether each row has an arrowhead at its second end; a net has one at each input it
+    /// Sets whether each row has an arrowhead at its second end. A net has one at each input it
     /// reaches.
     #[must_use]
     pub fn arrows(mut self, on: bool) -> Edges {

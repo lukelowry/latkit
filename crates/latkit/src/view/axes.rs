@@ -1,6 +1,6 @@
 //! A plot's axes, drawn over its marks: grid lines at round values, tick labels and titles in the
 //! theme's font, and the playhead at the shown coordinate. Rebuilt each frame as overlay sprites,
-//! in O(ticks). The room they take around the plot area is measured with the host's text metrics.
+//! in O(ticks). The space they take around the plot area is measured with the host's text metrics.
 
 use std::sync::Arc;
 
@@ -12,22 +12,22 @@ use crate::gpu::shaders::{self as wgsl, TEXT_SPREAD};
 use crate::host::{Host, TextRun};
 use crate::{Axis, Camera, Color, Format, Plot, Space};
 
-/// A tick's length, and the gap between it and its label: CSS pixels.
+/// A tick's length, and the gap between it and its label, in CSS pixels.
 const TICK: f64 = 4.0;
 const GAP: f64 = 3.0;
-/// Room kept on the sides of a hidden axis, in CSS pixels.
+/// Space kept on the sides of a hidden axis, in CSS pixels.
 const HIDDEN: f64 = 8.0;
 
-/// The room a plot's axes take around its area, from their measured text.
+/// The space a plot's axes take around the plot area, from their measured text.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub(crate) struct Gutters {
-    /// Room outside the area: top, right, bottom, left, CSS pixels.
+    /// Space outside the area in CSS pixels: top, right, bottom, left.
     pub(crate) room: [f64; 4],
-    /// How tall a tick label is written, CSS pixels.
+    /// The height of a tick label in CSS pixels.
     tick: f64,
 }
 
-/// The room `plot`'s axes take. `measure` gives the CSS pixel size of a run of the theme's text,
+/// The space `plot`'s axes take. `measure` gives the CSS pixel size of a run of the theme's text,
 /// including the distance field around it. Below the area: a tick, its labels, and the x title.
 /// Left: a tick and the widest y label. Above: the y title, at least half a label's height. Right:
 /// half the widest x label. A hidden axis leaves `HIDDEN` on its two sides instead.
@@ -43,8 +43,8 @@ pub(crate) fn gutters(plot: &Plot, measure: impl Fn(&str) -> [f64; 2]) -> Gutter
     Gutters { room: [top, right, bottom, left], tick }
 }
 
-/// Labels as wide as the widest `axis` writes: its given ticks' labels, else a sample value with a
-/// sign, two digits, and three decimals, in its format.
+/// Labels as wide as the widest that `axis` writes: its given ticks' labels, or else a sample value
+/// with a sign, two digits, and three decimals, in its format.
 fn written(axis: &Axis) -> Vec<String> {
     let Some(given) = &axis.ticks else { return vec![label(-88.888, 0.001, axis)] };
     let mut values: Vec<f64> = given.iter().map(|&(v, _)| v).collect();
@@ -91,7 +91,7 @@ pub(super) fn label(value: f64, step: f64, axis: &Axis) -> String {
     }
 }
 
-/// The ticks of `axis` across `range`: the ones it gives, else round values `step` apart.
+/// The ticks of `axis` across `range`: the ones it gives, otherwise round values `step` apart.
 fn axis_ticks(axis: &Axis, range: [f64; 2], step: f64) -> Vec<(f64, String)> {
     match &axis.ticks {
         Some(given) => given
@@ -148,7 +148,7 @@ pub(super) struct Writer<'a> {
 }
 
 impl Writer<'_> {
-    /// `text` as a sprite aligned by `align` at `anchor` (CSS pixels), snapped to device pixels;
+    /// `text` as a sprite aligned by `align` at `anchor` (CSS pixels), snapped to device pixels.
     /// `None` while the text cannot be set yet.
     pub(super) fn text(&mut self, text: &str, anchor: [f64; 2], align: Align) -> Option<wgsl::Sprite> {
         let run = TextRun { text: text.into(), font: self.font.clone(), size_px: self.size_px, max_width: None };
@@ -218,7 +218,7 @@ impl View {
         self.axes(inner, plot, self.area(), x, y)
     }
 
-    /// Measures the room the plot's axes take, with the host's metrics for the theme's text at the
+    /// Measures the space the plot's axes take, with the host's metrics for the theme's text at the
     /// view's pixel ratio, once per scene and ratio. The plot area is what they leave.
     pub(super) fn measure_gutters(&mut self) {
         let Space::Plot(plot) = &self.scene.space else { return };
@@ -292,7 +292,7 @@ impl View {
             }
             sprites.push(line([left, top], [left, bottom], 1.0, axis));
             if let Some(title) = &plot.y.label {
-                // Above the area, aligned with the left edge of the room its labels take.
+                // Above the area, aligned with the left edge of the space its labels take.
                 sprites.extend(writer.text(title, [left - gutters.room[3], top], Align::Above));
             }
         }

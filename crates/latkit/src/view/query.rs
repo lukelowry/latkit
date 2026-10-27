@@ -1,11 +1,12 @@
-//! Queries: every row within reach of a point, every row in a box, and where a row lies on screen.
+//! Queries: every row within a radius of a point, every row in a box, and where a row lies on
+//! screen.
 //!
 //! Each mark's probe program answers on the GPU, through the geometry the frame drew. The result is
 //! read back a frame or two later and decoded against that frame. A query's results for each mark
 //! follow the probe's words in the probe buffer: a hit count and capacity followed by the hits, or
 //! a bit per row. Hits arrive in any order and are sorted before they are returned. A mark that
-//! found more hits than it kept is queried again with room for all of them. One query runs at a
-//! time; the rest wait in order, and a query nobody awaits any more is skipped.
+//! found more hits than it kept is queried again with space for all of them. One query runs at a
+//! time. The rest wait in order, and a query nobody awaits any more is skipped.
 
 use std::collections::VecDeque;
 
@@ -21,7 +22,7 @@ use crate::gpu::shaders as wgsl;
 use crate::{Pending, Resolver, Row};
 
 /// Hits kept per mark on the first try. Hits past these are counted but not kept, and the query
-/// runs again with room for them.
+/// runs again with space for them.
 const HITS: u32 = 1024;
 
 /// A query for the GPU.
@@ -80,7 +81,7 @@ impl Ask {
     }
 }
 
-/// Where a query's results for mark `mark` lie: from probe-buffer word `at`, with room for `room`
+/// Where a query's results for mark `mark` lie: from probe-buffer word `at`, with space for `room`
 /// hits or rows.
 #[derive(Clone, Copy)]
 struct Found {
@@ -130,7 +131,7 @@ impl View {
         answer
     }
 
-    /// Where `row` lies on screen, in CSS pixels from the top left, as the next frames draw it;
+    /// Where `row` lies on screen, in CSS pixels from the top left, as the next frames draw it.
     /// `None` when no mark draws it in view. A diagram's vertices resolve at once from its sheet.
     pub fn screen_of(&mut self, row: &Row) -> Pending<Option<[f32; 2]>> {
         let diagram = matches!(self.scene.space, crate::Space::Diagram(_));
@@ -162,9 +163,9 @@ impl View {
         shown.item_of(shown.held_row(index as u32)?).filter(|&item| item < shown.rows)
     }
 
-    /// Starts the next query this frame if none is in progress, skipping those nobody awaits. Makes
-    /// room for its results after the probe's words, and returns its query words and whether it
-    /// reads depth.
+    /// Starts the next query this frame if none is in progress, skipping those nobody awaits.
+    /// Reserves space for its results after the probe's words, and returns its query words and
+    /// whether it reads depth.
     pub(super) fn next_query(&mut self) -> Option<([f32; 4], bool)> {
         if self.queries.running.is_some() || self.queries.reading.busy() {
             return None;
@@ -244,7 +245,7 @@ impl View {
         };
         match ask {
             Ask::Hits { point, radius, room, reply } => {
-                // If a mark found more hits than it kept, run again with room for all of them.
+                // If a mark found more hits than it kept, run again with space for all of them.
                 let most = found.iter().map(|f| words_at(&words, f.at, 1).first().copied().unwrap_or(0)).max();
                 match most.filter(|&most| most > room) {
                     Some(room) => self.queries.waiting.push_front(Ask::Hits { point, radius, room, reply }),
@@ -282,9 +283,9 @@ impl View {
 
 /// The hits in `words` for `found`, decoded against `drew`, the frame they came from.
 fn hits(found: &[Found], words: &[u32], drew: &Drew) -> Vec<Hit> {
-    // Nearest first; among equals, the mark drawn last first, and a port before its marker; then
-    // by row and position, so the order never depends on which hit arrived first. Each row appears
-    // once, at its nearest hit.
+    // Nearest first. Among equals, the mark drawn last comes first, and a port before its marker.
+    // Then by row and position, so the order never depends on which hit arrived first. Each row
+    // appears once, at its nearest hit.
     let mut kept: Vec<(usize, &[u32; wgsl::HIT_WORDS as usize])> = found
         .iter()
         .flat_map(|f| {

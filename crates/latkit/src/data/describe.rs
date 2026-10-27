@@ -1,5 +1,5 @@
-//! Summaries of a dataset: a [`Description`] of its tables and fields, and an [`Envelope`] of each
-//! row's least and greatest value of a sampled field over spans of the axis.
+//! Summaries of a dataset. A [`Description`] lists its tables and fields. An [`Envelope`] holds
+//! each row's least and greatest value of a sampled field over spans of the axis.
 
 use super::column::{PAGE_BITS, PAGE_MASK};
 use super::ids::Ids;
@@ -21,7 +21,8 @@ pub struct Description {
     pub name: Name,
     /// The axis name and unit, if set.
     pub axis: Option<[Name; 2]>,
-    /// The first and last axis coordinates held by any sampled field; `None` when none holds any.
+    /// The first and last axis coordinates held by any sampled field, or `None` if no field holds
+    /// any.
     pub span: Option<[f64; 2]>,
     /// Its tables, sorted by name.
     pub tables: Vec<TableDescription>,
@@ -54,9 +55,9 @@ pub struct FieldDescription {
 }
 
 /// A request for each row's least and greatest value of a sampled field over equal spans of the
-/// axis: field `field` of table `table`, over `spans` equal spans from `range[0]` to `range[1]`,
-/// for every row or for the rows `ids` names, in that order. Plain data that deserializes from
-/// JSON, like a query.
+/// axis. It reads field `field` of table `table` over `spans` equal spans from `range[0]` to
+/// `range[1]`, for every row or for the rows in `ids`, in that order. Like a query, it is plain
+/// data that deserializes from JSON.
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EnvelopeRequest {
@@ -64,11 +65,11 @@ pub struct EnvelopeRequest {
     pub table: Name,
     /// The sampled field to read.
     pub field: Name,
-    /// The axis range the spans cover, `[first, last]`: finite, with `first <= last`.
+    /// The axis range the spans cover, `[first, last]`. Both are finite, with `first <= last`.
     pub range: [f64; 2],
-    /// The number of equal spans to divide the range into; at least 1.
+    /// The number of equal spans to divide the range into. At least 1.
     pub spans: usize,
-    /// The rows to read, in this order; every row when unset.
+    /// The rows to read, in this order. Defaults to every row.
     #[serde(default)]
     pub ids: Option<Ids>,
 }
@@ -89,12 +90,11 @@ impl Snapshot {
     /// `request` describes. Values are laid out row by row, with NaN where a span holds no frame.
     ///
     /// Each span reads the coarsest stored levels of detail that fit inside it, so it costs a few
-    /// reads regardless of how many frames it covers. Where only coarser levels are present, as
-    /// while time tiles are loading, those are used instead and may include frames just outside
-    /// the span.
+    /// reads however many frames it covers. Where only coarser levels are present, such as while
+    /// time tiles load, those are used and may include frames just outside the span.
     ///
-    /// Errors if the table, the field, or a requested row does not exist, the field is not
-    /// sampled, the range is not finite and ordered, `spans` is 0, or rows times spans exceeds
+    /// Returns an error if the table, the field, or a requested row does not exist, the field is
+    /// not sampled, the range is not finite and ordered, `spans` is 0, or rows times spans exceeds
     /// 2^26.
     ///
     /// ```
@@ -155,7 +155,7 @@ impl Table {
         let width = (range[1] - range[0]) / spans as f64;
         let at: Vec<f64> =
             (0..=spans).map(|s| if s == spans { range[1] } else { range[0] + width * s as f64 }).collect();
-        // Each span covers frames from its start up to the next span's start; the last span also
+        // Each span covers frames from its start up to the next span's start. The last span also
         // includes its end.
         let bounds: Vec<u64> = at.iter().enumerate().map(|(s, &t)| samples.bound(t, s == spans)).collect();
         let pieces: Vec<Vec<(u32, u64)>> = bounds.windows(2).map(|b| samples.pieces(b[0]..b[1])).collect();
@@ -188,12 +188,13 @@ impl Table {
 /// [`Snapshot::envelope`] returns them.
 #[derive(Clone, PartialEq, Debug, serde::Serialize)]
 pub struct Envelope {
-    /// Each span's start coordinate, then the last span's end: one more value than spans.
+    /// Each span's start coordinate, then the last span's end. It has one more value than there
+    /// are spans.
     pub at: Vec<f64>,
-    /// The least value of each requested row in each span, row-major (`row * spans + span`); NaN
+    /// The least value of each requested row in each span, row-major (`row * spans + span`). NaN
     /// where the span has no value.
     pub least: Vec<f32>,
-    /// The greatest value of each requested row in each span, row-major (`row * spans + span`);
+    /// The greatest value of each requested row in each span, row-major (`row * spans + span`).
     /// NaN where the span has no value.
     pub greatest: Vec<f32>,
 }

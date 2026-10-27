@@ -25,7 +25,7 @@ interface Slot {
   timer?: ReturnType<typeof setTimeout>;
 }
 
-/** The error for a failed job: `cause` itself if it is one, else an `io` error saying it. */
+/** The error for a failed job: `cause` if it is a latkit error, else an `io` error from it. */
 function failure(cause: unknown): LatkitError {
   if (cause instanceof Error && 'code' in cause) return cause as LatkitError;
   const message = cause instanceof Error ? cause.message : String(cause);
@@ -35,9 +35,9 @@ function failure(cause: unknown): LatkitError {
 /**
  * Returns the function latkit hands its jobs to. It runs each job on a pooled worker, one job per
  * worker at a time. latkit queues jobs itself and hands one over only when it can run, so the pool
- * grows only to the number of jobs running at once, and nothing queues here. Idle workers are
- * terminated after 30 seconds. A job fails after one minute, including a new worker's startup. A
- * failure rejects that job and terminates its worker; later jobs start a new one.
+ * grows only to the number of jobs running at once and nothing queues here. Idle workers are
+ * terminated after 30 seconds. A job times out after one minute, counting a new worker's startup.
+ * A failure rejects that job and terminates its worker. Later jobs start a new one.
  */
 export function jobs(
   module: WebAssembly.Module,

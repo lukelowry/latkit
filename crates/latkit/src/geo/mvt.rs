@@ -35,8 +35,8 @@ impl Shape {
     }
 }
 
-/// One feature: its shape, and its properties as pairs of key index and value: a text, number, or
-/// boolean.
+/// One feature: its shape, and its properties as pairs of key index and value. A value is a text,
+/// number, or boolean.
 #[derive(Clone, Debug)]
 pub(crate) struct Feature {
     pub(crate) shape: Shape,

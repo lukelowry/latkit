@@ -13,16 +13,22 @@ let first: Promise<bindings.Gpu> | undefined;
 
 /**
  * Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
- * load; options they pass must equal the first call's, or they reject with an `io` error. A failed
- * load rejects with an `io` error and can be retried. `load()` also requests a GPU adapter while
- * the WebAssembly compiles, so the browser starts its GPU process early, then the first device for
- * `Gpu.create()`.
+ * load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
+ * load rejects with an `io` error and can be retried. While the WebAssembly compiles, `load()`
+ * requests a GPU adapter so the browser starts its GPU process early. Then it requests the first
+ * device for `Gpu.create()`.
  */
 export function load(
   options: {
-    /** The URL of this version's `latkit/wasm` asset, or that asset compiled; bundled by default. */
+    /**
+     * The URL of this version's `latkit/wasm` asset, or that asset compiled. Defaults to the
+     * bundled asset.
+     */
     wasm?: string | URL | WebAssembly.Module;
-    /** Creates a worker running the standalone `latkit/worker` bundle; bundled by default. */
+    /**
+     * Creates a worker that runs the standalone `latkit/worker` bundle. Defaults to the bundled
+     * worker.
+     */
     worker?: () => Worker;
   } = {},
 ): Promise<void> {
@@ -77,9 +83,9 @@ export function firstDevice(): Promise<bindings.Gpu> | undefined {
 }
 
 /**
- * Requests a high-performance GPU adapter, as latkit's own request does, while the WebAssembly
- * loads. This starts the browser's GPU process early. Starting it is most of a cold device's
- * 280 ms, so latkit's own request later finds the process running.
+ * Requests a high-performance GPU adapter, like latkit's own request, while the WebAssembly loads.
+ * This starts the browser's GPU process early. Starting it takes most of a cold device's 280 ms, so
+ * latkit's later request finds the process running.
  */
 function startGpuProcess(): void {
   const gpu = (

@@ -1,17 +1,18 @@
 //! Vector tiles: the tiles the camera needs, fetched from a PMTiles archive or a URL template
-//! (given directly or read from a TileJSON document), decoded in jobs, and appended to the dataset
-//! a set draws. The camera picks tiles that draw no larger than their own pixel size near its
-//! focus, splitting those drawn largest first, and lists them nearest first. Tiles decode only the
-//! layers a set's marks draw, and decode again for a set whose scene draws others. The job decoding
-//! a tile also computes its rows' shapes for their marks, so a tile arrives with its triangles and
-//! paths. A set holds the rows with their shapes, and draws a dataset of the rows as the tiles
-//! wrote them.
+//! (given directly or read from a TileJSON document). Jobs decode them, and their rows are
+//! appended to the dataset a set draws. Near its focus, the camera picks tiles that draw no larger
+//! than their own pixel size. It splits the tiles drawn largest first, and lists them nearest
+//! first. Tiles decode only the layers a set's marks draw, and decode again for a set whose scene
+//! draws other layers. The job decoding a tile also computes its rows' shapes for their marks, so a
+//! tile arrives with its triangles and paths. A set holds the rows with their shapes, and draws a
+//! dataset of the rows as the tiles wrote them.
 //!
-//! A set's tables hold the rows of the tiles it drew in the order they arrived, so a tile landing
-//! appends its rows and the pages earlier tiles filled stay as they are. Each table is paged, in
-//! table order: its tiles are the vector tiles drawn, each the span of rows it wrote. A tile that
-//! stops drawing keeps its rows, and draws them again if it returns, until the rows no drawn tile
-//! holds outnumber the rows drawn by at least a page; then every table drops them at once.
+//! A set's tables hold the rows of the tiles it drew, in the order they arrived. A landing tile
+//! appends its rows, and the pages earlier tiles filled stay as they are. Each table is paged in
+//! table order, and its tiles are the vector tiles drawn, each the span of rows it wrote. A tile
+//! that stops drawing keeps its rows, and draws them again if it returns. This lasts until the rows
+//! that no drawn tile holds outnumber the rows drawn by at least a page. Then every table drops
+//! them at once.
 
 use std::collections::BinaryHeap;
 use std::ops::Range;
@@ -35,15 +36,15 @@ use crate::gpu::shaders::PAGE_ROWS;
 use crate::host::{Job, Request};
 use crate::{Error, Expr, Kind, Mark, Pending, Scene};
 
-/// Most tiles drawn at once. Past this, tiles stop splitting. A view 4K CSS pixels wide, seen from
-/// above, draws at most about 100 tiles of 320 to 640 pixels.
+/// The most tiles drawn at once. Past this, tiles stop splitting. A view 4K CSS pixels wide, seen
+/// from above, draws at most about 100 tiles of 320 to 640 pixels.
 const MAX_TILES: usize = 128;
 
-/// The tiles to draw within `zooms` and `bounds`, nearest the camera's focus first: those meeting
-/// the camera's view, split from the root while they draw larger than their pixel size. The tile
-/// drawn largest splits first, so once [`MAX_TILES`] binds, the smaller tiles left stay as they
-/// are. Tiles coarser than the first zoom hold nothing: they split before any other, and draw
-/// nothing if they cannot.
+/// The tiles to draw within `zooms` and `bounds`, nearest the camera's focus first. These are the
+/// tiles that meet the camera's view, split from the root while they draw larger than their pixel
+/// size. The tile drawn largest splits first, so once [`MAX_TILES`] is reached, the smaller tiles
+/// left stay as they are. Tiles coarser than the first zoom hold nothing. They split before any
+/// other, and draw nothing if they cannot.
 fn wanted(sight: &Sight<'_>, zooms: [u8; 2], bounds: [f64; 4]) -> Vec<TileKey> {
     let region = sight.region();
     let focus = sight.focus();
@@ -199,10 +200,10 @@ impl Fetched {
 /// Each tile whose rows a set's tables hold, with the span of rows it wrote in each table.
 type Spans = FxHashMap<TileKey, Vec<(Name, Range<u32>)>>;
 
-/// What one set draws of vector tiles: the tiles whose rows its dataset holds, with their spans;
-/// the tiles drawn, nearest the camera's focus first; a stamp of what the rows were made from (the
-/// stamp they were decoded for, and their tables' priorities); and `held`, the same rows as the
-/// dataset including their derived shape fields.
+/// What one set draws of vector tiles. It records the tiles whose rows its dataset holds, with
+/// their spans, and the tiles drawn, nearest the camera's focus first. A stamp records what the
+/// rows were made from: the stamp they were decoded for, and their tables' priorities. `held`
+/// holds the same rows as the dataset, including their derived shape fields.
 pub(crate) struct Drawing {
     spans: Spans,
     drawn: Vec<TileKey>,
@@ -225,11 +226,11 @@ impl Drawing {
         self.drawn.len()
     }
 
-    /// What `table`, one of the dataset's tables, draws within `rows` rows: the span of each tile
-    /// drawn, nearest the camera's focus first until the rows run out (the tile they run out in
-    /// draws its last rows, those of highest priority), as ranges of its table order. The ranges
-    /// draw coarsest tile first, so finer tiles draw over the ancestors standing in for them.
-    /// `capped` when the budget left out any rows.
+    /// What `table`, one of the dataset's tables, draws within `rows` rows. It draws the span of
+    /// each tile drawn, as ranges of its table order, nearest the camera's focus first until the
+    /// rows run out. The tile in which they run out draws its last rows, which have the highest
+    /// priority. The ranges draw coarsest tile first, so finer tiles draw over the ancestors
+    /// standing in for them. `capped` is set when the budget left out any rows.
     pub(crate) fn chosen(&self, table: &Table, rows: u32) -> Chosen {
         let len = table.len() as u32;
         let (mut left, mut capped) = (rows, false);
@@ -289,11 +290,11 @@ impl Drawing {
     }
 
     /// Draws tiles `drawn`, decoded for `stamp`. A tile new to the tables appends its rows after
-    /// every row they hold, as the tile wrote them but in its table's priority order: to `data`,
-    /// and with their shapes to `held`. Rows of tiles not drawn stay until they outnumber the rows
-    /// drawn by at least a page; then each table drops them in one removal, and the spans after
-    /// them move down. Every row goes when the stamp or a priority changes, since each tile then
-    /// appends its rows anew, with the same ids. Returns whether `data` changed.
+    /// every row they hold, as the tile wrote them but in its table's priority order. The rows go
+    /// to `data`, and with their shapes to `held`. Rows of tiles not drawn stay until they
+    /// outnumber the rows drawn by at least a page. Then each table drops them in one removal, and
+    /// the spans after them move down. Every row goes when the stamp or a priority changes, since
+    /// each tile then appends its rows anew, with the same ids. Returns whether `data` changed.
     fn draw(
         &mut self,
         drawn: &[TileKey],
@@ -390,8 +391,8 @@ impl Drawing {
     }
 }
 
-/// The priority each table of dataset `name` draws its rows by: that of the first mark drawing it
-/// that gives one.
+/// The priority each table of dataset `name` draws its rows by. It is the priority of the first
+/// mark drawing the table that sets one.
 fn priorities(scene: &Scene, name: &Name) -> Vec<(Name, Expr)> {
     let mut out: Vec<(Name, Expr)> = Vec::new();
     for mark in &scene.marks {
@@ -405,7 +406,8 @@ fn priorities(scene: &Scene, name: &Name) -> Vec<(Name, Expr)> {
 }
 
 /// `table` with its rows in `priority` order, highest last, so they draw on top. Rows of equal
-/// priority keep their order, and a missing or NaN priority is lowest. As is without a priority.
+/// priority keep their order, and a missing or NaN priority is lowest. Without a priority, returns
+/// `table` unchanged.
 fn ranked(table: &Table, priority: Option<&Expr>, all: &[Snapshot]) -> Table {
     let Some(priority) = priority else { return table.clone() };
     let lowest = |p: f64| if p.is_nan() { f64::NEG_INFINITY } else { p };
@@ -535,10 +537,10 @@ fn decoded_tables(scene: &Scene, name: &Name) -> Vec<Decoded> {
     tables
 }
 
-/// Converts `table`'s fields to the kinds the same-named fields have where they differ: in the
-/// same-named table of `data`, or else in a table set before it in the same patch, as `kinds`
-/// records, by table and field. For example, a field a tile reads as numbers but the dataset holds
-/// as text is written as text. Records the kinds of fields new to both.
+/// Converts `table`'s fields to the kinds the same-named fields have, where they differ. Those
+/// fields are in the same-named table of `data`, or else in a table set before it in the same
+/// patch, as `kinds` records by table and field. For example, a field a tile reads as numbers but
+/// the dataset holds as text is written as text. Records the kinds of fields new to both.
 fn harmonized(table: &Table, data: &Snapshot, kinds: &mut FxHashMap<(Name, Name), Kind>) -> Table {
     let existing = data.table(&table.name);
     let mut out = table.clone();

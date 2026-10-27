@@ -21,8 +21,8 @@ use crate::scene::Side;
 pub(crate) struct Terminal {
     /// The point on the vertex's boundary.
     pub(crate) at: [f64; 2],
-    /// The side the wire leaves by. With none, the owner's side nearest `at`; without an owner, the
-    /// axis toward the rest of the net.
+    /// The side the wire leaves by. With none, the wire leaves by the owner's side nearest `at`, or
+    /// without an owner, along the axis toward the rest of the net.
     pub(crate) side: Option<Side>,
     /// The obstacle the terminal belongs to.
     pub(crate) owner: Option<u32>,
@@ -31,7 +31,7 @@ pub(crate) struct Terminal {
 /// A net: every terminal it joins. Two terminals make a plain edge.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub(crate) struct Net {
-    /// The terminals; the route grows from the first.
+    /// The terminals. The route grows from the first.
     pub(crate) terminals: Vec<Terminal>,
 }
 
@@ -226,8 +226,8 @@ impl<'a> Router<'a> {
         Some(tree)
     }
 
-    /// Resolves a terminal for routing. Its outward direction is its side's normal; else that of
-    /// its owner's side nearest it; else the axis toward `toward`.
+    /// Resolves a terminal for routing. Its outward direction is its side's normal, else the normal
+    /// of its owner's side nearest it, else the axis toward `toward`.
     fn end(&self, terminal: Terminal, toward: Point) -> End {
         let owner = self.obstacles.owned(terminal.owner);
         let at = terminal.at;
@@ -270,9 +270,9 @@ impl<'a> Router<'a> {
         point
     }
 
-    /// The cheapest clear path from the tree to a reader's stub end `end`: an elbow from one of the
-    /// nearest attach points; else a search around the obstacles at decreasing clearance; else a
-    /// plain elbow through them.
+    /// The cheapest clear path from the tree to a reader's stub end `end`. It is an elbow from one
+    /// of the nearest attach points, else a search around the obstacles at decreasing clearance,
+    /// else a plain elbow through them.
     fn branch(&mut self, tree: &Tree, end: Point, reader: &End, root: &End) -> Branch {
         let mut attaches = tree.attaches(end);
         attaches.truncate(ATTACHES);
@@ -315,7 +315,7 @@ impl<'a> Router<'a> {
 
     /// Spreads runs of different nets that share a line onto separate tracks, `spacing` apart where
     /// the corridor between obstacles has room. Tracks are ordered by where the runs' ends turn, so
-    /// runs nest rather than cross. A run moves its joints, so branches stay connected; terminals
+    /// runs nest rather than cross. A run moves its joints, so branches stay connected. Terminals
     /// never move, and stubs only grow.
     fn separate(&self, trees: &mut [Option<Tree>]) {
         let tolerance = self.spacing / 16.0;
@@ -805,7 +805,7 @@ impl Search {
                 return false;
             }
         }
-        // Index each vertical span's crossings; they come bottom to top, as the rows do.
+        // Index each vertical span's crossings. They come bottom to top, as the rows do.
         self.starts.clear();
         self.starts.resize(vertical.len() + 1, 0);
         for crossing in &self.crossings {
@@ -980,13 +980,13 @@ impl Search {
 
 /// The free spans of lines running along axis `along` (0: x, 1: y) within `window`, among `boxes`
 /// (the grown obstacles that meet it). Lines pass through each box's corners (clamped into the
-/// window) and through each of `ends`, taking the free span at that point; lines along the
+/// window) and through each of `ends`, taking the free span at that point. Lines along the
 /// window's edges take every free span. Sorted by line, then start.
 fn spans(boxes: &[Rect], window: Rect, ends: &[Point], along: usize) -> Vec<Span> {
     let held = 1 - along;
     let (start, end) = (window[along], window[along + 2]);
     let (low, high) = (window[held], window[held + 2]);
-    // A seed is a line and a point along it, which selects the free span holding that point; NaN
+    // A seed is a line and a point along it, which selects the free span holding that point. NaN
     // selects every free span of the line.
     let mut seeds: Vec<Point> = boxes
         .iter()
@@ -1159,7 +1159,7 @@ fn inside(p: Point, r: &Rect) -> bool {
 
 /// Whether the axis-aligned segment from `a` to `b` passes through a box's interior.
 fn crosses(a: Point, b: Point, r: &Rect) -> bool {
-    // A vertical segment has a fixed x and runs along y; a horizontal one has a fixed y.
+    // A vertical segment has a fixed x and runs along y. A horizontal one has a fixed y.
     let held = usize::from(a[0] != b[0]);
     let runs = 1 - held;
     a[held] > r[held] + EPSILON
@@ -1222,7 +1222,7 @@ struct Run {
     along: [f64; 2],
     /// Which way its ends turn: negative toward lower lines, positive toward higher.
     turn: f64,
-    /// The lines tracks may move it between; a single line for a run holding a terminal.
+    /// The lines tracks may move it between, or a single line for a run holding a terminal.
     limits: [f64; 2],
 }
 

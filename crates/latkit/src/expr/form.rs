@@ -1,7 +1,7 @@
-//! JSON forms of expressions, sizes, and colormaps. Every value reads by one rule: a number or
+//! JSON forms of expressions, sizes, and colormaps. Every value follows one rule: a number or
 //! boolean is a constant, `null` is a missing value, a string starting with `$` reads the field it
 //! names, any other string is a CSS color, and an object is one node whose key names its kind. A
-//! call's one key names its operation and holds its arguments:
+//! call has one key, which names its operation and holds its arguments:
 //!
 //! | Form                                                         | Builder                            |
 //! | ------------------------------------------------------------ | ---------------------------------- |
@@ -18,13 +18,13 @@
 //! | `{ "px": a }` (sizes only)                                   | `px(a)`                            |
 //! | `{ "units": a, "atLeast": 2, "atMost": 20 }` (sizes only)    | `units(a).at_least(..)`            |
 //!
-//! `neg`, `not`, `abs`, `sqrt`, `sin`, `cos`, `floor`, `ln`, and `exp` take one argument; `add`,
+//! `neg`, `not`, `abs`, `sqrt`, `sin`, `cos`, `floor`, `ln`, and `exp` take one argument. `add`,
 //! `sub`, `mul`, `div`, `rem`, `pow`, `min`, `max`, `lt`, `le`, `gt`, `ge`, `eq`, `ne`, `and`, and
-//! `or` take two; `is` and `contains` take a value and a plain text, which is neither a field nor a
+//! `or` take two. `is` and `contains` take a value and a plain text, which is neither a field nor a
 //! color. A field whose name starts with `$` is written `{ "field": "$x" }`. An object may have
-//! only its kind's keys; a key of another kind is an error. A colormap is a catalog name or
-//! `{ "kind": "sequential", "colors": ["black", [0.2, "red"], "white"] }`, where a `[place, color]`
-//! pair places a color and `categories` names a categorical map's colors.
+//! only its kind's keys, and a key of another kind is an error. A colormap is a catalog name or
+//! `{ "kind": "sequential", "colors": ["black", [0.2, "red"], "white"] }`. A `[place, color]` pair
+//! places a color, and `categories` names a categorical map's colors.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -133,7 +133,7 @@ macro_rules! form {
     };
     ($($vis:vis $key:ident $json:literal: $ty:ty $(as $how:ident)?),+ $(,)?) => {
         /// Every key that an expression object, a size, or label options can have, and the call
-        /// that a key naming an operation makes; each kind accepts only its own keys.
+        /// made by a key that names an operation. Each kind accepts only its own keys.
         #[derive(Default)]
         pub(crate) struct Form {
             $($vis $key: Option<$ty>,)+
@@ -154,8 +154,8 @@ macro_rules! form {
                 held
             }
 
-            /// Reads `key`'s value from `map`. Any other key names an operation, whose call it
-            /// makes.
+            /// Reads `key`'s value from `map`. Any other key names an operation, and this makes
+            /// its call.
             fn read<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<(), A::Error> {
                 match key {
                     $($json => {
@@ -203,8 +203,8 @@ impl Form {
         }
     }
 
-    /// Reads the arguments of the operation `key` names from `map`, and makes the call: values, or
-    /// for `is` and `contains`, a value and a text.
+    /// Reads from `map` the arguments of the operation `key` names, and makes the call. The
+    /// arguments are values, or a value and a text for `is` and `contains`.
     fn read_call<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<(), A::Error> {
         let Some(&(name, operation, _)) = OPERATIONS.iter().find(|(name, ..)| *name == key) else {
             return Err(de::Error::custom(format!("{key:?} names no option or operation")));
@@ -339,8 +339,9 @@ const OPERATIONS: [(&str, Operation, &str); 27] = [
     ),
 ];
 
-/// Declares each kind of expression object once: a struct for its JSON schema, never built because
-/// reading goes through `Form`, and the keys an object of that kind may have, its own key first.
+/// Declares each kind of expression object once. Each kind gets a struct for its JSON schema (never
+/// built, since reading goes through `Form`) and the list of keys an object of that kind may have,
+/// its own key first.
 macro_rules! kinds {
     ($($(#[$meta:meta])* $node:ident { $($(#[$attr:meta])* $key:ident: $ty:ty),+ $(,)? })+) => {
         $(
@@ -364,8 +365,8 @@ macro_rules! kinds {
 }
 
 kinds! {
-    /// A field's value in each row: from the mark's own table, or with `from`, from another
-    /// dataset's table joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
+    /// A field's value in each row, from the mark's own table. With `from`, it reads another
+    /// dataset's table, joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
     FieldNode {
         /// The field's name.
         field: Name,
@@ -374,7 +375,7 @@ kinds! {
         #[schemars(extend("tsType" = "TableInput"))]
         from: Option<(Name, Name)>,
         /// For a sampled field, reads the last frame at or before the shown coordinate instead of
-        /// interpolating. Default `false`.
+        /// interpolating. Defaults to `false`.
         #[serde(default)]
         step: bool,
     }
@@ -398,7 +399,7 @@ kinds! {
         scale: [f64; 2],
         /// The value mapped.
         value: Expr,
-        /// The values mapped to the range's ends; the extent of the values shown when unset.
+        /// The values mapped to the range's ends. Defaults to the extent of the values shown.
         #[serde(default)]
         #[schemars(extend("tsType" = "[low: number, high: number]"))]
         domain: Option<[f64; 2]>,
@@ -409,7 +410,7 @@ kinds! {
         colormap: Colormap,
         /// The value mapped. A categorical map takes each value's integer part as its category.
         value: Expr,
-        /// The values mapped to the colormap's ends; the extent of the values shown when unset. A
+        /// The values mapped to the colormap's ends. Defaults to the extent of the values shown. A
         /// categorical map ignores it.
         #[serde(default)]
         #[schemars(extend("tsType" = "[low: number, high: number]"))]
@@ -426,8 +427,8 @@ struct Px {
     px: Expr,
 }
 
-/// A size in position units (degrees on the earth), regardless of the space's unit, so it scales
-/// as the view zooms. `atLeast` and `atMost` bound it in CSS pixels.
+/// A size in position units (degrees on the earth), regardless of the space's unit. It scales with
+/// the zoom. `atLeast` and `atMost` bound it in CSS pixels.
 #[derive(JsonSchema)]
 #[expect(dead_code, reason = "used for its schema only; `Form` reads sizes")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -445,7 +446,7 @@ struct Units {
     at_most: Option<f32>,
 }
 
-/// An expression's schema is `ExprNode`; its TypeScript type also accepts the builders.
+/// An expression's schema is `ExprNode`. Its TypeScript type also accepts the builders.
 impl JsonSchema for Expr {
     fn schema_name() -> Cow<'static, str> {
         "Expr".into()
@@ -472,17 +473,17 @@ impl JsonSchema for ExprNode {
             json_schema!({ "type": "boolean" }),
             json_schema!({
                 "type": "null",
-                "description": "A missing value. An option that evaluates to missing uses the theme's value.",
+                "description": "A missing value. An option that is missing uses the theme's value.",
             }),
             json_schema!({
                 "type": "string",
-                "description": "A field's value in each row, or a color: `\"$kv\"` reads field `kv`, and any other string is a CSS color, such as `#ffb000` or `rebeccapurple`. A field whose name starts with `$` is written `{ \"field\": \"$x\" }`.",
+                "description": "A field or a color. `\"$kv\"` reads field `kv`. Any other string is a CSS color, such as `#ffb000` or `rebeccapurple`. Write a field named `$x` as `{ \"field\": \"$x\" }`.",
             }),
         ];
         any.extend(kinds(generator));
         any.push(generator.subschema_for::<CallNode>());
         json_schema!({
-            "description": "A value for each row. A number or boolean is a constant, `null` is a missing value, a string starting with `$` reads the field it names, any other string is a CSS color, and an object is a node that computes a value.",
+            "description": "A value for each row. A number or boolean is a constant and `null` is missing. A string starting with `$` reads that field, and any other string is a CSS color. An object computes a value.",
             "anyOf": any,
         })
     }
@@ -526,7 +527,7 @@ impl JsonSchema for CallNode {
             })
             .collect();
         json_schema!({
-            "description": "An operation on values: an object whose one key names the operation and holds its arguments, such as `{ \"add\": [\"$a\", 1] }`. `is` and `contains` take a plain text as their second argument, which is neither a field nor a color.",
+            "description": "An operation, written as an object with one key: the operation's name, holding its arguments. For example `{ \"add\": [\"$a\", 1] }`. The second argument of `is` and `contains` is plain text, not a field or a color.",
             "anyOf": calls,
         })
     }
@@ -560,7 +561,7 @@ impl JsonSchema for Size {
         let px = generator.subschema_for::<Px>();
         let units = generator.subschema_for::<Units>();
         json_schema!({
-            "description": "A size: a value in the space's unit (units in a diagram, CSS pixels elsewhere), `{ px }` in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow on screen as the view zooms in.",
+            "description": "A size: a value in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
             "anyOf": [expr, px, units],
         })
     }
@@ -610,8 +611,8 @@ impl JsonSchema for Color {
 struct CustomColormap {
     /// How the colors map values.
     kind: ColormapKind,
-    /// The colors, blended in OKLab. Each is a color, spaced evenly between its neighbors as in a
-    /// CSS gradient, or a `[place, color]` pair with a place from 0 to 1, in ascending order. A
+    /// The colors, blended in OKLab. Each is a color, spaced evenly between its neighbors like a
+    /// CSS gradient, or a `[place, color]` pair with a place from 0 to 1. Places must ascend. A
     /// categorical map takes one color per category, without places, at most 256.
     colors: Vec<Stop>,
     /// The category names in category order, shown in legends. Categorical maps only.
@@ -661,7 +662,7 @@ impl JsonSchema for Colormap {
         let names: Vec<&str> = Colormap::catalog().filter_map(|map| map.name()).collect();
         generator.definitions_mut().insert(
             "ColormapName".into(),
-            serde_json::json!({ "description": "A colormap of the catalog.", "type": "string", "enum": names }),
+            serde_json::json!({ "description": "A colormap from the catalog.", "type": "string", "enum": names }),
         );
         let colors = generator.subschema_for::<CustomColormap>();
         json_schema!({

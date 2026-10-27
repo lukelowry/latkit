@@ -17,25 +17,25 @@ mark!(
 ///     .color(field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05));
 /// ```
 Vertices("vertices") {
-    /// Each row's x and y. Without a position, the point field that `geometry` names places rows,
-    /// and the scene's layout places rows that have neither.
+    /// Each row's x and y. Rows without a position are placed by the point field `geometry` names.
+    /// The scene's layout places rows that have neither.
     position: Option<[Expr; 2]>,
-    /// The point field that places rows when `position` is not set; the field named `geometry` by
-    /// default.
+    /// The point field that places rows when `position` is not set. Defaults to the field named
+    /// `geometry`.
     geometry: Option<Name>,
-    /// Height above the ground; on the earth, a fraction of the earth's radius. Default 0. Not
+    /// Height above the ground. On the earth, a fraction of the earth's radius. Defaults to 0. Not
     /// allowed in a diagram, which is flat.
     elevation: Expr = "crate::scene::mark::zero",
-    /// Each row's radius, in the space's unit (units in a diagram, CSS pixels elsewhere) unless
-    /// given with `px` or `units`; a diagram refuses `px`. The theme's `vertex.radius` unless set.
+    /// Each row's radius in CSS pixels, or units in a diagram, unless given with `px` or `units`.
+    /// A diagram does not accept `px`. Defaults to the theme's `vertex.radius`.
     radius: Option<Size>,
-    /// Each row's width and height, for markers that are not round, in the space's unit unless
-    /// given with `px` or `units`; a diagram refuses `px`. In a diagram, a block without a size
-    /// fits its label and ports.
+    /// Each row's width and height, for markers that are not round. In CSS pixels, or units in a
+    /// diagram, unless given with `px` or `units`. A diagram does not accept `px`. In a diagram, a
+    /// block without a size fits its label and ports.
     size: Option<[Size; 2]>,
-    /// How each row is drawn; an ellipse by default.
+    /// How each row is drawn. Defaults to an ellipse.
     marker: Marker,
-    /// A ring around each row's marker in this color; a missing or transparent color draws none.
+    /// A ring around each row's marker in this color. A missing or transparent color draws no ring.
     ring: Option<Expr>,
     /// Ports on each row, one for each reference field that names a net. An `edges` mark of the net
     /// table, without `ends`, draws the nets. Diagrams only.
@@ -45,7 +45,7 @@ Vertices("vertices") {
     /// Diagrams only.
     contains: Option<(Name, Name)> as "[table: string, reference: string]",
     /// Whether each block or group casts a shadow on the sheet, styled by the theme's
-    /// `diagram.shadow`. Default `false`. Diagrams only.
+    /// `diagram.shadow`. Defaults to `false`. Diagrams only.
     shadow: bool,
 });
 
@@ -67,9 +67,9 @@ impl Vertices {
         }
     }
 
-    /// Adds a port on each row for the net that reference field `reference` names, replacing any
-    /// earlier port for that field. An [`Edges`](crate::Edges) mark of the net table, without ends,
-    /// draws the nets. Diagrams only.
+    /// Adds a port on each row for the net named by the reference field `reference`. It replaces
+    /// any earlier port for that field. An [`Edges`](crate::Edges) mark of the net table, without
+    /// ends, draws the nets. Diagrams only.
     #[must_use]
     pub fn port(mut self, reference: impl Into<Name>, port: impl Into<Port>) -> Vertices {
         let reference = reference.into();
@@ -87,7 +87,7 @@ impl Vertices {
         self
     }
 
-    /// Sets the point field that places rows without a position; `geometry` by default.
+    /// Sets the point field that places rows without a position. Defaults to `geometry`.
     #[must_use]
     pub fn geometry(mut self, field: impl Into<Name>) -> Vertices {
         self.geometry = Some(field.into());
@@ -99,16 +99,16 @@ impl Vertices {
         self.geometry.as_deref().unwrap_or(GEOMETRY)
     }
 
-    /// Sets each row's x and y. Without a position, the point field named by
-    /// [`geometry`](Vertices::geometry) places rows, and the scene's layout places rows that have
-    /// neither, in a diagram or on a plane or the earth.
+    /// Sets each row's x and y. Rows without a position are placed by the point field named by
+    /// [`geometry`](Vertices::geometry). The scene's layout places rows that have neither, in a
+    /// diagram or on a plane or the earth.
     #[must_use]
     pub fn position(mut self, x: impl Into<Expr>, y: impl Into<Expr>) -> Vertices {
         self.position = Some([x.into(), y.into()]);
         self
     }
 
-    /// Sets the height above the ground; on the earth, a fraction of the earth's radius. Not
+    /// Sets the height above the ground. On the earth, a fraction of the earth's radius. Not
     /// allowed in a diagram, which is flat.
     #[must_use]
     pub fn elevation(mut self, z: impl Into<Expr>) -> Vertices {
@@ -116,32 +116,32 @@ impl Vertices {
         self
     }
 
-    /// Sets each row's radius, in the space's unit (units in a diagram, CSS pixels elsewhere)
-    /// unless given with [`px`](crate::px) or [`units`](crate::units); a diagram refuses `px`.
+    /// Sets each row's radius in CSS pixels, or units in a diagram, unless given with
+    /// [`px`](crate::px) or [`units`](crate::units). A diagram does not accept `px`.
     #[must_use]
     pub fn radius(mut self, radius: impl Into<Size>) -> Vertices {
         self.radius = Some(radius.into());
         self
     }
 
-    /// Sets each row's width and height, for markers that are not round, in the space's unit
-    /// unless given with [`px`](crate::px) or [`units`](crate::units); a diagram refuses `px`. In a
-    /// diagram, a block without a size fits its label and ports.
+    /// Sets each row's width and height, for markers that are not round. In CSS pixels, or units
+    /// in a diagram, unless given with [`px`](crate::px) or [`units`](crate::units). A diagram does
+    /// not accept `px`. In a diagram, a block without a size fits its label and ports.
     #[must_use]
     pub fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Vertices {
         self.size = Some([width.into(), height.into()]);
         self
     }
 
-    /// Sets how each row is drawn; an ellipse by default.
+    /// Sets how each row is drawn. Defaults to an ellipse.
     #[must_use]
     pub fn marker(mut self, marker: impl Into<Marker>) -> Vertices {
         self.marker = marker.into();
         self
     }
 
-    /// Draws a ring around each row's marker in this color; a missing or transparent color draws
-    /// none.
+    /// Draws a ring around each row's marker in this color. A missing or transparent color draws
+    /// no ring.
     #[must_use]
     pub fn ring(mut self, color: impl Into<Expr>) -> Vertices {
         self.ring = Some(color.into());
@@ -190,7 +190,7 @@ impl Vertices {
             ports.push((reference.clone(), port.clone(), column));
         }
         let mut drawing = Drawing::new(MarkKind::Vertices);
-        // The marker's half-size stays within its size's pixel bounds; a `size` bounds the whole
+        // The marker's half-size stays within its size's pixel bounds. A `size` bounds the full
         // width, so its bounds are halved.
         drawing.size_px = match (&self.size, &self.radius) {
             (Some([w, _]), _) => w.px.map(|px| px / 2.0),
@@ -214,8 +214,8 @@ impl Vertices {
         Ok(drawing)
     }
 
-    /// Compiles positions and sizes in a diagram, which its sheet computes in units from the data
-    /// alone.
+    /// Compiles positions and sizes in a diagram. The diagram's sheet computes them in units, from
+    /// data only.
     fn sheet(&self, c: &mut Compiler<'_>, group: bool) -> Result<()> {
         let mut sizes = self
             .radius
@@ -239,8 +239,8 @@ impl Vertices {
         Ok(())
     }
 
-    /// Compiles positions and sizes outside a diagram. Rows stand at their position, or where the
-    /// scene's layout places them from the data alone, and take their size, their radius, or the
+    /// Compiles positions and sizes outside a diagram. Rows sit at their position, or where the
+    /// scene's layout places them from data only. Their size is their `size`, their radius, or the
     /// theme's radius. Returns the flags: `SIZED` when rows have a width and a height.
     fn placed(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<u32> {
         let at = wgsl::VERTEX_POSITION;

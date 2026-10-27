@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustc_hash::FxHashMap;
 
-/// The name of a dataset, table, or field: cheap to clone, compared and ordered by its text.
+/// The name of a dataset, table, or field. Cheap to clone, and compared and ordered by its text.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Name(Arc<str>);
@@ -108,8 +108,9 @@ impl fmt::Debug for Name {
     }
 }
 
-/// A row's id within its table: a number or a text. A number above 2^53 − 1 serializes as decimal
-/// text, since JSON readers such as JavaScript's would round it; the text names the same row.
+/// A row's id within its table, either a number or a text. A number above 2^53 − 1 serializes as
+/// decimal text, since JSON readers such as JavaScript's would round it. The text names the same
+/// row.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Id {
     /// A numeric id.
@@ -126,7 +127,7 @@ impl Id {
         }
     }
 
-    /// The id as a number every JSON reader represents exactly, as it serializes; `None` for a
+    /// The id as a number that every JSON reader represents exactly, as it serializes. `None` for a
     /// text id or a number above 2^53 − 1.
     pub fn exact_number(&self) -> Option<f64> {
         match self {
@@ -135,8 +136,8 @@ impl Id {
         }
     }
 
-    /// The id a JSON or JavaScript number names: a whole number from 0 to 2^53 − 1. `None` for any
-    /// other number, which may already be rounded.
+    /// The id that a JSON or JavaScript number names, if it is a whole number from 0 to 2^53 − 1.
+    /// `None` for any other number, which may already be rounded.
     pub fn from_number(number: f64) -> Option<Id> {
         (number.fract() == 0.0 && (0.0..=SAFE as f64).contains(&number)).then_some(Id::Number(number as u64))
     }
@@ -323,7 +324,7 @@ macro_rules! counter {
 counter!(
     /// Identifies one state of something that changes: a dataset, a table's rows, or a field.
     Version,
-    /// Identifies the contents of one page; a written page gets a new id.
+    /// Identifies the contents of one page. A written page gets a new id.
     PageId
 );
 

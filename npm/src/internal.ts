@@ -1,37 +1,37 @@
 /**
- * What the package's classes share: access to the WebAssembly bindings, the `Handle` base class,
- * latkit's errors and bounded waits, and reading bytes. Of these, `Handle`, `LatkitError`, `Wait`,
- * `ByteSource`, and `ReadableBytes` are public.
+ * Code the package's classes share: access to the WebAssembly bindings, the `Handle` base class,
+ * errors, bounded waits, and byte reading. `Handle`, `LatkitError`, `Wait`, `ByteSource`, and
+ * `ReadableBytes` are public.
  */
 
 import * as bindings from '../pkg/latkit.js';
 import type { Failure } from './outputs.js';
 
-/** The error latkit throws: an `Error` whose `code` says what kind of failure it is. */
+/** The error latkit throws: an `Error` with a `code` that names the kind of failure. */
 export interface LatkitError extends Error {
   /**
    * The kind of failure:
    *
-   * - `invalid`: the input is malformed or does not fit; `path` says where.
+   * - `invalid`: the input is malformed or does not fit. `path` says where.
    * - `unsupported`: the browser or device cannot do what was asked.
    * - `limit`: a budget or device limit would be exceeded.
    * - `io`: reading or writing external bytes failed, such as loading latkit or fetching a file.
-   * - `device-lost`: the GPU device was lost; create a new `Gpu`.
+   * - `device-lost`: the GPU device was lost. Create a new `Gpu`.
    * - `cancelled`: the wait's signal aborted, or the work was cancelled.
    * - `timeout`: the wait's signal timed out.
    * - `unloaded`: the call needs WebAssembly, and `load()` has not finished.
-   * - `destroyed`: the object was destroyed, so it can no longer be used.
+   * - `destroyed`: the object was destroyed and can't be used.
    */
   code: Failure['code'] | 'unloaded' | 'destroyed';
-  /** The invalid part of the input, such as `marks[2].color`, on `invalid` errors. */
+  /** On `invalid` errors, the invalid part of the input, such as `marks[2].color`. */
   path?: string;
 }
 
 /** Options that bound how long a promise waits. */
 export interface Wait {
   /**
-   * Aborts the wait. A timeout rejects with a `timeout` error; any other abort rejects with a
-   * `cancelled` error whose `cause` is the abort reason. Either way, latkit cancels the call's
+   * Aborts the wait. A timeout rejects with a `timeout` error. Any other abort rejects with a
+   * `cancelled` error, with the abort reason as its `cause`. Either way, latkit cancels the call's
    * pending work where it can. Without a signal, each wait times out after 30 seconds.
    */
   signal?: AbortSignal;
@@ -39,7 +39,7 @@ export interface Wait {
 
 let ready = false;
 
-/** @internal Marks the bindings as loaded, so `wasm()` returns them from now on. */
+/** @internal Marks the bindings as loaded, so `wasm()` returns them. */
 export function loaded(): void {
   ready = true;
 }
@@ -65,16 +65,16 @@ export function thrown({
   return Object.assign(error, path === undefined ? { code } : { code, path });
 }
 
-/** The bindings object behind each handle, until it is destroyed, and the name its errors use. */
+/** Each handle's bindings object, until the handle is destroyed, and the name its errors use. */
 const held = new WeakMap<Handle, { bound?: { free(): void }; what: string }>();
 
 /**
- * An object that holds WebAssembly memory, and GPU memory for a `Gpu`, until it is destroyed:
- * `destroy()` frees it, as does a `using` declaration when its block ends. Once it is destroyed,
- * its other methods throw a `destroyed` error.
+ * An object that holds WebAssembly memory (and GPU memory, for a `Gpu`) until it is destroyed.
+ * `destroy()` frees it, as does the end of a `using` block. After that, its other methods throw a
+ * `destroyed` error.
  */
 export abstract class Handle {
-  /** @internal Holds `bound`, the bindings object it frees; errors name the object `what`. */
+  /** @internal Holds `bound`, the bindings object to free. Errors call the object `what`. */
   constructor(bound: { free(): void }, what: string) {
     held.set(this, { bound, what });
   }
@@ -89,7 +89,7 @@ export abstract class Handle {
     bound.free();
   }
 
-  /** @internal Runs once, as the object is destroyed, before its memory is freed. */
+  /** @internal Runs once when the object is destroyed, before its memory is freed. */
   protected freeing(): void {}
 
   /** Calls `destroy()`, so a `using` declaration destroys the object when its block ends. */
@@ -108,7 +108,7 @@ export function inner<T>(owner: Handle): T {
 
 /** A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Uint8Array`. */
 export interface ReadableBytes {
-  /** A reader of the stream's chunks, which latkit reads to the end, or cancels. */
+  /** Returns a reader of the stream's chunks. latkit reads it to the end or cancels it. */
   getReader(): {
     read(): Promise<{ done: boolean; value?: Uint8Array }>;
     cancel(reason?: unknown): Promise<void>;
@@ -117,17 +117,17 @@ export interface ReadableBytes {
 }
 
 /**
- * Bytes to read: an array or buffer, a `Blob`, a `Response`, a byte stream, or a URL to fetch as a
- * string. Reading waits within its {@link Wait}, and fails with an `io` error when a fetch fails or
- * answers an error status, or the bytes cannot be read.
+ * Bytes to read: an array or buffer, a `Blob`, a `Response`, a byte stream, or a URL string to
+ * fetch. Reading is bounded by the call's {@link Wait}. It fails with an `io` error when a fetch
+ * fails or returns an error status, or when the bytes can't be read.
  */
 export type ByteSource =
   Uint8Array | ArrayBuffer | Blob | Response | ReadableBytes | AsyncIterable<Uint8Array> | string;
 
 /**
- * @internal Reads `source` into bytes, with the URL they came from as `base` (else empty). Any
- * object that is not a {@link ByteSource} is written as JSON text. Waits within `wait`, cancelling
- * a fetch or stream it gives up on.
+ * @internal Reads `source` into bytes, with the URL they came from as `base` (empty if none). An
+ * object that is not a {@link ByteSource} is encoded as JSON text. Waits within `wait`, and
+ * cancels a fetch or stream it gives up on.
  */
 export async function bytesOf(
   source: ByteSource | object,
@@ -179,9 +179,9 @@ async function collect(
 }
 
 /**
- * @internal Yields the chunks of `stream`, through `getReader()` when it has one, else by async
- * iteration, until the stream ends or `signal` aborts. Stopping early cancels the stream, with the
- * abort's reason. A failed read throws an `io` error.
+ * @internal Yields the chunks of `stream` until it ends or `signal` aborts. Reads through
+ * `getReader()` when the stream has one, else by async iteration. Stopping early cancels the
+ * stream with the abort reason. A failed read throws an `io` error.
  */
 export async function* chunks(
   stream: ReadableBytes | AsyncIterable<Uint8Array>,
@@ -219,11 +219,11 @@ export async function* chunks(
 }
 
 /**
- * @internal Awaits `pending`, a promise or a bindings task, until `signal` aborts (30 seconds by
- * default). If the signal aborts first, a task is cancelled so its work is skipped, and the call
- * rejects with an error naming `what`: `timeout` for a timeout, else `cancelled`. Work that fails
- * once the signal has aborted, such as a fetch given the same signal, rejects the same way. A task
- * is freed either way.
+ * @internal Awaits `pending`, a promise or a bindings task, until `signal` aborts. The signal
+ * defaults to a 30-second timeout. If the signal aborts first, a task is cancelled so its work is
+ * skipped, and the call rejects with an error naming `what`: `timeout` for a timeout, else
+ * `cancelled`. Work that fails after the signal aborted, such as a fetch given the same signal,
+ * rejects the same way. A task is always freed.
  */
 export async function waited<T>(
   pending: Promise<T> | bindings.Task,

@@ -1,10 +1,10 @@
-//! Tilings: a source's pieces, fetched by key as the sets drawing it need them, decoded into
-//! patches, and kept within a byte budget, evicting the least recently drawn first. Every set
-//! drawing one source shares its tiling, so a piece one set fetched draws in another. Each set
-//! decodes for a stamp that identifies what its decoding reads. A wanted key draws once it is
-//! decoded for that stamp; until then its nearest decoded ancestor is drawn as a placeholder, and
-//! missing pieces are fetched, nearest first. Earth tiles and spans of a sampled field's history
-//! both use it.
+//! Tilings: a source's pieces, fetched by key as the sets drawing the source need them, then
+//! decoded into patches. A tiling keeps pieces within a byte budget and evicts the least recently
+//! drawn first. Every set drawing one source shares its tiling, so a piece one set fetched draws in
+//! another. Each set decodes for a stamp that identifies what its decoding reads. A wanted key
+//! draws once it is decoded for that stamp. Until then its nearest decoded ancestor is drawn as a
+//! placeholder, and missing pieces are fetched, nearest first. Earth tiles and spans of a sampled
+//! field's history both use tilings.
 
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use crate::derive::Jobs;
 use crate::host::Request;
 use crate::{Error, Pending};
 
-/// Most fetches, and separately most decodes, a tiling runs at once.
+/// The most fetches a tiling runs at once, and separately the most decodes.
 const REQUESTS: usize = 8;
 /// Bytes of fetched pieces a tiling keeps. Past this, the least recently drawn are evicted.
 const KEPT_BYTES: usize = 64 << 20;
@@ -25,7 +25,7 @@ const KEPT_BYTES: usize = 64 << 20;
 pub(crate) enum Requested {
     /// Fetch the bytes `request` returns.
     Fetch(Request),
-    /// Not yet: the source must first fetch what locates the piece, such as an archive's
+    /// Not yet. The source must first fetch what locates the piece, such as an archive's
     /// directories.
     Wait,
     /// The source has no such piece, which draws nothing.
@@ -47,8 +47,9 @@ pub(crate) trait Pieces<K: Key> {
     fn decode(&self, key: K, bytes: &Arc<Vec<u8>>, jobs: &Jobs<'_>) -> Decoding;
 }
 
-/// The result of an update: each wanted key if decoded, else its nearest decoded ancestor, each
-/// listed once; and whether any wanted key shows a placeholder (an ancestor, or nothing).
+/// The result of an update. It lists each wanted key if decoded, else its nearest decoded
+/// ancestor, each once. It also says whether any wanted key shows a placeholder (an ancestor, or
+/// nothing).
 pub(crate) struct Drawn<K> {
     pub(crate) keys: Vec<K>,
     pub(crate) standing_in: bool,
@@ -57,7 +58,7 @@ pub(crate) struct Drawn<K> {
 }
 
 /// One set's claim on a tiling: the stamp it decodes for, and the keys whose decodes it keeps.
-/// Those are the keys it draws, the keys it wants, and their ancestors, which serve as
+/// Those are the keys it draws, the keys it wants, and their ancestors, which are drawn as
 /// placeholders.
 struct Claim<K> {
     stamp: u64,
@@ -109,8 +110,8 @@ impl<K: Key> Tiling<K> {
     ) -> Drawn<K> {
         self.tick += 1;
         self.land();
-        // Decode wanted keys once fetched, and the fetched ancestors of keys still loading, as
-        // placeholders; fetch the rest. A piece decoded immediately draws immediately.
+        // Decode wanted keys once fetched, and the fetched ancestors of keys still loading as
+        // placeholders. Fetch the rest. A piece decoded immediately draws immediately.
         let mut decode: Vec<K> = Vec::new();
         for &key in wanted {
             if self.ready(key, stamp) {
@@ -148,7 +149,7 @@ impl<K: Key> Tiling<K> {
             }
         }
         // The set keeps the decodes of what it draws and wants, plus every ancestor of what it
-        // wants, which serves as a placeholder while zooming. Each walk up stops where an earlier
+        // wants, which is drawn as a placeholder while zooming. Each walk up stops where an earlier
         // wanted key's walk passed.
         let mut keys: FxHashSet<K> = drawn.iter().copied().collect();
         let mut walked: FxHashSet<K> = FxHashSet::default();

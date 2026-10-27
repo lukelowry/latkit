@@ -1,24 +1,24 @@
 //! Labels.
 //!
-//! In the labels buffer each labeled mark keeps a run table, mapping its text codes to where the
-//! atlas holds each text, both words 0 until the text is set. Draws place every label from its
-//! anchor each frame, and a label shows wherever its text is set, its row shows, and it fits its
-//! row's room: no label depends on another, or on an earlier frame. A row whose text is missing has
-//! no label.
+//! In the labels buffer, each labeled mark keeps a run table that maps its text codes to where the
+//! atlas holds each text. Both words are 0 until the text is set. Draws place every label from its
+//! anchor each frame. A label shows when its text is set, its row is visible, and the text fits,
+//! for example inside a block. No label depends on another label or on an earlier frame. A row
+//! whose text is missing has no label.
 //!
-//! Labels beside their rows compete for room on the screen. When the camera, a labeled mark's
-//! places, or a run table changes, the claim pass writes each such label's claim into the screen
-//! cells its text covers (a short text's room until its text is set), each cell keeping the claim of
-//! the row drawn on top. A label shows only where it kept every cell it covers, so labels never
-//! overlap, and only labels that keep their room need texts: however large the data, the texts in
-//! view are as many as fit on the screen. The claims depend on that frame alone.
+//! Labels beside their rows compete for screen space. When the camera, a labeled mark's places, or
+//! a run table changes, the claim pass writes each such label's claim into the screen cells its
+//! text covers. Until its text is set, a label claims the cells a short text would cover. Each cell
+//! keeps the claim of the row drawn on top. A label shows only if it kept every cell it covers, so
+//! labels never overlap. Only labels that keep their cells need texts, so however large the data,
+//! the texts in view are only as many as fit on the screen. The claims depend on that frame alone.
 //!
-//! The texts pass then finds the texts those labels need: each one near the view whose text the
+//! The texts pass then finds the texts those labels need. Each label near the view whose text the
 //! atlas lacks asks for it, and each one in view whose text is set marks it seen. The host reads
-//! both back, sets a few of the asked texts each frame within a budget, and touches the seen ones so
-//! the atlas keeps them; a text set shows the frame after. When the atlas has no room left that the
-//! texts in view do not use, the rest wait for room. A run table grows with its mark's texts, and the
-//! new one starts with every text already set, so labels keep showing.
+//! both back, sets a few of the asked texts each frame within a budget, and touches the seen ones
+//! so the atlas keeps them. A text shows the frame after it is set. When the atlas has no space
+//! left beyond what the texts in view use, the rest wait. A run table grows with its mark's texts,
+//! and the new one starts with every text already set, so labels keep showing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,7 +51,7 @@ pub(crate) struct Slots {
     pub(crate) runs: u32,
     pub(crate) wanted: u32,
     pub(crate) seen: u32,
-    /// Codes its run table and seen bits have room for.
+    /// The number of codes its run table and seen bits have space for.
     codes: u32,
 }
 
@@ -108,8 +108,8 @@ impl Labels {
 
 impl View {
     /// How mark `i` sets its label texts, wherever its text field is: in the mark's table, a joined
-    /// one, or a table the view derives beside it. `None` while the mark has no label, or the table
-    /// holding its text is missing.
+    /// one, or a table derived beside it. `None` while the mark has no label or the table with its
+    /// text is missing.
     fn setting(&self, i: usize) -> Option<Setting> {
         let shown = &self.marks[i];
         let compiled = shown.compiled.as_ref()?;
@@ -133,7 +133,7 @@ impl View {
         Some(atlas::run(text, setting.font, setting.size, setting.max_width))
     }
 
-    /// Codes mark `i`'s label text has so far.
+    /// The number of codes mark `i`'s label text has so far.
     fn codes_of(&self, i: usize, inner: &mut Inner) -> u32 {
         self.setting(i).map_or(0, |setting| setting.dictionary(inner).len() as u32)
     }
@@ -181,13 +181,13 @@ impl View {
                 let Some(run) = self.run_of(i, code, inner) else { continue };
                 let host = inner.host.clone();
                 let Some(glyphs) = inner.atlas.text(host.as_deref(), &run) else {
-                    // With no room left this frame, the texts left are asked for once the view
-                    // changes.
+                    // With no atlas space left this frame, the remaining texts are asked for again
+                    // once the view changes.
                     if inner.atlas.full() {
                         break 'marks;
                     }
                     // A text that draws nothing, such as an empty one, gives no label, so it
-                    // claims no room.
+                    // claims no screen cells.
                     set += 1;
                     self.write_words(slots, code, [wgsl::NONE; 2]);
                     continue;
@@ -218,8 +218,8 @@ impl View {
 
     /// Lays out each labeled mark's slots in the labels buffer, and fixes run table entries whose
     /// texts the atlas evicted. When the layout or a mark's setting changed, it replaces the buffer
-    /// and writes back every text still set as before, so labels keep showing; a mark no longer
-    /// labeled, or setting its texts another way, starts over.
+    /// and writes back every text still set as before, so labels keep showing. A mark that stopped
+    /// being labeled, or sets its texts another way, starts over.
     pub(super) fn lay_out_labels(&mut self, inner: &mut Inner) {
         let mut slots: Vec<Option<Slots>> = vec![None; self.marks.len()];
         let labeled: Vec<usize> = (0..self.marks.len())
@@ -227,7 +227,7 @@ impl View {
                 self.marks[i].drawable() && self.marks[i].compiled.as_ref().is_some_and(|c| c.drawing.label.is_some())
             })
             .collect();
-        // Every mark's wanted codes, then every mark's seen bits, so one copy reads them all; then
+        // Every mark's wanted codes, then every mark's seen bits, so one copy reads them all. Then
         // each mark's run table.
         let mut at = 0;
         let codes: Vec<u32> = labeled.iter().map(|&i| self.codes_of(i, inner).next_power_of_two().max(64)).collect();
@@ -293,8 +293,8 @@ impl View {
         }
     }
 
-    /// Clears run table entries whose texts the atlas no longer holds where they were, so their
-    /// labels hide until their texts are set again.
+    /// Clears run table entries whose texts the atlas evicted or moved, so their labels hide until
+    /// their texts are set again.
     fn drop_evicted(&mut self, inner: &Inner) {
         let mut cleared = Vec::new();
         for (&i, written) in &mut self.labels.written {
@@ -318,10 +318,10 @@ impl View {
         self.labels.changes += 1;
     }
 
-    /// Claims the room labels cover, and runs the texts pass, when what they read changed. Claims
-    /// run in every such frame, since its labels show from them; the texts pass waits while its
-    /// last readback is in flight, and while a fit is about to move the camera. Both wait until the
-    /// text pipelines have compiled.
+    /// Claims the screen cells labels cover, and runs the texts pass, when their inputs changed.
+    /// Claims run in every such frame, since that frame's labels show from them. The texts pass
+    /// waits while its last readback is in flight, and while a fit is about to move the camera.
+    /// Both wait until the text pipelines have compiled.
     pub(super) fn place_labels(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, eye: &wgsl::Eye) {
         if !self.texts() {
             return;
@@ -342,7 +342,7 @@ impl View {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let resources = self.resources.as_mut().expect("created before labels");
-        // The grid spans the view and a margin around it, a word per cell; one more cell each way
+        // The grid spans the view and a margin around it, a word per cell. One more cell each way
         // covers rounding.
         let cells =
             |side: f32| u64::from(((side + 2.0 * wgsl::LABEL_MARGIN * side) / wgsl::LABEL_CELL).ceil() as u32 + 1);

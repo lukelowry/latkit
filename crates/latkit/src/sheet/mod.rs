@@ -3,14 +3,14 @@
 //!
 //! The sheet depends only on the data and the scene, never on what was drawn, so the camera,
 //! hover, and motion never change it. Places persist by row: adding a row moves nothing else, and
-//! a row that loses its position stays where it was. Layouts place only rows without a place until
+//! a row that loses its position stays where it was. Layouts place only rows without a place, until
 //! `arrange` lays out every row without a position again. A wire routes again only when its
 //! terminals move or a box near it changes. Superlinear work too large for the frame (layouts,
 //! many routes) runs as a host job that answers with a patch.
 //!
-//! The sheet is a derivation: it writes a table beside each table it draws, row for row, which
-//! marks read like data. An edit of the values that size and place rows recomputes only the rows
-//! it wrote and what they affect: their boxes, the groups around them, and the wires they move.
+//! The sheet is a derivation. It writes a table beside each table it draws, row for row, and marks
+//! read it like data. An edit of the values that size and place rows recomputes only the rows it
+//! wrote and what they affect: their boxes, the groups around them, and the wires they move.
 
 mod groups;
 mod wires;
@@ -171,7 +171,7 @@ impl Derive for Sheet {
 }
 
 impl Sheet {
-    /// Whether a layout job is pending; a fit waits for it.
+    /// Whether a layout job is pending. A fit waits for it.
     pub(crate) fn placing(&self) -> bool {
         self.placing.is_some()
     }
@@ -196,7 +196,7 @@ impl Sheet {
         self.boxes.get(row).copied()
     }
 
-    /// The box around every placed vertex and every wire, in units with y down; `None` until
+    /// The box around every placed vertex and every wire, in units with y down. `None` until
     /// something is placed. Read from the indexes the sheet keeps of blocks, groups, and wires.
     pub(crate) fn extent(&self) -> Option<[f64; 4]> {
         let wires = self.drawn.as_ref()?.wired.extent();
@@ -216,7 +216,7 @@ impl Sheet {
                     if let (Some(row), [Some(Value::Number(x)), Some(Value::Number(y))]) =
                         (placing.rows.get(&key), &values[..])
                     {
-                        // Layouts are y up; the sheet is y down.
+                        // Layouts are y up and the sheet is y down.
                         self.places.insert(row.clone(), [*x, -*y]);
                         placed.push((row.clone(), [*x, -*y]));
                     }
@@ -305,7 +305,7 @@ impl Sheet {
                 moved.extend(was.into_iter().chain(vertex.bounds));
             }
         }
-        // Refit the groups above the touched rows; a group whose box changed counts as touched.
+        // Refit the groups above the touched rows. A group whose box changed counts as touched.
         let framing = groups::Framing { header: &header, padding, places: &self.places };
         let regrouped = self.groups.refit(&mut drawn.vertices, &touched, &framing);
         if !regrouped.is_empty() {
@@ -396,8 +396,8 @@ impl Sheet {
     }
 
     /// Half the width and height of `vm`'s row `row`, in units: from its size, its radius, or else
-    /// a box fitting its label and ports. A group's is its size when it holds nothing: room for its
-    /// title.
+    /// a box fitting its label and ports. For a group, it is the size when the group holds nothing,
+    /// with space for its title.
     fn half(&mut self, vm: &VertexMark<'_>, rows: &Rows<'_>, row: usize, input: &Input<'_>) -> [f64; 2] {
         let theme = &input.scene.theme;
         let radius = f64::from(theme.vertex.radius);
@@ -472,7 +472,8 @@ impl Sheet {
         [width / 2.0, height / 2.0]
     }
 
-    /// The width and height of row `row`'s label in units, and its font size; `None` if no label.
+    /// The width and height of row `row`'s label in units, and its font size. `None` without a
+    /// label.
     fn label(&mut self, mark: &Vertices, rows: &Rows<'_>, row: usize, input: &Input<'_>) -> Option<([f64; 2], f64)> {
         let label = mark.style.label.as_ref()?;
         let text = rows.text(&label.text, row)?;
@@ -509,9 +510,9 @@ impl Sheet {
         size
     }
 
-    /// Starts a layout job, unless one is pending, to place every block, and every group holding
-    /// nothing, that has no place (while arranging, no position). Other rows are pinned, and
-    /// groups lay out around their members.
+    /// Starts a layout job, unless one is pending, to place every block and empty group that has no
+    /// place (while arranging, no position). Other rows are pinned, and groups lay out around their
+    /// members.
     #[allow(clippy::too_many_arguments, reason = "one layout request")]
     fn place(
         &mut self,
@@ -654,7 +655,7 @@ fn shape_of(mark: &Vertices) -> Shape {
     }
 }
 
-/// The height in units of the band across the top of a group mark's boxes, where titles sit; 0 for
+/// The height in units of the band across the top of a group mark's boxes, where titles sit. 0 for
 /// other marks, or without labels.
 fn header(mark: &Vertices, theme: &Theme) -> f64 {
     match (&mark.contains, &mark.style.label) {
@@ -719,8 +720,8 @@ const VERTEX_FIELDS: [VertexField; 5] = [
     ("depth", |v| Some(f64::from(v.depth))),
 ];
 
-/// Writes each drawn table's derived table, and drops those of tables no longer drawn: a vertex
-/// table's centers, half sizes, and depths; an edge table's paths. A field equal to the previous
+/// Writes each drawn table's derived table (a vertex table's centers, half sizes, and depths, or an
+/// edge table's paths), and drops those of tables no longer drawn. A field equal to the previous
 /// one keeps its column, so nothing uploads again.
 fn write(
     vertex_marks: &[VertexMark<'_>],

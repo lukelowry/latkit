@@ -1,9 +1,9 @@
-//! Time tiles: sampled fields' histories fetched in spans as the sets drawing them need, from the
-//! files [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes. Every field needs its coarsest
-//! spans, which are drawn as placeholders for any span still loading. A line tracing a field needs
-//! the spans of the level of detail its plot window draws at, middle first. A mark showing a field
-//! at the view's coordinate needs the frames around that coordinate. A drawn span adds its entries
-//! to the set's dataset, and a span no longer drawn removes them.
+//! Time tiles: the histories of sampled fields, fetched in spans as the sets drawing them need,
+//! from the files [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes. Every field needs its
+//! coarsest spans, which are drawn as placeholders for any span still loading. A line tracing a
+//! field needs the spans at the level of detail the plot window draws at, middle first. A mark
+//! showing a field at the view's coordinate needs the frames around that coordinate. A drawn span
+//! adds its entries to the set's dataset, and a span no longer drawn removes them.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -23,8 +23,8 @@ use crate::{Error, Pending};
 /// Most spans a line needs, middle first. A plot window normally needs far fewer.
 const MAX_SPANS: usize = 64;
 
-/// The spans of one manifest's sampled fields, shared by every set drawing them: the base dataset
-/// without their entries, and each field's fetched and decoded spans.
+/// The spans of one manifest's sampled fields, shared by every set drawing them. Holds the base
+/// dataset without their entries, and each field's fetched and decoded spans.
 pub(crate) struct Fetched {
     manifest: Manifest,
     /// The spans' URL template, resolved against the manifest's URL.
@@ -205,11 +205,11 @@ fn sampled<'a>(data: &'a Snapshot, listed: &Listed) -> Option<&'a Samples> {
     }
 }
 
-/// The spans a view needs of a field covering `frames`, nearest first. These are always the spans
-/// of its coarsest level holding any entry; when a mark shows it (`(_, true)`), the frames around
-/// the shown coordinate; and when a line traces it (`(true, _)`), the spans of the level of detail
-/// the plot window draws at, middle first. The window's position among the frames comes from the
-/// samples already held, as precisely as they allow.
+/// The spans a view needs of a field covering `frames`, nearest first. It always needs the spans
+/// of the field's coarsest level holding any entry. When a mark shows the field (`(_, true)`), it
+/// needs the frames around the shown coordinate. When a line traces it (`(true, _)`), it needs the
+/// spans of the level of detail the plot window draws at, middle first. The window's position
+/// among the frames comes from the samples already held, as precisely as they allow.
 fn wanted(
     frames: &Range<u64>,
     samples: Option<&Samples>,

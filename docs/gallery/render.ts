@@ -1,9 +1,8 @@
 /**
  * Draws the documentation's gallery with latkit. Each piece's default export builds its datasets
- * with `Data` and returns its picture, or a promise of it: a scene, and how to look at it. The
- * `latkit` CLI draws each piece to
- * `docs/images/NAME.png`, from the datasets the scene's tables belong to, with no editing of the
- * picture afterwards.
+ * with `Data` and returns its picture, or a promise of it: a scene and how to look at it. The
+ * `latkit` CLI draws each piece to `docs/images/NAME.png` from the datasets the scene uses. The
+ * pictures are not edited afterwards.
  *
  *   cargo build --locked -p latkit-cli --profile cli
  *   cargo xtask wasm                  # builds the `latkit` package the pieces import
@@ -64,7 +63,7 @@ async function render(name: string): Promise<void> {
   };
   const picture = await draw();
   const file = (suffix: string) => path.join(work, `${name}.${suffix}`);
-  // The datasets of the tables the scene names, collected as a view collects them.
+  // The datasets the scene's tables belong to, collected the way a view collects them.
   const datasets = new Set<Source>();
   const scene = JSON.stringify(
     picture.scene,

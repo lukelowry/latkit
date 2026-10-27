@@ -1,15 +1,15 @@
 //! Pipelines, cached by [`Variant`].
 //!
-//! Everything compiles through one queue per GPU ([`Pipelines::ask`]), most urgent first: the
-//! pipelines frames draw with, then their text, then those that changes, lit rows, and input need,
-//! then pipelines warmed for future views once the queue would otherwise sit idle.
+//! Every pipeline compiles through one queue per GPU ([`Pipelines::ask`]), most urgent first: draw
+//! pipelines, then text pipelines, then the pipelines that changes, lit rows, and input need. Last
+//! come pipelines warmed for future views, once the queue would otherwise sit idle.
 //!
-//! In a browser, draw pipelines start compiling at once, text as the browser's compile workers free
-//! up, and the rest a few at a time, all in the background and in parallel. Anything that uses a
-//! pipeline waits until its compile finishes, so no frame waits on a compile, and creating the
-//! pipeline afterwards finds it compiled. Natively a pipeline is created in process when first
-//! used, which is just as cheap. Every pipeline shares the view and mark group layouts; each
-//! shader's pass group comes from its WGSL.
+//! In a browser, compiles run in the background and in parallel. Draw pipelines start at once,
+//! text pipelines as the browser's compile workers free up, and the rest a few at a time. Anything
+//! that uses a pipeline waits until its compile finishes. So no frame waits on a compile, and
+//! creating the pipeline afterwards finds it compiled. Natively, a pipeline is created in process
+//! when first used, which is just as cheap. Every pipeline shares the view and mark group layouts.
+//! Each shader's pass group layout comes from its WGSL.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -24,9 +24,9 @@ use super::work::{Count, Counters};
 use crate::Error;
 use crate::view::DEPTH;
 
-/// How soon a requested pipeline is needed; sooner compiles first. `Draw`: pipelines frames draw
-/// with. `Text`: their text. `Answer`: pipelines that changes, lit rows, and input need. `Warm`:
-/// pipelines warmed for future views.
+/// How soon a requested pipeline is needed. Sooner compiles first. `Draw`: pipelines that frames
+/// draw with. `Text`: pipelines for the frames' text. `Answer`: pipelines that changes, lit rows,
+/// and input need. `Warm`: pipelines warmed for future views.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum Urgency {
     Draw,
@@ -35,10 +35,10 @@ pub(crate) enum Urgency {
     Warm,
 }
 
-/// How many pipelines a browser compiles in parallel. Text starts only while fewer than this are
-/// compiling, or while no draw pipeline is, since starting it sooner would delay the draw
-/// pipelines. The rest compile at most half as many at once, so frames drawn meanwhile keep the
-/// CPU; each finished compile starts the next.
+/// How many pipelines a browser compiles in parallel. Text pipelines start only while fewer than
+/// this are compiling, or while no draw pipeline is, since starting them sooner would delay the
+/// draw pipelines. The rest compile at most half as many at once, so frames drawn meanwhile keep
+/// the CPU. Each finished compile starts the next.
 const WORKERS: u64 = 8;
 
 /// A pending check of a custom marker's shader, resolving to its error if any. It is `Send`
@@ -102,8 +102,8 @@ impl Variant {
         Variant { shader, entry, primitive: 0, path: PATH_ENDS, reads: Reads::ALL, target: None }
     }
 
-    /// The probe program for marks of `primitive`. It answers every query in steps, each dispatch's
-    /// uniform selecting the step.
+    /// The probe program for marks of `primitive`. It answers every query in steps, and each
+    /// dispatch's uniform selects the step.
     pub(crate) fn probe(shader: Shader, primitive: u32) -> Variant {
         Variant::compute(shader, "answer").primitive(primitive)
     }
@@ -150,8 +150,8 @@ impl Variant {
     }
 }
 
-/// A pipeline requested ahead of use: a variant of a latkit shader, or of a custom marker, whose
-/// WGSL is appended to its shader's.
+/// A pipeline requested ahead of use: a variant of a latkit shader, or of a custom marker. A custom
+/// marker's WGSL is appended to its shader's WGSL.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Asked {
     Shader(Variant),
@@ -208,7 +208,7 @@ pub(crate) struct Pipelines {
     render: HashMap<Variant, wgpu::RenderPipeline>,
     compute: HashMap<Variant, wgpu::ComputePipeline>,
     custom: HashMap<(Arc<str>, Variant), Custom>,
-    /// Pipelines views, shots, and the GPU requested ahead, each with its compile state.
+    /// Pipelines requested ahead by views, shots, and the GPU, each with its compile state.
     asked: HashMap<Asked, Arc<Ahead>>,
     /// Requested pipelines waiting to start compiling: most urgent first, and largest first within
     /// an urgency, since a browser compiles in request order.
@@ -308,10 +308,10 @@ impl Pipelines {
     }
 
     /// Requests each of `needs` at `urgency`, waking `waker` as each compile finishes. Draw
-    /// pipelines start at once, text as workers free up, and the rest in turn, at most half of
-    /// `WORKERS` at a time. Requesting a queued pipeline again at a higher urgency moves it up.
-    /// Each shader module is created now, because a browser parses a module's WGSL on its GPU
-    /// thread at creation; this way modules that compile later are parsed before anything draws.
+    /// pipelines start at once, text pipelines as workers free up, and the rest in turn, at most
+    /// half of `WORKERS` at a time. Requesting a queued pipeline again at a higher urgency moves it
+    /// up. Each shader module is created now, because a browser parses a module's WGSL on its GPU
+    /// thread at creation. This way, modules that compile later are parsed before anything draws.
     pub(crate) fn ask(&mut self, device: &wgpu::Device, needs: &[Asked], urgency: Urgency, waker: &Waker) {
         self.queue(device, needs, urgency, waker);
         self.pump(device);
@@ -355,8 +355,9 @@ impl Pipelines {
         }
     }
 
-    /// Starts queued compiles in order: every draw pipeline; text while fewer than `WORKERS` are
-    /// compiling or no draw pipeline is; the rest while fewer than half of `WORKERS` are compiling.
+    /// Starts queued compiles in order. Draw pipelines always start. Text pipelines start while
+    /// fewer than `WORKERS` are compiling or no draw pipeline is. The rest start while fewer than
+    /// half of `WORKERS` are compiling.
     pub(crate) fn pump(&mut self, device: &wgpu::Device) {
         // Warm pipelines wait until the first scene's draw pipelines have finished.
         self.warming |= self.drew && self.drawing() == 0;
@@ -440,7 +441,7 @@ impl Pipelines {
                 drawing.fetch_add(1, Ordering::AcqRel);
             }
             wasm_bindgen_futures::spawn_local(async move {
-                // A descriptor the browser rejects also finishes; creating the pipeline later
+                // A descriptor the browser rejects also finishes. Creating the pipeline later
                 // reports why, as it would without compiling ahead.
                 let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
                 compiling.fetch_sub(1, Ordering::AcqRel);
@@ -496,7 +497,7 @@ impl Pipelines {
         }
     }
 
-    /// The layout of `shader`'s pass group; shaders with the same bindings share one.
+    /// The layout of `shader`'s pass group. Shaders with the same bindings share one.
     pub(crate) fn pass_layout(&mut self, device: &wgpu::Device, shader: Shader) -> wgpu::BindGroupLayout {
         let entries: Vec<_> = shader.source().pass.iter().map(Binding::layout_entry).collect();
         self.pass_layouts
@@ -540,8 +541,8 @@ impl Pipelines {
         })
     }
 
-    /// The pipeline `variant` of a custom marker's shader draws a marker of `source` with, or
-    /// `None` once its WGSL failed to compile.
+    /// The pipeline that draws a custom marker of `source`: `variant`, with `source` appended to
+    /// its shader. `None` once that WGSL failed to compile.
     pub(crate) fn custom(
         &mut self,
         device: &wgpu::Device,
@@ -682,10 +683,10 @@ mod compiled {
         ("createComputePipeline", "createComputePipelineAsync"),
     ];
 
-    /// Has the browser compile, in the background, the pipeline `make` creates through wgpu. While
-    /// `make` runs, the device's creation methods are swapped for their async variants and receive
-    /// the exact descriptor wgpu builds, so what compiles is exactly what wgpu creates later.
-    /// `None` if the device is not a browser's or `make` created nothing.
+    /// Has the browser compile, in the background, the pipeline that `make` creates through wgpu.
+    /// While `make` runs, the device's creation methods are swapped for their async variants. These
+    /// receive the exact descriptor wgpu builds, so what compiles is exactly what wgpu creates
+    /// later. Returns `None` if the device is not a browser's or `make` created nothing.
     pub(super) fn capture(device: &wgpu::Device, make: impl FnOnce()) -> Option<js_sys::Promise> {
         let raw: &JsValue = device.as_webgpu()?.as_ref();
         let twins: Vec<js_sys::Function> = MAKERS

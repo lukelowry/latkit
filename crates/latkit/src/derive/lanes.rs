@@ -21,7 +21,7 @@ use crate::host::Job;
 const LANE_COST: f64 = 0.06;
 /// The offset added to twice the lane, so the high half of a lane word is never negative.
 const HALF: u32 = 1 << 15;
-/// The largest family size a lane word stores; larger families store this.
+/// The largest family size a lane word stores. Larger families store this.
 const MOST: u32 = (1 << 16) - 1;
 
 /// The stamp a table's lanes were made from, and any pending job.
@@ -172,7 +172,7 @@ pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Option<Vec<(f32, u32)>> {
     )
 }
 
-/// Each of `rows` rows' lane among the rows joining the same two vertices, where `ends` gives each
+/// The lane of each of `rows` rows among the rows joining the same two vertices. `ends` gives each
 /// row's endpoints. The sheet spreads straight wires by lane. `None` if no rows share endpoints.
 pub(crate) fn spread(rows: usize, ends: impl Fn(usize) -> Option<[usize; 2]>) -> Option<Vec<f64>> {
     let (from, to): (Vec<u32>, Vec<u32>) =

@@ -1,21 +1,21 @@
-//! A mark's columns on the GPU. For every column its program reads: a descriptor and a page table
-//! of arena offsets, or for a sampled column, a cursor per page of rows at the shown coordinate.
+//! A mark's columns on the GPU. Each column the program reads gets a descriptor and a page table of
+//! arena offsets. A sampled column instead gets a cursor per page of rows at the shown coordinate.
 //!
 //! An unpaged table's rows are paged as its data is, and its columns read the data's pages. A paged
-//! table's rows are paged by slot, one page of its order per slot, and its columns read pages
-//! packed in that order, cached on the GPU by what they were packed from. A reference column to a
-//! paged table holds the referenced rows' places in that table's order.
+//! table's rows are paged by slot, one page of its order per slot. Its columns read pages packed in
+//! that order, cached on the GPU by what they were packed from. A reference column to a paged table
+//! holds the referenced rows' places in that table's order.
 //!
 //! A column a line traces holds only what is in view: runs of entries, as raw frames while there
-//! are at most two per pixel column, else as buckets of the level of detail that fits. Where the
-//! samples lack those, coarser buckets are shown as placeholders, or else the finer ones available.
-//! Each level drawn lists its axis pages and, per page of rows, its pages of values.
+//! are at most two per pixel column, otherwise as buckets of the level of detail that fits. Where
+//! the samples lack those, coarser buckets are shown as placeholders, or else the finer ones
+//! available. Each level drawn lists its axis pages and, per page of rows, its pages of values.
 //!
 //! Only columns whose inputs changed are rebuilt, once each. Moving the shown coordinate rebuilds
 //! only sampled columns' cursors, and a paged table rebuilds only where its marks' resident pages
 //! changed. Rebuilt tables are staged together with those of every other mark of the dataset. The
-//! dataset reserves every page they read at once, or none and waits for room. Once every page has
-//! arrived, the view swaps them all in, so a data version, and what a camera move draws, appear
+//! dataset reserves every page they read all at once, or none and waits for space. Once every page
+//! has arrived, the view swaps them all in, so a data version, and what a camera move draws, appear
 //! complete. Staged tables are rebuilt while they wait only if their inputs change again. A rebuilt
 //! column that lists pages reports which pages of rows read changed pages, so only those rows
 //! evaluate again. While a mark eases, its geometry column keeps the table it had when the
@@ -45,8 +45,8 @@ const WORDS: usize = wgsl::COLUMN_WORDS as usize;
 #[derive(Clone, PartialEq, Debug)]
 enum Stamp {
     Missing,
-    /// A field's version, and the id of the order it depends on: a reference's target table's
-    /// order, or the order paged shapes were made in; else 0.
+    /// A field's version, and the id of the order it depends on: the order of a reference's target
+    /// table, or the order paged shapes were made in. Otherwise 0.
     Field(Version, u64),
     Sampled(Version, Option<u64>, u32),
     Trace(Version, Plan),
@@ -62,8 +62,8 @@ pub(crate) struct Window {
     pub(crate) steps: u32,
 }
 
-/// What a traced column draws: runs of entries left to right, each with its first point; the level
-/// of detail the window needs; and the total point count.
+/// What a traced column draws: runs of entries left to right, each with its first point, the level
+/// of detail the window needs, and the total point count.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Plan {
     pub(crate) level: u32,
@@ -73,8 +73,8 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    /// The entry that point `point` draws: its level, its index, and its side, a bucket's least (0)
-    /// or greatest (1). `None` for a point that breaks the line.
+    /// The entry that point `point` draws: its level, its index, and its side, a bucket's minimum
+    /// (0) or maximum (1). `None` for a point that breaks the line.
     pub(crate) fn entry(&self, point: u32) -> Option<(u32, u64, usize)> {
         let i = self.runs.partition_point(|(_, first)| *first <= point).checked_sub(1)?;
         let (run, first) = &self.runs[i];
@@ -115,7 +115,7 @@ impl Rows<'_> {
 /// its pinned pages, and `missing` the words still waiting for an offset.
 struct ColumnTable {
     stamp: Stamp,
-    /// How it pages its rows: 0 for the data's pages, else the stamp of its drawing's slots.
+    /// How it pages its rows: 0 for the data's pages, otherwise the stamp of its drawing's slots.
     held: u64,
     descriptor: [u32; WORDS],
     words: Vec<u32>,
@@ -219,7 +219,7 @@ impl Staged {
     }
 
     /// Reserves every page the staged tables need, all or none. Returns `false` when the arena has
-    /// no room for them now. A table that needs a page the arena has since dropped, and has no
+    /// no space for them now. A table that needs a page the arena has since dropped, and has no
     /// content to upload for it, is discarded and rebuilt later.
     pub(crate) fn reserve(&mut self, gpu: &mut Inner, device: &wgpu::Device, queue: &crate::gpu::work::Queue) -> bool {
         let gone = |table: &ColumnTable| {
@@ -301,16 +301,16 @@ pub(crate) struct Tables {
 }
 
 /// What publishing rebuilt tables changed. Bit `i` of `columns` is set for each program column
-/// whose table changed, and of `data` for each whose data changed, not only its paging. `blocks`
-/// lists the row blocks whose pages changed; `None` when every row changed.
+/// whose table changed. Bit `i` of `data` is set for each whose data changed, not only its paging.
+/// `blocks` lists the row blocks whose pages changed, or is `None` when every row changed.
 pub(crate) struct Published {
     pub(crate) columns: u64,
     pub(crate) data: u64,
     pub(crate) blocks: Option<Vec<u32>>,
 }
 
-/// A mark's own dataset and table, the tables the view derives beside it, and for a paged table,
-/// the shapes made one page of its order at a time, by the field each is written as.
+/// A mark's own dataset and table, the tables derived beside it, and, for a paged table, the shapes
+/// made one page of its order at a time, keyed by the field each is written as.
 pub(crate) struct Source<'a> {
     pub(crate) data: &'a Snapshot,
     pub(crate) table: &'a Table,
@@ -375,8 +375,8 @@ enum Use<'a> {
 
 impl Tables {
     /// Rebuilds the tables whose inputs changed, for `source` paged as `rows`, with `inputs`.
-    /// Changes are measured against the `staged` tables if any, else the current ones. Each table
-    /// is built once and requests its pages. `None` when nothing changed.
+    /// Changes are measured against the `staged` tables if any, otherwise the current ones. Each
+    /// table is built once and requests its pages. `None` when nothing changed.
     pub(crate) fn rebuild(
         &mut self,
         program: &Program,
@@ -394,8 +394,8 @@ impl Tables {
             Use::Field { column, join }
         });
         let uses: Vec<Use<'_>> = fields.chain(joins.iter().map(|from| Use::Join(from))).collect();
-        // Rebuild every table when there are no tables of this shape yet, unless a reshape is
-        // already staged; then compare against it.
+        // Rebuild every table when there are no tables of this shape yet. If a reshape is already
+        // staged, compare against it instead.
         let reshaped = staged.is_some_and(|s| s.reshape && s.tables.len() == uses.len());
         let reshape = !reshaped
             && (!self.synced
@@ -490,7 +490,7 @@ impl Tables {
         published
     }
 
-    /// Drops the frozen geometry table: the mark no longer eases from it.
+    /// Drops the frozen geometry table, so the mark stops easing from it.
     pub(crate) fn thaw(&mut self, gpu: &mut Inner) {
         if let Some(table) = self.frozen.take() {
             unpin(&table.pins, gpu);
@@ -507,7 +507,7 @@ impl Tables {
         self.generation
     }
 
-    /// The most points the paths of geometry column `column` take; 0 for other columns.
+    /// The most points the paths of geometry column `column` take. 0 for other columns.
     pub(crate) fn points(&self, column: u32) -> u32 {
         self.current.get(column as usize).map_or(0, |t| t.points)
     }
@@ -664,7 +664,7 @@ fn plan(samples: &Samples, window: Window) -> Plan {
 }
 
 /// Where sampled `column` reads `samples` at axis coordinate `at`: the frame shown there, and how
-/// far toward the next one it is; 0 for a column that steps.
+/// far toward the next one it is (0 for a column that steps).
 fn shown_frame(samples: &Samples, column: &ColumnUse, at: f64) -> (Option<u64>, f32) {
     let frame = samples.frame_at(at);
     let t = if column.step { 0.0 } else { frame.map_or(0.0, |f| samples.t(f, at)) };
@@ -919,8 +919,8 @@ impl<'g> Builder<'g> {
     }
 
     /// Appends the page of `packing` in each slot of `drawing`, packed from `source` by `pack` the
-    /// first time it is needed; `NONE` for a free slot. The order's pages are looked up in one pass
-    /// over the column, and each page of kept rows separately.
+    /// first time it is needed, or `NONE` for a free slot. The order's pages are looked up in one
+    /// pass over the column, and each page of kept rows separately.
     fn held_pages(
         &mut self,
         drawing: &Drawing,
@@ -1001,7 +1001,8 @@ impl<'g> Builder<'g> {
 
     /// A geometry column's table, in the layout `lib/read.wesl` reads: per page, the block of its
     /// row table (each row's first point), where its blocks of points are listed, its point count,
-    /// and its row count; then those lists. A page's points take as many blocks as they need.
+    /// and its row count, followed by those lists. A page's points take as many blocks as they
+    /// need.
     fn path(&mut self, column: &Column) {
         let pages = column.pages();
         self.words.resize(wgsl::PATH_PAGE_WORDS as usize * pages.len(), 0);
@@ -1118,8 +1119,8 @@ impl<'g> Builder<'g> {
     /// - a header: the run count, pages of rows, level count, and total points;
     /// - per run: its level's index, first entry, entry count, and first point;
     /// - per level: the level, its axis page count and list offset, and its page lists' start;
-    /// - per level and page of rows: the count and list offset of its pages of frames or least
-    ///   values, then the same for greatest values;
+    /// - per level and page of rows: the count and list offset of its pages of frames or minimum
+    ///   values, then the same for maximum values;
     /// - the lists: axis pages as (offset, first entry), and pages of values as (offset, first
     ///   entry, words per entry).
     ///
@@ -1200,8 +1201,8 @@ impl<'g> Builder<'g> {
         at
     }
 
-    /// Sets frame `k` (0 the frame shown, 1 the next) of the cursor at `at` to `rows` rows from word
-    /// `base` of page `key`, built by `content` when the arena lacks it.
+    /// Sets frame `k` (0 the frame shown, 1 the next) of the cursor at `at` to `rows` rows from
+    /// word `base` of page `key`, built by `content` when the arena lacks it.
     fn cursor(&mut self, at: usize, k: usize, key: PageKey, base: u32, rows: u32, content: impl FnOnce() -> Content) {
         self.place(at + 2 * k, key, base + rows, content);
         self.words[at + 2 * k + 1] = base;
@@ -1225,7 +1226,7 @@ fn kept_packing(packing: &Packing, places: &[u32]) -> Packing {
 }
 
 /// The id of the page of `packing` in slot `s` of `drawing`, packed from `source`: a page of its
-/// order, or of its kept rows, each cached until one of its rows is written; `None` if free.
+/// order, or of its kept rows, each cached until one of its rows is written. `None` if free.
 fn slot_page(
     packed: &mut crate::gpu::packed::Packed,
     packing: &Packing,

@@ -27,9 +27,9 @@ fn corner_center(c: Corner) -> Center {
     return Center(to_screen(clip), c.shown && c.ahead && clip.w > 0.0);
 }
 
-// Where drawn row `item` lies on screen: a point's center; the middle of a path's middle segment,
-// or a trace's last sample; an area's label anchor, inside its largest polygon; or a face's
-// centroid. The row shows there when it is visible and that point is on screen.
+// Where drawn row `item` lies on screen: a point's center, the middle of a path's middle segment, a
+// trace's last sample, an area's label anchor (inside its largest polygon), or a face's centroid.
+// The row shows there when it is visible and that point is on screen.
 fn row_center(item: u32) -> Center {
     switch PRIMITIVE {
         case POINTS: {

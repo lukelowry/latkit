@@ -1,9 +1,9 @@
 //! A scene's title and its marks' legends, drawn over the marks.
 //!
 //! The title and subtitle sit at the top left. Legends stack upward from the bottom right of the
-//! drawing area (inside a plot's axes), each under its title: a ticked bar of the mark's colormap across its domain, a color cell per
-//! category, or, for named categories, a swatch beside each name. Rebuilt each frame as overlay
-//! sprites, in O(legends).
+//! drawing area (inside a plot's axes), each under its title. A legend is a ticked bar of the
+//! mark's colormap across its domain, a color cell per category, or, for named categories, a swatch
+//! beside each name. Rebuilt each frame as overlay sprites, in O(legends).
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use crate::{Axis, Color, Colormap, ColormapKind, Theme};
 
 /// CSS pixels between the view's inset edge and the title or legends.
 const MARGIN: f64 = 16.0;
-/// A legend's bar: width and height, CSS pixels.
+/// A legend's bar width and height, in CSS pixels.
 const BAR: [f64; 2] = [220.0, 8.0];
 /// Cells a continuous bar is drawn in.
 const CELLS: usize = 64;
@@ -33,7 +33,7 @@ const LEADING: f64 = 1.35;
 
 impl View {
     /// CSS pixels the title and subtitle take below the top inset, including the margin above them
-    /// and half a margin below; 0 when the scene has neither.
+    /// and half a margin below. 0 when the scene has neither.
     pub(super) fn title_band(&self) -> f64 {
         let font = f64::from(self.scene.theme.text.size);
         let lines: f64 = [(self.scene.title.is_some(), TITLE), (self.scene.subtitle.is_some(), SUBTITLE)]
@@ -70,8 +70,8 @@ impl View {
             writer(inner, scale, color, &mut |w| sprites.extend(w.text(text, [area[0], y], Align::BelowRight)));
             y += font * scale * LEADING;
         }
-        // Legends stack up from the drawing area's bottom right: on a plot, inside its axes, clear of
-        // their labels.
+        // Legends stack up from the drawing area's bottom right. On a plot that is inside its axes,
+        // clear of their labels.
         let drawing = self.area();
         let right = drawing[2] - MARGIN;
         let mut base = drawing[3] - MARGIN;
@@ -203,7 +203,7 @@ fn legend(
     height
 }
 
-/// A rectangle filled with `color`, corner `a` to corner `b`, CSS pixels.
+/// A rectangle filled with `color`, from corner `a` to corner `b`, in CSS pixels.
 fn fill(a: [f64; 2], b: [f64; 2], color: Color) -> wgsl::Sprite {
     let mut sprite = line(a, b, 0.0, color);
     sprite.kind = wgsl::SPRITE_FILL;

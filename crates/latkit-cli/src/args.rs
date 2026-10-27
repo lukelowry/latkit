@@ -59,8 +59,8 @@ pub(crate) enum Command {
         #[arg(long, default_value = "30", value_parser = deadline)]
         deadline: Duration,
     },
-    /// Write a dataset as time tiles: `frames.json` (which `--tiles` opens), the dataset without its
-    /// sampled fields' histories, and those histories in spans at every level of detail
+    /// Write a dataset as time tiles: `frames.json` (which `--tiles` opens), the dataset without
+    /// the histories of its sampled fields, and those histories in spans at every level of detail
     Tile {
         /// The dataset, `[NAME=]FILE` (`-` reads stdin)
         #[arg(value_name = "[NAME=]FILE")]
@@ -94,7 +94,7 @@ pub(crate) struct Job {
     /// Output file, `%d` pattern for an image sequence, or `-` for stdout
     #[arg(short, long, value_name = "FILE")]
     pub(crate) output: Option<PathBuf>,
-    /// Output format. Defaults to the one the output's extension names, else PNG
+    /// Output format. Defaults to the format of the output's extension, or PNG
     #[arg(long, value_enum)]
     pub(crate) format: Option<Format>,
     /// JPEG quality, from 1 (smallest) to 100 (sharpest)

@@ -1,24 +1,25 @@
 //! The plan: how each drawn table fits the GPU budget.
 //!
-//! A table draws whole (in priority order when a mark gives one) unless it is too large. A table a
-//! mark places on a map or a plane becomes a paged table when it is denser than a screen can show,
-//! and the largest such tables are paged until the rest fit the view's budget share. A table of
-//! vector tiles is always paged, its tiles the vector tiles drawn; other tables drawn from tiles
+//! A table draws all its rows (in priority order when a mark gives one) unless it is too large. A
+//! table a mark places on a map or a plane is paged when it is denser than a screen can show. The
+//! largest such tables are paged until the rest fit the view's budget share. A table of vector
+//! tiles is always paged, with the vector tiles drawn as its tiles. Other tables drawn from tiles
 //! never are. A paged table draws the rows of the tiles the camera needs, as many as its share
-//! holds, and edges ending at it are paged too, so they show with their endpoints. If the whole
-//! tables still do not fit, a table a line traces keeps drawing whole, its traces spanning only as
-//! many pixel columns as fit, and any other table draws the rows that matter most, as many as fit.
-//! What a view draws always fits.
+//! holds. Edges ending at it are paged too, so they show with their endpoints. If the unpaged
+//! tables still do not fit, a table a line traces still draws all its rows, with its traces
+//! spanning only as many pixel columns as fit. Any other table draws the rows that matter most, as
+//! many as fit. What a view draws always fits.
 //!
 //! A table costs what the arena allocates for it: its columns' pages, the arena blocks of its
-//! marks' per-row words, and its geometry. The GPU's ledger grants each view a share based on what
-//! it would draw whole. Costs are recomputed only when the scene, or a drawn table's rows or
-//! geometry, change, and the plan only when the costs or the share change.
+//! marks' per-row words, and its geometry. The GPU's ledger grants each view a share based on its
+//! cost with every table drawn in full. Costs are recomputed only when the scene, or a drawn
+//! table's rows or geometry, change. The plan is recomputed only when the costs or the share
+//! change.
 //!
 //! Paged tables can need more than the costs predict, such as the kept rows that drawn edges end
-//! at. When what the view holds exceeds its share, or finds no room in a full arena, paged tables
-//! are planned within a smaller part of the share until the share changes. That way the current
-//! drawing and its replacement both fit, with room left to keep idle pages.
+//! at. When the view's memory exceeds its share, or its pages do not fit in a full arena, paged
+//! tables are planned within a smaller part of the share until the share changes. That way the
+//! current drawing and its replacement both fit, with space left to keep idle pages.
 
 use std::hash::Hash;
 
@@ -37,13 +38,13 @@ use crate::{Expr, Kind, Mark, Space};
 
 /// Rows past which a table a mark places is paged: more than a screen shows at one row per cell.
 pub(crate) const DENSE: usize = 1 << 18;
-/// Pixel columns a view requests trace room for: a wide screen's width.
+/// Pixel columns a view requests trace space for: a wide screen's width.
 const ASKED_COLUMNS: f64 = 4096.0;
 /// The fewest rows a paged table draws: one tile's worth.
 const LEAST: u32 = 1 << 14;
-/// Bytes a row's trace takes per pixel column: the least and greatest values of two buckets.
+/// Bytes a row's trace takes per pixel column: the minimum and maximum values of two buckets.
 const TRACE_COLUMN_BYTES: f64 = 16.0;
-/// The fewest pixel columns a trace spans, however little room is left.
+/// The fewest pixel columns a trace spans, however little budget is left.
 const TRACE_COLUMNS: u32 = 32;
 
 /// A table's cost as the arena allocates it: its row count, bytes per page of rows, bytes of
@@ -66,7 +67,7 @@ impl Cost {
     }
 }
 
-/// Each table the scene draws, planned as drawn whole, and its cost.
+/// Each table the scene draws, planned as drawn in full, and its cost.
 #[derive(Default)]
 struct Costs {
     whole: Plans,
@@ -81,8 +82,8 @@ pub(crate) struct Planning {
     costs: Derived<Costs>,
     /// How each table draws, and the most pixel columns a trace spans.
     plan: Derived<(Plans, u32)>,
-    /// The fraction of the remaining room the plan gives paged tables. Lowered each time they find
-    /// no room in a full arena or exceed the share; reset when the share changes.
+    /// The fraction of the remaining budget the plan gives paged tables. Lowered each time their
+    /// pages do not fit in a full arena or exceed the share. Reset when the share changes.
     fit: f64,
     share: f64,
 }
@@ -109,23 +110,23 @@ impl Planning {
         self.plan.value.1
     }
 
-    /// Records that paged tables found no room in a full arena, so they draw within less while any
+    /// Records that paged tables did not fit in a full arena, so they draw within less while any
     /// draws more than its minimum. Returns whether the plan shrank.
     pub(crate) fn overflowed(&mut self) -> bool {
         self.tighten(0.75)
     }
 
-    /// Records that the view holds `bytes` for what it draws. If that exceeds the share and the
-    /// plan held back some of what the camera needs of a paged table (`capped`), paged tables draw
-    /// within less, in proportion to the excess. If nothing was held back, a smaller plan would
-    /// draw no less and only release idle pages, so the plan stays.
+    /// Records that the view uses `bytes` for what it draws. If that exceeds the share and the plan
+    /// left out some of the rows the camera needs from a paged table (`capped`), paged tables draw
+    /// within less, in proportion to the excess. If nothing was left out, a smaller plan would draw
+    /// no less and only release idle pages, so the plan stays.
     pub(crate) fn held(&mut self, bytes: u64, capped: bool) {
         if capped && self.share > 0.0 && bytes as f64 > self.share {
             self.tighten(self.share / bytes as f64);
         }
     }
 
-    /// Scales the room for paged tables by `part`, if any draws more than its minimum. Returns
+    /// Scales the budget for paged tables by `part`, if any draws more than its minimum. Returns
     /// whether it did.
     fn tighten(&mut self, part: f64) -> bool {
         let shrinks = self.plans().values().any(|p| matches!(p.draw, Draw::Tiles { rows } if rows > LEAST));
@@ -138,7 +139,7 @@ impl Planning {
 
 impl View {
     /// Updates the plan for the scene, the data, and the share of `budget` that the GPU's `ledger`
-    /// grants the view based on what it would draw whole.
+    /// grants the view based on its cost with every table drawn in full.
     pub(super) fn update_plan(&mut self, ledger: &mut Ledger, budget: u64) {
         let stamp = self.costs_stamp();
         if self.planning.costs.due(stamp) {
@@ -182,7 +183,7 @@ impl View {
     }
 
     /// Plans how each table the scene draws fits in `share` bytes given `costs`, giving paged
-    /// tables `fit` of the remaining room. Also returns the most pixel columns a trace spans.
+    /// tables `fit` of the remaining budget. Also returns the most pixel columns a trace spans.
     fn plan(&self, costs: &Costs, share: f64, fit: f64) -> (Plans, u32) {
         let (mut plans, costs) = (costs.whole.clone(), &costs.tables);
         let vector = |key: &(Name, Name)| self.derived.tiles.vector(&key.0);
@@ -197,7 +198,7 @@ impl View {
                 tiled.push(key.clone());
             }
         };
-        // Page tables of vector tiles and dense tables, then the largest ones until the whole
+        // Page tables of vector tiles and dense tables, then the largest ones until the unpaged
         // tables fit.
         let keys: Vec<(Name, Name)> = plans.keys().cloned().collect();
         for key in &keys {
@@ -219,8 +220,9 @@ impl View {
                 tile(key, &mut plans, &mut whole);
             }
         }
-        // If the whole tables still do not fit, each draws the rows that matter most, as many as
-        // fit. A table a line traces still draws whole; its traces get coarser in time instead.
+        // If the unpaged tables still do not fit, each draws the rows that matter most, as many as
+        // fit. A table a line traces still draws all its rows, and its traces get coarser in time
+        // instead.
         if whole > share {
             let kept: f64 = keys
                 .iter()
@@ -237,7 +239,7 @@ impl View {
             }
             whole = share.max(kept);
         }
-        // Paged tables and traces share the remaining room.
+        // Paged tables and traces share the remaining budget.
         let traced: f64 = costs.values().map(|c| c.traced).sum();
         let left = (share - whole).max(share / 4.0) * fit;
         let each = left / (tiled.len() + usize::from(traced > 0.0)).max(1) as f64;
@@ -251,8 +253,8 @@ impl View {
         (plans, columns)
     }
 
-    /// Plans each table the scene draws as whole, with the place and priority of the first mark
-    /// that gives each, and computes each table's cost from the fields its marks read.
+    /// Plans each table the scene draws as drawn in full, with the place and priority of the first
+    /// mark that gives each, and computes each table's cost from the fields its marks read.
     fn costs(&self) -> Costs {
         let space = &self.scene.space;
         let placing = matches!(space, Space::Earth(_) | Space::Plane(_));

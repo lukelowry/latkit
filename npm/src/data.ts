@@ -8,8 +8,8 @@ import type { Description, Value } from './outputs.js';
 import { framed, Patch, type Fields, type RowIds, type Run, type Values } from './patch.js';
 
 /**
- * A table of a dataset, which a mark draws or a field reads from: `grid.table('Bus')`. A view draws
- * the datasets its scene's tables belong to. Its JSON form is `[data, table]`.
+ * A table in a dataset, such as `grid.table('Bus')`. Marks draw its rows and `field().from()` reads
+ * its fields. A view loads every dataset its scene uses. In JSON it is `[data, table]`.
  */
 export class Table {
   /** The dataset the table belongs to. */
@@ -17,21 +17,21 @@ export class Table {
   /** The table's name. */
   readonly name: string;
 
-  /** Table `name` of `source`. */
+  /** The table `name` in `source`. */
   constructor(source: Source, name: string) {
     this.source = source;
     this.name = name;
   }
 
-  /** The JSON form, `[data, table]`, which `JSON.stringify` writes for the table. */
+  /** Returns the JSON form, `[data, table]`. `JSON.stringify` calls it. */
   toJSON(): [data: string, table: string] {
     return [this.source.name, this.name];
   }
 }
 
 /**
- * A table that a mark draws or a field reads from: a dataset's {@link Table}, or its JSON form
- * `[data, table]`, which names a dataset the view's `sources` give.
+ * A table for a mark to draw or a field to read: a {@link Table}, or its JSON form `[data, table]`,
+ * where `data` names a dataset in the view's `sources`.
  */
 export type TableInput = Table | readonly [data: string, table: string];
 
@@ -42,20 +42,20 @@ export interface QueryResult {
   /** The ids of the rows returned, in order. */
   ids: Id[];
   /**
-   * Each selected field's column, by output name: numbers as a `Float64Array` with NaN for missing
-   * values, other values as an array with `null` for missing ones, and a reference as the table it
-   * references and the id of the row each row references.
+   * Each selected field's column, keyed by output name. Numbers come as a `Float64Array` with NaN
+   * for missing values. Other values come as an array with `null` for missing ones. A reference
+   * comes as the referenced table and, for each row, the id of the row it references.
    */
   fields: Record<string, Float64Array | Value[] | { reference: string; ids: (Id | null)[] }>;
-  /** How many rows matched the query before `offset` and `limit` applied. */
+  /** The number of rows that matched, before `offset` and `limit`. */
   total: number;
 }
 
-/** Each row's minimum and maximum of a sampled field over equal spans of the axis. */
+/** The minimum and maximum of a sampled field for each row, over equal spans of the axis. */
 export interface Envelope {
   /** The span boundaries on the axis: one more than the number of spans. */
   at: Float64Array;
-  /** Each row's minimum in each span, `spans` values per row, row after row; NaN without frames. */
+  /** Each row's minimum in each span, `spans` values per row, row after row. NaN for no value. */
   least: Float32Array;
   /** Each row's maximum in each span, laid out like `least`. */
   greatest: Float32Array;
@@ -65,29 +65,29 @@ export interface Envelope {
 type Reads = bindings.Data | bindings.Snapshot;
 
 /**
- * Named tables of columns, read the same way from a {@link Data}, which reads its current version,
- * and a {@link Snapshot}, which reads its own.
+ * Named tables of columns. A {@link Data} reads its current version and a {@link Snapshot} reads
+ * the version it holds, through the same methods.
  */
 export abstract class Dataset extends Handle {
-  /** The dataset's name: the first part of its tables' JSON form. */
+  /** The dataset's name: the `data` in its tables' JSON form `[data, table]`. */
   get name(): string {
     return inner<Reads>(this).name;
   }
 
-  /** The dataset's table `name`, for a mark to draw or a field to read from. */
+  /** Returns table `name`, for a mark to draw or a field to read. */
   table(name: string): Table {
     return new Table(this as Dataset as Data | Snapshot, name);
   }
 
-  /** The tables and their row counts, each field and its kind, and the axis and its span. */
+  /** Describes the tables and row counts, each field and its kind, and the axis and its span. */
   describe(): Description {
     return JSON.parse(inner<Reads>(this).describe()) as Description;
   }
 
   /**
-   * Reads `field` of the row with `id` in `table`: for a sampled field, its last frame at or before
-   * `options.at`, or its last frame; for a reference, the referenced row's id. `null` when the
-   * table, row, field, or value is missing.
+   * Reads `field` of row `id` in `table`. A sampled field gives its last frame at or before
+   * `options.at`, or its last frame without `at`. A reference gives the referenced row's id.
+   * Returns `null` when the table, row, field, or value is missing.
    */
   get(
     table: string,
@@ -102,35 +102,36 @@ export abstract class Dataset extends Handle {
   }
 
   /**
-   * Reads a table's rows, filtered, sorted, and paged, through the same expressions marks use.
-   * Sampled fields are read at `query.at`.
+   * Reads a table's rows, filtered, sorted, and paged with the same expressions marks use. Sampled
+   * fields are read at `query.at`.
    */
   query(query: Query): QueryResult {
     return inner<Reads>(this).query(JSON.stringify(query)) as QueryResult;
   }
 
   /**
-   * Each row's minimum and maximum of a sampled field over equal spans of an axis range, for every
-   * row or the rows `request.ids` lists. Each span reads the coarsest stored levels of detail that
-   * fit in it, so it costs a few reads however many frames it covers. Throws a `limit` error when
-   * rows times spans exceeds 2^26.
+   * Returns the minimum and maximum of a sampled field over equal spans of an axis range, for every
+   * row or for the rows in `request.ids`. Each span reads the coarsest stored levels of detail that
+   * fit inside it, so it costs a few reads however many frames it covers. Throws a `limit` error
+   * when rows times spans exceeds 2^26.
    */
   envelope(request: EnvelopeRequest): Envelope {
     return inner<Reads>(this).envelope(JSON.stringify(request)) as Envelope;
   }
 
-  /** The dataset as latkit's bytes: a patch that builds it from an empty dataset. */
+  /** Returns the dataset as latkit's bytes: a patch that builds it from an empty dataset. */
   toBytes(): Uint8Array {
     return inner<Reads>(this).toBytes();
   }
 }
 
 /**
- * A dataset that changes in place, each change applied whole or not at all. Each method of
- * {@link Patch} is also a method here that applies that one change at once; `apply` applies a patch
- * of several. Views draw its latest version from the frame after each change. A {@link Snapshot}
- * keeps one version and shares its pages with the dataset, so an undo history costs only the pages
- * that differ. Destroying it leaves views drawing it and its snapshots usable.
+ * A dataset that changes in place. Each change applies all at once or not at all. Every
+ * {@link Patch} method is also a method here that applies that one change right away, and `apply`
+ * applies a patch of several. Views draw the latest version from the frame after each change. A
+ * {@link Snapshot} keeps one version and shares its pages with the dataset, so an undo history
+ * costs only the pages that differ. Destroying a `Data` leaves the views that draw it, and its
+ * snapshots, usable.
  *
  * ```ts
  * const grid = new Data('grid').set('Bus', [1, 2], { kv: [230, 115] });
@@ -153,15 +154,15 @@ export class Data extends Dataset {
    * - GeoJSON, plain or gzip-compressed, read in a worker. Points, line strings, and polygons
    *   become rows of tables `points`, `lines`, and `polygons`, with the geometry in field
    *   `geometry` and each property as a field.
-   * - A dataset document, `{"name": ..., "patch": [...]}`, whose patch is read as
-   *   {@link Patch.read} reads one.
+   * - A dataset document, `{"name": ..., "patch": [...]}`. Its patch is read like
+   *   {@link Patch.read}.
    */
   static async read(
     source: ByteSource | object,
     options: {
-      /** Names the dataset, replacing the name its bytes or document give; GeoJSON requires it. */
+      /** The dataset's name, overriding the name in its bytes or document. Required for GeoJSON. */
       name?: string;
-      /** The URL a document's file slices are relative to; by default, the one it came from. */
+      /** The URL that a document's file slices are relative to. Defaults to the document's URL. */
       base?: string;
     } & Wait = {},
   ): Promise<Data> {
@@ -186,8 +187,8 @@ export class Data extends Dataset {
   }
 
   /**
-   * Applies {@link Patch.replace}: replaces table `table` with rows `ids`, or `0` to `n - 1`, and
-   * `fields`.
+   * Applies {@link Patch.replace}: replaces table `table` with `fields` for rows `ids` (or `0` to
+   * `n - 1`).
    */
   replace(table: string, fields: Fields): this;
   replace(table: string, ids: RowIds, fields?: Fields): this;
@@ -197,8 +198,8 @@ export class Data extends Dataset {
   }
 
   /**
-   * Applies {@link Patch.set}: writes `fields` for rows `ids` of `table`, or `0` to `n - 1`, adding
-   * new rows.
+   * Applies {@link Patch.set}: writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
+   * adding new rows.
    */
   set(table: string, fields: Fields): this;
   set(table: string, ids: RowIds, fields?: Fields): this;
@@ -217,7 +218,7 @@ export class Data extends Dataset {
     at: number | readonly number[],
     fields: Readonly<Record<string, Values>>,
     options?: {
-      /** The rows the frames cover, every row by default; other rows keep their last values. */
+      /** The rows the frames cover. Defaults to every row. Other rows keep their last values. */
       ids?: RowIds;
     },
   ): this {
@@ -229,17 +230,17 @@ export class Data extends Dataset {
     return this.apply(new Patch().forget(before));
   }
 
-  /** Applies {@link Patch.frames}: stores a run of a sampled field's entries, as a time tile holds. */
+  /** Applies {@link Patch.frames}: stores a run of a sampled field's entries, as in a time tile. */
   frames(table: string, field: string, run: Run): this {
     return this.apply(new Patch().frames(table, field, run));
   }
 
-  /** The current version as a {@link Snapshot}, which later patches leave unchanged. O(1). */
+  /** Returns the current version as a {@link Snapshot}. Later patches don't change it. O(1). */
   snapshot(): Snapshot {
     return Snapshot.made(inner<bindings.Data>(this).snapshot());
   }
 
-  /** Makes `snapshot`, a version of this dataset, the current version, as an undo does. */
+  /** Makes `snapshot`, a version of this dataset, the current version. This is how to undo. */
   restore(snapshot: Snapshot): this {
     inner<bindings.Data>(this).restore(inner<bindings.Snapshot>(snapshot));
     return this;
@@ -248,7 +249,7 @@ export class Data extends Dataset {
 
 /**
  * One immutable version of a dataset, taken in O(1) by {@link Data.snapshot}. A view given a
- * snapshot draws that version, and keeps drawing it once the snapshot is destroyed.
+ * snapshot draws that version, and keeps drawing it after the snapshot is destroyed.
  */
 export class Snapshot extends Dataset {
   private constructor(bound: bindings.Snapshot) {
@@ -262,23 +263,23 @@ export class Snapshot extends Dataset {
 }
 
 /**
- * A dataset fetched in pieces as views need them: plain data, a dataset name and a URL. Each view
- * draws the pieces its camera and plot window need, and the views of a GPU share them. The first
- * bytes at `url` decide the kind:
+ * A dataset fetched in pieces as views need them. It is plain data: a dataset name and a URL. Each
+ * view fetches the pieces its camera and plot window need, and views on one GPU share them. The
+ * first bytes at `url` decide the kind:
  *
- * - Time tiles: a `frames.json` manifest as `latkit tile` writes it. A line tracing a sampled field
- *   fetches the detail its plot window shows; other marks fetch the frames around the view's `at`.
- *   A span still loading shows the coarser span that contains it.
+ * - Time tiles: a `frames.json` manifest written by `latkit tile`. A line that traces a sampled
+ *   field fetches the detail its plot window shows. Other marks fetch the frames around the view's
+ *   `at`. While a span loads, the coarser span that contains it shows.
  * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
  *   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
  *   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
- *   that kind whatever the marks. A tile arriving appends its rows to the view's dataset, which
- *   keeps the rows of tiles it no longer draws until they outnumber the rows it draws.
+ *   that kind regardless of the marks. Each tile that arrives appends its rows to the view's
+ *   dataset. Rows of tiles no longer drawn are kept until they outnumber the rows drawn.
  */
 export class Tiles {
   /** The name of the dataset the tiles are drawn as. */
   readonly name: string;
-  /** Where the tiles are. */
+  /** The tiles' URL. */
   readonly url: string;
 
   /** Tiles at `url`, drawn as the dataset named `name`. */
@@ -287,7 +288,7 @@ export class Tiles {
     this.url = url;
   }
 
-  /** The tiles' table `name`, such as a vector tile layer, for a mark to draw. */
+  /** Returns table `name`, such as a vector tile layer, for a mark to draw. */
   table(name: string): Table {
     return new Table(this, name);
   }

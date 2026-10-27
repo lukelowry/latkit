@@ -1,10 +1,10 @@
 //! Stars of nets, outside diagrams.
 //!
-//! Each row of an edge mark with `joins` is a net joining the vertex rows whose reference field
-//! names it. The net draws as a star: a segment from the members' centroid to each member, at the
-//! places their vertex mark gives them. Stars are a `route` path field beside the net table, which
-//! the mark draws like any geometry. They are recomputed only when the data, the scene, or the
-//! layout's places change.
+//! Each row of an edge mark with `joins` is a net. Its members are the vertex rows whose reference
+//! field names it. The net draws as a star: a segment from the members' centroid to each member, at
+//! the places their vertex mark gives them. Stars are a `route` path field beside the net table,
+//! and the mark draws them like any geometry. They are recomputed only when the data, the scene, or
+//! the layout's places change.
 
 use std::hash::Hash;
 
@@ -98,7 +98,8 @@ fn place(vm: &VertexMark<'_>, rows: &Rows<'_>, row: usize, placed: Option<&crate
     })
 }
 
-/// A net's star: a path from the centroid of `members` to each member; empty for fewer than two.
+/// A net's star: a path from the centroid of `members` to each member. Empty for fewer than two
+/// members.
 fn star(members: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
     if members.len() < 2 {
         return Vec::new();

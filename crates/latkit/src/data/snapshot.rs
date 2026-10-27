@@ -10,12 +10,12 @@ use super::table::{Field, Table};
 use super::values::Value;
 use crate::{Error, Result};
 
-/// One immutable version of a dataset. Taking one is O(1), and it shares unchanged pages with the
-/// versions before and after it. [`Data::snapshot`](crate::Data::snapshot) takes one; a view given
-/// one draws that version unchanged.
+/// One immutable version of a dataset, taken with [`Data::snapshot`](crate::Data::snapshot).
+/// Taking one is O(1), and it shares unchanged pages with the versions before and after it. A view
+/// given a snapshot draws that version.
 ///
-/// Later changes to the dataset never affect it: its description, values, queries, and envelopes
-/// stay the same.
+/// Later changes to the dataset never affect a snapshot. Its description, values, queries, and
+/// envelopes stay the same.
 ///
 /// ```
 /// # use latkit::{Data, Patch, Table, Value};
@@ -37,9 +37,9 @@ pub(crate) struct Inner {
     /// Sorted by name.
     pub(crate) tables: Vec<Table>,
     pub(crate) version: Version,
-    /// The version the dataset started from, shared by every version patches derive from it. A
-    /// view matches rows across versions with the same origin to animate them; for a same-named
-    /// dataset with another origin, every old row leaves and every new row enters.
+    /// The version the dataset started from. Every version that patches derive from it shares it.
+    /// A view matches rows across versions with the same origin to animate them. For a same-named
+    /// dataset with a different origin, every old row leaves and every new row enters.
     pub(crate) origin: Version,
     /// A hash of the table names and the fields' names, kinds, and targets. Marks recompile only
     /// when it changes.
@@ -105,9 +105,9 @@ impl Snapshot {
         }
     }
 
-    /// The version `patch` makes from this one. Applies every change or, if one is invalid, none,
-    /// returning an error whose path names the change and part, such as `patch[1].Bus.kv`. A patch
-    /// for another dataset is an error.
+    /// Returns the version `patch` makes from this one. Applies all changes or none. If a change is
+    /// invalid, the error's path names the change and part, such as `patch[1].Bus.kv`. A patch for
+    /// another dataset is an error.
     pub(crate) fn applied(&self, patch: Patch) -> Result<Snapshot> {
         if let Some(data) = &patch.data
             && *data != self.0.name
@@ -152,13 +152,13 @@ impl Snapshot {
         self.0.tables.iter().fold(patch, |patch, table| patch.replace(table.clone()))
     }
 
-    /// Encodes the dataset as bytes: its [`to_patch`](Snapshot::to_patch), encoded.
+    /// Encodes the dataset's [`to_patch`](Snapshot::to_patch) as bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.to_patch().to_bytes()
     }
 
-    /// Decodes a dataset from bytes written by [`to_bytes`](Snapshot::to_bytes). Errors unless the
-    /// bytes hold a patch that names a dataset.
+    /// Decodes a dataset from bytes written by [`to_bytes`](Snapshot::to_bytes). Returns an error
+    /// if the bytes do not hold a patch that names a dataset.
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Snapshot> {
         let patch = Patch::from_bytes(bytes)?;
         let Some(name) = patch.data.clone() else {

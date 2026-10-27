@@ -7,7 +7,7 @@
  * `--quick` runs each scenario once at its smallest size. It checks every phase and the work
  * baseline in under a minute on a GPU. Growth and times are judged only in a full sweep.
  * `--repeats` sets the runs per size (3 by default). `--update` merges this run's results into the
- * committed baselines, keeping entries it did not run; only a full sweep on the GPU writes times.
+ * committed baselines, keeping entries it did not run. Only a full sweep on the GPU writes times.
  * `--software` draws with SwiftShader on the CPU, as Linux always does. Work counts the same there,
  * times are only reported, and no shader can hang the GPU.
  *
@@ -52,7 +52,7 @@ const software = flags.software || process.platform === 'linux';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const baselines = path.join(here, 'baselines');
 const results = path.resolve(here, '../target/bench');
-/** Gives WebGPU timestamps, which measure each frame's GPU time, full precision; Chrome otherwise
+/** Gives WebGPU timestamps, which measure each frame's GPU time, full precision. Chrome otherwise
  * rounds them to 100 µs. The page steps each frame as soon as the GPU finishes the last, so the
  * display's frame rate never affects a run. */
 const FLAGS = ['--enable-webgpu-developer-features'];

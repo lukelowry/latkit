@@ -1,6 +1,6 @@
-//! Text dictionaries: each text field's distinct texts get codes in the order they are first seen.
+//! Text dictionaries. Each text field's distinct texts get codes in the order they are first seen.
 //! Codes are never reassigned, so a page's codes never change and upload once. A page is coded
-//! once, and a page written over a coded page reuses its codes and codes only the rows written.
+//! once. A page written over a coded page reuses that page's codes and codes only the rows written.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,13 +37,14 @@ impl Dictionaries {
 
 impl Dictionary {
     /// The codes of `page` as `f32` words, `MISSING` where missing, adding its new texts. A page
-    /// coded before needs no work; one written over a coded page codes only the rows written.
+    /// coded before needs no work. A page written over a coded page codes only the rows written.
     pub(crate) fn codes(&mut self, page: &Page) -> Arc<[u32]> {
         if let Some(codes) = self.pages.get(&page.id) {
             return codes.clone();
         }
         let len = page.values.len();
-        // The nearest page it was written over whose codes are kept, and the rows written since.
+        // Find the nearest page this one was written over that still has codes, and the rows
+        // written since.
         let mut reused = None;
         let mut at = page.written.as_deref();
         while let Some(written) = at {
@@ -72,9 +73,8 @@ impl Dictionary {
         codes
     }
 
-    /// The codes of `column`'s rows `rows`, in that order, adding new texts: the contents of a
-    /// packed page of a paged table. Each row costs a lookup, regardless of how its pages were
-    /// coded.
+    /// The codes of `column`'s rows `rows`, in that order, adding new texts. This fills a packed
+    /// page of a paged table. Each row costs one lookup, however its pages were coded.
     pub(crate) fn rows(&mut self, column: &Column, rows: &[u32]) -> Vec<u32> {
         rows.iter().map(|&r| column.at(r as usize).map_or(MISSING, |(values, i)| self.code(values, i))).collect()
     }
@@ -105,7 +105,8 @@ impl Dictionary {
         self.texts.get(code as usize)
     }
 
-    /// The code of `text` as an `f32` word, or NaN, which matches no text, if it was never seen.
+    /// The code of `text` as an `f32` word. Returns NaN, which matches no text, if `text` was never
+    /// seen.
     pub(crate) fn code_of(&self, text: &str) -> u32 {
         self.codes.get(text).map_or(f32::NAN.to_bits(), |&code| (code as f32).to_bits())
     }

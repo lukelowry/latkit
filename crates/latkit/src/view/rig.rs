@@ -1,12 +1,12 @@
 //! Camera motion. A gesture moves the camera at once, about the point under the pointer. The wheel,
-//! the keys, and a released drag add pending motion about such a point, which the following frames
-//! apply with exponential decay, so a fling coasts and a wheel notch glides by the same rule. A
-//! flight eases over a set time, and an orbit turns steadily. All of it runs on the view's clock.
+//! the keys, and a released drag add pending motion about such a point. The following frames apply
+//! it with exponential decay, so a fling coasts and a wheel notch glides by the same rule. A flight
+//! eases over a set time, and an orbit turns steadily. All of it runs on the view's clock.
 //!
-//! The camera keeps within its reach: where the space lets it go in the room the camera frames,
-//! narrowed by fits. Every move places it through the reach: gestures, pending motion, flights,
-//! orbits, fits, and the setter. The reach changes with the view's size and insets, its space, and
-//! fits, so each frame places the camera again before it moves.
+//! The camera stays within its zoom and pan limits (`Reach`): what the space allows for the area
+//! the camera frames, narrowed by fits. Every move is clamped to these limits: gestures, pending
+//! motion, flights, orbits, fits, and the setter. The limits change with the view's size and
+//! insets, its space, and fits, so each frame clamps the camera again before it moves.
 
 use super::camera::{Bounds, Camera, Reach};
 use super::{Event, View};
@@ -27,7 +27,7 @@ pub(crate) struct Rig {
     flight: Option<Flight>,
     /// Degrees of bearing per second.
     pub(crate) orbit: f64,
-    /// The box fits have framed, which narrows the reach.
+    /// The box fits have framed, which narrows the zoom and pan limits.
     pub(crate) bounds: Option<Bounds>,
 }
 
@@ -40,7 +40,7 @@ struct Flight {
 }
 
 impl Rig {
-    /// Whether the camera is easing to a rest: a flight or pending motion. An orbit never settles.
+    /// Whether the camera is easing to rest: a flight or pending motion. An orbit never settles.
     pub(crate) fn easing(&self) -> bool {
         self.flight.is_some() || self.owed()
     }
@@ -67,8 +67,8 @@ impl Rig {
         self.zoom += zoom;
     }
 
-    /// Adds the motion a drag released with velocities `pan` and `turn` coasts: each velocity times
-    /// the coasting time constant.
+    /// Adds the coasting motion of a drag released with velocities `pan` and `turn`: each velocity
+    /// times the coasting time constant.
     pub(crate) fn fling(&mut self, anchor: [f64; 3], pan: [f64; 2], turn: [f64; 2]) {
         self.owe(anchor, pan.map(|v| v * COAST), turn.map(|v| v * COAST), 0.0);
     }
@@ -81,8 +81,9 @@ impl Rig {
 }
 
 impl View {
-    /// Where the camera may go: the space's bounds in the room the camera frames, narrowed by the
-    /// box fits have framed. Until a frame gives the view its size, only fits narrow it.
+    /// The camera's zoom and pan limits: the space's limits for the area the camera frames,
+    /// narrowed by the box fits have framed. Until a frame gives the view its size, only fits set
+    /// limits.
     pub(super) fn reach(&self) -> Reach {
         let area = self.area();
         let sized = self.size[0] > 0.0 && self.size[1] > 0.0;
@@ -90,9 +91,9 @@ impl View {
         Reach::new(&self.scene.space, room, self.rig.bounds)
     }
 
-    /// Places the camera within its reach, which may have changed since the last frame; applies the
-    /// share of pending motion due for the `dt` seconds the clock moved; advances a flight; and
-    /// orbits.
+    /// Clamps the camera to its zoom and pan limits, which may have changed since the last frame.
+    /// Then applies the share of pending motion due for the `dt` seconds the clock moved, advances
+    /// a flight, and orbits.
     pub(super) fn advance(&mut self, dt: f64) {
         self.move_camera(self.camera);
         if let Some(flight) = &self.rig.flight {
@@ -132,16 +133,16 @@ impl View {
         }
     }
 
-    /// Moves the camera for a gesture, a fit, or an animation, or into a reach that changed, and
-    /// emits a `Camera` event if it moved.
+    /// Moves the camera for a gesture, a fit, or an animation, or back within limits that changed,
+    /// and emits a `Camera` event if it moved.
     pub(super) fn move_camera(&mut self, camera: Camera) {
         if self.place_camera(camera) {
             self.events.tell(Event::Camera(self.camera));
         }
     }
 
-    /// Moves the camera to `camera` kept within reach, and dirties the channels that read the
-    /// camera or the pointer. Returns whether it moved.
+    /// Moves the camera to `camera`, clamped to its zoom and pan limits, and dirties the channels
+    /// that read the camera or the pointer. Returns whether it moved.
     pub(super) fn place_camera(&mut self, camera: Camera) -> bool {
         let camera = camera.within(&self.reach());
         if camera == self.camera {

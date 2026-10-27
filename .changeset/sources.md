@@ -4,44 +4,74 @@
 
 Views draw from sources, every wait can be cancelled, colors and lengths are typed, and large tables draw in pages that stay on the GPU.
 
-- Added: `view.sources` and `gpu.view(scene, { sources })`. A source is a `Data` (drawn at its latest version from the frame after each patch), a `Snapshot` (one fixed version: `data.snapshot()`, `data.restore(snapshot)`), or `Tiles(name, url)` (time tiles or vector tiles, fetched once per GPU). `view.snapshot(name)` returns what a view currently draws of a source.
-- Added: `load({ wasm, worker })` loads the WebAssembly; using the library before it finishes throws `unloaded`. Every class and builder is exported from `latkit`.
-- Added: every wait takes `{ signal }` and times out after 30 seconds by default: picks, `screenOf`, `arrange`, pictures, encodings, videos, `gpu.done()`, and `gpu.landed()`. A timeout rejects with `timeout`; an abort or a destroyed view rejects with `cancelled` and drops the work in progress.
-- Added: `gpu.canvas(element, { layout: [{ view, at }] })` and `canvas.layout`; `canvas.shot()` captures exactly what a canvas shows; `new Shot(size, { scale, layout, transparent, capture, elapsed })`, where `capture: 'now'` takes views as they are; `shot.video({ fps, output, bitrate, signal })`.
-- Added: `px(n)` and `units(n)` give a length's unit. Lengths default to CSS pixels on planes, the earth, and plots, and to position units in diagrams. A stroke in pixels keeps its width as a diagram zooms.
-- Added: the theme in groups: `text`, `vertex`, `edge`, `line`, `area`, `focus`, `flow`, `diagram`, `earth`, `plot`. A comet's `flow.spacing` and `flow.length` take `{ px }` or `{ units }`. `diagram.outline`, `corner`, `portSize`, and `bend` style blocks, groups, ports, and wire bends; `shadow: true` on blocks and groups casts a soft shadow `diagram.shadow.lift` below them.
-- Added: `Gpu.resident` and `Gpu.uploading`, the bytes on the GPU and waiting to upload across all its views; `Work.packed`, `Work.resolved`, `Work.cleared`, and `Work.uploads`.
-- Added: `Handle`, the base of every object that holds memory (`Data`, `Snapshot`, `Gpu`, `View`, `Canvas`, `Image`): `destroy()` and `using`. `Dataset` holds the reads `Data` and `Snapshot` share.
+- Added: `view.sources`. A source is a `Data`, drawn at its latest version from the frame after each patch. It can also be a `Snapshot`, one fixed version (`data.snapshot()`, `data.restore(snapshot)`), or `Tiles(name, url)`, time tiles or vector tiles fetched once per GPU.
+- Added: `view.snapshot(name)` returns what a view currently draws of a source.
+- Added: `load({ wasm, worker })` loads the WebAssembly. Using the library before it finishes throws `unloaded`.
+- Added: every class and builder is exported from `latkit`.
+- Added: every wait takes `{ signal }` and times out after 30 seconds by default: picks, `screenOf`, `arrange`, pictures, encodings, videos, `gpu.done()`, and `gpu.landed()`. A timeout rejects with `timeout`. An abort or a destroyed view rejects with `cancelled` and drops the work in progress.
+- Added: `new Shot(size, { scale, transparent, capture, elapsed })`, where `capture: 'now'` takes views as they are, and `shot.video({ fps, output, bitrate, signal })`.
+- Added: `px(n)` and `units(n)` set a length's unit. Lengths default to position units in diagrams and CSS pixels elsewhere. A stroke in pixels keeps its width as a diagram zooms.
+- Added: theme groups `text`, `vertex`, `edge`, `line`, `area`, `focus`, `flow`, `diagram`, `earth`, and `plot`.
+- Added: a comet's `flow.spacing` and `flow.length` take `{ px }` or `{ units }`.
+- Added: `diagram.outline`, `corner`, `portSize`, and `bend` style blocks, groups, ports, and wire bends.
+- Added: `shadow: true` on blocks and groups casts a soft shadow `diagram.shadow.lift` below them.
+- Added: `Gpu.resident` and `Gpu.uploading`, the bytes on the GPU and the bytes waiting to upload, across all its views.
+- Added: `Work.packed`, `Work.resolved`, `Work.cleared`, and `Work.uploads`.
+- Added: `Handle`, the base class of every object that holds memory (`Data`, `Snapshot`, `Gpu`, `View`, `Image`), with `destroy()` and `using`.
+- Added: `Dataset`, the reads that `Data` and `Snapshot` share.
 - Added: `colormaps()` lists the catalog's colormaps with their names, labels, and kinds.
-- Added: the package's types document every member, every value of an enumeration, every form of a union, and every field of an options object.
-- Added: the CLI's `--camera` takes a camera as JSON, as `latkit query` takes a query, or a file of it.
+- Added: the package's types document every member, enumeration value, union form, and options field.
+- Added: the CLI's `--camera` takes a camera as JSON or as a file, like `latkit query` takes a query.
 - Changed: `view.scene`, `view.selection`, `view.screen(position)`, `view.position(point)`, `view.screenOf(row)`, `view.waiting`, and the `hovered` and `selection` events replace the methods and events removed below.
-- Changed: every error the package throws is a `LatkitError` with a `code`. A failed fetch or an error status is `io`; a call on a destroyed object has the new code `destroyed`; a bad `Patch.stream` limit and a `Video` drawn out of turn are `invalid`. Errors from the video encoder and worker jobs keep their codes, and an abort during a fetch rejects as `cancelled` or `timeout`.
-- Changed: latkit's bytes carry no version or flags. A frame's header is the magic `LATK` and the frame's length, 12 bytes; files written by earlier versions no longer open.
+- Changed: every error the package throws is a `LatkitError` with a `code`.
+- Changed: a failed fetch or an error status is `io`. A call on a destroyed object has the new code `destroyed`. A bad `Patch.stream` limit and a `Video` drawn out of turn are `invalid`.
+- Changed: errors from the video encoder and worker jobs keep their codes. An abort during a fetch rejects as `cancelled` or `timeout`.
+- Changed: latkit's bytes carry no version or flags. A frame's 12-byte header is the magic `LATK` and the frame's length. Files written by earlier versions no longer open.
 - Changed: `theme.missing` is the color a colormap gives a missing value. An option given a missing value (`null`) still takes its theme value.
-- Changed: `new Patch(dataset)` names its dataset; `Patch.read(source)` reads a patch's bytes or JSON, and `Data.read(source, { name, base })` a dataset's bytes, JSON, or GeoJSON, from a `ByteSource`: bytes, a `Blob`, a `Response`, a byte stream or async iterable, or a URL, read within the wait's `signal`; `patch.append(table, at, fields, { ids })`; `patch.frames(table, field, { level, first, at, values })`; `data.envelope({ table, field, range, spans, ids })`; `field(name).from(data, table)` reads another dataset.
-- Changed: a video's size rounds down to whole 4×2 blocks, in the browser and the CLI alike; a smaller size is `invalid`.
-- Changed: `view.screen` and `view.position` given the wrong number of coordinates throw `invalid` instead of answering `null`.
-- Changed: the `'earth'` space, `{ earth: { projection: 'mercator' | 'globe', graticule, daylight, atmosphere } }`. The ground color is the theme's `earth.ground`.
-- Changed: a table too large to draw whole draws in pages that keep their GPU slots as the camera moves. Pages no longer drawn stay on the GPU while the budget allows, so coming back is free, and a write rebuilds only the pages it touched. Appending rows never thins what draws. Lanes, net stars, joins, and fitted domains follow the data, not the camera.
-- Changed: edges whose ends lie far apart draw within the budget: their endpoint rows load individually, and only edges whose endpoints moved look them up again.
-- Changed: a hit describes the frame it came from. A GPU's views draw one frame together, and `Budget.uploadPerFrame` bounds what they upload in it.
-- Changed: editing a diagram rederives only what the edit reaches: the moved blocks, the groups around them, and the wires near them. Map tiles draw in the frame they finish loading.
-- Changed: a plot measures the room its axis labels and titles need. A GPU picks its antialiasing once. Zooming at a fit's limit keeps the center.
-- Removed: `view.setData`, `view.setTiles`, `view.removeData`, and `view.data(name)` (use `view.sources`); `view.show(scene)`, `view.select(rows)`, `view.point`, `view.ground`, and `view.locate`; the `hover` and `select` events; `Stats.waiting`, `Stats.uploading`, `Stats.resident`, and `Stats.budget`.
-- Removed: `loadLatkit()` and its result object; `latkit/core`; `createWorker` (use `load({ worker })`); `{ deadline }` options (use `{ signal }`); `canvas.show(views)` and the canvas's `panels`; `Shot`'s builder methods, `shot.image(views)`, and `shot.video(gpu, fps, output)`.
-- Removed: `Patch.to`, `Patch.fromBytes`, `Data.load`, `Data.tables`, `data.ids()`, `data.fields()`, `data.span` (use `describe()`), the positional `envelope`, and `expr.of(data, table)` (use `from`).
-- Removed: the `'mercator'` and `'globe'` spaces (use `earth`); flat theme keys such as `vertexRadius`, `fontSize`, and `edgeSpacing`; reading a string as a color only when it begins with `#`; `Flow.units`; shadows on edges, lines, areas, and faces, and the theme's `shadow.light` and `shadow.softness`.
-- Fixed: a view whose next version does not fit releases what it draws so that version can load; when nothing fits, it reports a `limit` error and stops.
-- Fixed: on the earth, sizes in `units(n)` are degrees, as comet lengths already were, not mercator radians.
-- Fixed: zoomed in close on the globe, paged tables and vector tiles keep drawing their finer tiles; past about zoom 12 they fell back to the coarsest.
-- Fixed: a text the host cannot rasterize reports one error, not one every frame it shows, and a text with nothing to draw is no error.
+- Changed: `new Patch(dataset)` names its dataset.
+- Changed: `Patch.read(source)` reads a patch's bytes or JSON, and `Data.read(source, { name, base })` reads a dataset's bytes, JSON, or GeoJSON. Both read from a `ByteSource` (bytes, a `Blob`, a `Response`, a byte stream or async iterable, or a URL) within the wait's `signal`.
+- Changed: the signatures `patch.append(table, at, fields, { ids })`, `patch.frames(table, field, { level, first, at, values })`, and `data.envelope({ table, field, range, spans, ids })`.
+- Changed: a video's size rounds down to whole 4×2 blocks, in the browser and the CLI. A smaller size is `invalid`.
+- Changed: `view.screen` and `view.position` given the wrong number of coordinates throw `invalid` instead of returning `null`.
+- Changed: the `'earth'` space takes `{ earth: { projection: 'mercator' | 'globe', graticule, daylight, atmosphere } }`. Its ground color is the theme's `earth.ground`.
+- Changed: a table too large to draw at once draws in pages that keep their place on the GPU as the camera moves.
+- Changed: pages no longer drawn stay on the GPU while the budget allows, so coming back to them is free.
+- Changed: a write rebuilds only the pages it touched, and appending rows never thins what draws.
+- Changed: lanes, net stars, joins, and fitted domains follow the data, not the camera.
+- Changed: edges with far-apart ends draw within the budget. Their end rows load one by one, and only edges whose ends moved look them up again.
+- Changed: a hit describes the frame it came from.
+- Changed: all views of a GPU draw one frame together, and `Budget.uploadPerFrame` caps what they upload in it.
+- Changed: editing a diagram recomputes only the moved blocks, the groups around them, and the wires near them.
+- Changed: map tiles draw in the frame they finish loading.
+- Changed: a plot measures the space its axis labels and titles need.
+- Changed: a GPU picks its antialiasing once.
+- Changed: zooming at a fit's limit keeps the center.
+- Removed: `view.setData`, `view.setTiles`, `view.removeData`, and `view.data(name)`. Use `view.sources`.
+- Removed: `view.show(scene)`, `view.select(rows)`, `view.point`, `view.ground`, `view.locate`, and the `hover` and `select` events.
+- Removed: `Stats.waiting`, `Stats.uploading`, `Stats.resident`, and `Stats.budget`.
+- Removed: `loadLatkit()` and its result object, and `latkit/core`.
+- Removed: `createWorker`. Use `load({ worker })`.
+- Removed: `{ deadline }` options. Use `{ signal }`.
+- Removed: `Shot`'s builder methods, `shot.image(views)`, and `shot.video(gpu, fps, output)`.
+- Removed: `Patch.to`, `Patch.fromBytes`, `Data.load`, and `Data.tables`.
+- Removed: `data.ids()`, `data.fields()`, and `data.span`. Use `describe()`.
+- Removed: the positional `envelope`.
+- Removed: `expr.of(data, table)`. Use `from`.
+- Removed: the `'mercator'` and `'globe'` spaces. Use `earth`.
+- Removed: flat theme keys such as `vertexRadius`, `fontSize`, and `edgeSpacing`.
+- Removed: reading a string as a color only when it begins with `#`.
+- Removed: `Flow.units`.
+- Removed: shadows on edges, lines, areas, and faces, and the theme's `shadow.light` and `shadow.softness`.
+- Fixed: when a view's next version does not fit, the view releases what it draws so the new version can load. If nothing fits, it reports a `limit` error and stops.
+- Fixed: on the earth, sizes in `units(n)` are degrees, like comet lengths, not Mercator radians.
+- Fixed: zoomed in close on the globe, paged tables and vector tiles keep drawing their finer tiles. Past about zoom 12 they fell back to the coarsest.
+- Fixed: a text the host cannot rasterize reports one error, not one every frame it shows. A text with nothing to draw is not an error.
 - Fixed: a layout or shaping job that fails runs once until its inputs change, not every frame.
 - Fixed: at the GPU's texture-layer limit, a new icon fails with a `limit` error instead of overwriting the last one.
-- Fixed: `view.screenOf` answers `null` for a hidden stroke or face, and for a face beyond the globe's horizon.
-- Fixed: edges and faces no longer compile a bounds pipeline they never use before their first frame.
+- Fixed: `view.screenOf` returns `null` for a hidden stroke or face, and for a face beyond the globe's horizon.
+- Fixed: edges and faces no longer compile an unused bounds pipeline before their first frame.
 - Fixed: a `priority` that tests a field only with `contains()` now reads that field when ranking a paged table's rows.
 - Fixed: a JSON patch's errors name the failing change the same way wherever they are found, such as `[0].append.fields.x`.
 - Fixed: a tile index that is neither TileJSON nor PMTiles fails as `invalid`, and tile errors keep their code.
-- Fixed: the CLI names an output it cannot write in its error, rather than blaming the frames file.
+- Fixed: when the CLI cannot write an output, its error names that output, not the frames file.
 - Fixed: a transition that starts in the frame a mark's tables grow no longer writes its rows over other data on the GPU, which could draw rows in the wrong colors or places.

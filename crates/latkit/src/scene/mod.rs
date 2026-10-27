@@ -1,5 +1,5 @@
-//! Scenes: plain-data descriptions of a view's content. Marks name their datasets, and the view
-//! draws them from the sources it is given.
+//! Scenes: plain data that describes what a view draws. Each mark names a dataset, and the view
+//! draws it from the sources it is given.
 
 pub(crate) mod areas;
 pub(crate) mod compile;
@@ -66,17 +66,18 @@ pub struct Scene {
     /// The marks, in drawing order: each draws over the marks before it.
     #[serde(default)]
     pub(crate) marks: Vec<Mark>,
-    /// How the view places vertex rows that have no position: a diagram's blocks, or points on a
-    /// plane or the earth. `none` by default.
+    /// How the view places vertex rows that have no position, such as a diagram's blocks or points
+    /// on a plane or the earth. Defaults to `none`.
     #[serde(default)]
     pub(crate) layout: Layout,
-    /// Default colors and sizes, and the look of text, focus, and each space; `dark` by default.
+    /// Default colors and sizes, and the look of text, focus, and each space. Defaults to `dark`.
     #[serde(default)]
     pub(crate) theme: Theme,
     /// How the view responds to the pointer and keyboard.
     #[serde(default)]
     pub(crate) controls: Controls,
-    /// Seconds over which scene and data changes animate; 0.3 by default, 0 for none.
+    /// How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to
+    /// 0.3.
     #[serde(default = "ease", deserialize_with = "form::seconds")]
     #[schemars(with = "f64")]
     pub(crate) ease: Duration,
@@ -115,8 +116,8 @@ impl Scene {
         self
     }
 
-    /// Sets the layout that places vertex rows without a position: a diagram's blocks, or points on
-    /// a plane or the earth.
+    /// Sets the layout that places vertex rows without a position, such as a diagram's blocks or
+    /// points on a plane or the earth.
     #[must_use]
     pub fn layout(mut self, layout: impl Into<Layout>) -> Scene {
         self.layout = layout.into();
@@ -137,7 +138,8 @@ impl Scene {
         self
     }
 
-    /// Sets how long scene and data changes animate; zero applies them at once. Default 0.3 s.
+    /// Sets how long scene and data changes take to animate. Zero applies them at once. Defaults to
+    /// 0.3 s.
     #[must_use]
     pub fn ease(mut self, over: Duration) -> Scene {
         self.ease = over;
@@ -163,12 +165,12 @@ impl Scene {
         &self.space
     }
 
-    /// Checks the scene against `sources` without a GPU, with the same compiler a view uses.
+    /// Checks the scene against `sources` without a GPU, using the same compiler as a view.
     ///
-    /// Every drawn dataset and table must be present, except datasets that a [`Source::Tiles`]
-    /// gives: a view fetches those while drawing, so their marks are checked as tiles arrive.
-    /// Errors on duplicate source names, missing datasets or tables, options a mark cannot compile,
-    /// and anything else the scene itself gets wrong, such as two marks with one key.
+    /// Every drawn dataset and table must be present, except datasets from a [`Source::Tiles`]. A
+    /// view fetches those while drawing, so their marks are checked as tiles arrive. Errors on
+    /// duplicate source names, missing datasets or tables, options a mark cannot compile, and other
+    /// mistakes in the scene itself, such as two marks with one key.
     pub fn validate(&self, sources: &[Source]) -> Result<()> {
         self.check()?;
         for (i, source) in sources.iter().enumerate() {
@@ -206,10 +208,10 @@ impl Scene {
         Ok(())
     }
 
-    /// Checks the scene's own consistency, which needs no data. Errors when a plot has a layout,
-    /// when the theme's comet spacing and length use different units, when two marks share a key
-    /// (they would be indistinguishable across scenes), when a mark uses an option its space lacks,
-    /// and when a legend has no colormap with a fixed domain or named categories to show.
+    /// Checks the scene on its own, without data. Errors when a plot has a layout, when the theme's
+    /// comet spacing and length use different units, when two marks share a key (they could not be
+    /// told apart across scenes), when a mark uses an option its space lacks, and when a legend has
+    /// no colormap with a fixed domain or named categories to show.
     pub(crate) fn check(&self) -> Result<()> {
         let diagram = matches!(self.space, Space::Diagram(_));
         if matches!(self.space, Space::Plot(_)) && self.layout != Layout::None {

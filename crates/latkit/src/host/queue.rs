@@ -14,7 +14,7 @@ pub(crate) struct Queue {
 }
 
 impl Queue {
-    /// Queues `job`; `resolver` receives its result.
+    /// Queues `job`. `resolver` receives its result.
     pub(crate) fn push(&mut self, job: Job, resolver: Resolver<Vec<u8>>) {
         self.waiting.push_back((job, resolver));
     }

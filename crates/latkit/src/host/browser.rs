@@ -23,8 +23,8 @@ thread_local! {
     static ENCODERS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
 }
 
-/// How many jobs the page's workers run at once: one fewer than the cores, from 1 to 4. The page
-/// keeps a worker for each, so it never queues.
+/// How many jobs the page's workers run at once: one fewer than the number of cores, from 1 to 4.
+/// The page keeps a worker for each, so it never queues.
 fn workers() -> usize {
     let cores = web_sys::window()
         .map(|window| window.navigator().hardware_concurrency())
@@ -39,7 +39,8 @@ fn workers() -> usize {
 }
 
 /// The latkit error for a value the page's script threw or rejected with. An error whose `code` is
-/// `unsupported` or `timeout` keeps it; anything else is an [`Error::Io`] saying `what` failed.
+/// `unsupported` or `timeout` keeps that code. Anything else becomes an [`Error::Io`] saying `what`
+/// failed.
 fn failure(error: &JsValue, what: &str) -> Error {
     let field = |key: &str| js_sys::Reflect::get(error, &key.into()).ok().and_then(|v| v.as_string());
     let message = field("message").or_else(|| error.as_string()).unwrap_or_default();

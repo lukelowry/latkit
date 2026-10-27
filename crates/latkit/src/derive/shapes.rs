@@ -3,17 +3,17 @@
 //! Each area becomes triangles, preceded by its label point. On the earth, each line's path is
 //! unwrapped across the antimeridian and bent to follow the globe.
 //!
-//! A table drawn whole is shaped page by page of its field, into a field beside it. A page keeps
-//! the shapes made from it before, and a page written over another keeps the shapes of its rows
-//! not written, so a write reshapes only the rows it wrote. A paged table is shaped page by page of
-//! its order, the first time each page draws. A row whose geometry did not change keeps its shape
-//! as its pages come and go.
+//! A table drawn whole is shaped one page of its field at a time, into a field beside it. A page
+//! keeps the shapes made from it before. A page written over another keeps the shapes of the rows
+//! not written, so a write reshapes only the rows it wrote. A paged table is shaped one page of its
+//! order at a time, the first time each page draws. A row whose geometry did not change keeps its
+//! shape as its pages come and go.
 //!
-//! Triangulation that does not fit the frame's budget runs in a job; a page whose every row needs
+//! Triangulation that does not fit the frame's budget runs in a job. A page where every row needs
 //! shaping goes to the job whole. Rows waiting on a job draw nothing until it finishes. Bending a
 //! path is cheap and done at once. Vector tiles bring their own shapes, made in the job that
-//! decodes them, as a field beside their rows. Their tables are paged, and read that field one
-//! page of their order at a time like any other, so nothing shapes those rows again.
+//! decodes them, as a field beside their rows. Their tables are paged and read that field one page
+//! of their order at a time, like any other, so nothing shapes those rows again.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -69,8 +69,8 @@ impl Missing {
     }
 }
 
-/// What one part of a job shapes: a whole page of the field, by page id, with its row count; or
-/// rows, by id, each with its geometry digest.
+/// What one part of a job shapes: a whole page of the field (by page id, with its row count), or
+/// rows (by id, each with its geometry digest).
 #[derive(Hash)]
 enum Asked {
     Page(PageId, usize),
@@ -95,9 +95,9 @@ fn empty_shapes(depth: u8, rows: usize) -> Values {
     Values::of_rows(depth, std::iter::repeat_n(None, rows))
 }
 
-/// Shapes made since the last complete set: whole pages, by the id of the field page each was made
-/// from; and rows, by id, each with the geometry digest it was made from and its part and index in
-/// `parts`.
+/// Shapes made since the last complete set. Whole pages are keyed by the id of the field page each
+/// was made from. Rows are keyed by id, each with the geometry digest it was made from and its part
+/// and index in `parts`.
 #[derive(Default)]
 struct Landed {
     pages: FxHashMap<PageId, Page>,
@@ -194,8 +194,9 @@ impl Paging {
     }
 }
 
-/// One field's shapes and any pending job. Drawn whole: the last complete set, the derived
-/// field written, and shapes made but not yet written. Paged: its pages and the previous order's.
+/// One field's shapes and any pending job. For a table drawn whole, it holds the last complete set,
+/// the derived field written, and shapes made but not yet written. For a paged table, it holds its
+/// pages and the previous order's pages.
 #[derive(Default)]
 struct Shaped {
     /// The source table, its field column, and the derived column from the last time every row
@@ -374,7 +375,7 @@ impl Shaped {
         had
     }
 
-    /// Updates the shapes of a table drawn whole to `source`; returns whether its field changed.
+    /// Updates the shapes of a table drawn whole to `source`. Returns whether its field changed.
     fn update_whole(
         &mut self,
         want: &Want,
@@ -390,7 +391,7 @@ impl Shaped {
         }
         self.stamp = stamp;
         let (mut derived, mut missing) = self.build(want, source, column, depth);
-        // Shapes made on the frame apply at once; rebuild the column with them.
+        // Shapes made on the frame apply at once. Rebuild the column with them.
         if !missing.is_empty() {
             match self.shape_now(want, column, missing, jobs) {
                 Ok(()) => (derived, missing) = self.build(want, source, column, depth),
@@ -450,8 +451,8 @@ impl Shaped {
             (paging.source, paging.column) = (source.clone(), column.clone());
         }
         paging.shapes.kept.retain(|d, _| paged.kept.binary_search(d).is_ok());
-        // Make drawn pages not made yet, or waiting on rows while no job runs; and, while no job
-        // runs, shape kept rows not shaped yet.
+        // Make drawn pages that are not made yet, or that wait on rows while no job runs. While no
+        // job runs, also shape kept rows not shaped yet.
         let running = self.working.busy();
         let made = &paging.shapes.pages;
         let make: Vec<u32> =
@@ -466,7 +467,7 @@ impl Shaped {
             return false;
         }
         let (mut made, mut kept, mut missing) = self.make_paged(want, order, &make, &keep, source, column, depth);
-        // Shapes made on the frame apply at once; remake the pages with them.
+        // Shapes made on the frame apply at once. Remake the pages with them.
         if !missing.rows.is_empty() {
             match self.shape_now(want, column, missing, jobs) {
                 Ok(()) => (made, kept, missing) = self.make_paged(want, order, &make, &keep, source, column, depth),
@@ -522,7 +523,7 @@ impl Shaped {
         (made, kept, missing)
     }
 
-    /// Shapes `missing` on the frame if it fits the rest of the budget; else returns it.
+    /// Shapes `missing` on the frame if it fits the rest of the budget. Otherwise returns it.
     fn shape_now(
         &mut self,
         want: &Want,
@@ -539,8 +540,8 @@ impl Shaped {
         Ok(())
     }
 
-    /// Starts a job to shape `missing`, unless one is pending, in which case a later update asks
-    /// again, or the same job already ran.
+    /// Starts a job to shape `missing`, unless the same job already ran. While a job is pending it
+    /// does nothing, and a later update asks again.
     fn ask(&mut self, want: &Want, column: &Column, missing: Missing, jobs: &mut Jobs<'_>) {
         if self.working.busy() {
             return;
@@ -554,8 +555,8 @@ impl Shaped {
 
     /// Builds the derived column for `column` of `source`, page by page, and returns what is left
     /// to shape. A page reuses the shapes made from it before, or that arrived for it. A page
-    /// written over a shaped page keeps the shapes of its rows not written, and a page at the same
-    /// place in the last complete set keeps those of its unchanged rows. A page none of whose rows
+    /// written over a shaped page keeps the shapes of its rows not written. A page at the same
+    /// place in the last complete set keeps the shapes of its unchanged rows. A page where no row
     /// can reuse a shape is shaped whole. Otherwise each row reuses a shape made from the same
     /// geometry, or is left to shape.
     fn build(&self, want: &Want, source: &Table, column: &Column, depth: u8) -> (Column, Missing) {
@@ -587,7 +588,7 @@ impl Shaped {
                 pages.push(Page::new(empty_shapes(depth, 0)));
                 continue;
             };
-            // A path page needing no bending is its own shape; sharing it means no new upload.
+            // A path page needing no bending is its own shape. Sharing it means no new upload.
             if want.shaping == Shaping::Path && !bends(geometry) {
                 pages.push(page.clone());
                 continue;
@@ -601,7 +602,7 @@ impl Shaped {
                 Some((&derived.pages().get(p)?.values, same))
             });
             if fresh && kept.is_none() && !found(start) {
-                // Every row needs shaping: shape the page whole; it draws nothing until then.
+                // Every row needs shaping: shape the page whole. It draws nothing until then.
                 pages.push(Page::new(empty_shapes(depth, len)));
                 missing.pages.push((page.id, page.values.clone()));
                 continue;
@@ -627,7 +628,7 @@ impl Shaped {
     }
 
     /// The shapes of the page that `page` was written over, searching back through its recorded
-    /// writes (a few at most), with whether each row keeps its shape: those not written since.
+    /// writes (a few at most), with whether each row keeps its shape (rows not written since do).
     fn over<'a>(&'a self, page: &Page, made: &FxHashMap<PageId, &'a Page>) -> Option<(&'a Values, Vec<bool>)> {
         let mut written: Vec<u32> = Vec::new();
         let mut at = page.written.as_deref();
@@ -664,8 +665,8 @@ impl Shaped {
     }
 
     /// Writes the shape of row `row` (with `id`), whose geometry is value `i` of `values`. Reuses a
-    /// shape that arrived or was made before from the same geometry; bends a path at once; else
-    /// writes an empty shape and adds the row to `missing`.
+    /// shape that arrived or was made before from the same geometry. Bends a path at once.
+    /// Otherwise writes an empty shape and adds the row to `missing`.
     fn shape(
         &self,
         want: &Want,
@@ -683,7 +684,7 @@ impl Shaped {
         if let Some((landed, at)) = self.landed.row(&id, digest).or_else(|| self.kept(&id, digest)) {
             shapes.push_from(landed, at);
         } else if want.shaping == Shaping::Path {
-            // Bending is cheap, so it runs here; rows needing none keep their geometry.
+            // Bending is cheap, so it runs here. Rows needing none keep their geometry.
             match values.get(i).and_then(|v| want.shaping.shape(&v)) {
                 Some(shape) => {
                     shapes.push_value(&shape);

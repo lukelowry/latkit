@@ -1,14 +1,14 @@
 # Globe
 
 ```{image} ../images/globe.png
-:alt: Routes between forty of the world's great cities, along great circles on a globe, comets flowing on them
+:alt: Great-circle routes between forty of the world's great cities on a globe, with comets flowing along them
 :class: picture
 ```
 
-Routes between forty cities along great circles, with comets flowing along them, over coastlines and borders read from GeoJSON, on a globe with an atmosphere.
+Great-circle routes between forty cities, with comets flowing along them. Coastlines and borders come from GeoJSON, and the globe has an atmosphere.
 
 The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. `node docs/gallery/render.ts globe` draws it again.
+with `Data` and returns its scene. Run `node docs/gallery/render.ts globe` to draw it again.
 
 ```{literalinclude} ../gallery/globe.ts
 :language: typescript

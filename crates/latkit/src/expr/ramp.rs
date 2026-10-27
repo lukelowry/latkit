@@ -1,5 +1,5 @@
 //! Builds a colormap's 256 texels from its stops, both for the catalog baked at build time and for
-//! maps made at run time. Colors blend in OKLab so lightness changes evenly; cyclic ramps wrap, and
+//! maps made at run time. Colors blend in OKLab so lightness changes evenly. Cyclic ramps wrap, and
 //! categorical ramps repeat their stops texel by texel. The file uses nothing from the crate, so
 //! the build script includes it unchanged.
 
@@ -16,8 +16,8 @@ pub(crate) enum Spread {
 
 /// The 256 texels through `stops`: each an optional place from 0 to 1, ascending, and a
 /// straight-alpha sRGB color with channels from 0 to 1. A stop without a place sits evenly between
-/// its neighbors' places, as in a CSS gradient. An unplaced first stop sits at 0. An unplaced last
-/// stop sits at 1, except in a cyclic ramp, whose unplaced stops spread evenly up to one turn past
+/// its neighbors' places, like a CSS gradient. An unplaced first stop sits at 0. An unplaced last
+/// stop sits at 1, except in a cyclic ramp. There, unplaced stops spread evenly up to one turn past
 /// the first stop. A categorical ramp's texel `i` takes stop `i` modulo the stop count.
 pub(crate) fn texels(spread: Spread, stops: &[(Option<f32>, [f32; 4])]) -> [[u8; 4]; 256] {
     assert!(!stops.is_empty(), "a ramp needs at least one stop");

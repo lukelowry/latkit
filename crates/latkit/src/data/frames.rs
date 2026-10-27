@@ -1,8 +1,8 @@
-//! Time tiles: a dataset written as files from which a view fetches its sampled fields' histories
-//! in spans, on demand. A span of level `k` holds `chunk` entries of that level: frames at level 0,
-//! buckets of `8^k` frames above. One span covers the same frames as eight spans of the level
-//! below, as one map tile covers four tiles one zoom level in. While a span loads, the view draws
-//! the nearest coarser span that has arrived.
+//! Time tiles: a dataset written as files, from which a view fetches the history of sampled fields
+//! in spans, on demand. A span at level `k` holds `chunk` entries of that level. The entries are
+//! frames at level 0 and buckets of `8^k` frames above it. One span covers the same frames as eight
+//! spans of the level below, as one map tile covers four tiles one zoom level in. While a span
+//! loads, the view draws the nearest coarser span that has arrived.
 //!
 //! | File          | Contents                                                                     |
 //! | ------------- | ---------------------------------------------------------------------------- |
@@ -71,7 +71,8 @@ mod range {
 
 impl Manifest {
     /// Parses a manifest. Returns `None` when `bytes` are not a JSON object with a `frames` list,
-    /// so other tile formats can be tried, and an error when they are one but invalid.
+    /// so other tile formats can be tried. Returns an error when they are such an object but it is
+    /// invalid.
     pub(crate) fn from_bytes(bytes: &[u8]) -> Option<Result<Manifest>> {
         /// The key every manifest has, used to recognize one.
         #[derive(serde::Deserialize)]
@@ -103,8 +104,8 @@ impl Manifest {
     }
 }
 
-/// Whether `chunk` is a valid number of entries per span: from 8 to 2^20 and a multiple of 8, so a
-/// bucket one level up never straddles two spans.
+/// Whether `chunk` is a valid number of entries per span. It must be from 8 to 2^20 and a multiple
+/// of 8, so a bucket one level up never straddles two spans.
 fn chunks(chunk: u32) -> bool {
     (8..=1 << 20).contains(&chunk) && chunk.is_multiple_of(8)
 }
@@ -112,16 +113,17 @@ fn chunks(chunk: u32) -> bool {
 impl Snapshot {
     /// Writes the dataset as time tiles, passing each file's path and bytes to `write`:
     ///
-    /// - `frames.json`, the manifest;
-    /// - `base.latk`, the dataset with each sampled field's frame range but none of its entries;
+    /// - `frames.json`, the manifest.
+    /// - `base.latk`, the dataset with each sampled field's frame range but none of its entries.
     /// - `{field}/{level}/{index}.latk`, a patch for each span of `chunk` entries, for every level
     ///   of every sampled field that has entries there.
     ///
     /// A view given the manifest as [`Tiles`](crate::Tiles) fetches the spans its lines draw, at
-    /// the level of detail its plot window needs, and the frames around the coordinate it shows.
-    /// Until a span arrives, the coarser span above it is drawn.
+    /// the level of detail the plot window needs. It also fetches the frames around the coordinate
+    /// it shows. Until a span arrives, the view draws the coarser span above it.
     ///
-    /// The manifest is written last, so a reader that finds it finds every file it names. Errors if
+    /// The manifest is written last, so a reader that finds it finds every file it names. Returns
+    /// an error if
     /// `chunk` is not a multiple of 8 from 8 to 2^20, or if `write` fails.
     pub fn to_tiles(&self, chunk: u32, mut write: impl FnMut(&str, &[u8]) -> Result<()>) -> Result<()> {
         if !chunks(chunk) {
@@ -205,8 +207,8 @@ mod tests {
         .expect("tiles");
         let manifest = Manifest::from_bytes(&files[MANIFEST]).expect("a manifest").expect("valid");
         assert_eq!(manifest.fields, [Listed { table: "Bus".into(), field: "vm".into(), levels: 2, frames: 0..100 }]);
-        // 100 frames: 7 spans of 16 at level 0; 12 buckets of 8 in 1 span at level 1; 1 bucket of
-        // 64 at level 2.
+        // 100 frames: 7 spans of 16 at level 0, 12 buckets of 8 in 1 span at level 1, and 1 bucket
+        // of 64 at level 2.
         let spans: Vec<&str> = files
             .keys()
             .map(String::as_str)

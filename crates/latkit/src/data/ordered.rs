@@ -1,5 +1,5 @@
-//! JSON objects read as named entries in the order written, for objects whose key order matters,
-//! such as a query's selected fields or a message's patches by dataset.
+//! JSON objects read as named entries in the order written. Used where key order matters, such as
+//! a query's selected fields or a message's patches by dataset.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -8,7 +8,7 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 
 use super::name::Name;
 
-/// Entries in the order written, each name once.
+/// Entries in the order written. Each name appears once.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Ordered<V>(pub(crate) Vec<(Name, V)>);
 

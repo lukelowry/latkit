@@ -14,8 +14,9 @@ pub(crate) struct Compiled {
 }
 
 /// Compiles `mark` against the schemas in `all`. Returns `None` while the mark's dataset or table
-/// is missing: a view keeps such a mark pending, and validation reports the absence before calling
-/// this. Errors when an option fails to compile or the mark compiles to more than 32 channels.
+/// is missing. A view keeps such a mark pending, and validation reports the missing table before
+/// calling this. Errors when an option fails to compile or the mark compiles to more than 32
+/// channels.
 pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Result<Option<Compiled>> {
     let style = mark.style();
     let Some(data) = all.iter().find(|d| *d.name() == style.data) else { return Ok(None) };

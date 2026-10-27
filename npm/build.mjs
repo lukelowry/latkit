@@ -1,5 +1,7 @@
-/** Build steps of the npm package, run with the workspace's pinned tools. Release and consumer
- * outputs all stay under target/npm. */
+/**
+ * Build steps for the npm package, run with the workspace's pinned tools. Release and consumer
+ * outputs all stay under target/npm.
+ */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

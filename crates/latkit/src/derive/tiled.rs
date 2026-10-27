@@ -1,20 +1,20 @@
-//! Tables drawn in a computed order: by priority, or by the tiles in sight.
+//! Tables drawn in a computed order: by priority, or by the visible tiles.
 //!
 //! A table with a priority draws its rows in priority order, highest on top. A paged table (too
-//! large to draw whole) draws the rows of the tiles the camera needs, or, where nothing places its
-//! rows, the rows that matter most. Each draws in an [`Order`]. The order is its pyramid's,
-//! computed from where its rows lie and their priority: on the frame when that fits the budget,
-//! else in one job per dataset. Until the pyramid arrives, the table draws an even sample of its
-//! rows first, enough for a first look, after the rows that sampled edges end at.
+//! large to draw whole) draws the rows of the tiles the camera needs. Where nothing places its
+//! rows, it draws the rows that matter most. Each draws in an [`Order`]: its pyramid's order,
+//! computed from where its rows lie and their priority. The pyramid is computed on the frame when
+//! that fits the budget, else in one job per dataset. Until it arrives, the table draws an even
+//! sample of its rows first, enough for a first look, after the endpoint rows of sampled edges.
 //!
-//! A table and the table its edges end at draw from their pyramids together, or both from their
-//! samples. A pyramid serves while the rows it was made from are unchanged. Rows appended since
-//! draw after them, so appending never thins the drawn rows; once the appended rows reach an
-//! eighth of the pyramid's rows (at least a page), the pyramid is rebuilt. What the camera needs of
-//! a table is ranges of its order, so nothing is gathered as it moves.
+//! A table and the table its edges end at both draw from their pyramids, or both from their
+//! samples. A pyramid is used while the rows it was made from are unchanged. Rows appended since
+//! draw after them, so appending never thins the drawn rows. Once the appended rows reach an eighth
+//! of the pyramid's rows (at least a page), the pyramid is rebuilt. The camera needs ranges of a
+//! table's order, so nothing is gathered as it moves.
 //!
-//! A table of vector tiles needs no pyramid: its tiles are the vector tiles themselves, whose rows
-//! its set appends as they arrive, and the set chooses what it draws (`TileSets::choose`).
+//! A table of vector tiles needs no pyramid. Its tiles are the vector tiles themselves. Its tile
+//! set appends their rows as they arrive and chooses what it draws (`TileSets::choose`).
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -89,11 +89,11 @@ pub(crate) struct Ask<'a> {
     pub(crate) earth: bool,
 }
 
-/// What a view draws of a paged table: its order, and the ranges of it to draw, in the order they
-/// draw, so later ranges draw on top. A pyramid's tiles draw finest first, so more important rows
-/// draw on top; vector tiles draw coarsest first, so finer tiles draw over the ancestors standing
-/// in for them. `capped` is whether the plan's row budget dropped some of what the camera needs;
-/// only then does a smaller budget draw less of the table.
+/// What a view draws of a paged table: its order, and the ranges of it to draw. Ranges are listed
+/// in draw order, so later ranges draw on top. A pyramid's tiles draw finest first, so more
+/// important rows draw on top. Vector tiles draw coarsest first, so finer tiles draw over the
+/// ancestors standing in for them. `capped` is whether the plan's row budget dropped some of what
+/// the camera needs. Only then does a smaller budget draw less of the table.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Chosen {
     pub(crate) order: Order,
@@ -164,8 +164,8 @@ impl Placed {
     }
 }
 
-/// What a dataset's pyramid job answers: the tables, each with its index among those asked, its
-/// order version when asked, and its bounds; and the square the pyramids tile.
+/// What a dataset's pyramid job answers: the tables (each with its index among those asked, its
+/// order version when asked, and its bounds) and the square the pyramids tile.
 struct Pyramids {
     tables: Vec<(u32, Name, Version, Option<[f64; 4]>)>,
     domain: Domain,
@@ -221,8 +221,8 @@ struct Set {
     working: Working<Pyramids>,
     /// The inputs of the last pyramid request, by table.
     read: Named<Read>,
-    /// Per table: the stamp of its inputs, the rows that sampled edges ending at it end at (lifted
-    /// into its sample), and the step of its own sample.
+    /// Per table: the stamp of its inputs, the endpoint rows of the sampled edges ending at it
+    /// (lifted into its sample), and the step of its own sample.
     lifted: Named<(u64, Lifted, u32)>,
     /// Whether any table draws its sample because no pyramid serves it yet.
     sampling: bool,
@@ -292,7 +292,7 @@ impl Set {
                 (None, Draw::Whole) => continue,
                 (None, Draw::Tiles { .. } | Draw::First { .. }) => {
                     self.sampling = true;
-                    // The rows sampled edges end at draw first, as in a pyramid.
+                    // The endpoint rows of sampled edges draw first, as in a pyramid.
                     let edges: Vec<usize> = (0..drawn.len()).filter(|&e| ends[e] == Some(i)).collect();
                     let (rows, step) = if edges.is_empty() {
                         (Lifted::default(), steps[i])
@@ -312,7 +312,7 @@ impl Set {
                     let made = pyramid.rows();
                     let (ranges, capped) = match draw {
                         Draw::Whole => (std::iter::once(0..len).collect(), false),
-                        // The rows that matter most are last in the order; appended rows draw too.
+                        // The rows that matter most are last in the order. Appended rows draw too.
                         Draw::First { rows } => (std::iter::once(made - rows.min(made)..len).collect(), rows < made),
                         Draw::Tiles { rows } => {
                             let (mut wanted, capped) =
@@ -340,7 +340,8 @@ impl Set {
     /// no rows written since except appended ones. With no job pending, each table's pyramid must
     /// also serve it, with fewer rows appended since than an eighth of the rows it was made from
     /// (at least a page). A pending job keeps running while only rows were appended, so appends
-    /// never starve the pyramids; once it finishes, it serves until that many rows are appended.
+    /// never starve the pyramids. Once it finishes, its pyramids serve until that many rows are
+    /// appended.
     fn holds(&self, placing: &[(&Table, &Planned)], earth: bool) -> bool {
         placing.len() == self.read.len()
             && placing.iter().all(|(table, planned)| {
@@ -371,12 +372,13 @@ impl Set {
     /// Requests the pyramids of `placing`: computed at once when they fit the frame's budget, else
     /// in one job for the dataset.
     fn level(&mut self, placing: &[(&Table, &Planned)], ask: &Ask<'_>, jobs: &mut Jobs<'_>) {
-        // Drop any pending job; its answer would no longer serve.
+        // Drop any pending job. Its answer would no longer serve.
         self.working.cancel();
         self.read =
             placing.iter().map(|(table, planned)| (table.name.clone(), Read::new(table, planned, ask.earth))).collect();
         let (leveling, bounds) = leveling(ask, placing);
-        // Placing a row takes about a microsecond; ordering one by priority alone, a twentieth.
+        // Placing a row takes about a microsecond. Ordering one by priority alone takes a
+        // twentieth of that.
         let cost: f64 = leveling
             .tables
             .iter()
@@ -405,7 +407,7 @@ impl Set {
 /// Each table's sample size until its pyramid arrives (its plan's row budget, at most `SAMPLE`),
 /// and its sample step. The endpoints of sampled edges count toward their target table's sample
 /// (per `ends`), so edges sample sparsely enough that their endpoints fill at most half the
-/// target's sample; the target's own sample fills the rest.
+/// target's sample. The target's own sample fills the rest.
 fn samples(drawn: &[(&Table, &Planned)], ends: &[Option<usize>]) -> (Vec<u32>, Vec<u32>) {
     let sample: Vec<u32> = drawn
         .iter()
@@ -432,10 +434,10 @@ fn samples(drawn: &[(&Table, &Planned)], ends: &[Option<usize>]) -> (Vec<u32>, V
     (sample, steps)
 }
 
-/// The rows of table `drawn[at]` that the sampled rows of edge tables `edges` end at (each edge
-/// table sampling every `steps[e]`th row), lifted into its sample of `sample` rows, with the step
-/// of its own even sample of the rest. Returns `was` when its input stamp is unchanged, else
-/// recomputes; the result starts with that stamp.
+/// The rows of table `drawn[at]` where the sampled rows of edge tables `edges` end, lifted into its
+/// sample of `sample` rows. Each edge table samples every `steps[e]`th row. Also returns the step
+/// of the target's own even sample of the rest. Returns `was` when its input stamp is unchanged,
+/// else recomputes. The result starts with that stamp.
 fn lift(
     drawn: &[(&Table, &Planned)],
     edges: &[usize],
@@ -565,7 +567,8 @@ fn fields_of(expr: &Expr, out: &mut Vec<Name>) {
     });
 }
 
-/// The box (west, south, east, north) around every placed row of `places`; inverted when none is.
+/// The box (west, south, east, north) around every placed row of `places`. Inverted when no row
+/// is placed.
 fn bounds_of(places: &Places) -> [f64; 4] {
     let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
     let mut take = |r: [f64; 4]| {

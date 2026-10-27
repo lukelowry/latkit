@@ -32,8 +32,8 @@ pub(crate) fn is_archive(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC)
 }
 
-/// Parses the header at the start of `bytes`. Errors unless it is a version 3 archive whose
-/// directories and tiles are uncompressed or gzip-compressed.
+/// Parses the header at the start of `bytes`. Errors if it is not a version 3 archive with
+/// uncompressed or gzip-compressed directories and tiles.
 pub(crate) fn header(bytes: &[u8]) -> Result<Header, String> {
     if !is_archive(bytes) || bytes.len() < HEADER {
         return Err("these bytes are not a PMTiles archive".into());

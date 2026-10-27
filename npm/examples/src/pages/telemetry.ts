@@ -1,9 +1,8 @@
 /**
  * Telemetry: thousands of streaming voltages traced over a scrolling window. Frames are appended as
- * they arrive and the oldest are forgotten; pause or scrub the timeline to read back what passed.
- * Every 20 seconds one area dips and recovers, or strike one yourself, and query for the signals
- * hit hardest. Or draw a recorded day instead, fetched span by span as time tiles at the detail the
- * plot needs.
+ * they arrive and the oldest are forgotten. Pause or scrub the timeline to read back what passed.
+ * Every 20 seconds one area dips and recovers. Strike one yourself, and query for the signals hit
+ * hardest. Or draw a recorded day, fetched span by span as time tiles at the detail the plot needs.
  */
 import { Data, Tiles, field, selected, when, type CustomColormap } from 'latkit';
 import { choice, page } from '../shell/page.js';
@@ -21,7 +20,7 @@ const KEEP = 60;
 const WINDOW = 20;
 const EVERY = 20;
 
-/** How far a dip has pulled voltages down, `since` seconds after it struck; 0 after six seconds. */
+/** How far a dip has pulled voltages down, `since` seconds after it struck. 0 after six seconds. */
 const dip = (since: number) =>
   since < 0 || since > 6
     ? 0

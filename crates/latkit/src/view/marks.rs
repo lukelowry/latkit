@@ -26,11 +26,11 @@ pub(crate) struct Offsets {
     pub(crate) palette: u32,
     pub(crate) port_info: u32,
     pub(crate) blends: u32,
-    /// The runs of held rows it draws; `NONE` without a drawing, when its held rows are its table's
+    /// The runs of held rows it draws. `NONE` without a drawing, when the held rows are the table's
     /// rows.
     pub(crate) runs: u32,
-    /// The page table of each kind of per-row words, indexed by `Kept`; `NONE` for a kind it does
-    /// not keep.
+    /// The page table of each kind of per-row words, indexed by `Kept`. `NONE` for a kind the mark
+    /// does not keep.
     pub(crate) pages: [u32; 5],
 }
 
@@ -86,7 +86,7 @@ pub(crate) struct Shown {
     pub(crate) rows: u32,
     /// Rows that left and are fading out, held after the live rows.
     pub(crate) exits: u32,
-    /// Rows it held when the frame began; a starting transition freezes these.
+    /// Rows it held when the frame began. A starting transition freezes these.
     pub(crate) before: u32,
     /// The rows its state holds, as of the last published tables.
     pub(crate) holding: Option<Holding>,
@@ -134,15 +134,15 @@ pub(crate) struct Shown {
     pub(crate) offsets: Offsets,
     pub(crate) packed: bool,
     pub(crate) written: Vec<u32>,
-    /// A transition waiting to start. `transition` is the running one, and `remap` where its remap
+    /// A transition waiting to start. `transition` is the running one. `remap` is where its remap
     /// words start in the frame it starts, which the compute pass freezes it from (`NONE` in other
-    /// frames). `carry` is whether this frame froze rows at new places, so their comets' travel
-    /// follows them.
+    /// frames). `carry` is whether this frame froze rows at new places, so their comets follow
+    /// them.
     pub(crate) begin: Option<Begin>,
     pub(crate) transition: Option<Transition>,
     pub(crate) remap: u32,
     pub(crate) carry: bool,
-    /// The probe-buffer word where this frame's query writes what it finds of this mark.
+    /// The probe-buffer word where this frame's query writes its result for this mark.
     pub(crate) query: u32,
     /// The list that numbers a stroke mark's segments when rows have different segment counts.
     pub(crate) segments: super::lists::Segments,
@@ -150,10 +150,10 @@ pub(crate) struct Shown {
     pub(crate) drawn_rows: super::lists::DrawnRows,
     /// Whether an edge mark follows great circles.
     pub(crate) geodesic: bool,
-    /// Incremented whenever the mark's state is written, so whatever derives from it updates.
-    /// `place_version` is incremented whenever what places its rows and labels is written: row
-    /// positions, sizes, and visibility, and label texts. A color that changes every frame moves no
-    /// label.
+    /// Incremented whenever the mark's state is written, so anything derived from it updates.
+    /// `place_version` is incremented whenever the channels that place its rows and labels are
+    /// written: row positions, sizes, visibility, and label texts. A color that changes every frame
+    /// moves no label.
     pub(crate) version: u64,
     pub(crate) place_version: u64,
     /// The rows its focus draw lights.
@@ -216,7 +216,7 @@ impl Shown {
     }
 
     /// Live held rows, not counting exits. Every per-row word belongs to a held row. An unpaged
-    /// table's held rows are its rows; a paged table holds a page of rows per slot.
+    /// table's held rows are its rows. A paged table holds a page of rows per slot.
     pub(crate) fn live(&self) -> u32 {
         self.drawing().map_or(self.rows, |d| d.live())
     }
@@ -302,7 +302,7 @@ impl Shown {
         self.words.release(&mut gpu.arena);
     }
 
-    /// Kind words per row.
+    /// Words per row that the mark's kind uses.
     pub(crate) fn stride(&self) -> u32 {
         self.kind().stride()
     }
@@ -317,14 +317,14 @@ impl Shown {
         self.stride() + self.extras()
     }
 
-    /// Words per row in each kind of word page its held rows take, 0 for a kind it keeps none of:
-    /// its state, its focus word, and when faces are `summing` their normals at its rows, those.
+    /// Words per row for each kind of word page: state, focus, and normals (when faces are
+    /// `summing` normals at its rows). 0 for a kind the mark keeps none of.
     pub(crate) fn kept_widths(&self, summing: bool) -> [(Kept, u32); 3] {
         [(Kept::State, self.width()), (Kept::Focus, 1), (Kept::Normals, if summing { wgsl::NORMAL_WORDS } else { 0 })]
     }
 
-    /// What its channels and fitted domains read besides its own table's static fields, which picks
-    /// their pipeline variant. Before it compiles, neither joins, samples, nor the view.
+    /// What its channels and fitted domains read besides its own table's static fields. This picks
+    /// their pipeline variant. Before the mark compiles, it reads no joins, samples, or view state.
     pub(crate) fn reads(&self) -> crate::gpu::pipelines::Reads {
         let Some(program) = self.compiled.as_ref().map(|c| &c.program) else {
             return crate::gpu::pipelines::Reads::NONE;
@@ -355,7 +355,7 @@ impl Shown {
     }
 
     /// Whether its edges curve between their endpoints, along great circles or bowed into lanes.
-    /// The GPU counts each edge's pieces; for great circles, the total is read back to size the
+    /// The GPU counts each edge's pieces. For great circles, the total is read back to size the
     /// segment list.
     pub(crate) fn curved(&self) -> bool {
         self.path() == wgsl::PATH_ENDS && (self.geodesic || self.laned())
@@ -367,7 +367,7 @@ impl Shown {
         compiled.drawing.lane != wgsl::NONE && self.tables.holds(compiled.drawing.lane)
     }
 
-    /// Instances its list needs room for: every path's segments plus each curve's pieces (as last
+    /// Instances its list needs space for: every path's segments plus each curve's pieces (as last
     /// counted), or every area's triangles.
     pub(crate) fn segment_capacity(&self) -> u32 {
         let rows = (self.rows + self.exits) as usize;
@@ -427,7 +427,7 @@ impl Shown {
     }
 
     /// Marks the channels and domains that read any of `columns` dirty. They evaluate over `blocks`
-    /// (the changed pages) when the channels read only their own rows, else over every row.
+    /// (the changed pages) when the channels read only their own rows, otherwise over every row.
     pub(crate) fn columns_changed(&mut self, columns: u64, blocks: Option<&[u32]>) {
         let Some(compiled) = &self.compiled else { return };
         let program = &compiled.program;
@@ -438,7 +438,7 @@ impl Shown {
                 channels |= 1 << k;
             }
         }
-        // A fitted domain, or a table read through a join, reaches past a row's own block.
+        // A fitted domain, or a table read through a join, reads beyond a row's own block.
         let joined =
             program.columns.iter().enumerate().any(|(i, c)| c.from.is_some() && columns & Reads::column(i) != 0);
         // Rows whose endpoint references changed resolve their endpoints again.
@@ -677,9 +677,9 @@ impl Blocks {
     }
 }
 
-/// The row count of each page of `held` rows, the first `live` of them not exits: a full page per
-/// slot of a `paged` table, since slots evaluate whole, or an unpaged table's rows split into
-/// pages. Exits follow in either case.
+/// The row count of each page of `held` rows, of which the first `live` are not exits. A `paged`
+/// table gets a full page per slot, since each slot evaluates as a whole page. An unpaged table's
+/// rows are split into pages. Exits follow in either case.
 pub(crate) fn page_rows(live: u32, held: u32, paged: bool) -> Vec<u32> {
     (0..held.div_ceil(wgsl::PAGE_ROWS))
         .map(|p| {

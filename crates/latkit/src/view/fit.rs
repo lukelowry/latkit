@@ -1,9 +1,9 @@
 //! Fits: moving the camera to frame what is drawn.
 //!
-//! A box fits at once, as does anything whose extent the CPU already knows: a diagram's sheet holds
-//! every box and wire, and tiles hold the bounds of every row they draw. Anything else is measured
+//! A box fits at once, as does anything whose extent the CPU already knows. A diagram's sheet has
+//! every box and wire, and tiles have the bounds of every row they draw. Anything else is measured
 //! on the GPU, read back, and framed a frame or two later. A plot without a value range measures
-//! its traces whenever they or the camera change, and grows its range with headroom so the axes
+//! its traces whenever they or the camera change. It grows its range with headroom so the axes
 //! stay still.
 
 use super::View;
@@ -32,7 +32,7 @@ impl Fitting {
         self.reading.busy()
     }
 
-    /// Whether a fit is waiting to be measured; never while extents are being read back.
+    /// Whether a fit is waiting to be measured. Always false while extents are being read back.
     pub(crate) fn due(&self) -> bool {
         self.wanted.is_some() && !self.reading.busy()
     }
@@ -96,7 +96,8 @@ impl View {
             return None;
         }
         // A fit waits until data has streamed, shapes are triangulated and bent, and any layout has
-        // placed it; in a diagram, until vertices stand where the sheet puts them.
+        // placed the rows. In a diagram it also waits until vertices reach where the sheet puts
+        // them.
         let easing = matches!(self.scene.space, Space::Diagram(_))
             && self
                 .marks
@@ -104,7 +105,7 @@ impl View {
                 .any(|m| m.kind() == MarkKind::Vertices && (m.transition.is_some() || m.begin.is_some()));
         let all = matches!(self.fitting.wanted, Some(Fit::All));
         // Fitting everything uses a tiled table's row bounds, regardless of what is drawn. A mark
-        // with no rows has nothing to frame; it only delays a fit while no mark has rows.
+        // with no rows has nothing to frame. It only delays a fit while no mark has rows.
         let compiled = || self.marks.iter().filter(|m| m.compiled.is_some());
         let staged = |m: &Shown| self.staged.get(&m.mark.style().data).is_some_and(|s| !s.is_empty());
         let drawn = |m: &Shown| (m.drawable() && !staged(m)) || (all && self.tiled_bounds(m).is_some());
@@ -171,9 +172,10 @@ impl View {
         self.frame_fit(lo, hi, fit);
     }
 
-    /// The box `fit` frames if known without measuring, as `[min x, min y, max x, max y]`. In a
-    /// diagram whose sheet is placed: the sheet's extent, or the fitted rows' boxes. Otherwise, for
-    /// `Fit::All` once every mark is `ready` and only tiled tables are measured: their bounds.
+    /// The box `fit` frames, if known without measuring, as `[min x, min y, max x, max y]`. In a
+    /// diagram whose sheet is placed, it is the sheet's extent or the union of the fitted rows'
+    /// boxes. Otherwise, for `Fit::All` once every mark is `ready` and only tiled tables are
+    /// measured, it is their bounds.
     fn known(&self, fit: &Fit, ready: bool) -> Option<[f64; 4]> {
         let union = |a: [f64; 4], b: [f64; 4]| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])];
         let sheet = &self.derived.sheet;
@@ -226,8 +228,9 @@ impl View {
         self.derived.tiled.bounds(&style.data, &style.table)
     }
 
-    /// Frames the box `min..max` at once, as far as the camera's reach allows. Framing everything
-    /// sets the box that narrows the reach; framing part of it widens that box, never narrows it.
+    /// Frames the box `min..max` at once, within the camera's zoom and pan limits. A fit to
+    /// everything sets the box that narrows the limits. A fit to part of it grows that box and
+    /// never shrinks it.
     fn frame_box(&mut self, min: [f64; 3], max: [f64; 3], everything: bool) {
         let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area());
         self.rig.hold();
@@ -277,7 +280,7 @@ impl View {
 }
 
 impl super::marks::Shown {
-    /// Whether this mark's extents frame a fit: whether its kind measures them.
+    /// Whether fits frame this mark's extents, which depends on its kind.
     pub(crate) fn measured(&self) -> bool {
         self.kind().bounds().is_some()
     }

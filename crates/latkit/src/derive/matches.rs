@@ -1,8 +1,8 @@
-//! Text matches: for each `field.contains(text)` a mark uses, whether each row's text field
-//! contains `text`, ignoring case. The results are boolean fields of a table beside the mark's own
-//! table, which the GPU reads. Texts stay on the CPU, so matches are computed here, again only when
-//! the field or the rows change. A page whose matches are unchanged keeps its column page, so only
-//! changed pages upload.
+//! Text matches. For each `field.contains(text)` a mark uses, computes whether each row's text
+//! field contains `text`, ignoring case. The results are boolean fields of a table beside the
+//! mark's own table, which the GPU reads. Texts stay on the CPU, so matches are computed here, and
+//! again only when the field or the rows change. A page whose matches are unchanged keeps its
+//! column page, so only changed pages upload.
 
 use std::sync::Arc;
 

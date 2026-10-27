@@ -29,8 +29,8 @@ pub(crate) const TICK: f64 = 1.0 / 60.0;
 /// The longest a picture waits for work to arrive before drawing again.
 const FRAME: Duration = Duration::from_millis(16);
 
-/// A picture of views, taken once they are complete as its [`Capture`] says. Each view draws into
-/// its panel of a `size`-pixel picture at `scale` pixels per CSS pixel. A shot is plain data, like
+/// A picture of views, taken when they are complete, as its [`Capture`] says. Each view draws into
+/// its panel of a `size`-pixel picture, at `scale` pixels per CSS pixel. A shot is plain data, like
 /// a scene.
 ///
 /// ```no_run
@@ -116,7 +116,8 @@ impl Shot {
         self
     }
 
-    /// Sets each view's panel in the picture, one per view, in order. By default one view fills it.
+    /// Sets each view's panel in the picture, one per view, in order. Defaults to one view filling
+    /// the picture.
     #[must_use]
     pub fn panels(mut self, panels: impl Into<Panels>) -> Shot {
         self.panels = panels.into();
@@ -130,8 +131,8 @@ impl Shot {
         self
     }
 
-    /// Sets when the picture is taken: once its views are complete and still (the default), or as
-    /// they are now.
+    /// Sets when the picture is taken: once its views are complete and still, or as they are now.
+    /// Defaults to [`Capture::Still`].
     #[must_use]
     pub fn capture(mut self, capture: Capture) -> Shot {
         self.capture = capture;
@@ -148,7 +149,7 @@ impl Shot {
     }
 
     /// Fixes elapsed-time expressions and animated drawing effects at `elapsed`, while finite
-    /// transitions still settle. By default they follow the view's clock.
+    /// transitions still settle. Defaults to following the view's clock.
     #[must_use]
     pub fn elapsed(mut self, elapsed: Duration) -> Shot {
         self.elapsed = Some(elapsed);

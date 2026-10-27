@@ -1,7 +1,7 @@
 /**
- * What an example page declares. A page is its settings, which the shell shows as controls, and an
- * `open` that builds its data and views. Each view's scene is a function of the settings, which the
- * shell draws again whenever one changes, so a page holds no code that restyles its views.
+ * What an example page declares: its settings, which the shell shows as controls, and an `open`
+ * function that builds its data and views. Each view's scene is a function of the settings. The
+ * shell redraws it whenever a setting changes, so a page has no code that restyles its views.
  */
 import type { Camera, Data, Rect, Scene, View } from 'latkit';
 
@@ -9,7 +9,7 @@ import type { Camera, Data, Rect, Scene, View } from 'latkit';
 export type Setting<T> = {
   readonly label: string;
   readonly value: T;
-  /** The side panel section it shows in; `Settings` by default. */
+  /** The side panel section it shows in. Defaults to `Settings`. */
   readonly section?: string;
   /** A key that changes it: a toggle flips, and a choice steps to its next option. */
   readonly key?: string;
@@ -27,7 +27,7 @@ export type Setting<T> = {
 
 type Where = { section?: string; key?: string };
 
-/** A dropdown of `options`, keyed by their labels; the first option by default. */
+/** A dropdown of `options`, keyed by their labels. Defaults to the first option. */
 export function choice<const T>(
   label: string,
   options: Readonly<Record<string, T>>,
@@ -43,7 +43,7 @@ export function choice<const T>(
   };
 }
 
-/** A button that toggles; off by default. */
+/** A toggle button. Defaults to off. */
 export function toggle(label: string, where: Where & { value?: boolean } = {}): Setting<boolean> {
   return { kind: 'toggle', label, ...where, value: where.value ?? false };
 }
@@ -79,15 +79,15 @@ export interface Timeline {
   play(): void;
 }
 
-/** What a page can do while it is open. Everything it makes through it closes with it. */
+/** What a page can do while it is open. Everything made through it closes with the page. */
 export interface Context<V> {
   /** The current settings. */
   readonly settings: Readonly<V>;
   /** Aborted when the page closes. */
   readonly signal: AbortSignal;
   /**
-   * Creates a view on the page's canvas, in `region`, drawing `scene` of the current settings and
-   * again after each change. Without a camera, it frames everything drawn.
+   * Creates a view on the page's canvas, in `region`, that draws `scene` for the current settings
+   * and redraws it after each change. Without a camera, it frames everything drawn.
    */
   view(
     scene: (settings: V) => Scene,
@@ -97,8 +97,8 @@ export interface Context<V> {
   actions(title: string, actions: readonly Action[]): void;
   /**
    * Plays `data`'s axis in a timeline under the canvas. Live, it follows the end of the data and
-   * forgets frames older than `keep` seconds; paused or replaying, it shows earlier frames. Every
-   * view of the page shows the timeline's coordinate.
+   * forgets frames older than `keep` seconds. Paused or replaying, it shows earlier frames. Every
+   * view on the page shows the timeline's coordinate.
    */
   timeline(options: {
     data: Data;
@@ -137,7 +137,7 @@ export interface Opened<V> {
 export interface Page<S extends Settings = Settings> {
   readonly title: string;
   readonly settings?: S;
-  /** Whether hovering or clicking a row shows its fields in the side panel; true by default. */
+  /** Whether hovering or clicking a row shows its fields in the side panel. Defaults to true. */
   readonly inspect?: boolean;
   open(context: Context<Values<S>>): Promise<Opened<Values<S>> | void>;
 }

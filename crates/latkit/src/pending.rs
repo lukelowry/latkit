@@ -140,8 +140,8 @@ impl<T> Future for Pending<T> {
     }
 }
 
-/// The wakers of whatever watches something, by the watcher's id, each the watcher's latest. Waking
-/// wakes every watcher.
+/// The wakers of everything watching one thing, keyed by watcher id. Each watcher keeps only its
+/// latest waker. Waking wakes every watcher.
 #[derive(Default)]
 pub(crate) struct Watchers(Mutex<Vec<(u64, Waker)>>);
 

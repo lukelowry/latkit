@@ -6,16 +6,16 @@ use super::form::{preset_schema, presets};
 /// The coordinate space of a scene's positions: a name, or
 /// `{ plane | diagram | earth | plot: options }`.
 ///
-/// The space sets the unit of lengths that do not name their own: units in a diagram, where a unit
-/// is a CSS pixel at zoom 0, and CSS pixels elsewhere. Only a diagram has ports, groups, nets, and
-/// orthogonal routes.
+/// The space sets the unit of lengths that do not name their own. In a diagram it is the diagram
+/// unit, one CSS pixel at zoom 0. Elsewhere it is the CSS pixel. Only a diagram has ports, groups,
+/// nets, and orthogonal routes.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = preset_schema::<Space>)]
 pub enum Space {
     /// Longitude and latitude in degrees, on a flat map or a globe.
     Earth(Earth),
-    /// Plane units, with elevation; the camera can turn and tilt.
+    /// Plane units, with elevation. The camera can turn and tilt.
     Plane(Plane),
     /// The data's axis horizontally and values vertically.
     Plot(Plot),
@@ -60,27 +60,27 @@ impl From<Plot> for Space {
     }
 }
 
-/// The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`
+/// The earth: positions are longitude and latitude in degrees. The ground uses the theme's `earth`
 /// colors.
 ///
-/// A flat map is one world, drawn once. Its ground ends at the antimeridian and at Web Mercator's
-/// latitude limit, and the camera zooms out until the whole world fits the view and pans until the
-/// world's edges meet the view's. On a globe, longitude wraps, and the camera zooms out until the
-/// globe spans a third of the view's shorter side.
+/// A flat map shows the world once. Its ground ends at the antimeridian and at Web Mercator's
+/// latitude limit. The camera zooms out until the whole world fits the view, and pans until the
+/// world's edges meet the view's edges. On a globe, longitude wraps, and the camera zooms out until
+/// the globe spans a third of the view's shorter side.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Earth {
-    /// A flat web mercator map (`mercator`, the default) or a globe (`globe`).
+    /// A flat web mercator map (`mercator`) or a globe (`globe`). Defaults to `mercator`.
     pub projection: Projection,
     /// Whether lines of longitude and latitude cross the ground, in the theme's `grid` color.
-    /// Default `true`.
+    /// Defaults to `true`.
     pub graticule: bool,
     /// Lights the earth by the sun's position this many seconds after the Unix epoch, plus the
     /// view's axis coordinate when it has one. The night side darkens the ground and everything on
-    /// it, down to the theme's `earth.night` brightness. Unset, the earth is lit evenly.
+    /// it, down to the theme's `earth.night` brightness. When unset, the earth is lit evenly.
     pub daylight: Option<f64>,
     /// Whether air glows around the globe, in the theme's `earth.atmosphere` color, brighter on the
-    /// day side. Default `false`.
+    /// day side. Defaults to `false`.
     pub atmosphere: bool,
 }
 
@@ -147,7 +147,7 @@ impl Default for Earth {
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Plane {
-    /// The grid drawn under the marks; lines 10 units apart by default.
+    /// The grid drawn under the marks. Defaults to lines 10 units apart.
     pub grid: Grid,
 }
 
@@ -157,16 +157,16 @@ impl Default for Plane {
     }
 }
 
-/// A flat sheet for diagrams, seen from straight above; the camera pans and zooms but does not
-/// turn. Positions are in units with y down. Lengths are in units too, a unit being a CSS pixel at
-/// zoom 0: sizes, padding, ports, strokes, text, and the theme's lengths. Sizes given with `px`,
-/// the text halo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole
-/// picture. Only a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout
-/// places its blocks.
+/// A flat sheet for diagrams, seen from straight above. The camera pans and zooms but does not
+/// turn. Positions are in units with y down, and a unit is a CSS pixel at zoom 0. Sizes, padding,
+/// ports, strokes, text, and the theme's lengths are in units too. Sizes given with `px`, the text
+/// halo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole picture.
+/// Only a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout places its
+/// blocks.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagram {
-    /// The grid drawn under the marks; dots 20 units apart by default.
+    /// The grid drawn under the marks. Defaults to dots 20 units apart.
     pub grid: Grid,
 }
 
@@ -187,11 +187,11 @@ pub enum Grid {
         /// Units between lines.
         pitch: f64,
     },
-    /// Dots `pitch` units apart; with `snap`, a diagram's drags snap to them.
+    /// Dots `pitch` units apart. With `snap`, drags in a diagram snap to them.
     Dots {
         /// Units between dots.
         pitch: f64,
-        /// Whether drag positions snap to the dots, in a diagram. Default `false`.
+        /// Whether drag positions snap to the dots, in a diagram. Defaults to `false`.
         #[serde(default)]
         snap: bool,
     },
@@ -213,19 +213,19 @@ pub struct Plot {
 pub struct Axis {
     /// The axis title.
     pub label: Option<String>,
-    /// Whether grid lines cross the plot at the ticks. Default `true`.
+    /// Whether grid lines cross the plot at the ticks. Defaults to `true`.
     pub grid: bool,
-    /// Whether the axis is hidden. Default `false`.
+    /// Whether the axis is hidden. Defaults to `false`.
     pub hidden: bool,
-    /// Tick positions, each a value or `[value, label]`; a tick without a label shows its value.
-    /// Unset, ticks fall at round values.
+    /// Tick positions, each a value or `[value, label]`. A tick without a label shows its value.
+    /// When unset, ticks fall at round values.
     #[serde(deserialize_with = "ticks")]
     #[schemars(with = "Option<Vec<Tick>>")]
     pub ticks: Ticks,
-    /// How tick values are formatted; `auto` by default.
+    /// How tick values are formatted. Defaults to `auto`.
     pub format: Format,
-    /// Decimal places of fixed values, or of the significand in scientific and engineering formats,
-    /// at most 15. Unset, as many as the tick step needs.
+    /// Decimal places of fixed values, or of the significand in scientific and engineering formats.
+    /// At most 15. When unset, as many as the tick step needs.
     #[schemars(range(max = 15))]
     pub precision: Option<u8>,
 }

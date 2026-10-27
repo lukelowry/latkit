@@ -1,4 +1,4 @@
-//! The GPU: it creates views and canvases, and reports its frames, budget, and work.
+//! The GPU, which creates views and canvases and reports its frames, budget, and work.
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;

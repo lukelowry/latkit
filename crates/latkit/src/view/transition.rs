@@ -1,4 +1,4 @@
-//! Transitions: a mark whose description, static data, or rows change eases from what it showed.
+//! Transitions: a mark whose options, static data, or rows change eases from its previous state.
 //!
 //! When a transition starts, each row's shown state is frozen into the mark's frozen words at the
 //! row's new index: from the same index when no row moved, or gathered by id when rows were added,
@@ -38,7 +38,7 @@ pub(crate) struct Transition {
 
 /// A transition waiting for the frame that freezes it.
 pub(crate) struct Begin {
-    /// Each new row's old row, then each exit's old row, when rows moved; `None` when every row
+    /// Each new row's old row, then each exit's old row, when rows moved. `None` when every row
     /// kept its index.
     sources: Option<Vec<u32>>,
     /// Whether no new row matches one shown before, so rows only fade in and out.
@@ -150,7 +150,7 @@ fn drawn(holding: &Holding) -> Vec<u32> {
 }
 
 /// How rows moved between holdings with different orders: each new held row is traced to its old
-/// held row, by index while the table's row order is unchanged, else by id.
+/// held row, by index while the table's row order is unchanged, otherwise by id.
 fn follow(old: &Holding, new: &Holding) -> (Vec<u32>, Vec<u32>) {
     let same = old.table.order == new.table.order;
     let source = |h: u32| match &new.drawing {
@@ -215,7 +215,7 @@ pub(crate) fn holds_alike(a: &Holding, b: &Holding) -> bool {
 }
 
 impl Shown {
-    /// Takes over `before`'s held rows and their words, as a changed description of the same mark.
+    /// Takes over `before`'s held rows and their words, as a changed version of the same mark.
     pub(crate) fn inherit(&mut self, before: &mut Shown) {
         self.words = std::mem::take(&mut before.words);
         self.before = before.before;
@@ -225,7 +225,7 @@ impl Shown {
         self.place_version = before.place_version + 1;
     }
 
-    /// Begins a transition from what the mark shows, with rows moved as `moved` says, if they
+    /// Begins a transition from the mark's current state, with rows moved as `moved` says, if they
     /// moved. Does nothing when the mark showed no rows.
     pub(crate) fn begin(&mut self, moved: Option<(Vec<u32>, Vec<u32>)>) {
         if self.before == 0 {
@@ -244,9 +244,9 @@ impl Shown {
         self.all_dirty();
     }
 
-    /// Restarts the running transition from what the mark shows, as slots `bound` receive pages of
-    /// entering rows. Other rows keep easing toward their settled state, which their channels
-    /// already evaluated, and exits keep fading out after the live rows.
+    /// Restarts the running transition from the mark's current state, as slots `bound` receive
+    /// pages of entering rows. Other rows keep easing toward their settled state, which their
+    /// channels already evaluated, and exits keep fading out after the live rows.
     pub(crate) fn restart(&mut self, bound: &[u32]) {
         let mut sources: Vec<u32> = (0..self.live()).collect();
         for &slot in bound {
@@ -300,7 +300,7 @@ impl View {
                     shown.tables.thaw(inner);
                 }
             } else {
-                // Rows ease only when the clock moves; their channels evaluated once already.
+                // Rows ease only when the clock moves. Their channels evaluated once already.
                 shown.easing = self.clock.moved();
             }
         }
@@ -378,8 +378,8 @@ impl View {
     }
 
     /// Allocates frozen and settled words for every held row of each mark whose transition starts
-    /// or runs, and frees them once it ends. A transition without room for them is cancelled, and
-    /// its rows show their evaluated state at once.
+    /// or runs, and frees them once it ends. A transition whose words do not fit in the arena is
+    /// cancelled, and its rows show their evaluated state at once.
     pub(super) fn fit_easing(&mut self, inner: &mut Inner) {
         let gpu = self.gpu.clone();
         let device = (&gpu.0.device, &gpu.0.queue);

@@ -26,10 +26,10 @@ pub struct Port {
     /// Its name, drawn beside it inside the marker.
     #[serde(default)]
     pub label: Option<String>,
-    /// Its shape; an ellipse by default.
+    /// Its shape. Defaults to an ellipse.
     #[serde(default)]
     pub shape: Shape,
-    /// Whether it is an output, which drives its net. Default `false`, an input.
+    /// Whether it is an output, which drives its net. Defaults to `false` (an input).
     #[serde(default)]
     pub output: bool,
 }

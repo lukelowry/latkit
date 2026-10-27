@@ -6,16 +6,16 @@ use crate::{Error, Kind, Name, Result};
 mark!(
 /// Rows drawn as the areas of a polygon field: parcels, states, lakes, the land and water of a map.
 /// The view triangulates each row's polygons once, in the background when they are large. On the
-/// earth, areas follow the globe's curve and stay whole across the antimeridian. To outline areas,
-/// add a [`Lines`](crate::Lines) mark of the same table, which draws their rings.
+/// earth, areas follow the globe's curve and stay unbroken across the antimeridian. To outline
+/// areas, add a [`Lines`](crate::Lines) mark of the same table. It draws their rings.
 ///
 /// ```
 /// # use latkit::{field, Areas, Colormap};
 /// let states = Areas::of("map", "states").color(field("load").colormap(Colormap::MAKO));
 /// ```
 Areas("areas") {
-    /// The polygon field each row fills, holding one polygon's rings or several polygons; the field
-    /// named `geometry` by default.
+    /// The polygon field each row fills. It holds one polygon's rings or several polygons. Defaults
+    /// to the field named `geometry`.
     geometry: Option<Name>,
 });
 
@@ -25,8 +25,8 @@ impl Areas {
         Areas { style: Style::new(data.into(), table.into()), geometry: None }
     }
 
-    /// Sets the polygon field each row fills, holding one polygon's rings or several polygons; the
-    /// field named `geometry` by default.
+    /// Sets the polygon field each row fills. It holds one polygon's rings or several polygons.
+    /// Defaults to the field named `geometry`.
     #[must_use]
     pub fn geometry(mut self, field: impl Into<Name>) -> Areas {
         self.geometry = Some(field.into());
@@ -58,8 +58,8 @@ impl Areas {
     }
 }
 
-/// The name of the derived field holding polygon field `field`'s triangles: for each row, the point
-/// its label anchors to, then three points per triangle.
+/// The name of the derived field that holds the triangles of polygon field `field`. Each row holds
+/// its label's anchor point, then three points per triangle.
 pub(crate) fn triangles_of(field: &str) -> Name {
     format!("{field}.triangles").into()
 }

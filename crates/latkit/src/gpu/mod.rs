@@ -1,5 +1,5 @@
-//! The GPU: one device shared by every view, with the page arena, pipelines, colormaps, and text
-//! dictionaries all views draw from.
+//! The GPU device that every view shares, and the page arena, pipelines, colormaps, and text
+//! dictionaries the views draw from.
 
 pub(crate) mod arena;
 pub(crate) mod atlas;
@@ -34,7 +34,7 @@ use crate::{Error, Result};
 /// canvas supports it.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
-/// The GPU device that views draw with. Cheap to clone; views of one `Gpu` share uploaded data.
+/// The GPU device that views draw with. Cheap to clone. Views of one `Gpu` share uploaded data.
 #[derive(Clone)]
 pub struct Gpu(pub(crate) Arc<Shared>);
 
@@ -105,7 +105,7 @@ pub(crate) struct Inner {
     pub(crate) budget: Budget,
     /// Each view's share of the budget, which it plans within.
     pub(crate) ledger: Ledger,
-    /// What the current frame, shared by views drawn together, may still upload and compute.
+    /// What the current frame may still upload and compute. Views drawn together share it.
     pub(crate) frame: Allowance,
 }
 
@@ -134,13 +134,13 @@ impl Inner {
     }
 }
 
-/// Fraction of the budget that a GPU's views together plan their drawing within. The rest holds the
-/// pages a new data version uploads while the old one is still drawn, and cached pages.
+/// Fraction of the budget that all of a GPU's views plan their drawing within. The rest holds
+/// cached pages, and the pages of a new data version that upload while the old version still draws.
 const PLANNED: f64 = 0.5;
 
-/// Each view's share of the planned part of the budget, granted max-min fair, so views together
-/// never plan past it however many there are. Pages several views draw are resident once, so they
-/// count once, split between those views.
+/// Each view's share of the planned part of the budget. Shares are max-min fair, so all views
+/// together never plan past it, however many there are. A page that several views draw is resident
+/// once, so it counts once, split between those views.
 #[derive(Default)]
 pub(crate) struct Ledger {
     /// Each view's request for drawing everything, by view.
@@ -197,13 +197,13 @@ impl Ledger {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Budget {
     /// GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's
-    /// per-row state. A view draws a table too large for its share as a paged table, drawing only
-    /// the pages the camera needs, so it always fits. Pages no view draws stay cached in the
-    /// remaining room, least recently drawn evicted first. Defaults to half the device's largest
-    /// storage buffer. The page pool grows as data needs it and never shrinks, so set the budget
-    /// before drawing data.
+    /// per-row state. A table too large for a view's share draws as a paged table, with only the
+    /// pages the camera needs, so it always fits. Pages no view draws stay cached in the rest of
+    /// the budget, and the least recently drawn are evicted first. Defaults to half the device's
+    /// largest storage buffer. The page pool grows as data needs it and never shrinks, so set the
+    /// budget before drawing data.
     pub bytes: u64,
-    /// Most bytes uploaded per frame; larger data streams in over several frames. Defaults to
+    /// The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to
     /// 32 MiB.
     pub upload_per_frame: u64,
 }
@@ -255,8 +255,8 @@ impl Gpu {
     }
 
     /// Queues, once, the pipelines nearly every scene uses to draw into the page's canvases, so
-    /// views opened later find them compiled. In a browser this happens as the first view opens,
-    /// and they compile after that view's draw pipelines finish. A GPU no view uses compiles
+    /// views opened later find them compiled. In a browser this runs when the first view opens, and
+    /// these pipelines compile after that view's own draw pipelines. A GPU no view uses compiles
     /// nothing.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     pub(crate) fn warm(&self) {
@@ -288,7 +288,7 @@ impl Gpu {
         Ok(Gpu::create(None, None, device, queue))
     }
 
-    /// A lightweight sink for the application's existing device callbacks; it does not own the GPU.
+    /// A handle that the application's own device callbacks report to. It does not own the GPU.
     pub fn device_events(&self) -> DeviceEvents {
         DeviceEvents { lost: self.0.lost.clone(), errors: self.0.errors.clone() }
     }
@@ -351,8 +351,8 @@ impl Gpu {
                 inner: Mutex::new(inner),
             }
         });
-        // In a page, set the multisample count now from the screen, which every view and canvas of
-        // the GPU draws for.
+        // In a page, set the multisample count now from the screen's pixel ratio. Every view and
+        // canvas of the GPU draws for that screen.
         #[cfg(all(feature = "web", target_arch = "wasm32"))]
         if let Some(window) = web_sys::window() {
             let _ = shared.samples.set(samples_at(window.device_pixel_ratio() as f32));
@@ -411,7 +411,7 @@ impl Gpu {
     }
 
     /// Gives views the platform's services: text, background jobs, fetching, and video encoding.
-    /// Texts the last host set are set again by this one.
+    /// Text the previous host rasterized is rasterized again by this one.
     pub fn set_host(&self, host: impl Host) {
         let mut inner = self.0.lock();
         inner.host = Some(Arc::new(host));

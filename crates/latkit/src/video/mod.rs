@@ -1,8 +1,7 @@
 //! Videos: a shot's pictures over time, passed in order to a [`Sink`] as they are drawn. Three
-//! stages overlap, so throughput is set by the slowest stage rather than their sum: the GPU draws
-//! and composes one frame while another is read back and the sink takes a third. A frame where
-//! nothing moved is neither drawn nor read back; the sink is told it is held and shows the previous
-//! frame again.
+//! stages overlap, so the slowest stage sets throughput, not their sum. The GPU draws and composes
+//! one frame while another is read back and the sink takes a third. A frame where nothing moved is
+//! neither drawn nor read back. The sink is told it is held and shows the previous frame again.
 //!
 //! [`Mp4`] is the usual sink: H.264 from the host's [`Encoder`](crate::host::Encoder), written as
 //! fragmented MP4.
@@ -22,9 +21,9 @@ use crate::host::{Encoder, Host, TIMESCALE, Unit};
 use crate::shot::{Borrowed, Drawing, Step, Views};
 use crate::{Error, Gpu, Result, Shot, View};
 
-/// Most frames in flight at once: one drawing, one reading back, one in the sink.
+/// The most frames in flight at once: one drawing, one reading back, one in the sink.
 const IN_FLIGHT: usize = 3;
-/// Most seconds of video between keyframes.
+/// The most seconds of video between keyframes.
 const KEYFRAMES: f64 = 2.0;
 /// Default bits per pixel per frame, enough to keep lines and text sharp.
 const BITS_PER_PIXEL: f64 = 0.15;
@@ -47,7 +46,8 @@ pub trait Sink {
     const PIXELS: Pixels;
 
     /// Prepares the sink for the video `encoding` describes, before the first frame, using the
-    /// GPU's `host` services; an MP4 gets its encoder from the host. Does nothing by default.
+    /// GPU's `host` services. An MP4 gets its encoder from the host. The default implementation
+    /// does nothing.
     fn begin(&mut self, encoding: &Encoding, host: Option<&dyn Host>) -> Result<()> {
         let _ = (encoding, host);
         Ok(())

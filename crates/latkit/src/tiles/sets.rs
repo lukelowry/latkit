@@ -1,7 +1,7 @@
 //! Tile sets: for each tile source a view is given, a set whose dataset holds the pieces the view's
 //! camera and plot window need. Marks draw it like any other dataset, except that a vector set's
-//! tables are always paged, and draw the vector tiles drawn as their tiles. The pieces come from
-//! the GPU's cache, shared by every view drawing the same source.
+//! tables are always paged, and their tiles are the vector tiles drawn. The pieces come from the
+//! GPU's cache, shared by every view drawing the same source.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,9 +13,9 @@ use crate::derive::tiled::{Choices, Draw, Plans};
 use crate::derive::{Input, Jobs};
 use crate::{Error, Tiles};
 
-/// What a view reads of sampled fields: the plot window lines trace across (`across`) and its width
-/// in pixel columns, the coordinate fields are shown at (`at`), and each field marks read, by
-/// dataset, table, and name, with whether a line traces it.
+/// What a view reads of sampled fields. It holds the plot window that lines trace across (`across`)
+/// and its width in pixel columns, and the coordinate at which fields are shown (`at`). It also
+/// holds each field that marks read, by dataset, table, and name, with whether a line traces it.
 #[derive(Default)]
 pub(crate) struct Reading {
     pub(crate) across: Option<[f64; 2]>,
@@ -201,8 +201,8 @@ impl TileSets {
         self.sets.iter().any(|s| *s.tiles.name == *name && matches!(s.drawing, Some(Drawing::Vector(_))))
     }
 
-    /// Adds to `choices` what each table of vector tiles draws, for the tables `plans` draws by
-    /// tile: the spans of the vector tiles drawn, within the plan's rows.
+    /// Adds to `choices` what each table of vector tiles draws, for the tables that `plans` draws
+    /// by tile. A table draws the spans of the vector tiles drawn, within the plan's rows.
     pub(crate) fn choose(&self, plans: &Plans, choices: &mut Choices) {
         for set in &self.sets {
             let Some(Drawing::Vector(vector)) = &set.drawing else { continue };

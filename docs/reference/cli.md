@@ -1,6 +1,6 @@
 # Command reference
 
-Every command and option of the `latkit` command line, written from its help. The [command-line guide](../cli.md) shows them at work. `--help` prints a command's help in the terminal, and `latkit --version` prints the version.
+Every command and option of the `latkit` command line, generated from its help. The [command-line guide](../cli.md) shows them in use. `--help` prints a command's help, and `latkit --version` prints the version.
 
 (cli-latkit)=
 
@@ -36,7 +36,7 @@ Render scenes of JSON or binary data to images and videos.
 
 {.member}
 [`latkit tile`](#cli-tile)
-: Write a dataset as time tiles: `frames.json` (which [`--tiles`](#cli-render-tiles) opens), the dataset without its sampled fields' histories, and those histories in spans at every level of detail.
+: Write a dataset as time tiles: `frames.json` (which [`--tiles`](#cli-render-tiles) opens), the dataset without the histories of its sampled fields, and those histories in spans at every level of detail.
 
 ```{rubric} Options
 ```
@@ -86,7 +86,7 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
 {#cli-render-format .member}
 **`--format`** `<FORMAT>` [¶](#cli-render-format){.headerlink}
-: Output format. Defaults to the one the output's extension names, else PNG.
+: Output format. Defaults to the format of the output's extension, or PNG.
 
   {#cli-render-format-png .member}
   **`png`** [¶](#cli-render-format-png){.headerlink}
@@ -284,7 +284,7 @@ Print the rows a query selects, sorted and paged, as JSON Lines with one object 
 {.signature}
 `latkit tile [OPTIONS] --output <DIR> <[NAME=]FILE>`
 
-Write a dataset as time tiles: `frames.json` (which [`--tiles`](#cli-render-tiles) opens), the dataset without its sampled fields' histories, and those histories in spans at every level of detail.
+Write a dataset as time tiles: `frames.json` (which [`--tiles`](#cli-render-tiles) opens), the dataset without the histories of its sampled fields, and those histories in spans at every level of detail.
 
 ```{rubric} Arguments
 ```

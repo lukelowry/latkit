@@ -14,20 +14,21 @@ pub(crate) const PAGE_MASK: usize = PAGE_ROWS - 1;
 /// entirely rewritten.
 const REMEMBERED: u8 = 8;
 
-/// One page of a column: up to [`PAGE_ROWS`] values and an id unique to these contents. A page
-/// made by writing over another records which page and which rows (`written`). It also caches its
-/// geometry's point count.
+/// One page of a column. It holds up to [`PAGE_ROWS`] values and an id unique to these contents. A
+/// page made by writing over another records that page and the rows written (`written`). It also
+/// caches its geometry's point count.
 #[derive(Clone, Debug)]
 pub(crate) struct Page {
     pub(crate) id: PageId,
     pub(crate) values: Values,
     pub(crate) written: Option<Arc<Written>>,
-    /// Computed on first use and cached; pages are immutable.
+    /// Computed on first use and cached, since pages are immutable.
     points: OnceLock<usize>,
 }
 
-/// How a page was written: the page it copied (`from`), the rows written or added as offsets into
-/// the page, and how `from` was written in turn (`before`), up to [`REMEMBERED`] writes back.
+/// How a page was written. It records the page it copied (`from`), the rows written or added as
+/// offsets into the page, and how `from` was written in turn (`before`), up to [`REMEMBERED`]
+/// writes back.
 #[derive(Debug)]
 pub(crate) struct Written {
     pub(crate) from: PageId,
@@ -49,12 +50,12 @@ impl Page {
         Page { id: PageId::next(), values, written: Some(Arc::new(written)), points: OnceLock::new() }
     }
 
-    /// Its geometry's point count as shaders read it; see [`Values::points`].
+    /// The page's geometry point count as shaders read it. See [`Values::points`].
     pub(crate) fn points(&self) -> usize {
         *self.points.get_or_init(|| self.values.points())
     }
 
-    /// The rows written since page `before`, as sorted offsets into the page; empty if this page is
+    /// The rows written since page `before`, as sorted offsets into the page. Empty if this page is
     /// `before`. `None` unless this page was written from `before` and still remembers it (see
     /// [`REMEMBERED`]).
     pub(crate) fn rows_since(&self, before: PageId) -> Option<Vec<u32>> {
@@ -76,8 +77,8 @@ impl Page {
     }
 }
 
-/// A field's values in pages of [`PAGE_ROWS`] rows. Writes replace only the pages they touch;
-/// the others keep their ids.
+/// A field's values in pages of [`PAGE_ROWS`] rows. Writes replace only the pages they touch. The
+/// others keep their ids.
 #[derive(Clone, Debug)]
 pub(crate) struct Column {
     len: usize,
@@ -129,7 +130,7 @@ impl Column {
         &self.pages
     }
 
-    /// Whether `other` has the same length and page ids, which means equal values without
+    /// Whether `other` has the same length and page ids. That means the values are equal, without
     /// comparing any.
     pub(crate) fn shares(&self, other: &Column) -> bool {
         self.len == other.len && self.pages.iter().zip(other.pages.iter()).all(|(a, b)| a.id == b.id)
@@ -143,7 +144,7 @@ impl Column {
         self.pages.get(row >> PAGE_BITS)?.values.get(row & PAGE_MASK)
     }
 
-    /// The values of the page holding row `row` and the row's index in them; `None` past the
+    /// The values of the page holding row `row`, and the row's index in them. `None` past the
     /// column's end.
     pub(crate) fn at(&self, row: usize) -> Option<(&Values, usize)> {
         let values = &self.pages.get(row >> PAGE_BITS)?.values;
@@ -152,8 +153,8 @@ impl Column {
     }
 
     /// The values of rows `rows`, in that order, for GPU upload. Rows past the column's end come
-    /// back missing: a placeholder derived table, shown until its job finishes, can be shorter than
-    /// the rows requested.
+    /// back missing, because a placeholder derived table, shown until its job finishes, can be
+    /// shorter than the rows requested.
     pub(crate) fn pick(&self, rows: &[u32]) -> Values {
         let from: Vec<Option<usize>> = rows.iter().map(|&r| Some(r as usize).filter(|&r| r < self.len)).collect();
         let sources: Vec<&Values> = std::iter::once(&self.like).chain(self.pages.iter().map(|p| &p.values)).collect();
@@ -163,8 +164,8 @@ impl Column {
     /// A copy with `len` rows (at least the current count) and `writes` applied.
     ///
     /// `writes` are `(row, source row)` pairs sorted by row, each row at most once. Pages that no
-    /// write touches and whose length is unchanged keep their ids. New rows not written are
-    /// missing. Errors if `source` holds another kind of value.
+    /// write touches and that keep their length keep their ids. New rows not written are missing.
+    /// Returns an error if `source` holds another kind of value.
     pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &Column) -> Result<Column> {
         debug_assert!(len >= self.len);
         debug_assert!(writes.windows(2).all(|w| w[0].0 < w[1].0));
@@ -227,8 +228,8 @@ impl Column {
     }
 
     /// Whether the first `rows` rows are unchanged since `before`, which this column was written
-    /// from a few writes back: every write since is at row `rows` or later, as with appends.
-    /// Writes a page no longer remembers count as changes.
+    /// from a few writes back. That holds when every write since is at row `rows` or later, as with
+    /// appends. Writes that a page no longer remembers count as changes.
     pub(crate) fn kept_below(&self, before: &Column, rows: usize) -> bool {
         (0..rows.div_ceil(PAGE_ROWS)).all(|p| {
             let (Some(now), Some(then)) = (self.pages.get(p), before.pages.get(p)) else { return false };
@@ -240,8 +241,8 @@ impl Column {
 
     /// The rows written or added since `before`, in order. For each page that differs from
     /// `before`'s, these are the rows it remembers writing since, or all its rows if it does not
-    /// remember `before`'s page. A page `before` lacks counts whole. Rows of `before` past this
-    /// column's end are not included.
+    /// remember `before`'s page. A page that `before` lacks counts in full. Rows of `before` past
+    /// this column's end are not included.
     pub(crate) fn written_since(&self, before: &Column) -> Vec<usize> {
         let mut rows = Vec::new();
         for (p, now) in self.pages.iter().enumerate() {
@@ -259,7 +260,7 @@ impl Column {
     }
 
     /// All values in row order as one [`Values`]. A single-page column returns its page without
-    /// copying; otherwise the pages are concatenated.
+    /// copying. Otherwise the pages are concatenated.
     pub(crate) fn values(&self) -> Values {
         match &self.pages[..] {
             [] => self.like.clone(),
@@ -269,8 +270,8 @@ impl Column {
     }
 
     /// The rows whose values differ from `before`'s, in order. When the pages remember the rows
-    /// written since, only those rows are compared; otherwise every row of each changed page is
-    /// (see [`differing`](Column::differing)).
+    /// written since, only those rows are compared. Otherwise every row of each changed page is
+    /// compared (see [`differing`](Column::differing)).
     pub(crate) fn changed_since(&self, before: &Column) -> Vec<usize> {
         let Some(written) = self.rows_since(before) else { return self.differing(before) };
         written
@@ -284,8 +285,8 @@ impl Column {
         self.pages[row / PAGE_ROWS].values.same_row(row % PAGE_ROWS, values, at)
     }
 
-    /// The rows whose values differ from `before`'s, in order. Pages with the same id are skipped;
-    /// the rest are compared row by row. Rows past the shorter column's end count as different.
+    /// The rows whose values differ from `before`'s, in order. Pages with the same id are skipped,
+    /// and the rest are compared row by row. Rows past the shorter column's end count as different.
     pub(crate) fn differing(&self, before: &Column) -> Vec<usize> {
         let mut rows = Vec::new();
         for p in 0..self.pages.len().max(before.pages.len()) {
@@ -351,7 +352,7 @@ mod tests {
     fn differing_rows_are_found_in_the_pages_that_changed() {
         let column = Column::new(&numbers(PAGE_ROWS * 2 + 10));
         let source = Column::new(&Values::from(vec![-1.0_f64, (PAGE_ROWS + 4) as f64]));
-        // Row 3 of the second page changes; its row 4 is rewritten with the value it already had.
+        // Row 3 of the second page changes. Its row 4 is rewritten with the value it already had.
         let written = column.write(column.len(), &[(PAGE_ROWS + 3, 0), (PAGE_ROWS + 4, 1)], &source);
         let written = written.expect("numbers");
         assert_eq!(written.differing(&column), [PAGE_ROWS + 3]);
@@ -373,7 +374,7 @@ mod tests {
         assert_eq!(Column::new(&numbers(PAGE_ROWS + 10)).rows_since(&column), None, "nor from another column");
         let grown = column.write(column.len() + 2, &[], &source).expect("numbers");
         assert_eq!(grown.rows_since(&column), None, "a changed row count lists no rows");
-        // A page remembers a few writes back; beyond that it counts as entirely rewritten.
+        // A page remembers a few writes back. Beyond that it counts as entirely rewritten.
         let mut near = once.clone();
         for _ in 1..REMEMBERED {
             near = near.write(near.len(), &[(7, 0)], &source).expect("numbers");

@@ -20,7 +20,7 @@ fn main() -> Result<(), latkit::Error> {
 ```
 
 - `default-features = false`: data, patches, LATK, JSON reading, queries, expressions, colormaps,
-  GeoJSON, and images; no GPU dependency.
+  GeoJSON, and images, with no GPU dependency.
 - `gpu` (default): scenes, views, picking, layouts, and rendering into wgpu targets.
 - `native`: system fonts, file loading, jobs, and Windows Media Foundation video.
 - `web`: browser integration on `wasm32-unknown-unknown`.
@@ -28,8 +28,7 @@ fn main() -> Result<(), latkit::Error> {
 `cargo install latkit-cli` installs the `latkit` executable. `npm install latkit` installs
 the browser runtime and plain-data builders.
 
-The binary format uses 64-bit absolute frame indexes. Sampled values are `f32`; coordinates are
-`f64`.
-See the [format specification](https://latkit.readthedocs.io/en/latest/guide.html#bytes).
+The binary format uses 64-bit absolute frame indexes. Sampled values are `f32` and coordinates are
+`f64`. See the [format specification](https://latkit.readthedocs.io/en/latest/guide.html#bytes).
 
 MIT licensed. Third-party notices are in `THIRD_PARTY.md` and `colormaps/NOTICES.md`.

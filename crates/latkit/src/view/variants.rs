@@ -1,21 +1,22 @@
 //! The pipelines a scene uses, requested when the scene is shown, in three urgency tiers.
 //!
-//! Draw: for each kind of mark, its draw pipeline and the compute passes it needs (a stroke mark's
-//! for the path it follows), and each mark's channels for what they read. Text: labels, glyphs, the
-//! distance fields text is set in, and the overlay. Answer: the passes that transitions and comet
-//! carry use, the lit rows' draws, and for frames that take input, each kind of mark's probe
-//! program, which answers hover, picks, box selection, and row location.
+//! Draw: for each kind of mark, its draw pipeline and the compute passes it needs (for a stroke
+//! mark, those for the path it follows), and each mark's channel pipeline for what its channels
+//! read. Text: labels, glyphs, the distance fields text is set in, and the overlay. Answer: the
+//! passes that transitions and comet carry use, the lit rows' draws, and for frames that take
+//! input, each kind of mark's probe program, which answers hover, picks, box selection, and row
+//! location.
 //!
 //! The GPU compiles them through its queue, most urgent first ([`crate::gpu::pipelines`]). The view
 //! draws once its draw pipelines are ready, adds text once those are, and lights rows, probes, and
 //! answers queries once the rest are. So no frame waits on a compile, and nothing compiles at first
-//! use. Pipelines the scene never uses are never requested. A picture takes no input: it requests
+//! use. Pipelines the scene never uses are never requested. A picture takes no input. It requests
 //! everything it draws with, text, transitions, and lit rows at draw urgency, and draws once all of
 //! them are ready.
 //!
-//! Each pipeline is named once, here: the passes that serve every mark alike as constants, and a
-//! mark's own through [`MarkVariants`]. The view requests and runs them by these same names, so it
-//! runs only what it requested.
+//! Each pipeline is named once, here: the passes shared by every mark as constants, and each mark's
+//! own through [`MarkVariants`]. The view requests and runs them by these same names, so it runs
+//! only what it requested.
 
 use std::sync::Arc;
 
@@ -85,7 +86,7 @@ impl<'a> MarkVariants<'a> {
         self.kind.primitive().code()
     }
 
-    /// The shader drawing its rows, or with `lit`, the rows its focus lights; `None` for a face's
+    /// The shader drawing its rows, or with `lit`, the rows its focus lights. `None` for a face's
     /// lit rows.
     pub(super) fn shader(self, lit: bool) -> Option<Shader> {
         let (every, focus) = self.kind.shaders(self.custom.is_some());
@@ -102,13 +103,13 @@ impl<'a> MarkVariants<'a> {
         })
     }
 
-    /// The pass measuring its rows' extents for a fit; `None` for edges and faces.
+    /// The pass measuring its rows' extents for a fit. `None` for edges and faces.
     pub(super) fn bounds(self) -> Option<Variant> {
         Some(Variant::compute(Shader::Bounds, self.kind.bounds()?).path(self.path))
     }
 
-    /// Whether a list may number its instances, for rows whose counts differ: edges between ends,
-    /// which may pass through bends, follow great circles, or bow into lanes; and every path
+    /// Whether a list may number its instances, for rows whose counts differ: edges between ends
+    /// (which may pass through bends, follow great circles, or bow into lanes), and every path
     /// through geometry, including areas' triangles.
     fn listed(self) -> bool {
         self.path == PATH_GEOMETRY || (self.kind == MarkKind::Edges && self.path == PATH_ENDS)
@@ -126,8 +127,8 @@ impl<'a> MarkVariants<'a> {
         Variant::probe(shader, self.primitive()).path(self.path)
     }
 
-    /// The label passes: `claim`, which claims the room its labels would cover, then `texts`, which
-    /// finds the texts the labels that kept their room need.
+    /// The label passes: `claim`, which claims the screen cells its labels would cover, then
+    /// `texts`, which finds the texts needed by the labels that kept their cells.
     pub(super) fn label_passes(self) -> [Variant; 2] {
         ["claim", "texts"]
             .map(|entry| Variant::compute(Shader::Texts, entry).path(self.path).primitive(self.primitive()))
@@ -191,7 +192,7 @@ impl View {
             } else {
                 ([draw, text, changes, lit].concat(), Vec::new(), Vec::new())
             };
-            // Several marks can need the same pipeline; request each once.
+            // Several marks can need the same pipeline. Request each once.
             for asked in [&mut drawing, &mut texts, &mut answering] {
                 let mut seen = rustc_hash::FxHashSet::default();
                 asked.retain(|need| seen.insert(need.clone()));
@@ -206,8 +207,8 @@ impl View {
         at
     }
 
-    /// Each mark's channel pipeline, built for what its channels read. Before its data is known,
-    /// they read neither joins, samples, nor the view.
+    /// Each mark's channel pipeline, built for what its channels read. Before the mark's data is
+    /// known, it reads no joins, samples, or view state.
     fn channels(&self) -> Vec<Asked> {
         let mut channels: Vec<Asked> = Vec::new();
         for shown in &self.marks {
@@ -298,9 +299,9 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     stages
 }
 
-/// Adds `mark`'s pipelines to `stages`: its draw and compute passes, for the path a stroke follows
-/// or an area's triangle geometry; its lit-row draw, for the rows that hover, selection, and edge
-/// endpoints light; its probe; and its labels.
+/// Adds `mark`'s pipelines to `stages`: its draw and compute passes (for the path a stroke follows
+/// or an area's triangle geometry), its lit-row draw (for the rows that hover, selection, and edge
+/// endpoints light), its probe, and its labels.
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, &scene.space);
     stages.draw.extend(variants.draw(false, format, samples));

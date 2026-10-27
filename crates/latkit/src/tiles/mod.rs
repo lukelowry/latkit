@@ -1,9 +1,9 @@
 //! Tiles: data fetched in pieces, by key, as views need them. Each key is covered by its parent,
-//! up to a root: an earth tile by the tile one zoom out, and a span of a sampled field's history by
-//! the span one level of detail up. Until a piece is fetched, its nearest fetched ancestor is drawn
-//! as a placeholder.
+//! up to a root. An earth tile's parent is the tile one zoom out. A span of a sampled field's
+//! history has the span one level of detail up. Until a piece is fetched, its nearest fetched
+//! ancestor is drawn as a placeholder.
 //!
-//! A GPU fetches and decodes each source's pieces once for every view drawing them (`cache`,
+//! A GPU fetches and decodes each source's pieces once for all the views drawing them (`cache`,
 //! `tiling`). Each view draws the pieces its camera needs as a dataset of its own (`sets`).
 
 mod cache;
@@ -21,26 +21,27 @@ pub(crate) use sets::{Asked, Reading, TileSets};
 
 use crate::data::Name;
 
-/// A dataset fetched in pieces as views need them: a [`Source`](crate::Source) that each view draws
-/// as a dataset of its own, holding the pieces its camera needs. All views of a GPU drawing tiles
-/// from one URL share what is fetched. The source's first bytes determine the kind of tiles.
+/// A dataset fetched in pieces as views need them. Each view draws this
+/// [`Source`](crate::Source) as a dataset of its own, holding the pieces its camera needs. Views on
+/// one GPU that draw tiles from the same URL share what is fetched. The source's first bytes
+/// determine the kind of tiles.
 ///
-/// **Time tiles**: a `frames.json` manifest as
-/// [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes it, for a dataset whose sampled fields'
-/// histories are fetched in spans. A line tracing a field fetches the level of detail its plot
-/// window draws at. A mark showing a field fetches the frames around the view's coordinate. A span
-/// still loading draws the coarser span above it.
+/// **Time tiles**: a `frames.json` manifest, as
+/// [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes it. The history of each sampled field
+/// is fetched in spans. A line tracing a field fetches the level of detail the plot window draws
+/// at. A mark showing a field fetches the frames around the view's coordinate. While a span loads,
+/// the coarser span above it is drawn.
 ///
 /// **Vector tiles**: a PMTiles archive, a TileJSON document, or a URL template with `{z}`, `{x}`,
-/// and `{y}`, fetched as the camera needs them. Each layer becomes a table of its features of the
-/// geometry type its marks draw: polygons for [`Areas`](crate::Areas), lines for
-/// [`Lines`](crate::Lines), and points for [`Vertices`](crate::Vertices). When marks of several
-/// kinds draw one layer, polygons come first. A table named `layer:polygons`, `layer:lines`, or
-/// `layer:points` holds that geometry type regardless of its marks. Each feature's properties
-/// become fields. Row ids are stable, derived from the tile and the feature's index in it, so a
-/// refetched tile keeps its rows' selection. A tile arriving appends its rows to the view's
-/// dataset, which keeps the rows of tiles it no longer draws until they outnumber the rows it
-/// draws.
+/// and `{y}`. Tiles are fetched as the camera needs them. Each layer becomes a table of the
+/// layer's features that have the geometry type its marks draw: polygons for
+/// [`Areas`](crate::Areas), lines for [`Lines`](crate::Lines), and points for
+/// [`Vertices`](crate::Vertices). When marks of several kinds draw one layer, polygons come first.
+/// A table named `layer:polygons`, `layer:lines`, or `layer:points` holds that geometry type
+/// whatever its marks. Each feature's properties become fields. Row ids are stable, derived from
+/// the tile and the feature's index in it, so a refetched tile keeps its rows' selection. An
+/// arriving tile appends its rows to the view's dataset. The dataset keeps the rows of tiles it no
+/// longer draws until they outnumber the rows it draws.
 ///
 /// ```
 /// # use latkit::Tiles;
@@ -72,7 +73,7 @@ impl Tiles {
 
 /// A tiling key: one piece of a source, covered by its parent up to a root.
 pub(crate) trait Key: Copy + Eq + Hash + Ord + Debug {
-    /// The key covering this one, one level up; `None` at the root.
+    /// The key covering this one, one level up, or `None` at the root.
     fn parent(self) -> Option<Self>;
 }
 

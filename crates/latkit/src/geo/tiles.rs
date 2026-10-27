@@ -75,8 +75,8 @@ pub(crate) struct Decoded {
     pub(crate) shapes: Vec<Shaping>,
 }
 
-/// Most rows one tile adds to a table; further rows are dropped. Row ids are the tile's id times
-/// this plus the row's index, so ids from different tiles never collide.
+/// The most rows one tile adds to a table. Further rows are dropped. Row ids are the tile's id
+/// times this plus the row's index, so ids from different tiles never collide.
 pub(crate) const FEATURES: u64 = 1 << 20;
 
 /// Name of the field holding a tile row's geometry.

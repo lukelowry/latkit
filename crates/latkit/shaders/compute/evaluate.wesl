@@ -1,7 +1,7 @@
-// The expression machine: each row of a mark runs the mark's channels, which store into the row's
-// state words. All rows run the same instructions, so control flow stays uniform across a
-// workgroup. A dispatch covers the row pages the mark lists: only the changed pages, when only some
-// rows changed.
+// The expression machine, a stack interpreter. Each row of a mark runs the mark's channels, which
+// store into the row's state words. All rows run the same instructions, so control flow stays
+// uniform across a workgroup. A dispatch covers the row pages the mark lists, which are only the
+// changed pages when only some rows changed.
 //
 // Evaluation ignores transitions. During a transition, channels store into the settled words, and
 // each frame `ease` computes what every row shows from its frozen and settled words by the mark's

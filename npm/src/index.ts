@@ -4,10 +4,9 @@
  * latkit: columnar data drawn with WebGPU.
  *
  * Scenes, expressions, and patches are plain data and need no WebAssembly. Datasets, views,
- * pictures, and the colormap functions need it, so `await load()` first. Every `Handle` also works
- * with `using`. The references above make the browser types latkit names (canvases, `Blob`,
- * `Response`, `WebAssembly.Module`) and `Symbol.dispose` typecheck whatever a project's `lib`
- * setting, in Node.js too.
+ * pictures, and the colormap functions do, so call `await load()` first. Every `Handle` works with
+ * `using`. The references above let the browser types latkit uses (canvases, `Blob`, `Response`,
+ * `WebAssembly.Module`) and `Symbol.dispose` typecheck under any `lib` setting, in Node.js too.
  */
 export type * from './inputs.js';
 export type * from './outputs.js';

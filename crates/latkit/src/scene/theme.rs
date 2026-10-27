@@ -8,13 +8,12 @@ use serde_json::Value;
 use super::form::{Presets, preset_schema, presets};
 use crate::Color;
 
-/// Default colors and sizes for marks whose options leave them unset or missing, and the look of
-/// text, focus, comets, and each space, grouped by subject. Write a base theme's name (`"dark"` or
-/// `"light"`), or options over a base (`base`, dark by default); a group's options override only
-/// the base values they set.
+/// Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped
+/// by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
+/// names the base and defaults to `dark`. Each option replaces only the base value it sets.
 ///
-/// Lengths are in the space's unit (units in a diagram, CSS pixels elsewhere), except the text halo
-/// and the focus glow, which are always in CSS pixels.
+/// Lengths are in CSS pixels, or units in a diagram. The text halo and the focus glow are always in
+/// CSS pixels.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = with_base)]
@@ -23,7 +22,7 @@ pub struct Theme {
     pub background: Color,
     /// The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule.
     pub grid: Color,
-    /// The color a colormap gives a missing value, such as a row whose field has none.
+    /// The color a colormap gives a missing value, such as a row with no value in the field.
     pub missing: Color,
     /// The dash period: one dash and one gap of equal length.
     pub dash: f32,
@@ -82,19 +81,20 @@ pub struct VertexTheme {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
 pub struct EdgeTheme {
-    /// The edge color. `None` blends the colors of each edge's two vertices; a diagram's wires and
-    /// edges without `ends` (nets and poles) then take the text color.
+    /// The edge color. `None` blends the colors of each edge's two vertices. With `None`, a
+    /// diagram's wires and edges without `ends` (nets and poles) use the text color.
     pub color: Option<Color>,
     /// The edge width, in the space's unit.
     pub width: f32,
     /// In a diagram, the distance between edges joining the same two vertices and between parallel
     /// orthogonal wires. Wires keep twice this distance from blocks where they can.
     pub spacing: f32,
-    /// Outside a diagram, how far edges joining the same two vertices bow apart: each lane by this
-    /// fraction of the edge's length at its middle. A family spreads at most eight lanes wide, and
-    /// more lanes pack closer. A bow is part of the drawing, so it scales with the zoom.
+    /// Outside a diagram, how far edges joining the same two vertices bow apart. Each lane bows out
+    /// by this fraction of the edge's length, measured at its middle. Parallel edges spread at most
+    /// eight lanes wide, and more lanes pack closer. Bows scale with the zoom.
     pub bow: f32,
-    /// How far an arrowhead extends beyond the edge's width: a head is this plus the width long.
+    /// How far an arrowhead extends beyond the edge's width. A head's length is this plus the
+    /// width.
     pub arrow: f32,
 }
 
@@ -125,36 +125,36 @@ pub struct AreaTheme {
 pub struct FocusTheme {
     /// The glow color around hovered rows.
     pub hover: Color,
-    /// The glow color around selected rows; `None` glows in each row's own color.
+    /// The glow color around selected rows. `None` uses each row's own color.
     pub selected: Option<Color>,
     /// How far the hover and selection glows reach, in CSS pixels.
     pub glow: f32,
     /// The opacity of rows outside the selection while any row is selected, from 0 to 1.
     pub dim: f32,
-    /// The scale factor for a hovered vertex sized in CSS pixels; vertices sized in units only
+    /// The scale factor for a hovered vertex sized in CSS pixels. Vertices sized in units only
     /// glow.
     pub grow: f32,
 }
 
-/// How comets flowing along edges and lines look: a round head, brightest at its middle, trailing a
+/// How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
 /// tail that thins and fades.
 ///
-/// `spacing` and `length` must be in the same unit, which also measures each row's `flow` speed. In
-/// position units (degrees on the earth), comets are part of the drawing: they scale with the zoom
-/// and stay in place along their lines. In CSS pixels, they keep their on-screen size and speed. A
-/// plain number is in the space's unit.
+/// `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
+/// In position units (degrees on the earth), comets scale with the zoom and stay in place along
+/// their lines. In CSS pixels, they keep their size and speed on screen. A plain number is in the
+/// space's unit.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
 pub struct FlowTheme {
-    /// The comet color. Its alpha sets how strongly a comet covers its stroke; a fully transparent
+    /// The comet color. Its alpha sets how strongly a comet covers its stroke. A fully transparent
     /// color turns comets off.
     pub color: Color,
     /// The distance between consecutive comets.
     pub spacing: Length,
     /// The length of a comet's tail behind its head.
     pub length: Length,
-    /// The width of a comet's head, in the space's unit; never narrower than its stroke.
+    /// The width of a comet's head, in the space's unit. A head is never narrower than its stroke.
     pub width: f32,
 }
 
@@ -165,9 +165,9 @@ pub struct FlowTheme {
 pub struct DiagramTheme {
     /// The fill color of group containers.
     pub group: Color,
-    /// The color of the one-unit border around blocks and groups; `None` draws no border.
+    /// The color of the one-unit border around blocks and groups. `None` draws no border.
     pub outline: Option<Color>,
-    /// The corner radius of blocks and groups; a block marker can set its own.
+    /// The corner radius of blocks and groups. A block marker can set its own.
     pub corner: f32,
     /// The width of ports.
     pub port_size: f32,
@@ -184,9 +184,9 @@ pub struct DiagramTheme {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
 pub struct ShadowTheme {
-    /// The color a shadow darkens toward; its alpha sets how dark the shadow is under the block.
+    /// The color a shadow darkens toward. Its alpha sets how dark the shadow is under the block.
     pub color: Color,
-    /// How far a shadow falls below its block or group; its edge softens over the same distance.
+    /// How far a shadow falls below its block or group. Its edge softens over the same distance.
     pub lift: f32,
 }
 
@@ -212,9 +212,9 @@ pub struct PlotTheme {
     pub playhead: Color,
 }
 
-/// A theme length: a plain number in the space's unit (units in a diagram, CSS pixels elsewhere),
+/// A theme length: a plain number in the space's unit (CSS pixels, or units in a diagram),
 /// `{ "px": n }` in CSS pixels at any zoom, or `{ "units": n }` in position units (degrees on the
-/// earth), which scale as the view zooms.
+/// earth), which scale with the zoom.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Length {
     /// In the space's unit.
@@ -298,18 +298,18 @@ impl JsonSchema for Length {
             })
         };
         schemars::json_schema!({
-            "description": "A length: a number in the space's unit (units in a diagram, CSS pixels elsewhere), `{ px }` in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow on screen as the view zooms in.",
+            "description": "A length: a number in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
             "anyOf": [
                 { "type": "number" },
-                exactly("px", "CSS pixels, at any zoom."),
-                exactly("units", "Position units (degrees on the earth), which grow on screen as the view zooms in."),
+                exactly("px", "CSS pixels, the same at any zoom."),
+                exactly("units", "Position units (degrees on the earth), which grow as the view zooms in."),
             ],
         })
     }
 }
 
 impl Theme {
-    /// Light marks on a dark background; the default theme.
+    /// Light marks on a dark background. The default theme.
     pub fn dark() -> Theme {
         let hex = |hex: &str| Color::hex(hex).expect("hex");
         Theme {
@@ -394,7 +394,7 @@ impl Default for Theme {
 
 presets!(Theme { "dark" => Theme::dark(), "light" => Theme::light() }; read by hand);
 
-/// Reads a base theme's name, or options merged over the base's serialized form group by group: an
+/// Reads a base theme's name, or options merged group by group over the base's serialized form. An
 /// omitted option keeps the base's value, and `null` clears an optional color.
 impl<'de> Deserialize<'de> for Theme {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Theme, D::Error> {
@@ -423,8 +423,8 @@ impl Serialize for Theme {
     }
 }
 
-/// Merges `options` into `base` object by object, except that a length object replaces the base's
-/// value whole.
+/// Merges `options` into `base` object by object. A length object replaces the base's value
+/// outright.
 fn over(base: &mut Value, options: Value) {
     match (base, options) {
         (Value::Object(base), Value::Object(options)) if !is_length(&options) => {
@@ -450,7 +450,7 @@ fn merged(schema: &mut schemars::Schema) {
 fn with_base(schema: &mut schemars::Schema) {
     merged(schema);
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        let base = serde_json::json!({ "description": "The theme these options change; dark unless set.", "enum": Theme::NAMES });
+        let base = serde_json::json!({ "description": "The theme these options change. Defaults to `dark`.", "enum": Theme::NAMES });
         properties.insert("base".into(), base);
     }
     preset_schema::<Theme>(schema);

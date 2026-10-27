@@ -6,7 +6,7 @@ use super::values::Value;
 /// Shared, immutable geometries of one depth: nested offsets over `[x, y]` coordinates.
 ///
 /// Depth 0 is a point per row, 1 a path, 2 parts (rings of a polygon, or the paths of a
-/// multi-path), and 3 polygons. `levels[0]` is indexed by row; each level's offsets index the next
+/// multi-path), and 3 polygons. `levels[0]` is indexed by row. Each level's offsets index the next
 /// level, and the last level indexes `coords`. Offsets are absolute, so slicing rows slices only
 /// `levels[0]`.
 #[derive(Clone)]
@@ -54,7 +54,7 @@ impl Geometry {
         &self.coords
     }
 
-    /// The number of coordinates its rows cover; for a slice, only its own rows'.
+    /// The number of coordinates its rows cover. For a slice, only its own rows count.
     pub(crate) fn points(&self) -> usize {
         let Some(rows) = self.levels.first() else { return self.coords.len() };
         let mut span = rows[0] as usize..rows[rows.len() - 1] as usize;
@@ -212,7 +212,7 @@ impl GeometryBuilder {
         for level in 0..self.levels.len() {
             let offsets = &source.levels[level];
             let (first, last) = (offsets[span.start], offsets[span.end]);
-            // Items already pushed at the next level; this run's offsets continue from there.
+            // Items already pushed at the next level. This run's offsets continue from there.
             let next = match self.levels.get(level + 1) {
                 Some(below) => below.len() - 1,
                 None => self.coords.len(),

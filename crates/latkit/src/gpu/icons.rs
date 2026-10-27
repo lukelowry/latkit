@@ -1,6 +1,5 @@
-//! Icons on the GPU: each image an icon marker shows is a layer of one texture array, scaled to fit
-//! a common size. Markers reference their images, and markers showing the same image share its
-//! layer.
+//! Icons on the GPU. Each image an icon marker shows is scaled to a common size and stored as one
+//! layer of a texture array. Markers showing the same image share its layer.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -12,8 +11,8 @@ use crate::gpu::work::Queue;
 /// Texels across an icon layer.
 const SIZE: u32 = 64;
 
-/// An image's pixels, the same when shared: markers showing one image share its layer. Holding the
-/// pixels keeps their address, which identifies them, from being reused.
+/// An image's pixels, compared by address so that markers showing one image share its layer.
+/// Holding the pixels keeps the address from being reused.
 pub(crate) struct Pixels(Arc<[u8]>);
 
 impl PartialEq for Pixels {

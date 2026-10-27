@@ -1,5 +1,5 @@
-//! Queries answered from what the frame drew: every row within reach of a point, nearest first, the
-//! rows in a Shift-drag box, a row's screen position, and the sample a traced line passes through.
+//! Queries answered from what the frame drew: every row near a point, nearest first, the rows in a
+//! Shift-drag box, a row's screen position, and the sample a traced line passes through.
 
 #![cfg(feature = "gpu")]
 
@@ -141,8 +141,8 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
         let hits = answer(&gpu, &mut view, pending);
         assert!(!hits.is_empty(), "the middle of the lattice is in reach");
         for hit in &hits {
-            // A vertex is in reach at its outline, but its point is its center, a marker radius
-            // further.
+            // A vertex is within the radius at its outline, but its point is its center, a marker
+            // radius further.
             let reach = (hit.point[0] - c).hypot(hit.point[1] - c);
             let what = format!("{} {} at {:?}, {reach} away", hit.row.table, hit.row.id, hit.point);
             assert!(hit.distance <= radius && reach <= radius + 8.0, "{what}");

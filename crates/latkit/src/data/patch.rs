@@ -10,12 +10,12 @@ use super::table::{Field, Reference, Table};
 use super::values::Values;
 use crate::{Error, Result};
 
-/// A list of changes to a dataset, applied in order and atomically by
-/// [`Data::apply`](crate::Data::apply): every change applies, or none does.
+/// A list of changes to a dataset. [`Data::apply`](crate::Data::apply) applies them in order, all
+/// at once or not at all.
 ///
-/// Patches are built in code or decoded from bytes and JSON; every change reaches a dataset this
-/// way. A patch made by [`Patch::to`] names its dataset, as patches in a stream of several
-/// datasets do, and applying it to another dataset is an error.
+/// Patches are built in code or decoded from bytes or JSON. They are the only way to change a
+/// dataset. A patch made by [`Patch::to`] names its dataset, as patches in a stream of several
+/// datasets do. Applying it to another dataset is an error.
 #[derive(Clone, Default, Debug)]
 pub struct Patch {
     pub(crate) data: Option<Name>,
@@ -28,12 +28,13 @@ pub(crate) enum Op {
     Axis { name: Name, unit: Name },
     /// Replaces a whole table, sampled fields included.
     Replace(Table),
-    /// Writes the given fields of the given rows. Unknown ids add rows; an unknown table is added.
+    /// Writes the given fields of the given rows. Unknown ids add rows, and an unknown table is
+    /// added.
     Set(Table),
-    /// Removes rows by id; ids that name no row are ignored.
+    /// Removes rows by id. Ids that name no row are ignored.
     Remove { table: Name, ids: Ids },
-    /// Records frames of sampled fields, values frame-major. Covers every row, or the rows `ids`
-    /// names; other rows keep their last values.
+    /// Records frames of sampled fields, with values frame-major. Covers every row, or only the
+    /// rows in `ids`. Other rows keep their last values.
     Append { table: Name, at: Vec<f64>, ids: Option<Ids>, fields: Vec<(Name, Values)> },
     /// Forgets every sampled field's frames before a coordinate.
     Forget { before: f64 },
@@ -47,7 +48,7 @@ impl Patch {
         Patch::default()
     }
 
-    /// An empty patch for dataset `data` only; applying it to another dataset is an error.
+    /// An empty patch for dataset `data` only. Applying it to another dataset is an error.
     pub fn to(data: impl Into<Name>) -> Patch {
         Patch { data: Some(data.into()), ops: Vec::new() }
     }
@@ -71,16 +72,16 @@ impl Patch {
         self
     }
 
-    /// Writes `table`'s fields for its rows. Rows with existing ids are updated, new ids add rows,
-    /// and fields `table` leaves out keep their values (missing for added rows). Adds the table if
-    /// none has its name.
+    /// Writes the fields of `table` for its rows. Rows with existing ids are updated and new ids
+    /// add rows. Fields that `table` leaves out keep their values, or are missing for added rows.
+    /// Adds the table if no table has its name.
     #[must_use]
     pub fn set(mut self, table: Table) -> Patch {
         self.ops.push(Op::Set(table));
         self
     }
 
-    /// Removes the rows of `table` with `ids`. Ids that match no row are ignored; a missing table
+    /// Removes the rows of `table` with `ids`. Ids that match no row are ignored. A missing table
     /// is an error.
     #[must_use]
     pub fn remove(mut self, table: impl Into<Name>, ids: impl Into<Ids>) -> Patch {
@@ -91,7 +92,7 @@ impl Patch {
     /// Records a frame of `table` at each axis coordinate in `at`. Each field gives a value per row
     /// per coordinate, frame-major: every row's value at the first coordinate, then at the next.
     ///
-    /// A field's first frame makes it sampled. Coordinates must be finite and must not decrease; at
+    /// A field's first frame makes it sampled. Coordinates must be finite and must not decrease. At
     /// equal coordinates, reads return the last frame.
     #[must_use]
     pub fn append<F, V>(
@@ -109,9 +110,9 @@ impl Patch {
         self
     }
 
-    /// Like [`append`](Patch::append), but records values only for the rows `ids` names: one per
-    /// named row per coordinate, frame-major. Other rows keep their last value. An id that names no
-    /// row is an error.
+    /// Like [`append`](Patch::append), but records values only for the rows in `ids`, one per row
+    /// per coordinate, frame-major. Other rows keep their last value. An id that names no row is an
+    /// error.
     #[must_use]
     pub fn append_rows<F, V>(
         mut self,
@@ -139,11 +140,11 @@ impl Patch {
     }
 
     /// Inserts a run of entries of sampled field `field` at level `level`, numbered from `first`,
-    /// as time tiles (such as `latkit tile` writes) store them. At level 0 the entries are frames:
-    /// one coordinate each in `at` and one value per row of `table` in `values`. At level `k` they
-    /// are buckets of `8^k` frames: each bucket's first and last frame's coordinates in `at`, and
-    /// in `values` every bucket's least value per row, followed by every bucket's greatest. NaN is
-    /// missing.
+    /// in the form time tiles store them (such as the tiles `latkit tile` writes). At level 0 the
+    /// entries are frames, each with one coordinate in `at` and one value per row of `table` in
+    /// `values`. At level `k` they are buckets of `8^k` frames. `at` holds the coordinates of each
+    /// bucket's first and last frame. `values` holds every bucket's least value per row, followed
+    /// by every bucket's greatest. NaN is missing.
     ///
     /// None of the entries may already be present. Entries outside the field's frame range extend
     /// it, and frames in any gap stay missing.
@@ -190,17 +191,17 @@ impl Patch {
     }
 
     /// Decodes one whole frame written by [`Patch::to_bytes`] or
-    /// [`Snapshot::to_bytes`](crate::Snapshot::to_bytes), with default [`DecodeLimits`]. Errors if
-    /// `bytes` are malformed, truncated, or extend past the frame.
+    /// [`Snapshot::to_bytes`](crate::Snapshot::to_bytes), with default [`DecodeLimits`]. Returns an
+    /// error if `bytes` are malformed, truncated, or extend past the frame.
     pub fn from_bytes(bytes: &[u8]) -> Result<Patch> {
         super::bytes::decode(bytes)
     }
 
-    /// Decodes the back-to-back frames `read` carries, as from a file, pipe, or socket, yielding
-    /// each patch once its frame has fully arrived. Each frame states its length up front, so one
-    /// longer than `limits` allows fails with [`Error::Limit`](crate::Error::Limit) before its body
-    /// is read, and an untrusted stream buffers only one frame at a time. The iterator ends when
-    /// the input ends between frames, or after the first error.
+    /// Decodes back-to-back frames from `read`, such as a file, pipe, or socket. Yields each patch
+    /// once its whole frame has arrived. Each frame states its length up front, so a frame longer
+    /// than `limits` allows fails with [`Error::Limit`](crate::Error::Limit) before its body is
+    /// read. An untrusted stream buffers at most one frame at a time. The iterator ends when the
+    /// input ends between frames, or after the first error.
     ///
     /// ```
     /// # use latkit::{DecodeLimits, Ids, Patch, Table};
@@ -224,8 +225,8 @@ impl From<Table> for Patch {
     }
 }
 
-/// Consecutive appends to the same fields of every row of one table, merged into one append so
-/// each field is written once, however many changes carried its frames.
+/// Consecutive appends to the same fields of every row of one table, merged into one append. Each
+/// field is then written once, however many changes carried its frames.
 pub(crate) struct Appends {
     table: Name,
     at: Vec<f64>,
@@ -280,8 +281,8 @@ impl Appends {
 }
 
 impl Op {
-    /// An [`Op::Frames`] of entries of `level` from `first`; the entry count follows from the
-    /// number of coordinates in `at`.
+    /// An [`Op::Frames`] of entries at `level`, numbered from `first`. The number of coordinates in
+    /// `at` sets the entry count.
     pub(crate) fn frames(table: Name, field: Name, level: u32, first: u64, at: Vec<f64>, values: Vec<f32>) -> Op {
         let entries = (at.len() / super::samples::coordinates(level)) as u64;
         let run = Run { level, entries: first..first.saturating_add(entries) };

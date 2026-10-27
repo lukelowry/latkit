@@ -9,25 +9,26 @@ use crate::gpu::shaders as wgsl;
 use crate::{Color, Expr, Image};
 
 /// How a vertex is drawn: a shape's name, `"block"`, or
-/// `{ shape | block | gauge | pie | icon | wgsl: options }`. An ellipse by default.
+/// `{ shape | block | gauge | pie | icon | wgsl: options }`. Defaults to an ellipse.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = preset_schema::<Marker>)]
 pub enum Marker {
     /// A filled shape.
     Shape(Shape),
-    /// A rectangle with rounded corners that holds its label inside, as a diagram's blocks do.
+    /// A rectangle with rounded corners that holds its label inside, like a diagram's blocks.
     Block {
-        /// Corner radius in the space's unit (units in a diagram, CSS pixels elsewhere); the
-        /// theme's `diagram.corner` unless set.
+        /// Corner radius in CSS pixels, or units in a diagram. Defaults to the theme's
+        /// `diagram.corner`.
         #[serde(default)]
         corner: Option<f32>,
     },
-    /// A shape's outline, filled to `fill` from 0 to 1: around a circle, or upward in other shapes.
+    /// A shape's outline, filled to `fill` (0 to 1). A circle fills around its edge, and other
+    /// shapes fill upward.
     Gauge {
         /// How full each row's gauge is, from 0 to 1.
         fill: Expr,
-        /// The outline's shape; an ellipse by default.
+        /// The outline's shape. Defaults to an ellipse.
         #[serde(default)]
         shape: Shape,
     },
@@ -37,11 +38,11 @@ pub enum Marker {
         slices: Vec<Expr>,
         /// Each slice's color.
         colors: Vec<Color>,
-        /// The hole in the middle, as a fraction of the radius; 0 by default.
+        /// The hole in the middle, as a fraction of the radius. Defaults to 0.
         #[serde(default)]
         hole: f32,
     },
-    /// One of `images`, fitted to the marker's box; `index` picks the image for each row.
+    /// One of `images`, fitted to the marker's box. `index` picks the image for each row.
     Icon {
         /// The images.
         images: Vec<Image>,

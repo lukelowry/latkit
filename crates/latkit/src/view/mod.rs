@@ -1,4 +1,4 @@
-//! The view: draws a scene from its sources into any wgpu frame, and handles input.
+//! The view. Draws a scene from its sources into any wgpu frame and handles input.
 
 mod axes;
 mod camera;
@@ -74,15 +74,15 @@ pub struct Frame<'a> {
     /// Physical pixels per CSS pixel.
     pub pixel_ratio: f32,
     /// Seconds on the caller's clock: an animation frame's timestamp, a video frame's time, or a
-    /// test's step. The view's motion advances by the change since the previous frame, clamped to
-    /// between 0 and 0.25 seconds, so it never jumps or runs backward.
+    /// test's step. Motion advances by the time since the previous frame, clamped to between 0 and
+    /// 0.25 seconds, so it never jumps or runs backward.
     pub time: f64,
 }
 
-/// Draws a scene from its sources, which are named datasets, and handles input.
+/// Draws a scene from its sources (named datasets) and handles input.
 ///
 /// The application owns the data and the scene. The view owns the camera, the axis coordinate, the
-/// selection, and the GPU state its frames need. It has no loop of its own:
+/// selection, and the GPU state for drawing. It has no loop of its own:
 /// [`render`](View::render) records a frame into an encoder the application submits, and
 /// [`input`](View::input) takes the platform's pointer and key events.
 ///
@@ -102,7 +102,7 @@ pub struct Frame<'a> {
 /// ```
 pub struct View {
     gpu: Gpu,
-    /// This view's id among its GPU's views. The GPU's ledger grants budget shares by it.
+    /// This view's id among the GPU's views. The GPU's ledger keys budget shares by it.
     id: u64,
     scene: Scene,
     /// Incremented whenever the scene changes.
@@ -112,43 +112,43 @@ pub struct View {
     /// The version of each dataset the view draws, sorted by name: a given snapshot, the latest
     /// version of a `Data` as of the last refresh, or the tiles loaded so far.
     snapshots: Vec<Snapshot>,
-    /// What the camera chose to draw of each paged table this frame.
+    /// The parts of each paged table the camera chose to draw this frame.
     choices: crate::derive::tiled::Choices,
     /// Each paged table's drawing, by dataset and table.
     drawings: crate::data::Keyed<(Name, Name), drawing::Drawn>,
-    /// Per dataset, the marks' rebuilt tables, waiting for their pages before they replace the
-    /// current ones.
+    /// The marks' rebuilt tables, per dataset. They replace the current tables once their pages
+    /// arrive.
     staged: crate::data::Keyed<Name, sync::Staged>,
-    /// Whether this frame's pages found room in the arena, and if not, how the next frame finds it.
+    /// Whether this frame's pages fit in the arena, and if not, how the next frame makes space.
     room: frame::Room,
-    /// Set once the view has reported that what it draws exceeds the GPU budget. Until a new data
-    /// version publishes, running out of room and a due fit (with nothing drawn to measure) no
-    /// longer request frames.
+    /// Set once the view has reported that its data exceeds the GPU budget. Until a new data
+    /// version publishes, a full arena and a due fit (with nothing drawn to measure) stop
+    /// requesting frames.
     limited: bool,
-    /// Tables the view derives from the data and the scene, row for row beside the tables it draws.
-    /// Marks read them like data.
+    /// Tables derived from the data and the scene, row for row with the drawn tables. Marks read
+    /// them like data.
     derived: Derivations,
     marks: Vec<Shown>,
     camera: Camera,
     rig: Rig,
     /// CSS pixels kept clear at the top, right, bottom, and left.
     insets: [f32; 4],
-    /// The room a plot's axes take around its area, with the stamp of the scene and pixel ratio it
-    /// was measured for.
+    /// The space a plot's axes take around the plot area, and the stamp of the scene and pixel
+    /// ratio it was measured for.
     gutters: (u64, axes::Gutters),
     fitting: Fitting,
-    /// The value range a plot without one shows, fitted to its traces.
+    /// The value range fitted to the traces, shown when the plot camera sets none.
     plot_y: Option<[f64; 2]>,
     at: f64,
     clock: Clock,
     effect_time: f64,
     events: Events,
-    /// The signal that arriving work wakes, and a waker for it, which readbacks, jobs, and fetches
-    /// hold.
+    /// The signal that finished work wakes, and a waker for it. Readbacks, jobs, and fetches keep
+    /// clones of the waker.
     signal: Arc<wake::Signal>,
     waker: Waker,
     resources: Option<Resources>,
-    /// Where each mark's words lie in the program buffer.
+    /// Each mark's word range in the program buffer.
     regions: Regions,
     /// Something visible changed since the last frame.
     changed: bool,
@@ -167,7 +167,7 @@ pub struct View {
     /// The same, while the text pipelines compile. Meanwhile frames draw without labels, glyphs,
     /// and the overlay.
     texting: Option<u64>,
-    /// The callers waiting on the arrangement under way.
+    /// Callers waiting for the arrangement in progress.
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Whether the platform requests reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
@@ -178,23 +178,24 @@ pub struct View {
     focus: Focus,
     probing: Probing,
     queries: query::Queries,
-    /// Words the marks' segment lists take at the front of the lists buffer.
+    /// The number of words the marks' segment lists use at the start of the lists buffer.
     list_words: u32,
     labels: labels::Labels,
     gestures: Gestures,
-    /// The pointer over the view: its point, keys held, and device; `None` once it has left.
+    /// The pointer over the view: its point, pressed modifier keys, and device. `None` once it
+    /// leaves.
     pointer: Option<Trigger>,
     /// The size of the last frame in CSS pixels, and its pixel ratio.
     size: [f64; 2],
     pixel_ratio: f32,
-    /// How each table draws within the view's share of the budget, and the costs behind it.
+    /// How each table draws within the view's budget share, and the costs the plan used.
     planning: plan::Planning,
-    /// The most pixel columns a trace spans, as the plan allows.
+    /// The most pixel columns a trace may span, set by the plan.
     trace_columns: u32,
     stats: Stats,
 }
 
-/// Views created so far; gives each view its id.
+/// The number of views created, used to give each view its id.
 static VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl View {
@@ -273,8 +274,8 @@ impl View {
 
     /// Replaces the scene, compiling its marks against the latest version of each
     /// [`Data`](crate::Data) source. A mark that matches a current mark by kind, data, table, and
-    /// name keeps its state, and eases to its new description. Errors if the scene is invalid or a
-    /// mark fails to compile; the current scene then stays.
+    /// name keeps its state and eases to its new options. Errors if the scene is invalid or a mark
+    /// fails to compile, and the current scene stays.
     pub fn set_scene(&mut self, scene: Scene) -> Result<()> {
         scene.check()?;
         let gpu = self.gpu.clone();
@@ -343,9 +344,9 @@ impl View {
             self.camera = Camera::default_for(&scene.space);
             self.plot_y = None;
         }
-        // Fits framed the old space's positions, and motion under way moves through them; neither
-        // carries over to another kind of space. The next frame places the camera within the new
-        // space's reach.
+        // Fit bounds and running motion refer to the old space's positions, so they do not carry
+        // over to another kind of space. The next frame places the camera within the new space's
+        // zoom and pan limits.
         if kind_changed {
             self.rig.bounds = None;
             self.rig.hold();
@@ -355,13 +356,13 @@ impl View {
         }
         self.scene = scene;
         self.scene_version += 1;
-        // Request the new scene's pipelines afresh. They compile while its data syncs and its sheet
-        // is arranged; those it shares with the old scene are compiled already.
+        // Request the new scene's pipelines again. They compile while its data syncs and its sheet
+        // is arranged. Pipelines shared with the old scene are already compiled.
         self.asked.clear();
         self.compiling = None;
         self.answering = None;
         self.texting = None;
-        // If the GPU's samples per pixel are known, start compiling now; else the first frame asks.
+        // If the GPU's sample count is known, start compiling now. Otherwise the first frame asks.
         if let Some(samples) = gpu.samples() {
             self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
         }
@@ -372,11 +373,11 @@ impl View {
     }
 
     /// Replaces the view's sources, each a named dataset. A [`Data`](crate::Data) draws its latest
-    /// version, from the frame after each patch applies. A [`Snapshot`] draws as given.
-    /// [`Tiles`](crate::Tiles) loads the pieces the view needs.
+    /// version, starting the frame after each patch applies. A [`Snapshot`] draws as given.
+    /// [`Tiles`](crate::Tiles) loads the pieces in view.
     ///
-    /// This is cheap: unchanged pages are shared, and only changed fields evaluate again. A mark
-    /// whose dataset no longer fits it draws nothing, and the next frame reports why, unless a new
+    /// This is cheap: unchanged pages are shared and only changed fields evaluate again. A mark
+    /// whose dataset no longer fits it draws nothing, and the next frame reports why unless a new
     /// scene replaces that mark first. So the sources and the scene can be set in either order.
     /// Errors if two sources share a name.
     pub fn set_sources<S: Into<Source>>(&mut self, sources: impl IntoIterator<Item = S>) -> Result<()> {
@@ -440,12 +441,12 @@ impl View {
         Some(&self.snapshots[i])
     }
 
-    /// Brings every source up to date before the frame reads it: the tiles the camera and the plot
-    /// window need, with the pieces that arrived for them, and the latest version of each changed
-    /// `Data`. A frame compiles marks, requests pipelines, derives, and draws from one version of
-    /// each dataset, so a newly added field is never read by a pipeline not requested for it. While
-    /// a picture holds the view, `Data` sources stay at the versions taken when it began, but tiles
-    /// still arrive.
+    /// Updates every source before the frame reads it: the tiles the camera and the plot window
+    /// need, the pieces that arrived for them, and the latest version of each changed `Data`. A
+    /// frame compiles marks, requests pipelines, derives, and draws from one version of each
+    /// dataset, so no pipeline reads a field added after the pipeline was requested. While a shot
+    /// keeps the view's data unchanged, `Data` sources stay at the versions taken when it began,
+    /// but tiles still arrive.
     fn refresh(&mut self, inner: &mut crate::gpu::Inner) {
         self.update_tiles(inner);
         for data in self.derived.tiles.take_changed() {
@@ -499,8 +500,8 @@ impl View {
         self.fitting.plot_due = true;
     }
 
-    /// Stops drawing dataset `name`, releasing what its marks hold of it, until a source provides
-    /// it again.
+    /// Stops drawing dataset `name` until a source provides it again, and releases the GPU tables
+    /// its marks use.
     fn forget(&mut self, name: &str, inner: &mut crate::gpu::Inner) {
         self.derived.tiles.remove(name, &mut inner.tiles);
         self.snapshots.retain(|d| d.name() != name);
@@ -543,12 +544,12 @@ impl View {
     /// Moves to `camera` at once, stopping any flight or coasting. Like every setter, it emits no
     /// event. Ignored unless `camera` [fits](Camera::fits) the scene's space.
     ///
-    /// Like every camera move, it keeps the camera within reach. The earth bounds the reach, as
-    /// [`Earth`](crate::Earth) describes, in the part of the view inside the
-    /// [`insets`](View::insets). Fits narrow it to 3 zoom levels out and 8 in from what they
-    /// framed, with the center no farther outside the framed box than its size. The view learns its
-    /// size from its first frame. When its size, insets, or space change, the next frame moves the
-    /// camera back within reach and emits a [`Camera`](Event::Camera) event.
+    /// Every camera move stays within the camera's zoom and pan limits. On the earth, the limits
+    /// are those [`Earth`](crate::Earth) describes, for the part of the view inside the
+    /// [`insets`](View::insets). After a fit, the camera zooms at most 3 levels out and 8 in from
+    /// the fit, and its center stays within one box size of the box the fit framed. The view learns
+    /// its size from its first frame. When its size, insets, or space change, the next frame moves
+    /// the camera back within the limits and emits a [`Camera`](Event::Camera) event.
     pub fn set_camera(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
             self.rig.hold();
@@ -584,9 +585,9 @@ impl View {
         if self.moves() { self.scene.ease } else { Duration::ZERO }
     }
 
-    /// Eases to `camera`, kept within reach as [`set_camera`](View::set_camera) keeps it, over
-    /// twice the scene's ease, on the view's clock. Ignored unless `camera` [fits](Camera::fits)
-    /// the scene's space.
+    /// Eases to `camera` over twice the scene's ease, on the view's clock. The target stays within
+    /// the zoom and pan limits [`set_camera`](View::set_camera) describes. Ignored unless `camera`
+    /// [fits](Camera::fits) the scene's space.
     pub fn fly(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
             let seconds = (self.ease().max(Duration::from_millis(1)) * 2).as_secs_f64();
@@ -596,27 +597,27 @@ impl View {
         }
     }
 
-    /// The screen point of `position` (x, y, and elevation), in CSS pixels from the top left;
+    /// The screen point of `position` (x, y, and elevation), in CSS pixels from the top left.
     /// `None` behind the camera. Use it to anchor overlays to what the view draws.
     pub fn screen(&self, position: [f64; 3]) -> Option<[f32; 2]> {
         let view = self.projected();
         view.screen(view.world(position)).map(|s| [s[0] as f32, s[1] as f32])
     }
 
-    /// The ground position under screen point `point` (CSS pixels from the top left): on a plane,
-    /// the point at elevation 0; on the earth, the point on the map or globe; on a plot, the values
-    /// there. `None` where the point misses the ground.
+    /// The ground position under screen point `point` (CSS pixels from the top left). On a plane
+    /// it is the point at elevation 0, on the earth the point on the map or globe, and on a plot
+    /// the values there. `None` where the point misses the ground.
     pub fn position(&self, point: [f32; 2]) -> Option<[f64; 3]> {
         let view = self.projected();
         view.ground(point.map(f64::from)).map(|w| view.position(w))
     }
 
-    /// Lays out every vertex row without a position again, by the scene's layout: a diagram's
-    /// blocks, or the points of a plane or the earth. Without this call, laid-out positions
-    /// persist, and rows added later are placed around them.
+    /// Runs the scene's layout again on every vertex row without a position: a diagram's blocks, or
+    /// the points on a plane or the earth. Without this call, laid-out positions persist and rows
+    /// added later are placed around them.
     ///
-    /// Once the layout finishes, resolves to one patch per dataset that writes each laid-out row's
-    /// position into its mark's position fields (or its point `geometry`). Applying the patches
+    /// Once the layout finishes, resolves to one patch per dataset. Each patch writes the laid-out
+    /// positions into the mark's position fields (or its point `geometry`). Applying the patches
     /// makes the positions part of the data. Marks whose position is not a pair of fields are
     /// skipped.
     pub fn arrange(&mut self) -> Pending<Vec<Patch>> {
@@ -667,7 +668,7 @@ impl View {
         self.rig.orbit
     }
 
-    /// Turns the camera about its center at `degrees_per_second`; zero stops it. A diagram never
+    /// Turns the camera about its center at `degrees_per_second`. Zero stops it. A diagram never
     /// turns.
     pub fn set_orbit(&mut self, degrees_per_second: f64) {
         let turns = degrees_per_second.is_finite() && !matches!(self.scene.space, Space::Diagram(_));
@@ -728,20 +729,20 @@ impl View {
     /// a changed page waits to upload, a tile shows its ancestor, a large table shows an even
     /// sample of its rows, a row keeps its old position until a layout arrives, a wire shows an
     /// elbow until its route arrives, an area shows its previous triangles, a label shows its
-    /// estimated size, or a fit is due. Shots and videos wait for it, and
+    /// estimated size, or a fit is due. Shots and videos wait until it is true.
     /// [`waiting`](View::waiting) lists what is pending.
     pub fn complete(&self) -> bool {
         self.waiting.is_empty()
     }
 
-    /// The kinds of pending work the last frame showed placeholders for; empty once the view is
-    /// [complete](View::complete). [`Waiting`](Event::Waiting) events report its changes.
+    /// The kinds of pending work the last frame showed placeholders for. Empty once the view is
+    /// [complete](View::complete). [`Waiting`](Event::Waiting) events report changes to it.
     pub fn waiting(&self) -> Waiting {
         self.waiting
     }
 
-    /// The events since the last call, in order: see [`Event`]. An intent whose details depend on a
-    /// pick is held until the pick finishes, and later intents wait behind it.
+    /// The events since the last call, in order. See [`Event`]. An intent that needs a pick result
+    /// waits until the pick finishes, and later intents wait behind it.
     pub fn events(&mut self) -> impl Iterator<Item = Event> + use<> {
         self.events.drain()
     }
@@ -758,7 +759,7 @@ impl View {
     }
 
     /// Whether a [`Shot`](crate::Shot) or a [`Video`](crate::Video) is drawing the view. Nothing
-    /// else should draw it meanwhile, since a view draws at one size at a time; a canvas or window
+    /// else should draw it meanwhile, since a view draws at one size at a time. A canvas or window
     /// keeps showing its last frame.
     pub fn lent(&self) -> bool {
         self.signal.lent()
@@ -776,15 +777,15 @@ impl View {
         self.events.error().cloned()
     }
 
-    /// Whether the view can draw frames into `format` at `pixel_ratio` now, with every pipeline its
-    /// scene draws with compiled.
+    /// Whether the view can draw frames into `format` at `pixel_ratio` now, because the scene's
+    /// draw pipelines for that target are compiled.
     ///
     /// The first call for a target requests every pipeline the scene uses, draw pipelines first. In
     /// a browser they compile in parallel off the GPU thread, and each one that finishes wakes the
-    /// view. Until the draw pipelines are ready, the view draws nothing new, so whatever shows its
-    /// frames keeps the last one, as a canvas does. Until the rest are ready, frames omit text and
-    /// lit rows, and probes and queries wait. Natively the view can always draw.
-    /// [`render`](View::render) checks this itself and records nothing until it is true.
+    /// view. Until the draw pipelines are ready, the view draws nothing new, so a canvas keeps
+    /// showing the last frame. Until the rest are ready, frames omit text and lit rows, and probes
+    /// and queries wait. Natively the view can always draw. [`render`](View::render) checks this
+    /// itself and records nothing until it is true.
     pub fn ready(&mut self, format: wgpu::TextureFormat, pixel_ratio: f32) -> bool {
         self.ready_for(format, pixel_ratio, true)
     }
@@ -830,11 +831,11 @@ impl View {
     }
 
     /// Whether a new frame would differ from the last one: something changed, animates, or streams
-    /// in, or pending work arrived. While the view only waits, it needs no frame; the work it waits
+    /// in, or pending work arrived. While the view only waits, it needs no frame. The work it waits
     /// on wakes it.
     pub fn needs_render(&self) -> bool {
         let landed = || self.gpu.0.lock().pipelines.landed();
-        // While draw pipelines compile, the view draws nothing new; each finished compile wakes it.
+        // While draw pipelines compile, the view draws nothing new. Each finished compile wakes it.
         if let Some(seen) = self.compiling {
             return landed() != seen;
         }
@@ -863,8 +864,8 @@ impl View {
 
     /// Whether the view wants a frame: one that would differ
     /// ([`needs_render`](View::needs_render)), or one that only checks whether a touch has been
-    /// held long enough to open a menu. A loop that draws on demand draws while this is true, as a
-    /// canvas does. A video repeats its last frame instead of drawing frames that only check.
+    /// pressed long enough to open a menu. A loop that draws on demand, like a canvas, draws while
+    /// this is true. A video repeats its last frame rather than draw frames that only check.
     pub fn wants_frame(&self) -> bool {
         self.needs_render() || (self.compiling.is_none() && self.holding())
     }
@@ -875,8 +876,8 @@ impl View {
         self.scene.theme.flow.color.a > 0.0 && self.marks.iter().any(|m| m.drawable() && m.mark.flows())
     }
 
-    /// Whether the next frame, taking `input` or not, has work this one left: pages to upload past
-    /// the frame's budget, pages that found no room this frame, a due fit, probe, or query, tile
+    /// Whether this frame left work for the next one (taking `input` or not): pages over the
+    /// frame's upload budget, pages that did not fit in the arena, a due fit, probe, or query, tile
     /// pieces to take, or a transition to begin. Nothing else would wake the view for these. Jobs,
     /// texts, fetches, and readbacks wake it themselves when they arrive.
     fn due(&self, input: bool) -> bool {
@@ -893,10 +894,10 @@ impl View {
         self.signal.ask();
     }
 
-    /// The pending work a frame drawn now would show placeholders for: see
+    /// The pending work a frame drawn now would show placeholders for. See
     /// [`complete`](View::complete). A mark waits for its dataset until a source provides it. A
-    /// mark that failed, or whose dataset comes from tiles (which may never hold its table), waits
-    /// for nothing.
+    /// mark that failed, or whose dataset comes from tiles (which may never contain its table),
+    /// waits for nothing.
     fn under_way(&self) -> Waiting {
         let marks = || self.marks.iter().filter(|m| m.compiled.is_some());
         let given = |m: &Shown| {
@@ -921,9 +922,8 @@ impl View {
         }
     }
 
-    /// Whether something is easing to a rest: a transition, a flight, coasting, or a tile fade.
-    /// Orbits, comets, and other motion that lasts as long as it is shown never settle, and do not
-    /// count.
+    /// Whether something is easing to rest: a transition, a flight, coasting, or a tile fade.
+    /// Orbits, comets, and other continuous motion never settle and do not count.
     pub(crate) fn easing(&self) -> bool {
         self.rig.easing() || self.fading() || self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some())
     }
@@ -971,8 +971,8 @@ impl View {
         self.projected_with(&self.drawn_camera())
     }
 
-    /// The projection through `camera`, with a plot's missing value range filled in as the frame
-    /// fills it.
+    /// The projection through `camera`. A plot camera without a value range uses the fitted one,
+    /// as the frame does.
     fn projected_with(&self, camera: &Camera) -> Projected {
         let camera = match *camera {
             Camera::Plot { x, y: None } => Camera::Plot { x, y: Some(self.plot_y.unwrap_or([0.0, 1.0])) },

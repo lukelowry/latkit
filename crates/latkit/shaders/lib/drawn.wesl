@@ -9,7 +9,7 @@ import package::lib::lists::lists;
 
 struct DrawnRow {
     row: u32,
-    // Opacity and scale factors while its tile fades in or out; 1 otherwise.
+    // Opacity and scale factors while its tile fades in or out. 1 otherwise.
     presence: f32,
     growth: f32,
     // Whether its tile is leaving. A leaving row ignores the pointer.

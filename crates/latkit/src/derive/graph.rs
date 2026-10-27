@@ -76,8 +76,8 @@ pub(crate) fn drawing(vertex_marks: &[VertexMark<'_>], data: &Name, table: &Name
     vertex_marks.iter().position(|vm| vm.data.name() == data && vm.table.name() == table)
 }
 
-/// The position row `row`'s data gives it: from the mark's position fields, else its point geometry
-/// (finite points only). `None` where the data gives none.
+/// Row `row`'s position from its data: the mark's position fields, else its point geometry (finite
+/// points only). `None` where the data gives none.
 pub(crate) fn position(mark: &Vertices, rows: &Rows<'_>, row: usize) -> Option<[f64; 2]> {
     match &mark.position {
         Some([x, y]) => Some([rows.number(x, row)?, rows.number(y, row)?]),
@@ -115,8 +115,9 @@ pub(crate) fn links(marks: &[VertexMark<'_>], edge_marks: &[EdgeMark<'_>]) -> Ve
     links
 }
 
-/// How an edge mark's rows meet vertices: the two endpoint references, each with the first vertex
-/// index of the table it references; or, for a net table, every port reference to its rows.
+/// How an edge mark's rows meet vertices. For an edge table, the two endpoint references, each with
+/// the first vertex index of the table it references. For a net table, every port reference to its
+/// rows.
 pub(crate) struct Joins<'a> {
     ends: Option<[(&'a Reference, usize); 2]>,
     ports: Vec<Naming<'a>>,

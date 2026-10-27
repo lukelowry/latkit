@@ -1,14 +1,14 @@
-//! The text atlas. The host rasterizes each run once at `TEXT_BASE`, and the GPU turns it into a
-//! distance field reaching `TEXT_SPREAD` texels past the text's edge, packed on shelves of one
-//! texture. A distance field draws crisp at any size and also yields halos, so a run is rasterized
-//! once regardless of the size it shows at. The GPU builds the fields of every run rasterized in a
-//! frame in one batch before the frame draws (`compute/fields.wesl`).
+//! The text atlas. The host rasterizes each text run once at `TEXT_BASE`. The GPU turns the raster
+//! into a distance field that extends `TEXT_SPREAD` texels past the text's edge, and packs it on a
+//! shelf of one texture. A distance field draws crisp at any size and also gives halos, so each run
+//! is rasterized once whatever size it shows at. Before a frame draws, the GPU builds the fields of
+//! every run rasterized in that frame in one batch (`compute/fields.wesl`).
 //!
-//! When no shelf has room, the least recently used shelf tall enough is cleared for the new run. A
-//! run counts as used when it is rasterized and whenever labels in view show it, and a shelf used
-//! this frame is never cleared, so visible text is not evicted. When every shelf is in use, the
-//! atlas is full for the rest of the frame and takes no more runs; it starts over only when nothing
-//! in it was used this frame. Views track evictions to drop stale references.
+//! When no shelf has space, the least recently used shelf that is tall enough is cleared for the
+//! new run. A run counts as used when it is rasterized and whenever labels in view show it. A shelf
+//! used this frame is never cleared, so visible text is not evicted. When every shelf is in use,
+//! the atlas is full for the rest of the frame and takes no more runs. It starts over only when
+//! nothing in it was used this frame. Views track evictions to drop stale references.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ const SIZE: u32 = 4096;
 const GAP: u32 = 1;
 /// Texels of field around a run's coverage.
 const PAD: u32 = TEXT_SPREAD as u32;
-/// Most runs whose fields one dispatch builds, one workgroup layer each.
+/// The most runs one dispatch builds fields for, one workgroup layer each.
 const RUNS: usize = 65_535;
 
 /// Where `Atlas::hold` put a raster: at its glyphs on a shelf, nowhere because it has nothing to
@@ -170,8 +170,8 @@ impl Atlas {
         placed.map(|(glyphs, _)| glyphs)
     }
 
-    /// Forgets everything the host made: runs and failures. A new host rasterizes texts again in its
-    /// own fonts.
+    /// Forgets the runs and failures the host made. A new host rasterizes texts again in its own
+    /// fonts.
     pub(crate) fn rehost(&mut self) {
         self.runs.clear();
         self.waiting.clear();
@@ -179,7 +179,7 @@ impl Atlas {
         self.evictions += 1;
     }
 
-    /// Places `raster`'s field, queued to be built, and returns where.
+    /// Places `raster`'s field and queues it to be built. Returns where it was placed.
     fn hold(&mut self, raster: Raster) -> Held {
         let [w, h] = raster.size;
         if w == 0 || h == 0 {
@@ -313,8 +313,8 @@ impl Atlas {
         (self.work.buffer.clone(), self.work_group.clone().expect("built above"))
     }
 
-    /// Finds room for `width` by `height` texels, returning the shelf and top-left corner; `None`
-    /// when every shelf that could hold it was used this frame.
+    /// Finds space for `width` by `height` texels and returns the shelf and top-left corner.
+    /// Returns `None` when every shelf that could hold it was used this frame.
     fn place(&mut self, width: u32, height: u32) -> Option<(usize, [u32; 2])> {
         let fits = |s: &Shelf| s.height >= height && s.height <= height + height / 2 + 4;
         let at = self.shelves.iter().position(|s| fits(s) && s.used + width <= SIZE);
@@ -326,8 +326,8 @@ impl Atlas {
             })
         });
         let at = at.or_else(|| {
-            // Clear the shelf tall enough that was used least recently, a fitting height first,
-            // unless it was used this frame.
+            // Clear the least recently used shelf that is tall enough, preferring a fitting height.
+            // Shelves used this frame are skipped.
             let clock = self.clock;
             let oldest = (0..self.shelves.len())
                 .filter(|&i| self.shelves[i].height >= height && self.shelves[i].tick < clock)
@@ -366,7 +366,7 @@ mod tests {
     use super::*;
 
     /// The exact field of `width` by `height` coverage bytes, computed texel by texel: the least
-    /// squared distance to inside and to outside over every texel within reach.
+    /// squared distance to inside and to outside over every texel within `PAD` texels.
     fn exact(coverage: &[u8], width: usize, height: usize) -> Vec<u8> {
         let pad = i64::from(PAD);
         let (w, h) = (width as i64 + 2 * pad, height as i64 + 2 * pad);

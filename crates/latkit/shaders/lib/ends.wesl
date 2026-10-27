@@ -1,7 +1,7 @@
 // Resolves each end of an edge or face row to a held row of the vertex mark that draws the end's
 // table. A row's ends name places in that table's order, and places stay fixed as the camera moves.
-// Their held rows change, because the vertex mark's drawing makes pages and kept rows resident in
-// its slots as the camera moves. So no channel stores an end's held row. The expression machine's
+// Their held rows change as the camera moves, because the vertex mark makes other pages and kept
+// rows resident in its slots. So no channel stores an end's held row. The expression machine's
 // end step resolves it for the rows whose ends changed, and for every row once the vertices moved.
 // It writes end `k` into the row's kind word `k`, which draws, probes, and normals read.
 

@@ -18,11 +18,11 @@
         },
         "layout": {
           "$ref": "#/$defs/Layout",
-          "description": "How the view places vertex rows that have no position: a diagram's blocks, or points on a\nplane or the earth. `none` by default."
+          "description": "How the view places vertex rows that have no position, such as a diagram's blocks or points\non a plane or the earth. Defaults to `none`."
         },
         "theme": {
           "$ref": "#/$defs/Theme",
-          "description": "Default colors and sizes, and the look of text, focus, and each space; `dark` by default."
+          "description": "Default colors and sizes, and the look of text, focus, and each space. Defaults to `dark`."
         },
         "controls": {
           "$ref": "#/$defs/Controls",
@@ -31,7 +31,7 @@
         "ease": {
           "type": "number",
           "format": "double",
-          "description": "Seconds over which scene and data changes animate; 0.3 by default, 0 for none."
+          "description": "How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to\n0.3."
         },
         "title": {
           "type": [
@@ -80,7 +80,7 @@
               "additionalProperties": false
             },
             {
-              "description": "Plane units, with elevation; the camera can turn and tilt.",
+              "description": "Plane units, with elevation. The camera can turn and tilt.",
               "type": "object",
               "properties": {
                 "plane": {
@@ -121,7 +121,7 @@
           ]
         }
       ],
-      "description": "The coordinate space of a scene's positions: a name, or\n`{ plane | diagram | earth | plot: options }`.\n\nThe space sets the unit of lengths that do not name their own: units in a diagram, where a unit\nis a CSS pixel at zoom 0, and CSS pixels elsewhere. Only a diagram has ports, groups, nets, and\northogonal routes."
+      "description": "The coordinate space of a scene's positions: a name, or\n`{ plane | diagram | earth | plot: options }`.\n\nThe space sets the unit of lengths that do not name their own. In a diagram it is the diagram\nunit, one CSS pixel at zoom 0. Elsewhere it is the CSS pixel. Only a diagram has ports, groups,\nnets, and orthogonal routes."
     },
     "Earth": {
       "type": "object",
@@ -129,11 +129,11 @@
       "properties": {
         "projection": {
           "$ref": "#/$defs/Projection",
-          "description": "A flat web mercator map (`mercator`, the default) or a globe (`globe`)."
+          "description": "A flat web mercator map (`mercator`) or a globe (`globe`). Defaults to `mercator`."
         },
         "graticule": {
           "type": "boolean",
-          "description": "Whether lines of longitude and latitude cross the ground, in the theme's `grid` color.\nDefault `true`."
+          "description": "Whether lines of longitude and latitude cross the ground, in the theme's `grid` color.\nDefaults to `true`."
         },
         "daylight": {
           "type": [
@@ -141,14 +141,14 @@
             "null"
           ],
           "format": "double",
-          "description": "Lights the earth by the sun's position this many seconds after the Unix epoch, plus the\nview's axis coordinate when it has one. The night side darkens the ground and everything on\nit, down to the theme's `earth.night` brightness. Unset, the earth is lit evenly."
+          "description": "Lights the earth by the sun's position this many seconds after the Unix epoch, plus the\nview's axis coordinate when it has one. The night side darkens the ground and everything on\nit, down to the theme's `earth.night` brightness. When unset, the earth is lit evenly."
         },
         "atmosphere": {
           "type": "boolean",
-          "description": "Whether air glows around the globe, in the theme's `earth.atmosphere` color, brighter on the\nday side. Default `false`."
+          "description": "Whether air glows around the globe, in the theme's `earth.atmosphere` color, brighter on the\nday side. Defaults to `false`."
         }
       },
-      "description": "The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`\ncolors.\n\nA flat map is one world, drawn once. Its ground ends at the antimeridian and at Web Mercator's\nlatitude limit, and the camera zooms out until the whole world fits the view and pans until the\nworld's edges meet the view's. On a globe, longitude wraps, and the camera zooms out until the\nglobe spans a third of the view's shorter side."
+      "description": "The earth: positions are longitude and latitude in degrees. The ground uses the theme's `earth`\ncolors.\n\nA flat map shows the world once. Its ground ends at the antimeridian and at Web Mercator's\nlatitude limit. The camera zooms out until the whole world fits the view, and pans until the\nworld's edges meet the view's edges. On a globe, longitude wraps, and the camera zooms out until\nthe globe spans a third of the view's shorter side."
     },
     "Projection": {
       "oneOf": [
@@ -171,7 +171,7 @@
       "properties": {
         "grid": {
           "$ref": "#/$defs/Grid",
-          "description": "The grid drawn under the marks; lines 10 units apart by default."
+          "description": "The grid drawn under the marks. Defaults to lines 10 units apart."
         }
       },
       "description": "A plane: positions are in plane units."
@@ -219,7 +219,7 @@
                   "format": "double"
                 },
                 "snap": {
-                  "description": "Whether drag positions snap to the dots, in a diagram. Default `false`.",
+                  "description": "Whether drag positions snap to the dots, in a diagram. Defaults to `false`.",
                   "type": "boolean"
                 }
               },
@@ -233,7 +233,7 @@
             "dots"
           ],
           "additionalProperties": false,
-          "description": "Dots `pitch` units apart; with `snap`, a diagram's drags snap to them."
+          "description": "Dots `pitch` units apart. With `snap`, drags in a diagram snap to them."
         }
       ],
       "description": "A plane's or a diagram's grid: `\"off\"`, `{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`."
@@ -266,11 +266,11 @@
         },
         "grid": {
           "type": "boolean",
-          "description": "Whether grid lines cross the plot at the ticks. Default `true`."
+          "description": "Whether grid lines cross the plot at the ticks. Defaults to `true`."
         },
         "hidden": {
           "type": "boolean",
-          "description": "Whether the axis is hidden. Default `false`."
+          "description": "Whether the axis is hidden. Defaults to `false`."
         },
         "ticks": {
           "type": [
@@ -280,11 +280,11 @@
           "items": {
             "$ref": "#/$defs/Tick"
           },
-          "description": "Tick positions, each a value or `[value, label]`; a tick without a label shows its value.\nUnset, ticks fall at round values."
+          "description": "Tick positions, each a value or `[value, label]`. A tick without a label shows its value.\nWhen unset, ticks fall at round values."
         },
         "format": {
           "$ref": "#/$defs/Format",
-          "description": "How tick values are formatted; `auto` by default."
+          "description": "How tick values are formatted. Defaults to `auto`."
         },
         "precision": {
           "type": [
@@ -294,7 +294,7 @@
           "format": "uint8",
           "minimum": 0,
           "maximum": 15,
-          "description": "Decimal places of fixed values, or of the significand in scientific and engineering formats,\nat most 15. Unset, as many as the tick step needs."
+          "description": "Decimal places of fixed values, or of the significand in scientific and engineering formats.\nAt most 15. When unset, as many as the tick step needs."
         }
       },
       "description": "A plot axis."
@@ -356,13 +356,13 @@
       "properties": {
         "grid": {
           "$ref": "#/$defs/Grid",
-          "description": "The grid drawn under the marks; dots 20 units apart by default."
+          "description": "The grid drawn under the marks. Defaults to dots 20 units apart."
         }
       },
-      "description": "A flat sheet for diagrams, seen from straight above; the camera pans and zooms but does not\nturn. Positions are in units with y down. Lengths are in units too, a unit being a CSS pixel at\nzoom 0: sizes, padding, ports, strokes, text, and the theme's lengths. Sizes given with `px`,\nthe text halo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole\npicture. Only a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout\nplaces its blocks."
+      "description": "A flat sheet for diagrams, seen from straight above. The camera pans and zooms but does not\nturn. Positions are in units with y down, and a unit is a CSS pixel at zoom 0. Sizes, padding,\nports, strokes, text, and the theme's lengths are in units too. Sizes given with `px`, the text\nhalo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole picture.\nOnly a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout places its\nblocks."
     },
     "Mark": {
-      "description": "One table a scene draws. The key naming the mark's kind holds its dataset and table, beside its options: `{ vertices: [data, table], radius: 4 }`.",
+      "description": "One table a scene draws. The mark's kind is the key that holds its table, next to its options: `{ vertices: [data, table], radius: 4 }`.",
       "oneOf": [
         {
           "$ref": "#/$defs/Vertices"
@@ -415,18 +415,18 @@
               },
               "minItems": 2,
               "maxItems": 2,
-              "description": "Each row's x and y. Without a position, the point field that `geometry` names places rows,\nand the scene's layout places rows that have neither."
+              "description": "Each row's x and y. Rows without a position are placed by the point field `geometry` names.\nThe scene's layout places rows that have neither."
             },
             "geometry": {
               "type": [
                 "string",
                 "null"
               ],
-              "description": "The point field that places rows when `position` is not set; the field named `geometry` by\ndefault."
+              "description": "The point field that places rows when `position` is not set. Defaults to the field named\n`geometry`."
             },
             "elevation": {
               "$ref": "#/$defs/Expr",
-              "description": "Height above the ground; on the earth, a fraction of the earth's radius. Default 0. Not\nallowed in a diagram, which is flat."
+              "description": "Height above the ground. On the earth, a fraction of the earth's radius. Defaults to 0. Not\nallowed in a diagram, which is flat."
             },
             "radius": {
               "anyOf": [
@@ -437,7 +437,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Each row's radius, in the space's unit (units in a diagram, CSS pixels elsewhere) unless\ngiven with `px` or `units`; a diagram refuses `px`. The theme's `vertex.radius` unless set."
+              "description": "Each row's radius in CSS pixels, or units in a diagram, unless given with `px` or `units`.\nA diagram does not accept `px`. Defaults to the theme's `vertex.radius`."
             },
             "size": {
               "type": [
@@ -449,11 +449,11 @@
               },
               "minItems": 2,
               "maxItems": 2,
-              "description": "Each row's width and height, for markers that are not round, in the space's unit unless\ngiven with `px` or `units`; a diagram refuses `px`. In a diagram, a block without a size\nfits its label and ports."
+              "description": "Each row's width and height, for markers that are not round. In CSS pixels, or units in a\ndiagram, unless given with `px` or `units`. A diagram does not accept `px`. In a diagram, a\nblock without a size fits its label and ports."
             },
             "marker": {
               "$ref": "#/$defs/Marker",
-              "description": "How each row is drawn; an ellipse by default."
+              "description": "How each row is drawn. Defaults to an ellipse."
             },
             "ring": {
               "anyOf": [
@@ -464,7 +464,7 @@
                   "type": "null"
                 }
               ],
-              "description": "A ring around each row's marker in this color; a missing or transparent color draws none."
+              "description": "A ring around each row's marker in this color. A missing or transparent color draws no ring."
             },
             "ports": {
               "type": "array",
@@ -504,7 +504,7 @@
             },
             "shadow": {
               "type": "boolean",
-              "description": "Whether each block or group casts a shadow on the sheet, styled by the theme's\n`diagram.shadow`. Default `false`. Diagrams only."
+              "description": "Whether each block or group casts a shadow on the sheet, styled by the theme's\n`diagram.shadow`. Defaults to `false`. Diagrams only."
             }
           },
           "required": [
@@ -520,7 +520,7 @@
       "tsType": "ExprInput"
     },
     "ExprNode": {
-      "description": "A value for each row. A number or boolean is a constant, `null` is a missing value, a string starting with `$` reads the field it names, any other string is a CSS color, and an object is a node that computes a value.",
+      "description": "A value for each row. A number or boolean is a constant and `null` is missing. A string starting with `$` reads that field, and any other string is a CSS color. An object computes a value.",
       "anyOf": [
         {
           "type": "number"
@@ -529,11 +529,11 @@
           "type": "boolean"
         },
         {
-          "description": "A missing value. An option that evaluates to missing uses the theme's value.",
+          "description": "A missing value. An option that is missing uses the theme's value.",
           "type": "null"
         },
         {
-          "description": "A field's value in each row, or a color: `\"$kv\"` reads field `kv`, and any other string is a CSS color, such as `#ffb000` or `rebeccapurple`. A field whose name starts with `$` is written `{ \"field\": \"$x\" }`.",
+          "description": "A field or a color. `\"$kv\"` reads field `kv`. Any other string is a CSS color, such as `#ffb000` or `rebeccapurple`. Write a field named `$x` as `{ \"field\": \"$x\" }`.",
           "type": "string"
         },
         {
@@ -584,13 +584,13 @@
         },
         "step": {
           "type": "boolean",
-          "description": "For a sampled field, reads the last frame at or before the shown coordinate instead of\ninterpolating. Default `false`."
+          "description": "For a sampled field, reads the last frame at or before the shown coordinate instead of\ninterpolating. Defaults to `false`."
         }
       },
       "required": [
         "field"
       ],
-      "description": "A field's value in each row: from the mark's own table, or with `from`, from another\ndataset's table joined by row id. `\"$name\"` is the short form of `{ \"field\": \"name\" }`."
+      "description": "A field's value in each row, from the mark's own table. With `from`, it reads another\ndataset's table, joined by row id. `\"$name\"` is the short form of `{ \"field\": \"name\" }`."
     },
     "StateNode": {
       "type": "object",
@@ -680,7 +680,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "The values mapped to the range's ends; the extent of the values shown when unset.",
+          "description": "The values mapped to the range's ends. Defaults to the extent of the values shown.",
           "tsType": "[low: number, high: number]"
         }
       },
@@ -713,7 +713,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "The values mapped to the colormap's ends; the extent of the values shown when unset. A\ncategorical map ignores it.",
+          "description": "The values mapped to the colormap's ends. Defaults to the extent of the values shown. A\ncategorical map ignores it.",
           "tsType": "[low: number, high: number]"
         }
       },
@@ -735,7 +735,7 @@
       ]
     },
     "ColormapName": {
-      "description": "A colormap of the catalog.",
+      "description": "A colormap from the catalog.",
       "type": "string",
       "enum": [
         "amber",
@@ -822,7 +822,7 @@
               }
             ]
           },
-          "description": "The colors, blended in OKLab. Each is a color, spaced evenly between its neighbors as in a\nCSS gradient, or a `[place, color]` pair with a place from 0 to 1, in ascending order. A\ncategorical map takes one color per category, without places, at most 256."
+          "description": "The colors, blended in OKLab. Each is a color, spaced evenly between its neighbors like a\nCSS gradient, or a `[place, color]` pair with a place from 0 to 1. Places must ascend. A\ncategorical map takes one color per category, without places, at most 256."
         },
         "categories": {
           "type": "array",
@@ -864,7 +864,7 @@
       "description": "How a colormap maps values: `sequential` and `diverging` maps clamp, `cyclic` maps wrap, and\n`categorical` maps give each integer its own color."
     },
     "CallNode": {
-      "description": "An operation on values: an object whose one key names the operation and holds its arguments, such as `{ \"add\": [\"$a\", 1] }`. `is` and `contains` take a plain text as their second argument, which is neither a field nor a color.",
+      "description": "An operation, written as an object with one key: the operation's name, holding its arguments. For example `{ \"add\": [\"$a\", 1] }`. The second argument of `is` and `contains` is plain text, not a field or a color.",
       "anyOf": [
         {
           "type": "object",
@@ -1465,7 +1465,7 @@
       ]
     },
     "Size": {
-      "description": "A size: a value in the space's unit (units in a diagram, CSS pixels elsewhere), `{ px }` in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow on screen as the view zooms in.",
+      "description": "A size: a value in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
       "anyOf": [
         {
           "$ref": "#/$defs/Expr"
@@ -1522,7 +1522,7 @@
       "required": [
         "units"
       ],
-      "description": "A size in position units (degrees on the earth), regardless of the space's unit, so it scales\nas the view zooms. `atLeast` and `atMost` bound it in CSS pixels."
+      "description": "A size in position units (degrees on the earth), regardless of the space's unit. It scales with\nthe zoom. `atLeast` and `atMost` bound it in CSS pixels."
     },
     "Marker": {
       "anyOf": [
@@ -1552,14 +1552,14 @@
               "additionalProperties": false
             },
             {
-              "description": "A rectangle with rounded corners that holds its label inside, as a diagram's blocks do.",
+              "description": "A rectangle with rounded corners that holds its label inside, like a diagram's blocks.",
               "type": "object",
               "properties": {
                 "block": {
                   "type": "object",
                   "properties": {
                     "corner": {
-                      "description": "Corner radius in the space's unit (units in a diagram, CSS pixels elsewhere); the\ntheme's `diagram.corner` unless set.",
+                      "description": "Corner radius in CSS pixels, or units in a diagram. Defaults to the theme's\n`diagram.corner`.",
                       "type": [
                         "number",
                         "null"
@@ -1576,7 +1576,7 @@
               "additionalProperties": false
             },
             {
-              "description": "A shape's outline, filled to `fill` from 0 to 1: around a circle, or upward in other shapes.",
+              "description": "A shape's outline, filled to `fill` (0 to 1). A circle fills around its edge, and other\nshapes fill upward.",
               "type": "object",
               "properties": {
                 "gauge": {
@@ -1587,7 +1587,7 @@
                       "$ref": "#/$defs/Expr"
                     },
                     "shape": {
-                      "description": "The outline's shape; an ellipse by default.",
+                      "description": "The outline's shape. Defaults to an ellipse.",
                       "$ref": "#/$defs/Shape"
                     }
                   },
@@ -1626,7 +1626,7 @@
                       }
                     },
                     "hole": {
-                      "description": "The hole in the middle, as a fraction of the radius; 0 by default.",
+                      "description": "The hole in the middle, as a fraction of the radius. Defaults to 0.",
                       "type": "number",
                       "format": "float"
                     }
@@ -1644,7 +1644,7 @@
               "additionalProperties": false
             },
             {
-              "description": "One of `images`, fitted to the marker's box; `index` picks the image for each row.",
+              "description": "One of `images`, fitted to the marker's box. `index` picks the image for each row.",
               "type": "object",
               "properties": {
                 "icon": {
@@ -1707,7 +1707,7 @@
           ]
         }
       ],
-      "description": "How a vertex is drawn: a shape's name, `\"block\"`, or\n`{ shape | block | gauge | pie | icon | wgsl: options }`. An ellipse by default."
+      "description": "How a vertex is drawn: a shape's name, `\"block\"`, or\n`{ shape | block | gauge | pie | icon | wgsl: options }`. Defaults to an ellipse."
     },
     "Shape": {
       "oneOf": [
@@ -1801,11 +1801,11 @@
               ]
             },
             "shape": {
-              "description": "Its shape; an ellipse by default.",
+              "description": "Its shape. Defaults to an ellipse.",
               "$ref": "#/$defs/Shape"
             },
             "output": {
-              "description": "Whether it is an output, which drives its net. Default `false`, an input.",
+              "description": "Whether it is an output, which drives its net. Defaults to `false` (an input).",
               "type": "boolean"
             }
           },
@@ -1851,11 +1851,11 @@
           "type": "object",
           "properties": {
             "text": {
-              "description": "The text field to show, or a `when` whose values are each that field or missing. A row\nwhose text is missing or empty has no label. In a diagram the text reads only data, since the sheet\nsizes blocks around it.",
+              "description": "The text field to show, or a `when` that returns that field or missing. A row whose text is\nmissing or empty has no label. In a diagram, the text may read only data, since the sheet\nsizes blocks around it.",
               "$ref": "#/$defs/Expr"
             },
             "size": {
-              "description": "Font size in the space's unit (units in a diagram, CSS pixels elsewhere); the theme's\n`text.size` unless set.",
+              "description": "Font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's\n`text.size`.",
               "type": [
                 "number",
                 "null"
@@ -1863,7 +1863,7 @@
               "format": "float"
             },
             "color": {
-              "description": "Each row's text color; the theme's text color unless set.",
+              "description": "Each row's text color. Defaults to the theme's text color.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Expr"
@@ -1874,7 +1874,7 @@
               ]
             },
             "maxWidth": {
-              "description": "The width at which lines wrap, in the space's unit (units in a diagram, CSS pixels\nelsewhere).",
+              "description": "The width at which lines wrap, in CSS pixels, or diagram units in a diagram.",
               "type": [
                 "number",
                 "null"
@@ -1882,7 +1882,7 @@
               "format": "float"
             },
             "font": {
-              "description": "The CSS font family list for the text; the theme's `text.font` unless set.",
+              "description": "The CSS font family list for the text. Defaults to the theme's `text.font`.",
               "type": [
                 "string",
                 "null"
@@ -1895,7 +1895,7 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and following it every frame:\na text field, or options. A label shows wherever its row shows and its text fits the room the\nrow gives it, such as inside a block. Labels beside or along their rows never overlap: where they\nwould, the label of the row drawn on top shows, so a mark's `priority` decides, and a dense view\nlabels as many rows as fit. A row whose text is missing or empty has no label, so a `when` choosing\nbetween the text field and missing labels only the rows it names. In a diagram a label is part\nof the drawing: it scales with the zoom, fades out when too small to read, and shows wherever it\nfits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, or options. A label shows when its row is visible and its text fits, for example inside\na block.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows. In a diagram, a label scales with the zoom, fades out when too small to read, and\nshows wherever it fits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\n```"
     },
     "MarkOptions": {
       "type": "object",
@@ -1910,11 +1910,11 @@
               "type": "null"
             }
           ],
-          "description": "Each row's color: a CSS color, a value through a colormap, or a conditional choosing\nbetween colors. Unset, rows take the theme's default for the mark; faces instead\nblend their corners' colors."
+          "description": "Each row's color: a CSS color, a value through a colormap, or a conditional that\npicks between colors. Defaults to the theme's color for the mark. Faces default to a\nblend of their corners' colors."
         },
         "visible": {
           "$ref": "#/$defs/Expr",
-          "description": "Whether each row is drawn and can be picked. Default `true`."
+          "description": "Whether each row is drawn and can be picked. Defaults to `true`."
         },
         "priority": {
           "anyOf": [
@@ -1925,7 +1925,7 @@
               "type": "null"
             }
           ],
-          "description": "Each row's priority, from its data alone (no view state). Higher-priority rows draw\non top, their labels win where labels would overlap, and they are the last dropped\nwhen a table too large to draw whole is thinned to the tiles in view."
+          "description": "Each row's priority. It reads only data, not view state. Higher rows draw on top,\nkeep their labels where labels overlap, and are dropped last when a large table is\nthinned."
         },
         "name": {
           "type": [
@@ -1939,15 +1939,15 @@
             "boolean",
             "null"
           ],
-          "description": "Whether rows respond to hover, clicks, and picks. Unset, vertices, edges, faces, and\nplot traces do, and geometry (areas, and lines along paths such as coasts, borders,\nand roads) does not."
+          "description": "Whether rows respond to hover, clicks, and picks. Defaults to on for vertices,\nedges, faces, and plot traces, and off for geometry: areas, and lines along paths\nsuch as coasts, borders, and roads."
         },
         "select": {
           "type": "boolean",
-          "description": "Whether clicking a row selects it. Default `true`."
+          "description": "Whether clicking a row selects it. Defaults to `true`."
         },
         "drag": {
           "type": "boolean",
-          "description": "Whether pressing and moving a row drags it, reported as\n[`Event::Drag`](crate::Event), instead of panning the camera. Default `false`."
+          "description": "Whether pressing and moving a row drags it instead of panning the camera. Drags are\nreported as [`Event::Drag`](crate::Event). Defaults to `false`."
         },
         "label": {
           "anyOf": [
@@ -1965,7 +1965,7 @@
             "string",
             "null"
           ],
-          "description": "A legend of the mark's colors at the view's bottom right, under this title: a ticked\ncolormap across its domain, a cell for each category, or a swatch beside each name\nof a map's `categories`. `color` must map through a colormap with a fixed domain or\nnamed categories; in a conditional, `otherwise` is searched before the cases."
+          "description": "A legend of the mark's colors at the view's bottom right, with this title. It shows\na ticked colormap across its domain, a cell for each category, or a swatch for each\nname in the colormap's `categories`. `color` must map through a colormap with a\nfixed domain or named categories. In a conditional, `otherwise` is searched before\nthe cases."
         }
       }
     },
@@ -2030,15 +2030,15 @@
                   "type": "null"
                 }
               ],
-              "description": "How each row runs between its ends: geodesic on the earth and straight elsewhere unless set.\n`orthogonal` routes around blocks with rounded bends, in diagrams only."
+              "description": "How each row runs between its ends. Defaults to geodesic on the earth and straight\nelsewhere. `orthogonal` routes around blocks with rounded bends, in diagrams only."
             },
             "arrows": {
               "type": "boolean",
-              "description": "Whether each row has an arrowhead at its second end; a net has one at each input it reaches.\nDefault `false`."
+              "description": "Whether each row has an arrowhead at its second end. A net has one at each input it\nreaches. Defaults to `false`."
             },
             "poles": {
               "type": "boolean",
-              "description": "Draws each row as a pole from its own vertex down to the ground, on a plane or the earth.\nPoles take no `ends`, `bends`, or `joins`. Default `false`."
+              "description": "Draws each row as a pole from its own vertex down to the ground, on a plane or the earth.\nPoles take no `ends`, `bends`, or `joins`. Defaults to `false`."
             },
             "joins": {
               "type": [
@@ -2055,7 +2055,7 @@
               ],
               "minItems": 2,
               "maxItems": 2,
-              "description": "Draws each row as a net on a plane or the earth, joining the vertex rows of `table` whose\n`reference` field names it: a star from their center to each member.",
+              "description": "Draws each row as a net on a plane or the earth. The net joins the vertex rows of `table`\nwhose `reference` field names it, as a star from their center to each member.",
               "tsType": "[table: string, reference: string]"
             }
           },
@@ -2065,7 +2065,7 @@
         }
       ],
       "unevaluatedProperties": false,
-      "description": "Rows drawn as strokes between the vertices named by two reference fields: branches, links, wires. In a diagram, a row without ends is a net, joining every vertex port whose reference field names it."
+      "description": "Rows drawn as strokes between two vertices named by reference fields: branches, links, wires. In a diagram, a row without ends is a net. It joins every vertex port whose reference field names it."
     },
     "Route": {
       "oneOf": [
@@ -2100,15 +2100,15 @@
               "type": "null"
             }
           ],
-          "description": "Each row's width, in the space's unit (units in a diagram, CSS pixels elsewhere)\nunless given with `px` or `units`. The theme's width unless set."
+          "description": "Each row's width in CSS pixels, or units in a diagram, unless given with `px` or\n`units`. Defaults to the theme's width."
         },
         "dash": {
           "$ref": "#/$defs/Expr",
-          "description": "Whether each row is dashed, with the theme's `dash` period. Default `false`."
+          "description": "Whether each row is dashed, using the theme's `dash` period. Defaults to `false`."
         },
         "flow": {
           "$ref": "#/$defs/Expr",
-          "description": "The speed of comets flowing along each row, per second, in the unit of the theme's\n`flow` lengths. Negative speeds flow backward; 0, the default, draws no comets. When\nthe speed changes, comets continue from where they are."
+          "description": "The speed of comets along each row, per second, in the unit of the theme's `flow`\nlengths. Negative speeds flow backward. 0 draws no comets. Defaults to 0. When the\nspeed changes, comets continue from where they are."
         }
       }
     },
@@ -2146,7 +2146,7 @@
               },
               "minItems": 3,
               "maxItems": 3,
-              "description": "The reference fields naming each row's three vertices; required. Without a color, a face\nblends the colors of its corners.",
+              "description": "The reference fields naming each row's three vertices. Required. Without a color, a face\nblends the colors of its corners.",
               "tsType": "[a: string, b: string, c: string]"
             }
           },
@@ -2156,7 +2156,7 @@
         }
       ],
       "unevaluatedProperties": false,
-      "description": "Rows drawn as triangles between the vertices named by three reference fields: meshes, surfaces, and fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from above shows its exact colors."
+      "description": "Rows drawn as triangles between three vertices named by reference fields: meshes, surfaces, and fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from above shows its exact colors."
     },
     "Lines": {
       "allOf": [
@@ -2190,18 +2190,18 @@
                 "string",
                 "null"
               ],
-              "description": "The path or polygon field each row runs along; the field named `geometry` by default. Not\nallowed on a plot."
+              "description": "The path or polygon field each row runs along. Defaults to the field named `geometry`. Not\nallowed on a plot."
             },
             "trace": {
               "type": [
                 "string",
                 "null"
               ],
-              "description": "The sampled field each row traces across the data's axis; plots only, where it is required.\nA field with no frames yet draws nothing until its first frame arrives."
+              "description": "The sampled field each row traces across the data's axis. Required on a plot, and allowed\nonly there. A field with no frames yet draws nothing until its first frame arrives."
             },
             "interpolation": {
               "$ref": "#/$defs/Interpolation",
-              "description": "How each row runs between its samples on a plot; `linear` by default."
+              "description": "How each row runs between its samples on a plot. Defaults to `linear`."
             }
           },
           "required": [
@@ -2210,7 +2210,7 @@
         }
       ],
       "unevaluatedProperties": false,
-      "description": "Rows drawn as lines along a path field (roads, rivers, borders) or a polygon field's rings (area outlines). On a plot, each row instead traces a sampled field's history across the data's axis, as a monitor does. On the earth, paths follow the globe's curve and stay whole across the antimeridian."
+      "description": "Rows drawn as lines along a path field (roads, rivers, borders) or a polygon field's rings (area outlines). On a plot, each row traces a sampled field's history across the data's axis, like a monitor. On the earth, paths follow the globe's curve and stay unbroken across the antimeridian."
     },
     "Interpolation": {
       "oneOf": [
@@ -2261,7 +2261,7 @@
                 "string",
                 "null"
               ],
-              "description": "The polygon field each row fills, holding one polygon's rings or several polygons; the field\nnamed `geometry` by default."
+              "description": "The polygon field each row fills. It holds one polygon's rings or several polygons. Defaults\nto the field named `geometry`."
             }
           },
           "required": [
@@ -2270,7 +2270,7 @@
         }
       ],
       "unevaluatedProperties": false,
-      "description": "Rows drawn as the areas of a polygon field: parcels, states, lakes, the land and water of a map. The view triangulates each row's polygons once, in the background when they are large. On the earth, areas follow the globe's curve and stay whole across the antimeridian. To outline areas, add a [`Lines`](crate::Lines) mark of the same table, which draws their rings."
+      "description": "Rows drawn as the areas of a polygon field: parcels, states, lakes, the land and water of a map. The view triangulates each row's polygons once, in the background when they are large. On the earth, areas follow the globe's curve and stay unbroken across the antimeridian. To outline areas, add a [`Lines`](crate::Lines) mark of the same table. It draws their rings."
     },
     "Layout": {
       "anyOf": [
@@ -2313,7 +2313,7 @@
           ]
         }
       ],
-      "description": "How the view places vertex rows that have no position: a name, or\n`{ stress | layered: options }`. In a diagram it places blocks; on a plane or the earth it\nplaces points among the rows they link to. Gaps are in position units: diagram units, plane\nunits, or degrees on the earth.\n\nA row keeps its place once placed: rows added later are placed around the others, and\n[`View::arrange`](crate::View::arrange) lays out every row again."
+      "description": "How the view places vertex rows that have no position: a name, or\n`{ stress | layered: options }`. In a diagram it places blocks. On a plane or the earth it\nplaces points among the rows they link to. Gaps are in position units: diagram units, plane\nunits, or degrees on the earth.\n\nA placed row keeps its place. Rows added later are placed around the others, and\n[`View::arrange`](crate::View::arrange) lays out every row again."
     },
     "Stress": {
       "type": "object",
@@ -2322,11 +2322,11 @@
         "gap": {
           "type": "number",
           "format": "double",
-          "description": "Distance between the centers of linked vertices, in position units. Default 40.",
+          "description": "Distance between the centers of linked vertices, in position units. Defaults to 40.",
           "minimum": 0
         }
       },
-      "description": "Stress majorization: vertices move until drawn distances match graph distances, then overlapping\nboxes separate, keeping a quarter of `gap` between them."
+      "description": "Stress majorization: vertices move until drawn distances match graph distances. Then\noverlapping boxes separate, keeping a quarter of `gap` between them."
     },
     "Layered": {
       "type": "object",
@@ -2334,17 +2334,17 @@
       "properties": {
         "direction": {
           "$ref": "#/$defs/Direction",
-          "description": "The direction edges point; `right` by default."
+          "description": "The direction edges point. Defaults to `right`."
         },
         "gap": {
           "type": "number",
           "format": "double",
-          "description": "Distance between vertices within a rank, in position units. Default 30."
+          "description": "Distance between vertices within a rank, in position units. Defaults to 30."
         },
         "rankGap": {
           "type": "number",
           "format": "double",
-          "description": "Distance between ranks, in position units. Default 80."
+          "description": "Distance between ranks, in position units. Defaults to 80."
         }
       },
       "description": "Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their\noutputs."
@@ -2397,7 +2397,7 @@
               "tsType": "Color"
             },
             "missing": {
-              "description": "The color a colormap gives a missing value, such as a row whose field has none.",
+              "description": "The color a colormap gives a missing value, such as a row with no value in the field.",
               "type": "string",
               "tsType": "Color"
             },
@@ -2452,7 +2452,7 @@
               "$ref": "#/$defs/PlotTheme"
             },
             "base": {
-              "description": "The theme these options change; dark unless set.",
+              "description": "The theme these options change. Defaults to `dark`.",
               "enum": [
                 "dark",
                 "light"
@@ -2462,7 +2462,7 @@
           "additionalProperties": false
         }
       ],
-      "description": "Default colors and sizes for marks whose options leave them unset or missing, and the look of\ntext, focus, comets, and each space, grouped by subject. Write a base theme's name (`\"dark\"` or\n`\"light\"`), or options over a base (`base`, dark by default); a group's options override only\nthe base values they set.\n\nLengths are in the space's unit (units in a diagram, CSS pixels elsewhere), except the text halo\nand the focus glow, which are always in CSS pixels."
+      "description": "Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped\nby subject: a base theme's name (`\"dark\"` or `\"light\"`), or options that change a base. `base`\nnames the base and defaults to `dark`. Each option replaces only the base value it sets.\n\nLengths are in CSS pixels, or units in a diagram. The text halo and the focus glow are always in\nCSS pixels."
     },
     "TextTheme": {
       "type": "object",
@@ -2512,7 +2512,7 @@
       "additionalProperties": false,
       "properties": {
         "color": {
-          "description": "The edge color. `None` blends the colors of each edge's two vertices; a diagram's wires and\nedges without `ends` (nets and poles) then take the text color.",
+          "description": "The edge color. `None` blends the colors of each edge's two vertices. With `None`, a\ndiagram's wires and edges without `ends` (nets and poles) use the text color.",
           "tsType": "Color",
           "type": [
             "string",
@@ -2532,12 +2532,12 @@
         "bow": {
           "type": "number",
           "format": "float",
-          "description": "Outside a diagram, how far edges joining the same two vertices bow apart: each lane by this\nfraction of the edge's length at its middle. A family spreads at most eight lanes wide, and\nmore lanes pack closer. A bow is part of the drawing, so it scales with the zoom."
+          "description": "Outside a diagram, how far edges joining the same two vertices bow apart. Each lane bows out\nby this fraction of the edge's length, measured at its middle. Parallel edges spread at most\neight lanes wide, and more lanes pack closer. Bows scale with the zoom."
         },
         "arrow": {
           "type": "number",
           "format": "float",
-          "description": "How far an arrowhead extends beyond the edge's width: a head is this plus the width long."
+          "description": "How far an arrowhead extends beyond the edge's width. A head's length is this plus the\nwidth."
         }
       },
       "description": "Defaults for edges, and how parallel edges and arrowheads look."
@@ -2581,7 +2581,7 @@
           "type": "string"
         },
         "selected": {
-          "description": "The glow color around selected rows; `None` glows in each row's own color.",
+          "description": "The glow color around selected rows. `None` uses each row's own color.",
           "tsType": "Color",
           "type": [
             "string",
@@ -2601,7 +2601,7 @@
         "grow": {
           "type": "number",
           "format": "float",
-          "description": "The scale factor for a hovered vertex sized in CSS pixels; vertices sized in units only\nglow."
+          "description": "The scale factor for a hovered vertex sized in CSS pixels. Vertices sized in units only\nglow."
         }
       },
       "description": "How hovered and selected rows glow, and how rows outside a selection dim."
@@ -2611,7 +2611,7 @@
       "additionalProperties": false,
       "properties": {
         "color": {
-          "description": "The comet color. Its alpha sets how strongly a comet covers its stroke; a fully transparent\ncolor turns comets off.",
+          "description": "The comet color. Its alpha sets how strongly a comet covers its stroke. A fully transparent\ncolor turns comets off.",
           "tsType": "Color",
           "type": "string"
         },
@@ -2626,13 +2626,13 @@
         "width": {
           "type": "number",
           "format": "float",
-          "description": "The width of a comet's head, in the space's unit; never narrower than its stroke."
+          "description": "The width of a comet's head, in the space's unit. A head is never narrower than its stroke."
         }
       },
-      "description": "How comets flowing along edges and lines look: a round head, brightest at its middle, trailing a\ntail that thins and fades.\n\n`spacing` and `length` must be in the same unit, which also measures each row's `flow` speed. In\nposition units (degrees on the earth), comets are part of the drawing: they scale with the zoom\nand stay in place along their lines. In CSS pixels, they keep their on-screen size and speed. A\nplain number is in the space's unit."
+      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen. A plain number is in the\nspace's unit."
     },
     "Length": {
-      "description": "A length: a number in the space's unit (units in a diagram, CSS pixels elsewhere), `{ px }` in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow on screen as the view zooms in.",
+      "description": "A length: a number in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
       "anyOf": [
         {
           "type": "number"
@@ -2642,7 +2642,7 @@
           "properties": {
             "px": {
               "type": "number",
-              "description": "CSS pixels, at any zoom."
+              "description": "CSS pixels, the same at any zoom."
             }
           },
           "required": [
@@ -2655,7 +2655,7 @@
           "properties": {
             "units": {
               "type": "number",
-              "description": "Position units (degrees on the earth), which grow on screen as the view zooms in."
+              "description": "Position units (degrees on the earth), which grow as the view zooms in."
             }
           },
           "required": [
@@ -2675,7 +2675,7 @@
           "type": "string"
         },
         "outline": {
-          "description": "The color of the one-unit border around blocks and groups; `None` draws no border.",
+          "description": "The color of the one-unit border around blocks and groups. `None` draws no border.",
           "tsType": "Color",
           "type": [
             "string",
@@ -2685,7 +2685,7 @@
         "corner": {
           "type": "number",
           "format": "float",
-          "description": "The corner radius of blocks and groups; a block marker can set its own."
+          "description": "The corner radius of blocks and groups. A block marker can set its own."
         },
         "portSize": {
           "type": "number",
@@ -2714,14 +2714,14 @@
       "additionalProperties": false,
       "properties": {
         "color": {
-          "description": "The color a shadow darkens toward; its alpha sets how dark the shadow is under the block.",
+          "description": "The color a shadow darkens toward. Its alpha sets how dark the shadow is under the block.",
           "tsType": "Color",
           "type": "string"
         },
         "lift": {
           "type": "number",
           "format": "float",
-          "description": "How far a shadow falls below its block or group; its edge softens over the same distance."
+          "description": "How far a shadow falls below its block or group. Its edge softens over the same distance."
         }
       },
       "description": "How a diagram's blocks and groups cast shadows on the sheet, for vertex marks with `shadow` on."
@@ -2773,60 +2773,60 @@
           "type": "object",
           "properties": {
             "pan": {
-              "description": "Whether dragging the background pans the camera. Default `true`.",
+              "description": "Whether dragging the background pans the camera. Defaults to `true`.",
               "type": "boolean"
             },
             "zoom": {
-              "description": "Which input zooms the view: the wheel and pinching (`wheel`, the default); pinching, and the\nwheel only with Control or Meta held, as trackpad pinches send it, so the plain wheel\nscrolls the page (`modifier`); or nothing (`off`).",
+              "description": "Which input zooms the view. `wheel` zooms with the wheel and pinching. `modifier` zooms with\npinching, and with the wheel only while Control or Meta is held (as trackpad pinches send\nit), so the plain wheel scrolls the page. `off` turns zooming off. Defaults to `wheel`.",
               "$ref": "#/$defs/Zoom"
             },
             "turn": {
-              "description": "Whether dragging with the secondary button, or with Shift, rotates and tilts a map or plane.\nDefault `true`.",
+              "description": "Whether dragging with the secondary button, or with Shift, rotates and tilts a map or plane.\nDefaults to `true`.",
               "type": "boolean"
             },
             "keyboard": {
-              "description": "Whether the keyboard controls the view. Default `true`. Tab and Shift+Tab step through the\nrows nearest the view's center, and arrow keys step to the nearest row in their direction.\nEnter opens the stepped-to row and Space selects it. With no row stepped to, arrow keys pan\n(Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the\nselection.",
+              "description": "Whether the keyboard controls the view. Defaults to `true`. Tab and Shift+Tab step through\nthe rows nearest the view's center. Arrow keys step to the nearest row in their direction.\nEnter opens the row stepped to, and Space selects it. With no row stepped to, arrow keys pan\n(Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the\nselection.",
               "type": "boolean"
             },
             "hover": {
-              "description": "Whether the hovered row glows, and a hovered vertex sized in CSS pixels grows. Default\n`true`. Rows are hovered either way: [`Event::Hovered`](crate::Event) still fires and\n`hovered()` still reads them.",
+              "description": "Whether the hovered row glows and a hovered vertex sized in CSS pixels grows. Defaults to\n`true`. Hover is tracked either way: [`Event::Hovered`](crate::Event) still fires and\n`hovered()` still returns the row.",
               "type": "boolean"
             },
             "pickRadius": {
-              "description": "How far from the pointer, in CSS pixels, a row can be and still be picked; touch adds 8.\nDefault 6.",
+              "description": "How far a row can be from the pointer and still be picked, in CSS pixels. Touch adds 8.\nDefaults to 6.",
               "type": "number",
               "format": "float"
             },
             "selectBox": {
-              "description": "Whether Shift+drag selects the rows inside a box instead of turning the camera. Shift+click\nstill toggles one row. Default `false`.",
+              "description": "Whether Shift+drag selects the rows inside a box instead of turning the camera. Shift+click\nstill toggles one row. Defaults to `false`.",
               "type": "boolean"
             },
             "connect": {
-              "description": "Whether the user can draw connections, reported as [`Event::Connect`](crate::Event): by\ndragging from a port, from a vertex with Alt held, or an edge's end off its vertex. Default\n`false`.",
+              "description": "Whether the user can draw connections by dragging from a port, from a vertex with Alt held,\nor an edge's end off its vertex. Connections are reported as\n[`Event::Connect`](crate::Event). Defaults to `false`.",
               "type": "boolean"
             },
             "delete": {
-              "description": "Whether Delete and Backspace report the selection as [`Event::Delete`](crate::Event).\nDefault `false`.",
+              "description": "Whether Delete and Backspace report the selection as [`Event::Delete`](crate::Event).\nDefaults to `false`.",
               "type": "boolean"
             },
             "cycle": {
-              "description": "Whether clicking again at the same point, with the camera unmoved, selects the next row\nunder it, nearest first, so overlapping rows can each be selected. Default `false`.",
+              "description": "Whether clicking again at the same point, with the camera unmoved, selects the next row\nunder the pointer, nearest first. This lets overlapping rows each be selected. Defaults to\n`false`.",
               "type": "boolean"
             },
             "press": {
-              "description": "Seconds a touch or pen must hold still to request a menu ([`Event::Menu`](crate::Event)),\nas the secondary button does; 0 turns this off. Default 0.5.",
+              "description": "How many seconds a touch or pen must hold still to request a menu\n([`Event::Menu`](crate::Event)), like the secondary button. 0 turns this off. Defaults to\n0.5.",
               "type": "number",
               "format": "double"
             },
             "motion": {
-              "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and\noptions that read `elapsed()`. `system` (the default) follows the user's reduced-motion\nsetting, `full` animates everything, and `reduced` animates only motion the user drives.",
+              "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and\noptions that read `elapsed()`. `system` follows the user's reduced-motion setting, `full`\nanimates everything, and `reduced` animates only motion the user drives. Defaults to\n`system`.",
               "$ref": "#/$defs/Motion"
             }
           },
           "additionalProperties": false
         }
       ],
-      "description": "How a view responds to the pointer and keyboard, and how much it animates on its own: a preset\n(`\"none\"` or `\"inspect\"`), or options over the defaults. Each mark controls whether its own rows\npick, select, and drag; these options control the view itself."
+      "description": "How a view responds to the pointer and keyboard, and how much it animates on its own: a preset\n(`\"none\"` or `\"inspect\"`), or options that change the defaults. Each mark sets whether its own\nrows pick, select, and drag. These options control the view itself."
     },
     "Zoom": {
       "oneOf": [
@@ -2853,7 +2853,7 @@
         {
           "type": "string",
           "const": "system",
-          "description": "Follows the system: reduced when the user asked their system for less motion."
+          "description": "Follows the system setting: reduced when the user has asked their system for less motion."
         },
         {
           "type": "string",
@@ -3103,7 +3103,7 @@
             "remove"
           ],
           "additionalProperties": false,
-          "description": "Removes the rows with these ids; ids that match no row are ignored."
+          "description": "Removes the rows with these ids. Ids that match no row are ignored."
         },
         {
           "type": "object",
@@ -3209,7 +3209,7 @@
             "append"
           ],
           "additionalProperties": false,
-          "description": "Records a frame at each axis coordinate in `at`. Each field gives one value per row per\ncoordinate, frame-major. Covers every row, or only the rows `ids` names; other rows keep\ntheir last values."
+          "description": "Records a frame at each axis coordinate in `at`. Each field gives one value per row per\ncoordinate, frame-major. Covers every row, or only the rows in `ids`. Other rows keep their\nlast values."
         },
         {
           "type": "object",
@@ -3288,7 +3288,7 @@
             "frames"
           ],
           "additionalProperties": false,
-          "description": "Inserts a run of entries of sampled field `field` at level `level`, numbered from `first`,\nas time tiles store them. At level 0 each entry is a frame: one coordinate in `at` and one\nvalue per row in `values`. At level `k` each entry is a bucket of `8^k` frames: its first\nand last frame's coordinates in `at`, and in `values` every bucket's least value per row,\nfollowed by every bucket's greatest. Null is missing."
+          "description": "Inserts a run of entries of sampled field `field` at level `level`, numbered from `first`,\nin the form time tiles store them. At level 0 each entry is a frame, with one coordinate in\n`at` and one value per row in `values`. At level `k` each entry is a bucket of `8^k` frames.\n`at` holds the coordinates of each bucket's first and last frame. `values` holds every\nbucket's least value per row, followed by every bucket's greatest. Null is missing."
         }
       ],
       "description": "One change in a patch, keyed by the name of the `Patch` method that makes it."
@@ -3396,7 +3396,7 @@
         "u8",
         "bool"
       ],
-      "description": "The value type of a slice's bytes. Numbers are little endian; `bool` is one byte each, nonzero\nmeaning true."
+      "description": "The value type of a slice's bytes. Numbers are little endian. `bool` is one byte each, nonzero\nmeaning true."
     },
     "Patch": {
       "type": "array",
@@ -3421,7 +3421,7 @@
               "type": "null"
             }
           ],
-          "description": "The rows to read, in this order unless sorted; every row when unset. Ids that name no row\nare skipped."
+          "description": "The rows to read, in this order unless sorted. Defaults to every row. Ids that name no row\nare skipped."
         },
         "filter": {
           "anyOf": [
@@ -3449,7 +3449,7 @@
             "minItems": 2,
             "maxItems": 2
           },
-          "description": "Keys to sort by, each breaking ties left by the keys before it. Rows where a key has no\nvalue sort last; rows equal on every key keep their order."
+          "description": "Keys to sort by. Each key breaks ties left by the keys before it. Rows where a key has no\nvalue sort last, and rows equal on every key keep their order."
         },
         "offset": {
           "type": "integer",
@@ -3474,7 +3474,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/Expr"
           },
-          "description": "Fields to return, by output name. A plain field returns that field as stored; any other\nexpression returns numbers. Every field when unset; an empty object returns the ids alone."
+          "description": "Fields to return, by output name. A plain field returns that field as stored, and any other\nexpression returns numbers. Defaults to every field. An empty object returns the ids alone."
         },
         "at": {
           "type": [
@@ -3482,7 +3482,7 @@
             "null"
           ],
           "format": "double",
-          "description": "The axis coordinate at which sampled fields are read; their last frame when unset."
+          "description": "The axis coordinate at which sampled fields are read. Defaults to their last frame."
         }
       },
       "required": [
@@ -3525,13 +3525,13 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "The axis range the spans cover, `[first, last]`: finite, with `first <= last`."
+          "description": "The axis range the spans cover, `[first, last]`. Both are finite, with `first <= last`."
         },
         "spans": {
           "type": "integer",
           "format": "uint",
           "minimum": 0,
-          "description": "The number of equal spans to divide the range into; at least 1."
+          "description": "The number of equal spans to divide the range into. At least 1."
         },
         "ids": {
           "anyOf": [
@@ -3542,7 +3542,7 @@
               "type": "null"
             }
           ],
-          "description": "The rows to read, in this order; every row when unset."
+          "description": "The rows to read, in this order. Defaults to every row."
         }
       },
       "required": [
@@ -3551,7 +3551,7 @@
         "range",
         "spans"
       ],
-      "description": "A request for each row's least and greatest value of a sampled field over equal spans of the\naxis: field `field` of table `table`, over `spans` equal spans from `range[0]` to `range[1]`,\nfor every row or for the rows `ids` names, in that order. Plain data that deserializes from\nJSON, like a query."
+      "description": "A request for each row's least and greatest value of a sampled field over equal spans of the\naxis. It reads field `field` of table `table` over `spans` equal spans from `range[0]` to\n`range[1]`, for every row or for the rows in `ids`, in that order. Like a query, it is plain\ndata that deserializes from JSON."
     },
     "Camera": {
       "anyOf": [
@@ -3580,12 +3580,12 @@
                   "maxItems": 3
                 }
               ],
-              "description": "Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane or a\ndiagram. In JSON, `[x, y]` is shorthand for elevation 0."
+              "description": "On the earth, longitude, latitude, and elevation. On a plane or a diagram, x, y, and\nelevation. In JSON, `[x, y]` is shorthand for elevation 0."
             },
             "zoom": {
               "type": "number",
               "format": "double",
-              "description": "The web mercator zoom level on the earth; elsewhere, log₂ of CSS pixels per unit."
+              "description": "The web mercator zoom level on the earth. Elsewhere, log₂ of CSS pixels per unit."
             },
             "pitch": {
               "type": "number",
@@ -3685,7 +3685,7 @@
               "type": "object",
               "properties": {
                 "min": {
-                  "description": "The least corner.",
+                  "description": "The minimum corner.",
                   "type": "array",
                   "items": {
                     "type": "number",
@@ -3695,7 +3695,7 @@
                   "maxItems": 3
                 },
                 "max": {
-                  "description": "The greatest corner.",
+                  "description": "The maximum corner.",
                   "type": "array",
                   "items": {
                     "type": "number",
@@ -3777,13 +3777,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A view draws a table too large for its share as a paged table, drawing only\nthe pages the camera needs, so it always fits. Pages no view draws stay cached in the\nremaining room, least recently drawn evicted first. Defaults to half the device's largest\nstorage buffer. The page pool grows as data needs it and never shrinks, so set the budget\nbefore drawing data."
+          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\nlargest storage buffer. The page pool grows as data needs it and never shrinks, so set the\nbudget before drawing data."
         },
         "uploadPerFrame": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Most bytes uploaded per frame; larger data streams in over several frames. Defaults to\n32 MiB."
+          "description": "The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to\n32 MiB."
         }
       },
       "required": [
@@ -3836,7 +3836,7 @@
       "required": [
         "size"
       ],
-      "description": "A picture of views, taken once they are complete as its [`Capture`] says. Each view draws into\nits panel of a `size`-pixel picture at `scale` pixels per CSS pixel. A shot is plain data, like\na scene.\n\n```no_run\n# async fn example(view: &mut latkit::View) -> latkit::Result<()> {\nuse latkit::Shot;\nlet image = Shot::new([3840, 2160]).scale(2.0).image(&mut [view]).await?;\nstd::fs::write(\"view.png\", image.encode(latkit::ImageFormat::Png)?).expect(\"written\");\n# Ok(()) }\n```"
+      "description": "A picture of views, taken when they are complete, as its [`Capture`] says. Each view draws into\nits panel of a `size`-pixel picture, at `scale` pixels per CSS pixel. A shot is plain data, like\na scene.\n\n```no_run\n# async fn example(view: &mut latkit::View) -> latkit::Result<()> {\nuse latkit::Shot;\nlet image = Shot::new([3840, 2160]).scale(2.0).image(&mut [view]).await?;\nstd::fs::write(\"view.png\", image.encode(latkit::ImageFormat::Png)?).expect(\"written\");\n# Ok(()) }\n```"
     },
     "Panels": {
       "type": "array",
@@ -3985,7 +3985,7 @@
                   "$ref": "#/outputs/Hit"
                 },
                 "position": {
-                  "description": "The row's new position in the space's coordinates: the hit point moved with the pointer\nsince the press, at the depth where the drag started, so a vertex keeps its grab offset.\nSnapped to a diagram's dots when its grid snaps.",
+                  "description": "The row's new position in the space's coordinates. It is the hit point moved with the\npointer since the press, at the depth where the drag started, so a vertex keeps its\noffset from the pointer. Snapped to a diagram's grid dots when the grid snaps.",
                   "type": "array",
                   "items": {
                     "type": "number",
@@ -4024,7 +4024,7 @@
               "type": "object",
               "properties": {
                 "from": {
-                  "description": "The end it was drawn from: for an edge, the end that stayed.",
+                  "description": "The end it was drawn from. For a dragged edge end, the edge's other end.",
                   "$ref": "#/outputs/End"
                 },
                 "to": {
@@ -4039,7 +4039,7 @@
                   ]
                 },
                 "edge": {
-                  "description": "The edge whose end was dragged off; `to` replaces that end.",
+                  "description": "The edge whose end was dragged off. `to` replaces that end.",
                   "anyOf": [
                     {
                       "$ref": "#/outputs/Row"
@@ -4113,7 +4113,7 @@
               "type": "object",
               "properties": {
                 "hit": {
-                  "description": "The row now hovered; `None` once no row is.",
+                  "description": "The row now hovered, or `None` if no row is.",
                   "anyOf": [
                     {
                       "$ref": "#/outputs/Hit"
@@ -4158,7 +4158,7 @@
                   }
                 },
                 "trigger": {
-                  "description": "How the user changed it; `None` when the data dropped rows from it.",
+                  "description": "How the user changed it, or `None` when the data dropped rows from it.",
                   "anyOf": [
                     {
                       "$ref": "#/outputs/Trigger"
@@ -4196,7 +4196,7 @@
             "type",
             "detail"
           ],
-          "description": "The camera moved by a gesture, fit, flight, coast, or orbit, or back within reach as the\nview's size, insets, or space changed: [`View::camera`](crate::View::camera)."
+          "description": "The camera moved: [`View::camera`](crate::View::camera). A gesture, fit, flight, coast, or\norbit moved it, or it moved back within its zoom and pan limits after the view's size,\ninsets, or space changed."
         },
         {
           "type": "object",
@@ -4213,7 +4213,7 @@
             "type",
             "detail"
           ],
-          "description": "The work the last frame waited on changed; empty once frames are complete:\n[`View::waiting`](crate::View::waiting)."
+          "description": "The work the last frame waited on changed: [`View::waiting`](crate::View::waiting). Empty\nonce frames are complete."
         },
         {
           "type": "object",
@@ -4230,7 +4230,7 @@
             "type",
             "detail"
           ],
-          "description": "Something failed; reported once. A mark that no longer fits its data is also listed in\n[`View::failures`](crate::View::failures)."
+          "description": "Something failed. Reported once. A mark that no longer fits its data is also listed in\n[`View::failures`](crate::View::failures)."
         }
       ],
       "description": "Something that happened in a view, as [`View::events`](crate::View::events) reports it."
@@ -4247,7 +4247,7 @@
             "string",
             "null"
           ],
-          "description": "The name of the mark that drew it, if named. It tells two marks of one table apart."
+          "description": "The name of the mark that drew it, if the mark has one. It tells apart two marks of one\ntable."
         },
         "point": {
           "type": "array",
@@ -4279,7 +4279,7 @@
             "string",
             "null"
           ],
-          "description": "The port hit, when a vertex's port was."
+          "description": "The port hit, if the hit is on a vertex's port."
         },
         "sample": {
           "anyOf": [
@@ -4290,7 +4290,7 @@
               "type": "null"
             }
           ],
-          "description": "The sample hit, when a line tracing a sampled field was."
+          "description": "The sample hit, if the hit is on a line tracing a sampled field."
         }
       },
       "required": [
@@ -4388,7 +4388,7 @@
         "modifiers",
         "device"
       ],
-      "description": "Where the user acted, with which modifier keys, and with which device. For keyboard input, the\npoint is the row the keys point at, else the pointer, else the view's middle."
+      "description": "Where the user acted, with which modifier keys and device. For keyboard input, the point is the\nrow the keys point at, or else the pointer, or else the view's middle."
     },
     "Modifiers": {
       "type": "object",
@@ -4433,7 +4433,7 @@
         {
           "type": "string",
           "const": "touch",
-          "description": "A finger: picks reach 8 CSS pixels farther."
+          "description": "A finger. Picks find rows up to 8 CSS pixels farther away."
         },
         {
           "type": "string",
@@ -4536,12 +4536,12 @@
                   "maxItems": 3
                 }
               ],
-              "description": "Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane or a\ndiagram. In JSON, `[x, y]` is shorthand for elevation 0."
+              "description": "On the earth, longitude, latitude, and elevation. On a plane or a diagram, x, y, and\nelevation. In JSON, `[x, y]` is shorthand for elevation 0."
             },
             "zoom": {
               "type": "number",
               "format": "double",
-              "description": "The web mercator zoom level on the earth; elsewhere, log₂ of CSS pixels per unit."
+              "description": "The web mercator zoom level on the earth. Elsewhere, log₂ of CSS pixels per unit."
             },
             "pitch": {
               "type": "number",
@@ -4614,11 +4614,11 @@
       }
     },
     "Failure": {
-      "description": "What failed, as JSON: the form of the npm package's `LatkitError`.",
+      "description": "A failure as JSON, in the same form as the npm package's `LatkitError`.",
       "type": "object",
       "properties": {
         "code": {
-          "description": "The kind of failure, as `LatkitError.code` describes it.",
+          "description": "The kind of failure. See `LatkitError.code`.",
           "enum": [
             "invalid",
             "unsupported",
@@ -4630,11 +4630,11 @@
           ]
         },
         "message": {
-          "description": "What failed, in words.",
+          "description": "A description of what failed.",
           "type": "string"
         },
         "path": {
-          "description": "The invalid part of the input, such as `marks[2].color`, on `invalid` failures.",
+          "description": "For `invalid` failures, the path of the invalid input, such as `marks[2].color`.",
           "type": "string"
         }
       },
@@ -4662,7 +4662,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Rows every mark draws: every row of a table drawn whole, and the rows of the tiles in view\nof a paged table."
+          "description": "Rows the marks draw: every row of a fully drawn table, and the rows in the tiles in view of\na paged table."
         },
         "draws": {
           "type": "integer",
@@ -4680,13 +4680,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Fetched tiles the view draws, of every tile source."
+          "description": "Fetched tiles the view draws, across all tile sources."
         },
         "tilesLoading": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Tiles being fetched or decoded, of every tile source."
+          "description": "Tiles being fetched or decoded, across all tile sources."
         },
         "cpuMs": {
           "type": "number",
@@ -4696,7 +4696,7 @@
         "gpuMs": {
           "type": "number",
           "format": "float",
-          "description": "Milliseconds the GPU takes per frame: the median of recently measured frames; 0 if the\ndevice cannot measure."
+          "description": "Milliseconds the GPU takes per frame: the median of recently measured frames. 0 if the\ndevice cannot measure GPU time."
         }
       },
       "required": [
@@ -4743,7 +4743,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Edge and face rows whose endpoints the GPU resolved to their vertices' resident rows: rows\nthat changed, plus every row of a page that references a vertex now resident elsewhere."
+          "description": "Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows\nthat changed, plus every row of a page that references a vertex now resident elsewhere."
         },
         "cleared": {
           "type": "integer",
@@ -4834,7 +4834,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "The first and last axis coordinates held by any sampled field; `None` when none holds any."
+          "description": "The first and last axis coordinates held by any sampled field, or `None` if no field holds\nany."
         },
         "tables": {
           "type": "array",
@@ -4976,13 +4976,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A view draws a table too large for its share as a paged table, drawing only\nthe pages the camera needs, so it always fits. Pages no view draws stay cached in the\nremaining room, least recently drawn evicted first. Defaults to half the device's largest\nstorage buffer. The page pool grows as data needs it and never shrinks, so set the budget\nbefore drawing data."
+          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\nlargest storage buffer. The page pool grows as data needs it and never shrinks, so set the\nbudget before drawing data."
         },
         "uploadPerFrame": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Most bytes uploaded per frame; larger data streams in over several frames. Defaults to\n32 MiB."
+          "description": "The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to\n32 MiB."
         }
       },
       "required": [

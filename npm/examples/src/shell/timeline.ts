@@ -1,7 +1,7 @@
 /**
  * A page's timeline: the recorded span of a dataset with an axis, played live, paused, or
- * replayed, with its transport under the canvas. Live, it follows the end of the data and forgets
- * frames older than the span it keeps.
+ * replayed, with playback controls under the canvas. When live, it follows the end of the data and
+ * forgets frames older than the span it keeps.
  */
 import type { Data } from 'latkit';
 import { h } from './dom.js';

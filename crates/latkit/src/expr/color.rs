@@ -31,7 +31,7 @@ impl Color {
         Color { r, g, b, a: 1.0 }
     }
 
-    /// A color from `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`; `None` for any other text.
+    /// A color from `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`. `None` for any other text.
     pub fn hex(hex: &str) -> Option<Color> {
         let digits = hex.strip_prefix('#')?;
         if !digits.is_ascii() {
@@ -51,7 +51,7 @@ impl Color {
     }
 
     /// A color from CSS: hex, `rgb(…)` or `rgba(…)` (channels 0 to 255 or percentages, alpha 0 to 1
-    /// or a percentage), a named color, or `transparent`. Case-insensitive; `None` if unrecognized.
+    /// or a percentage), a named color, or `transparent`. Case-insensitive. `None` if unrecognized.
     pub fn css(css: &str) -> Option<Color> {
         let css = css.trim();
         if css.starts_with('#') {

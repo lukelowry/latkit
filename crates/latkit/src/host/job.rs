@@ -280,10 +280,10 @@ impl Job {
         Job(out.0)
     }
 
-    /// A job reading GeoJSON `bytes` as dataset `name` in the background, as
-    /// [`Data::read`](crate::Data::read) does; GeoJSON can be large. `None` if `bytes` are latkit's
-    /// own bytes or a dataset document, which are read on the calling thread. Its result is the
-    /// patch that builds the dataset, or no bytes if the GeoJSON is invalid.
+    /// A job that reads GeoJSON `bytes` as dataset `name` in the background, like
+    /// [`Data::read`](crate::Data::read), since GeoJSON can be large. `None` if `bytes` are
+    /// latkit's own bytes or a dataset document, which are read on the calling thread. Its result
+    /// is the patch that builds the dataset, or no bytes if the GeoJSON is invalid.
     pub fn geojson(name: &str, bytes: &[u8]) -> Option<Job> {
         if !crate::data::geojson(bytes) {
             return None;

@@ -12,12 +12,12 @@ const SWEEPS: usize = 8;
 
 /// Every vertex's center from a layered layout. Pinned vertices stay put. The others go in ranks
 /// along `options.direction` (`Direction::Up` is toward +y), `options.gap` apart within a rank and
-/// `options.rank_gap` between ranks, ordered to reduce crossings. Links are directed; cycles are
-/// broken.
+/// `options.rank_gap` between ranks, ordered to reduce crossings. Links are directed, and cycles
+/// are broken.
 ///
 /// Each connected part is laid out separately, and parts with no pinned vertex pack into rows
 /// (aspect 16:9) below the pinned ones. Across the direction, each vertex lines up with its
-/// sources; in a part with no pinned vertex, each source then centers among the vertices it fans
+/// sources. In a part with no pinned vertex, each source then centers among the vertices it fans
 /// out to. Groups nest as [`nested`] lays them out.
 pub(crate) fn layered(graph: &Graph<'_>, options: &Layered) -> Vec<[f64; 2]> {
     nested(graph, |level| arrange(level, options))
@@ -31,7 +31,7 @@ fn arrange(level: &Level, options: &Layered) -> Vec<[f64; 2]> {
     let (part, count) = parts(sizes.len(), &level.links);
     let inside = Runs::new(count, (0..sizes.len()).map(|i| (part[i] as usize, i as u32)));
     let joins = Runs::new(count, level.links.iter().map(|&link| (part[link[0] as usize] as usize, link)));
-    // Each member's index within its part; a part's members are in index order.
+    // Each member's index within its part. A part's members are in index order.
     let mut slot = vec![0_u32; sizes.len()];
     for p in 0..count {
         for (s, &i) in inside.get(p).iter().enumerate() {
@@ -124,8 +124,8 @@ fn parts(count: usize, links: &[[u32; 2]]) -> (Vec<u32>, usize) {
     (part, parts)
 }
 
-/// Rank coordinates of plane coordinates: rotated so `direction` runs along the first axis,
-/// `[along, across]`. Across runs down for a sideways direction, and right for an upward or
+/// Rank coordinates `[along, across]` of plane coordinates, rotated so `direction` runs along the
+/// first axis. Across runs down for a sideways direction, and right for an upward or
 /// downward one.
 fn to_ranks(direction: Direction, [x, y]: [f64; 2]) -> [f64; 2] {
     match direction {
@@ -136,7 +136,7 @@ fn to_ranks(direction: Direction, [x, y]: [f64; 2]) -> [f64; 2] {
     }
 }
 
-/// Plane coordinates of rank coordinates `[along, across]`; undoes [`to_ranks`].
+/// Plane coordinates of rank coordinates `[along, across]`. Undoes [`to_ranks`].
 fn from_ranks(direction: Direction, [along, across]: [f64; 2]) -> [f64; 2] {
     match direction {
         Direction::Right => [along, -across],
@@ -204,7 +204,7 @@ fn ranks(count: usize, links: &[[u32; 2]]) -> Vec<u32> {
     }
     let mut roots: Vec<u32> = (0..count as u32).collect();
     crate::order::by_key(&mut roots, |&vertex| u64::from(pointed[vertex as usize]));
-    // A link into a vertex still on the walk closes a cycle; every other link keeps its direction.
+    // A link into a vertex still on the walk closes a cycle. Every other link keeps its direction.
     let mut state = vec![NEW; count];
     let mut forward: Vec<[u32; 2]> = Vec::with_capacity(links.len());
     let mut walk: Vec<(u32, usize)> = Vec::new();

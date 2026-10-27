@@ -5,8 +5,8 @@
 //! A [`Gpu`](crate::Gpu) gets its host from [`Gpu::set_host`](crate::Gpu::set_host). Without one,
 //! views draw no text, run jobs immediately, fetch nothing, and encode no video. In a browser the
 //! host is `Browser` (the `web` feature on `wasm32`). Natively, the `native` feature supplies
-//! `Native`: fonts loaded on first use, a worker pool that runs jobs and reads files, and Media
-//! Foundation H.264 on Windows. It needs no window or network client.
+//! `Native`. It loads fonts on first use, runs jobs and reads files on a worker pool, and encodes
+//! H.264 with Media Foundation on Windows. It needs no window or network client.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod browser;
@@ -37,8 +37,8 @@ pub const TIMESCALE: u32 = 90_000;
 /// A platform's H.264 encoder: NV12 pictures (BT.709, limited range) in, Annex B units out. It uses
 /// no B-frames, so every platform's encoder can comply and the muxer never reorders frames.
 pub trait Encoder {
-    /// Encodes one NV12 picture at `time` ticks, as a keyframe when `key`. Resolves, once the
-    /// encoder can take another picture, to the units finished since the last call, in order.
+    /// Encodes one NV12 picture at `time` ticks, as a keyframe when `key`. Once the encoder can
+    /// take another picture, resolves to the units finished since the last call, in order.
     fn encode(&mut self, nv12: Vec<u8>, time: u64, key: bool) -> Pending<Vec<Unit>>;
 
     /// Resolves to the remaining units once every picture given has been encoded.
@@ -63,27 +63,27 @@ pub trait Host: Send + Sync + 'static {
     /// fails.
     fn rasterize(&self, run: &TextRun) -> Result<Raster>;
 
-    /// The width and height of `run` once rasterized, in pixels. By default, rasterizes it to find
-    /// out.
+    /// The width and height of `run` once rasterized, in pixels. The default implementation
+    /// rasterizes it.
     fn measure(&self, run: &TextRun) -> Result<[f32; 2]> {
         self.rasterize(run).map(|raster| raster.size.map(|v| v as f32))
     }
 
-    /// Runs `job` in the background, resolving to the result of [`Job::run`]. By default it runs
-    /// immediately on the calling thread.
+    /// Runs `job` in the background, resolving to the result of [`Job::run`]. The default
+    /// implementation runs it immediately on the calling thread.
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         Pending::ready(Ok(job.run()))
     }
 
     /// Fetches `request`, resolving to its bytes. Resolves to no bytes if nothing exists at the
-    /// URL, and to an error if it cannot be read. By default, fails as unsupported.
+    /// URL, and to an error if it cannot be read. The default implementation fails as unsupported.
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
         let _ = request;
         Pending::ready(Err(Error::Unsupported("this host cannot fetch".into())))
     }
 
     /// An H.264 encoder for `encoding`, in hardware where the platform has one. [`Mp4`](crate::Mp4)
-    /// encodes with it. By default, fails as unsupported.
+    /// encodes with it. The default implementation fails as unsupported.
     fn encoder(&self, encoding: &Encoding) -> crate::Result<Box<dyn Encoder>> {
         let _ = encoding;
         Err(Error::Unsupported("this host cannot encode video".into()))

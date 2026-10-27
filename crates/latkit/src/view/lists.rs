@@ -92,7 +92,7 @@ impl List {
 
 impl View {
     /// Lays out every listed mark's segment list at the front of the lists buffer, using counts
-    /// read back: a list smaller than its rows were found to need grows, with a quarter to spare.
+    /// read back. A list smaller than its rows need grows, with a quarter to spare.
     pub(super) fn lay_out_segments(&mut self) {
         let mut at = 0;
         for shown in &mut self.marks {
@@ -180,7 +180,7 @@ impl View {
 
     /// Reads back how many segments each great-circle mark needs, so a list too small grows. Each
     /// mark has one readback at a time: a newer list does not cancel it, and is counted after it
-    /// arrives. A mark only bowed into lanes always has room for every piece of every lane, so it
+    /// arrives. A mark only bowed into lanes always has space for every piece of every lane, so it
     /// reads back nothing.
     pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner) {
         let gpu = self.gpu.clone();

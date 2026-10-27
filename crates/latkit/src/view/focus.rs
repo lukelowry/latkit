@@ -3,7 +3,7 @@
 //!
 //! The selection keeps only rows a pickable mark shows. The endpoints of a selected or hovered edge
 //! are lit too. Each mark's lit rows are listed by draw index for its focus draw, which draws them
-//! again over everything with a glow. Hover is always state that expressions can read; the controls
+//! again over everything with a glow. Hover is always state that expressions can read. The controls
 //! decide whether it glows.
 
 use rustc_hash::FxHashMap;
@@ -19,7 +19,7 @@ use crate::gpu::work::Queue;
 use crate::scene::mark::Primitive;
 use crate::{Row, Rows};
 
-/// The row gap at which two changed words of a page are written separately; closer ones share one
+/// The row gap at which two changed words of a page are written separately. Closer ones share one
 /// write, along with the unchanged words between them.
 const GAP: u32 = 16;
 
@@ -185,9 +185,9 @@ impl View {
         self.focus.lit = Some(all);
     }
 
-    /// Instances each lit row takes in mark `i`'s focus draw, for lit held rows `lit`: one for a
-    /// point; for paths and areas, enough for the longest lit row's pieces, past which a shorter
-    /// row's instances draw nothing; none for faces.
+    /// Instances each lit row takes in mark `i`'s focus draw, for lit held rows `lit`. One for a
+    /// point. For paths and areas, enough for the longest lit row's pieces (a shorter row's extra
+    /// instances draw nothing). None for faces.
     fn pieces(&self, i: usize, lit: &[u32]) -> u32 {
         let shown = &self.marks[i];
         if shown.compiled.is_none() {

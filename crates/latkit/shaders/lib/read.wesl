@@ -28,8 +28,8 @@ fn column_word(column: u32, word: u32) -> u32 {
     return program[mark.columns + column * COLUMN_WORDS + word];
 }
 
-// Binary search: where the last of `count` items of `stride` words at `at` in `program` whose word
-// `key` is at most `value` starts; the first item when none is.
+// Binary search over `count` items of `stride` words at `at` in `program`. Returns where the last
+// item whose word `key` is at most `value` starts, or the first item when none is.
 fn last_at_most(at: u32, count: u32, stride: u32, key: u32, value: u32) -> u32 {
     var lo = 0u;
     var hi = count;
@@ -93,7 +93,7 @@ fn sample_value(column: u32, row: u32) -> u32 {
     return bitcast<u32>(mix(bitcast<f32>(a), bitcast<f32>(b), t));
 }
 
-// A bits column's word, such as a reference's row index; NONE where unwired.
+// A bits column's word, such as a reference's row index. NONE where unwired.
 fn bits_value(column: u32, row: u32) -> u32 {
     if row >= column_word(column, COLUMN_ROWS) {
         return NONE;

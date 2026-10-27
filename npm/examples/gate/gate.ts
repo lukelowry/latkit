@@ -24,7 +24,7 @@ import { STEP, deadline, errorsOf, launch, serve, type Chrome } from './browser.
 import { quantile } from './quantile.ts';
 
 /** Maximum milliseconds Chrome may take to compile one pipeline cold. The slowest takes about
- * 0.35 s. A view opens no sooner than its slowest pipeline; the others compile in parallel. */
+ * 0.35 s. A view opens no sooner than its slowest pipeline. The others compile in parallel. */
 const COMPILE_BUDGET = 800;
 /** Maximum milliseconds from opening a page cold to its views' first frames. A first frame draws
  * everything its scene uses. Every pipeline compiles in parallel, off Chrome's GPU thread. */
@@ -286,8 +286,8 @@ async function open(url: string, id: string): Promise<Opened> {
     const page = await deadline(context.newPage(), STEP, 'a page');
     const opened: Opened = { wrong: errorsOf(page), slow: [] };
     const { wrong, slow } = opened;
-    // Tracks the longest gap between animation frames since the last reset, the last 120 gaps,
-    // whose median is the display's frame interval, and each gap longer than `LONG` with what the
+    // Tracks the longest gap between animation frames since the last reset, the last 120 gaps
+    // (their median is the display's frame interval), and each gap longer than `LONG` with what the
     // views were doing.
     await page.addInitScript((long: number) => {
       interface Stage {

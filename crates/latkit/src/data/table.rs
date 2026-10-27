@@ -8,7 +8,8 @@ use super::samples::Samples;
 use super::values::{Array, Kind, Value, Values};
 use crate::{Error, Result};
 
-/// A named set of rows with fields: the rows of one type in a dataset, or rows to write into one.
+/// A named set of rows with fields. It holds the rows of one type in a dataset, or rows to write
+/// into one.
 ///
 /// ```
 /// # use latkit::{Ids, Table};
@@ -43,8 +44,8 @@ pub(crate) enum Field {
 pub(crate) struct Reference {
     pub(crate) to: Name,
     pub(crate) ids: Column,
-    /// Target row of each row as `u32`; missing where unwired or the id names no row. Its pages
-    /// align with the pages of `ids`.
+    /// Each row's target row as a `u32`, missing where the row is unwired or its id names no row.
+    /// Its pages line up with the pages of `ids`.
     pub(crate) rows: Column,
     /// The inputs each page of `rows` was resolved from, used to detect stale pages.
     pub(crate) resolved: Arc<[Resolved]>,
@@ -57,7 +58,7 @@ pub(crate) struct Reference {
 /// The target row of a reference row that names no row.
 pub(crate) const UNWIRED: u32 = u32::MAX;
 
-/// The rows that reference each target row: target `t`'s are `rows[starts[t]..starts[t + 1]]`, in
+/// The rows that reference each target row. Target `t` has `rows[starts[t]..starts[t + 1]]`, in
 /// row order.
 #[derive(Default)]
 pub(crate) struct Inverse {
@@ -103,7 +104,7 @@ impl Field {
     }
 
     /// The field for rows `rows`, in that order. A reference keeps its target ids, and its target
-    /// rows are resolved again when the result is applied; samples keep every frame.
+    /// rows are resolved again when the result is applied. Samples keep every frame.
     pub(crate) fn gather(&self, rows: &[usize]) -> Field {
         match self {
             Field::Values(column, _) => Field::Values(column.gather(rows), Version::next()),
@@ -132,8 +133,8 @@ impl Reference {
         }
     }
 
-    /// The target row that row `row` references, or [`UNWIRED`] if none or past the rows. Reads the
-    /// page's `u32` storage directly, as [`targets`](Reference::targets) does for every row.
+    /// The target row that row `row` references, or [`UNWIRED`] if it has none or `row` is past the
+    /// end. Reads the page's `u32` storage directly, like [`targets`](Reference::targets).
     pub(crate) fn target_row(&self, row: usize) -> u32 {
         let Some((values, i)) = self.rows.at(row) else { return UNWIRED };
         match (&values.array, &values.valid) {
@@ -149,8 +150,8 @@ impl Reference {
         }
     }
 
-    /// Every row's target row, or [`UNWIRED`] where it names none. Reads page by page rather than
-    /// value by value.
+    /// Every row's target row, or [`UNWIRED`] where it names none. Reads a page at a time, not a
+    /// value at a time.
     pub(crate) fn targets(&self) -> Vec<u32> {
         let mut out = Vec::with_capacity(self.rows.len());
         for page in self.rows.pages() {
@@ -239,8 +240,8 @@ impl Reference {
 }
 
 impl Table {
-    /// A table named `name` with rows `ids`: a count for rows `0..n`, or a list of numbers or
-    /// texts.
+    /// A table named `name` with rows `ids`. `ids` is a count for rows `0..n`, or a list of numbers
+    /// or texts.
     pub fn new(name: impl Into<Name>, ids: impl Into<Ids>) -> Table {
         let version = Version::next();
         Table {
@@ -263,7 +264,7 @@ impl Table {
     }
 
     /// Adds or replaces field `name`, referencing rows of table `to` by id, one id per row. `None`
-    /// leaves a row unwired. A missing table `to` is an error when the table is applied; an id that
+    /// leaves a row unwired. A missing table `to` is an error when the table is applied. An id that
     /// matches no row stays unwired until such a row exists.
     #[must_use]
     pub fn reference(mut self, name: impl Into<Name>, to: impl Into<Name>, ids: impl Into<Ids>) -> Table {
@@ -306,14 +307,14 @@ impl Table {
     }
 
     /// The value of `field` for the row with `id`, or `None` if missing. A sampled field reads its
-    /// last frame; a reference returns the target's id.
+    /// last frame. A reference returns the target's id.
     pub fn get(&self, id: impl Into<Id>, field: &str) -> Option<Value> {
         let row = self.row(id.into().as_ref())?;
         self.value(row, field, f64::INFINITY)
     }
 
-    /// Every row's value of `field`, in row order: target ids for a reference, the last frame for
-    /// a sampled field.
+    /// Every row's value of `field`, in row order. A reference gives target ids and a sampled field
+    /// gives its last frame.
     pub fn values(&self, field: &str) -> Option<Values> {
         Some(match self.field_named(field)? {
             Field::Values(column, _) => column.values(),
@@ -333,7 +334,8 @@ impl Table {
         }
     }
 
-    /// A table of rows `rows` of this one, in that order, with every field. Removing rows uses it.
+    /// A table of the given `rows` of this one, in that order, with every field. Used to remove
+    /// rows.
     pub(crate) fn rows(&self, rows: &[usize]) -> Table {
         let version = Version::next();
         Table {

@@ -72,8 +72,8 @@ fn place(level: &Level, gap: f64) -> Vec<[f64; 2]> {
     separate(&boxes, &pinned, gap * CLEARANCE)
 }
 
-/// Each vertex's terms as (other vertex, target distance, weight): its neighbors one `gap` away,
-/// weighted by the inverse square of that distance; and pivots at their graph distance times
+/// Each vertex's terms as (other vertex, target distance, weight). Its neighbors are one `gap`
+/// away, weighted by the inverse square of that distance. Pivots are at their graph distance times
 /// `gap`, weighted by the inverse square times how many vertices of the pivot's region lie within
 /// half that distance of it.
 fn terms(n: usize, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<Vec<(u32, f64, f64)>> {
@@ -225,8 +225,8 @@ fn start(level: &Level, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<[f64;
     start
 }
 
-/// Each vertex's neighbors, each once, ignoring direction, self-links, and links out of range: as
-/// offsets into one list of targets.
+/// Each vertex's neighbors, each once, as offsets into one list of targets. Ignores direction,
+/// self-links, and links out of range.
 fn neighbors(n: usize, links: &[[u32; 2]]) -> (Vec<u32>, Vec<u32>) {
     let mut pairs: Vec<(u32, u32)> = links
         .iter()
@@ -245,7 +245,7 @@ fn neighbors(n: usize, links: &[[u32; 2]]) -> (Vec<u32>, Vec<u32>) {
     (offsets, pairs.into_iter().map(|(_, b)| b).collect())
 }
 
-/// Hop counts from `from` to every vertex; `u32::MAX` where unreachable.
+/// Hop counts from `from` to every vertex, or `u32::MAX` where unreachable.
 fn hops(from: usize, offsets: &[u32], targets: &[u32]) -> Vec<u32> {
     let mut distance = vec![u32::MAX; offsets.len() - 1];
     let mut queue = VecDeque::from([from]);

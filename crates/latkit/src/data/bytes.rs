@@ -1,8 +1,8 @@
 //! The binary encoding shared by patches and datasets.
 //!
-//! A patch encodes as one frame: a header (magic and total length), the name of the dataset the
-//! patch changes (empty when it names none), and the patch's operations. Everything is little
-//! endian. Because the header states the frame's length, back-to-back frames split without
+//! A patch encodes as one frame. The frame holds a header (magic and total length), the name of the
+//! dataset the patch changes (empty if it names none), and the patch's operations. Everything is
+//! little endian. Because the header states the frame's length, back-to-back frames split without
 //! decoding, and a reader knows as soon as the header arrives whether it has a whole frame. A
 //! dataset encodes as the patch that builds it from an empty dataset.
 //!
@@ -59,10 +59,11 @@ const HEADER: usize = 12;
 /// afterwards, to apply the patch or keep the dataset, is not counted.
 #[derive(Clone, Copy, Debug)]
 pub struct DecodeLimits {
-    /// The largest encoded frame, in bytes. Checked as soon as the header arrives. Default 256 MiB.
+    /// The largest encoded frame, in bytes. Checked as soon as the header arrives. Defaults to
+    /// 256 MiB.
     pub frame_bytes: usize,
     /// The budget, in bytes, for decoded vectors, names, operations, pages, and derived sample
-    /// buckets. Default 512 MiB.
+    /// buckets. Defaults to 512 MiB.
     pub decoded_bytes: usize,
 }
 
@@ -203,7 +204,7 @@ pub(crate) fn stream<R: Read>(mut read: R, limits: DecodeLimits) -> impl Iterato
     })
 }
 
-/// Reads the next frame from `read`. Returns `None` if the input ends between frames; an end
+/// Reads the next frame from `read`. Returns `None` if the input ends between frames. An end
 /// inside a frame is a truncation error.
 fn next(read: &mut impl Read, limits: DecodeLimits) -> Result<Option<Patch>> {
     let failed = |error: std::io::Error| match error.kind() {
@@ -519,7 +520,7 @@ impl Reader<'_> {
     }
 
     /// Reads ids as values. `u32` ids, sent by writers without 64-bit integers, are widened to
-    /// `u64`, the storage of every numeric id.
+    /// `u64`, which stores every numeric id.
     fn id_values(&mut self) -> Result<Values> {
         let values = self.values()?;
         Ok(match values.array {

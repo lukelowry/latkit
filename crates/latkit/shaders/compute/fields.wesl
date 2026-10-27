@@ -1,17 +1,17 @@
-// Text distance fields. For each run, converts the coverage a host set into each texel's signed
-// distance to the text's edge (positive inside), stored as the byte
+// Text distance fields. For each run, converts the coverage the host rasterized into each texel's
+// signed distance to the text's edge (positive inside), stored as the byte
 // `0.5 + distance / (2 TEXT_SPREAD)`. The field covers the run plus `TEXT_SPREAD` texels on each
 // side. Partial coverage places the edge within its texel, so antialiased edges keep subtexel
 // precision.
 //
 // A texel's squared distance to the text is the minimum, over the field's texels, of each texel's
-// own squared distance (0 inside the text, a partial texel's subtexel distance squared, effectively
-// infinite outside) plus the squared distance to that texel. The distance to the outside works the
-// same way. The minimum splits into a pass down each column, then a pass along each row. Only
-// texels within the spread can bring a texel within the spread, so each pass looks only that far,
-// which is exact wherever the field is not clamped. After the column pass, one of a texel's two
-// distances is always 0, so one signed word holds both: the distance to the outside above zero, and
-// to the text below.
+// own squared distance plus the squared distance to that texel. A texel's own squared distance is 0
+// inside the text, its subtexel distance squared where coverage is partial, and effectively
+// infinite outside. The distance to the outside works the same way. The minimum splits into a pass
+// down each column, then a pass along each row. Only texels within the spread can bring a texel
+// within the spread, so each pass looks only that far, which is exact wherever the field is not
+// clamped. After the column pass, one of a texel's two distances is always 0, so one signed word
+// holds both: the distance to the outside above zero, and to the text below.
 
 import package::lib::types::{
     TEXT_SPREAD, FIELD_COVERAGE, FIELD_WIDTH, FIELD_HEIGHT, FIELD_COLUMNS, FIELD_AT, FIELD_ROW, FIELD_WORDS,

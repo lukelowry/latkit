@@ -1,9 +1,9 @@
 //! Polygon triangulation by ear clipping, ported from Mapbox's earcut 3.2.
 //!
-//! Each hole is joined to the outer ring by a bridge. Ears are clipped from a doubly linked ring;
-//! large polygons use a z-order index to find points that block an ear. When no ear can be clipped,
-//! the ring is filtered while that removes points, then cured of local self-intersections once,
-//! then split in two.
+//! Each hole is joined to the outer ring by a bridge. Ears are clipped from a doubly linked ring.
+//! Large polygons use a z-order index to find points that block an ear. When no ear can be
+//! clipped, the ring is filtered while that removes points, then cured of local self-intersections
+//! once, then split in two.
 
 /// The null node index.
 const NIL: u32 = u32::MAX;
@@ -32,7 +32,7 @@ struct Rings<'a> {
     filtered: bool,
 }
 
-/// Triangulates a polygon. `points` holds the outer ring, then each hole; `holes` lists the index
+/// Triangulates a polygon. `points` holds the outer ring, then each hole. `holes` lists the index
 /// where each hole starts. Returns triangles as index triples into `points`.
 pub(crate) fn earcut(points: &[[f64; 2]], holes: &[usize]) -> Vec<[u32; 3]> {
     let nodes = Vec::with_capacity(points.len() * 3 / 2);

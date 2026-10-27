@@ -1,8 +1,8 @@
 //! Pictures and videos of views. A shot crosses as JSON, `{ size, scale, transparent, capture,
-//! elapsed }` with times in seconds, and its layout as a canvas's does: views, and four fractions
-//! per view. Canvases showing those views keep their last frames meanwhile. The page decides how
-//! long to wait. An image's pixels cross once, and its files are encoded in workers. A video returns
-//! the bytes each frame produced, for the page to write.
+//! elapsed }` with times in seconds. Its layout crosses as a canvas's does: views, and four
+//! fractions per view. Canvases showing those views keep their last frames meanwhile. The page
+//! decides how long to wait. An image's pixels cross once, and its files are encoded in workers. A
+//! video returns the bytes each frame produced, for the page to write.
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -63,16 +63,16 @@ impl Image {
     }
 }
 
-/// Takes `shot`'s (JSON) picture of `views`, each at its four fractions of `at`, once they are
-/// complete as its capture says.
+/// Takes a picture of `views` as `shot` (JSON) describes, each view at its four fractions of `at`,
+/// once the views are complete as the shot's `capture` says.
 #[wasm_bindgen]
 pub fn image(shot: &str, views: Vec<Handle>, at: &[f32]) -> Result<Task, Error> {
     let (shot, views) = shot_of(shot, views, at)?;
     Ok(task(async move { Ok(Image(latkit::web::image(&shot, &views).await?)) }))
 }
 
-/// The shot `json` describes, with its panels from `views` and `at`, and no deadline, since the
-/// page decides how long to wait; and its views.
+/// The shot `json` describes, with its panels from `views` and `at` and no deadline (the page
+/// decides how long to wait), and its views.
 fn shot_of(json: &str, views: Vec<Handle>, at: &[f32]) -> Result<(latkit::Shot, Vec<PageView>), Error> {
     let panels = layout(views, at)?;
     let shot = crate::json::<latkit::Shot>("shot", json)?.deadline(None);
@@ -96,7 +96,7 @@ impl Write for Written {
 }
 
 /// A video of a shot's pictures of its views, encoded with WebCodecs as frames are drawn. One
-/// operation runs at a time; cancelling its task drops the video with it.
+/// operation runs at a time. Cancelling its task drops the video with it.
 #[wasm_bindgen]
 pub struct Video {
     /// The video. `None` while a frame is drawing it, and after it is finished or cancelled.
@@ -114,8 +114,8 @@ impl Video {
         *self.frames.borrow() as f64
     }
 
-    /// Draws the next frame of its views. Resolves to the file bytes ready to write, once there is
-    /// room for another frame.
+    /// Draws the next frame of its views. Resolves to the file bytes ready to write, once the
+    /// encoder can take another frame.
     pub fn frame(&self) -> Task {
         let (inner, written, frames) = (self.inner.clone(), self.written.clone(), self.frames.clone());
         let views = self.views.clone();
@@ -154,9 +154,9 @@ impl Written {
     }
 }
 
-/// A video of `shot`'s (JSON) pictures of `views`, each at its four fractions of `at`, at `fps`
-/// frames per second. It encodes MP4 at `bitrate` bits per second, by default about 0.15 bits per
-/// pixel per frame.
+/// A video of pictures of `views` as `shot` (JSON) describes, each view at its four fractions of
+/// `at`, at `fps` frames per second. It encodes MP4 at `bitrate` bits per second. Defaults to about
+/// 0.15 bits per pixel per frame.
 #[wasm_bindgen]
 pub fn video(shot: &str, views: Vec<Handle>, at: &[f32], fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
     let (shot, views) = shot_of(shot, views, at)?;
