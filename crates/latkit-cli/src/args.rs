@@ -105,7 +105,7 @@ pub(crate) struct Job {
     #[arg(long, default_value = "1600x900", value_parser = size)]
     pub(crate) size: [u32; 2],
     /// Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp
-    #[arg(long, default_value = "1", value_parser = positive)]
+    #[arg(long, default_value = "1", value_parser = scale)]
     pub(crate) scale: f32,
     /// A scene's panel of the picture: its x, y, width, and height, as fractions. Give one per
     /// scene, in order
@@ -136,9 +136,16 @@ pub(crate) struct Job {
     /// A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets
     #[arg(long, value_parser = seconds, conflicts_with = "frames")]
     pub(crate) elapsed: Option<Duration>,
-    /// Frames as JSON Lines, one line per output frame (`-` reads stdin)
+    /// Frames as JSON Lines (`-` reads stdin): one per output frame, or with `--span`, at their `at`
     #[arg(long, value_name = "FILE")]
     pub(crate) frames: Option<PathBuf>,
+    /// The axis interval to play. A video or image sequence without `--frames` plays the datasets'
+    /// span
+    #[arg(long, value_name = "FROM,TO", value_parser = span, allow_hyphen_values = true)]
+    pub(crate) span: Option<[f64; 2]>,
+    /// Axis units played per second. Defaults to 1
+    #[arg(long, value_parser = positive)]
+    pub(crate) rate: Option<f64>,
     /// Output frames per second
     #[arg(long, default_value = "60", value_parser = fps)]
     pub(crate) fps: f64,
@@ -205,6 +212,11 @@ impl std::str::FromStr for Source {
 }
 
 impl Format {
+    /// Whether it is a video: MP4 or YUV4MPEG2.
+    pub(crate) fn video(self) -> bool {
+        matches!(self, Format::Mp4 | Format::Y4m)
+    }
+
     /// The pixel layout its pictures compose into.
     pub(crate) fn pixels(self) -> Pixels {
         match self {
@@ -249,6 +261,12 @@ impl Job {
     /// Whether the output is a `%d` or `%0Nd` pattern that names one file per frame.
     pub(crate) fn sequence(&self) -> bool {
         self.output.as_deref().is_some_and(|p| pattern(p).is_some())
+    }
+
+    /// Whether the render plays a span: `--span`, or a video or image sequence without `--frames`,
+    /// which plays the datasets' span.
+    pub(crate) fn plays(&self) -> bool {
+        self.span.is_some() || (self.frames.is_none() && (self.format().video() || self.sequence()))
     }
 }
 
@@ -317,9 +335,17 @@ impl Cli {
                 "--output must end in .png, .jpg, .webp, .mp4, .y4m, or .rgba, unless --format is set",
             ));
         }
-        let video = matches!(format, Format::Mp4 | Format::Y4m);
-        if (video || job.sequence()) && job.frames.is_none() {
-            return Err(invalid("a video or an image sequence takes --frames"));
+        if job.span.is_some() && !(format.video() || job.sequence() || format == Format::Rgba) {
+            return Err(invalid("--span plays a video, an image sequence, or raw frames"));
+        }
+        if job.plays() && (job.at.is_some() || job.elapsed.is_some()) {
+            return Err(Self::command().error(
+                ErrorKind::ArgumentConflict,
+                "a span sets each frame's axis coordinate and time, so it takes no --at or --elapsed",
+            ));
+        }
+        if job.rate.is_some() && !job.plays() {
+            return Err(invalid("--rate sets how fast a span plays: give --span, or no --frames"));
         }
         if job.sequence() && (format.image(job.quality).is_none() || is_stdio(output)) {
             return Err(invalid("a %d pattern needs an image format: png, jpeg, or webp"));
@@ -336,9 +362,19 @@ fn finite(value: &str) -> Result<f64, String> {
     value.parse::<f64>().ok().filter(|n| n.is_finite()).ok_or_else(|| "expected a finite number".into())
 }
 
-fn positive(value: &str) -> Result<f32, String> {
-    let n = finite(value)? as f32;
-    if n.is_finite() && n > 0.0 { Ok(n) } else { Err("expected a positive number".into()) }
+fn positive(value: &str) -> Result<f64, String> {
+    finite(value).and_then(|n| if n > 0.0 { Ok(n) } else { Err("expected a positive number".into()) })
+}
+
+fn scale(value: &str) -> Result<f32, String> {
+    let n = positive(value)? as f32;
+    if n.is_finite() { Ok(n) } else { Err("expected a positive number".into()) }
+}
+
+fn span(value: &str) -> Result<[f64; 2], String> {
+    let (from, to) = value.split_once(',').ok_or("expected FROM,TO")?;
+    let [from, to] = [finite(from.trim())?, finite(to.trim())?];
+    if to > from { Ok([from, to]) } else { Err("expected TO greater than FROM".into()) }
 }
 
 fn seconds(value: &str) -> Result<Duration, String> {

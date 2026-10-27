@@ -60,10 +60,16 @@ impl View {
         Ok(())
     }
 
-    /// Eases to `camera` (JSON).
-    pub fn fly(&self, camera: &str) -> Result<(), Error> {
+    /// Eases to `camera` (JSON) over `seconds`, or over twice the scene's ease without it.
+    pub fn fly(&self, camera: &str, seconds: Option<f64>) -> Result<(), Error> {
         let camera = json("camera", camera)?;
-        self.view.with(|v| v.fly(camera));
+        let seconds = seconds
+            .map(|s| {
+                std::time::Duration::try_from_secs_f64(s)
+                    .map_err(|_| latkit::Error::invalid("expected nonnegative seconds").at("seconds"))
+            })
+            .transpose()?;
+        self.view.with(|v| v.fly(camera, seconds));
         Ok(())
     }
 

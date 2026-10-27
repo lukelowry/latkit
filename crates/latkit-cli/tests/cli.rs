@@ -90,12 +90,16 @@ fn usage_errors_exit_2_before_reading_or_drawing() {
         vec!["render", "missing.json", "-o", "out.png", "--elapsed", "1e100"],
         vec!["render", "missing.json", "-o", "out.png", "--deadline", "0"],
         vec!["render", "missing.json", "-o", "out.gif"],
-        vec!["render", "missing.json", "-o", "out.mp4"],
+        vec!["render", "missing.json", "-o", "out.mp4", "--span", "2,1"],
+        vec!["render", "missing.json", "-o", "out.png", "--span", "0,1"],
+        vec!["render", "missing.json", "-o", "out.mp4", "--at", "1"],
+        vec!["render", "missing.json", "-o", "out.mp4", "--span", "0,1", "--elapsed", "1"],
+        vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--rate", "2"],
+        vec!["render", "missing.json", "-o", "out.mp4", "--rate", "0"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--size", "3x64"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--transparent"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--fps", "0"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out/%04d.y4m"],
-        vec!["render", "missing.json", "-o", "out/%04d.png"],
         vec!["render", "a.json", "b.json", "-o", "out.png"],
         vec!["render", "a.json", "-o", "out.png", "--tiles", "base.pmtiles"],
         vec!["validate", "-", "-d", "-"],
@@ -386,4 +390,78 @@ fn a_frame_stream_writes_every_output_and_repeats_unchanged_frames() {
         assert_eq!(run(dir.path(), &args, None).status.code(), Some(1));
         assert_eq!(std::fs::read(dir.path().join("out.mp4")).unwrap(), mp4, "a failed video leaves the file intact");
     }
+}
+
+#[test]
+fn a_span_plays_frames_at_their_at_and_flies_between_their_cameras() {
+    let dir = fixture();
+    let camera = |x: f64| format!(r#"{{"center":[{x},0],"zoom":2,"pitch":0,"bearing":0}}"#);
+    let lines =
+        [format!(r#"{{"at":0,"camera":{}}}"#, camera(0.0)), format!(r#"{{"at":0.05,"camera":{}}}"#, camera(8.0))];
+    std::fs::write(dir.path().join("span.jsonl"), lines.join("\n")).unwrap();
+    let common = ["scene.json", "-d", "grid.json", "--size=64x64", "--format", "rgba", "-o", "-"];
+    let args = [&["render", "--frames", "span.jsonl", "--span", "0,0.05"][..], &common].concat();
+    let output = run(dir.path(), &args, None);
+    if no_gpu(&output) {
+        return;
+    }
+    ok(&output);
+    // 0.05 axis units at the default rate of 1 and 60 fps: frames at 0, 1/60, 2/60, and 3/60.
+    let size = 64 * 64 * 4;
+    let frames: Vec<&[u8]> = output.stdout.chunks(size).collect();
+    assert_eq!(frames.len(), 4);
+    assert!(frames[0] != frames[1] && frames[1] != frames[2], "the camera flies between the lines");
+    // The last frame reaches the last line, so it shows that line's camera, as a still with it does.
+    let last = camera(8.0);
+    let still = run(dir.path(), &[&["render", "--camera", last.as_str()][..], &common].concat(), None);
+    ok(&still);
+    assert_eq!(frames[3], &still.stdout[..], "arrives on the last line");
+
+    // Each line needs `at`, in order, and its patches name datasets that exist.
+    for (lines, path) in [
+        ([r#"{"at":0}"#, r#"{"orbit":1}"#], "frames[1].at"),
+        ([r#"{"at":0.02}"#, r#"{"at":0.01}"#], "frames[1].at"),
+        ([r#"{"at":0}"#, r#"{"at":0.01,"patch":{"absent":[]}}"#], "frames[1].patch"),
+    ] {
+        std::fs::write(dir.path().join("bad.jsonl"), lines.join("\n")).unwrap();
+        let args =
+            ["validate", "scene.json", "-d", "grid.json", "--frames", "bad.jsonl", "--span", "0,1", "-o", "x.y4m"];
+        let output = run(dir.path(), &args, None);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(path),
+            "{path}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_video_without_frames_plays_the_datasets_span_at_its_rate() {
+    let dir = fixture();
+    let sampled = r#"{"name":"grid","patch":[
+        {"replace":{"table":"Bus","ids":[10,20],"fields":{"x":[-10,10],"y":[0,0]}}},
+        {"axis":{"name":"time","unit":"s"}},
+        {"append":{"table":"Bus","at":[0,0.05],"fields":{"v":[1,2,3,4]}}}]}"#;
+    std::fs::write(dir.path().join("sampled.json"), sampled).unwrap();
+    let header = b"YUV4MPEG2 W64 H64 F60:1 Ip A1:1 C420jpeg XCOLORRANGE=LIMITED\n";
+    let frames = |extra: &[&str]| {
+        let args =
+            [&["render", "scene.json", "-d", "sampled.json", "--size=64x64", "-o", "out.y4m"][..], extra].concat();
+        let output = run(dir.path(), &args, None);
+        (!no_gpu(&output)).then(|| {
+            ok(&output);
+            let y4m = std::fs::read(dir.path().join("out.y4m")).unwrap();
+            (y4m.len() - header.len()) / (6 + 64 * 64 * 3 / 2)
+        })
+    };
+    // The span is 0 to 0.05: four frames at a rate of 1, and seven at half that.
+    if let Some(count) = frames(&[]) {
+        assert_eq!(count, 4);
+        assert_eq!(frames(&["--rate", "0.5"]), Some(7));
+    }
+    // Without a span, a video has nothing to play.
+    let output = run(dir.path(), &["render", "scene.json", "-d", "grid.json", "--size=64x64", "-o", "none.y4m"], None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("nothing to play"));
 }

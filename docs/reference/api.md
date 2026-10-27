@@ -1131,8 +1131,9 @@ const view = await View.create(canvas, {
 
 {#view-camera .member}
 **`camera`**`:` [`Camera`](#camera) [¶](#view-camera){.headerlink}
-: Where the view looks. Setting it moves the camera at once. Use [`View.fly()`](#view-fly) to ease. A
-  camera of the wrong kind for the space, such as a plot camera on a map, is ignored.
+: Where the view looks. Setting it moves the camera at once, replacing a flight or a fit not yet
+  applied. Use [`View.fly()`](#view-fly) to ease. A camera of the wrong kind for the space, such as a plot
+  camera on a map, is ignored.
 
   Camera moves stay within the camera's zoom and pan limits. On the earth, the space sets the
   limits inside the insets, as [`Earth`](#earth) describes. A fit narrows them to 3 zoom levels out and 8
@@ -1215,10 +1216,11 @@ const view = await View.create(canvas, {
   the next frame, or a frame or two later when the GPU must measure the extent.
 
 {#view-fly .member}
-**`fly`**`(camera:` [`Camera`](#camera)`): void` [¶](#view-fly){.headerlink}
-: Eases the camera to `camera` over twice the scene's ease time, or moves it at once when motion
-  is reduced. The camera stays within its limits, as [`View.camera`](#view-camera) describes. A camera of
-  the wrong kind for the space is ignored.
+**`fly`**`(camera:` [`Camera`](#camera)`, seconds?: number): void` [¶](#view-fly){.headerlink}
+: Eases the camera to `camera` over `seconds`, or over twice the scene's ease time without it,
+  replacing a fit not yet applied. When motion is reduced, it moves at once. The camera stays
+  within its limits, as [`View.camera`](#view-camera) describes. A camera of the wrong kind for the space is
+  ignored.
 
 {#view-screen .member}
 **`screen`**`(position:` [`Position`](#position)`):` [`Point`](#point) `| null` [¶](#view-screen){.headerlink}

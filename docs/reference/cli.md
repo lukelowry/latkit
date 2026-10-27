@@ -162,7 +162,15 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
 {#cli-render-frames .member}
 **`--frames`** `<FILE>` [¶](#cli-render-frames){.headerlink}
-: Frames as JSON Lines, one line per output frame (`-` reads stdin).
+: Frames as JSON Lines (`-` reads stdin): one per output frame, or with [`--span`](#cli-render-span), at their `at`.
+
+{#cli-render-span .member}
+**`--span`** `<FROM,TO>` [¶](#cli-render-span){.headerlink}
+: The axis interval to play. A video or image sequence without [`--frames`](#cli-render-frames) plays the datasets' span.
+
+{#cli-render-rate .member}
+**`--rate`** `<RATE>` [¶](#cli-render-rate){.headerlink}
+: Axis units played per second. Defaults to 1.
 
 {#cli-render-fps .member}
 **`--fps`** `<FPS>` [¶](#cli-render-fps){.headerlink}

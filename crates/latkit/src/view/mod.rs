@@ -541,8 +541,9 @@ impl View {
         &self.camera
     }
 
-    /// Moves to `camera` at once, stopping any flight or coasting. Like every setter, it emits no
-    /// event. Ignored unless `camera` [fits](Camera::fits) the scene's space.
+    /// Moves to `camera` at once, stopping any flight or coasting and replacing a fit not yet
+    /// applied. Like every setter, it emits no event. Ignored unless `camera`
+    /// [fits](Camera::fits) the scene's space.
     ///
     /// Every camera move stays within the camera's zoom and pan limits. On the earth, the limits
     /// are those [`Earth`](crate::Earth) describes, for the part of the view inside the
@@ -552,6 +553,7 @@ impl View {
     /// the camera back within the limits and emits a [`Camera`](Event::Camera) event.
     pub fn set_camera(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
+            self.cancel_fit();
             self.rig.hold();
             self.place_camera(camera);
         }
@@ -585,12 +587,15 @@ impl View {
         if self.moves() { self.scene.ease } else { Duration::ZERO }
     }
 
-    /// Eases to `camera` over twice the scene's ease, on the view's clock. The target stays within
-    /// the zoom and pan limits [`set_camera`](View::set_camera) describes. Ignored unless `camera`
-    /// [fits](Camera::fits) the scene's space.
-    pub fn fly(&mut self, camera: Camera) {
+    /// Eases to `camera` on the view's clock, over `seconds`, or over twice the scene's ease when
+    /// `None`, replacing a fit not yet applied. The target stays within the zoom and pan limits
+    /// [`set_camera`](View::set_camera) describes. Ignored unless `camera` [fits](Camera::fits) the
+    /// scene's space.
+    pub fn fly(&mut self, camera: Camera, seconds: Option<Duration>) {
         if camera.fits(&self.scene.space) {
-            let seconds = (self.ease().max(Duration::from_millis(1)) * 2).as_secs_f64();
+            self.cancel_fit();
+            let least = Duration::from_millis(1);
+            let seconds = seconds.unwrap_or_else(|| self.ease().max(least) * 2).max(least).as_secs_f64();
             let to = camera.within(&self.reach());
             self.rig.fly(self.camera, to, self.clock.now(), seconds);
             self.wake();

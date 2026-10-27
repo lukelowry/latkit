@@ -6,14 +6,17 @@
 //!
 //! Hover is reported whether or not it glows, and follows the frame. A lit row keeps its ports on
 //! top. Setters emit no events. A scene's first frame requests every pipeline its input can use.
-//! The wheel zooms as the controls say, and reduced motion applies every move at once. A flat map
-//! keeps the camera over its one world, and a frame reports moving it there.
+//! The wheel zooms as the controls say, and reduced motion applies every move at once. A flight
+//! takes the seconds it is given. A flat map keeps the camera over its one world, and a frame
+//! reports moving it there.
 
 #![cfg(feature = "gpu")]
 
 mod common;
 
-use common::{SIZE, camera, diagram, frame, gpu, plain_theme, step};
+use std::time::Duration;
+
+use common::{SIZE, TICK, camera, diagram, frame, gpu, plain_theme, step};
 use latkit::{
     Button, Camera, Controls, Data, Device, Edges, End, Event, Ids, Input, Key, Modifiers, Motion, Patch, Phase, Row,
     Rows, Scene, Side, Table, Vertices, View, Zoom, field,
@@ -350,9 +353,29 @@ fn setters_emit_no_events_but_a_flight_reports_the_camera() {
     frame(&gpu, &mut view);
     let told: Vec<Event> = view.events().filter(|e| matches!(e, Event::Camera(_) | Event::Selection { .. })).collect();
     assert_eq!(told, Vec::new(), "setters emit no events");
-    view.fly(Camera::Map { center: [-10.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    view.fly(Camera::Map { center: [-10.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 }, None);
     let flown = after(&gpu, &mut view, &[], |e| if let Event::Camera(camera) = e { Some(*camera) } else { None });
     assert_ne!(flown, set, "a flight reports where it moved");
+}
+
+#[test]
+fn a_flight_takes_the_seconds_it_is_given() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu, editing());
+    let Camera::Map { center, zoom, pitch, bearing } = *view.camera() else { unreachable!("a plane's camera") };
+    let x = |view: &View| if let Camera::Map { center, .. } = view.camera() { center[0] } else { f64::NAN };
+    let to = Camera::Map { center: [center[0] + 1.0, center[1], center[2]], zoom, pitch, bearing };
+    view.fly(to, Some(Duration::from_secs(2)));
+    // One second of frames in, halfway through the two seconds, smoothstep puts the camera halfway.
+    let second = (1.0 / TICK).round() as usize;
+    for _ in 0..second {
+        step(&gpu, &mut view);
+    }
+    assert!((x(&view) - (center[0] + 0.5)).abs() < 1e-9, "halfway: {}", x(&view));
+    for _ in 0..second {
+        step(&gpu, &mut view);
+    }
+    assert_eq!(*view.camera(), to, "arrives on time");
 }
 
 #[test]
@@ -477,7 +500,7 @@ fn reduced_motion_applies_every_move_at_once() {
     let mut system = view(&gpu, Controls::default());
     system.set_reduced_motion(true);
     let to = Camera::Map { center: [-10.0, 5.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 };
-    system.fly(to);
+    system.fly(to, None);
     step(&gpu, &mut system);
     step(&gpu, &mut system);
     assert_eq!(*system.camera(), to);

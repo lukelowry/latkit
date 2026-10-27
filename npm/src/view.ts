@@ -209,8 +209,9 @@ export class View extends Handle {
   }
 
   /**
-   * Where the view looks. Setting it moves the camera at once. Use {@link View.fly} to ease. A
-   * camera of the wrong kind for the space, such as a plot camera on a map, is ignored.
+   * Where the view looks. Setting it moves the camera at once, replacing a flight or a fit not yet
+   * applied. Use {@link View.fly} to ease. A camera of the wrong kind for the space, such as a plot
+   * camera on a map, is ignored.
    *
    * Camera moves stay within the camera's zoom and pan limits. On the earth, the space sets the
    * limits inside the insets, as `Earth` describes. A fit narrows them to 3 zoom levels out and 8
@@ -304,12 +305,13 @@ export class View extends Handle {
   }
 
   /**
-   * Eases the camera to `camera` over twice the scene's ease time, or moves it at once when motion
-   * is reduced. The camera stays within its limits, as {@link View.camera} describes. A camera of
-   * the wrong kind for the space is ignored.
+   * Eases the camera to `camera` over `seconds`, or over twice the scene's ease time without it,
+   * replacing a fit not yet applied. When motion is reduced, it moves at once. The camera stays
+   * within its limits, as {@link View.camera} describes. A camera of the wrong kind for the space is
+   * ignored.
    */
-  fly(camera: Camera): void {
-    view(this).fly(JSON.stringify(camera));
+  fly(camera: Camera, seconds?: number): void {
+    view(this).fly(JSON.stringify(camera), seconds);
   }
 
   /**

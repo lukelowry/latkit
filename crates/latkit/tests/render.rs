@@ -311,6 +311,26 @@ fn new_data_versions_show_and_fit_frames_them() {
 }
 
 #[test]
+fn a_camera_set_after_a_fit_replaces_it() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![1000.0]).field("y", vec![1000.0])).expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_sources([&data]).expect("a source");
+    // The fit has not framed the vertex yet when the camera is set, so the camera stays.
+    view.fit(latkit::Fit::All);
+    let set = camera();
+    view.set_camera(set);
+    let pixels = frame(&gpu, &mut view);
+    assert_eq!(*view.camera(), set, "the later camera wins");
+    let center = SIZE / 2;
+    assert!(close(at(&pixels, center, center), [0, 0, 0, 255]), "the vertex stays out of view");
+}
+
+#[test]
 fn a_mark_with_no_rows_does_not_delay_a_fit() {
     let Some(gpu) = gpu() else { return };
     // The links table is empty. It has nothing to frame and does not delay the fit.

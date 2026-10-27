@@ -1,15 +1,16 @@
 //! Rendering and validating a job. Rendering creates a view of each scene over the datasets, then
-//! takes a still picture, or draws a video of the frames into a sink. Validating reads, loads, and
-//! checks every input a render does, including frames, without a GPU. Both apply frames with
-//! [`apply`].
+//! takes a still picture, or draws a video into a sink. Validating reads, loads, and checks every
+//! input a render does, including frames, without a GPU. Both read what plays with [`playback`] and
+//! apply frames with [`apply`].
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use latkit::host::Native;
 use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Name, Patch, Scene, Sink, Tiles, View};
 
 use crate::args::{Format, Job, Source};
-use crate::inputs::{self, Ahead, Each, Frame, Frames};
+use crate::inputs::{self, Each, Frame, Frames, Next, blame};
 use crate::report::Report;
 use crate::sinks::{Commit, Images, Output, Raw, Y4m};
 use crate::{Failure, block};
@@ -55,6 +56,11 @@ impl Inputs {
         self.data.iter().map(latkit::Source::from).chain(self.tiles.iter().map(latkit::Source::from)).collect()
     }
 
+    /// The datasets' span: from the first axis coordinate any of them holds to the last.
+    fn span(&self) -> Option<[f64; 2]> {
+        self.data.iter().filter_map(|d| d.snapshot().describe().span).reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])])
+    }
+
     /// Creates a view of each scene over every dataset and the tiles, with the job's insets, axis
     /// coordinate, and camera or fit.
     fn views(&self, gpu: &Gpu, job: &Job) -> Result<Vec<View>, Failure> {
@@ -84,7 +90,7 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
     gpu.set_host(inputs.host.clone());
     let mut views = inputs.views(&gpu, job)?;
     let output = job.output.as_deref().expect("render requires --output");
-    let Some(path) = &job.frames else {
+    let Some(playback) = playback(job, &inputs)? else {
         let mut shot = job.shot();
         if let Some(elapsed) = job.elapsed {
             shot = shot.elapsed(elapsed);
@@ -99,9 +105,8 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
         report.done(1, &views, &gpu);
         return Ok(());
     };
-    let frames = Frames::open(path, inputs.host.clone(), job.deadline)?.ahead();
     let host = inputs.host.clone();
-    let mut sequence = Sequence { job, path, gpu: &gpu, views: &mut views, inputs: &inputs, report };
+    let sequence = Sequence { job, playback, gpu: &gpu, views: &mut views, inputs: &inputs, report };
     let format = job.format();
     if let Some(image) = format.image(job.quality) {
         let images = if job.sequence() {
@@ -109,26 +114,135 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
         } else {
             Images::one(Output::create(output)?, image, host)
         };
-        return sequence.run(frames, images);
+        return sequence.run(images);
     }
     match format {
         Format::Png | Format::Jpeg | Format::Webp => unreachable!("image formats are handled above"),
-        Format::Rgba => sequence.run(frames, Raw::new(Output::create(output)?)),
-        Format::Y4m => sequence.run(frames, Y4m::new(Output::create(output)?)),
+        Format::Rgba => sequence.run(Raw::new(Output::create(output)?)),
+        Format::Y4m => sequence.run(Y4m::new(Output::create(output)?)),
         Format::Mp4 => {
             let mut mp4 = Mp4::new(Output::create(output)?);
             if let Some(bitrate) = job.bitrate {
                 mp4 = mp4.bitrate(bitrate);
             }
-            sequence.run(frames, mp4)
+            sequence.run(mp4)
         }
     }
 }
 
-/// A video of the frames file at `path`, one output frame per line.
+/// What a render plays: the frames file's lines, in order, and with a span, how its output frames
+/// step through the axis.
+struct Playback {
+    lines: Box<dyn Iterator<Item = Result<Next, Failure>>>,
+    span: Option<Span>,
+    /// What errors in the lines name: the frames file, or `--span` without one.
+    file: PathBuf,
+}
+
+/// An axis interval played at `rate` units per second, and the flights between its lines.
+struct Span {
+    from: f64,
+    to: f64,
+    rate: f64,
+    flights: Flights,
+}
+
+/// What `job` plays, or `None` for a still.
+fn playback(job: &Job, inputs: &Inputs) -> Result<Option<Playback>, Failure> {
+    let file = job.frames.clone().unwrap_or_else(|| PathBuf::from("--span"));
+    let frames = job.frames.as_deref().map(|path| Frames::open(path, inputs.host.clone(), job.deadline)).transpose()?;
+    if !job.plays() {
+        let Some(frames) = frames else { return Ok(None) };
+        let mut lines = frames.ahead().peekable();
+        if lines.peek().is_none() {
+            return Err(Failure::at(Error::invalid("the frames file has no frames"), &file));
+        }
+        return Ok(Some(Playback { lines: Box::new(lines), span: None, file }));
+    }
+    let lines = frames.map(Frames::ordered).transpose()?.unwrap_or_default();
+    let [from, to] = job.span.or_else(|| inputs.span()).ok_or_else(|| {
+        Failure::from(Error::invalid("nothing to play: the datasets record no axis span, so give --span or --frames"))
+    })?;
+    let rate = job.rate.unwrap_or(1.0);
+    let flights = Flights::plan(&lines, inputs.scenes.len(), rate);
+    let span = Span { from, to, rate, flights };
+    Ok(Some(Playback { lines: Box::new(lines.into_iter().map(Ok)), span: Some(span), file }))
+}
+
+/// For each line of a span, the camera each view it sets flies on to, and the axis coordinate of
+/// the next line that sets that view's camera. A line that also flies or fits the view starts none.
+#[derive(Default)]
+struct Flights {
+    onward: Vec<Vec<Option<(f64, Camera)>>>,
+    rate: f64,
+}
+
+impl Flights {
+    fn plan(lines: &[Next], views: usize, rate: f64) -> Flights {
+        // From the end back: the next camera each view is set to.
+        let mut later: Vec<Option<(f64, Camera)>> = vec![None; views];
+        let mut onward = vec![Vec::new(); lines.len()];
+        for (j, (_, frame, _)) in lines.iter().enumerate().rev() {
+            let set = |i: usize| frame.camera.as_ref().and_then(|c| c.of(i));
+            let steered = |i: usize| {
+                frame.fly.as_ref().and_then(|c| c.of(i)).is_some() || frame.fit.as_ref().and_then(|f| f.of(i)).is_some()
+            };
+            onward[j] = (0..views).map(|i| later[i].filter(|_| set(i).is_some() && !steered(i))).collect();
+            for (i, later) in later.iter_mut().enumerate() {
+                if let (Some(camera), Some(at)) = (set(i), frame.at) {
+                    *later = Some((at, camera));
+                }
+            }
+        }
+        Flights { onward, rate }
+    }
+
+    /// Flies each view that line `j` set on to its next camera, from axis coordinate `at`.
+    fn start(&self, views: &mut [View], j: usize, at: f64) {
+        let Some(onward) = self.onward.get(j) else { return };
+        for (view, onward) in views.iter_mut().zip(onward) {
+            if let Some((arrive, camera)) = *onward {
+                view.fly(camera, Some(Duration::from_secs_f64(((arrive - at) / self.rate).max(0.0))));
+            }
+        }
+    }
+}
+
+/// One output frame: the lines it applies, in order, and in a span, the axis coordinate it shows.
+struct Shown {
+    lines: Vec<Next>,
+    at: Option<f64>,
+}
+
+/// The output frames of `lines`: one per line, or with `span`, one per step through it, each
+/// applying the lines it reached.
+fn shown<'a>(
+    lines: Box<dyn Iterator<Item = Result<Next, Failure>>>,
+    span: Option<&'a Span>,
+    fps: f64,
+) -> Box<dyn Iterator<Item = Result<Shown, Failure>> + 'a> {
+    let Some(span) = span else {
+        return Box::new(lines.map(|line| line.map(|line| Shown { lines: vec![line], at: None })));
+    };
+    // A little slack keeps the last frame when the span divides evenly into frames.
+    let count = ((span.to - span.from) * fps / span.rate + 1e-9).floor() as usize + 1;
+    let mut lines = lines.peekable();
+    Box::new((0..count).map(move |n| {
+        let at = span.from + n as f64 * span.rate / fps;
+        let mut due = Vec::new();
+        while let Some(line) =
+            lines.next_if(|line| line.as_ref().is_ok_and(|(_, f, _)| f.at.is_some_and(|key| key <= at)))
+        {
+            due.push(line?);
+        }
+        Ok(Shown { lines: due, at: Some(at) })
+    }))
+}
+
+/// A video of what plays, drawn into a sink.
 struct Sequence<'a> {
     job: &'a Job,
-    path: &'a Path,
+    playback: Playback,
     gpu: &'a Gpu,
     views: &'a mut Vec<View>,
     inputs: &'a Inputs,
@@ -136,27 +250,36 @@ struct Sequence<'a> {
 }
 
 impl Sequence<'_> {
-    fn run<S: Sink + Commit>(&mut self, frames: Ahead, sink: S) -> Result<(), Failure> {
-        let (job, path) = (self.job, self.path);
-        let mut video = job.shot().video(self.gpu, job.fps, sink)?;
-        let mut any = false;
-        for next in frames {
-            let (index, frame, patches) = next?;
-            any = true;
-            let at = |error: Error| Failure::at(error.at(index).at("frames"), path);
-            apply(&self.inputs.data, &self.inputs.scenes, &frame, patches).map_err(at)?;
-            steer(self.views, &frame);
+    fn run<S: Sink + Commit>(self, sink: S) -> Result<(), Failure> {
+        let Sequence { job, playback: Playback { lines, span, file }, gpu, views, inputs, report } = self;
+        // An output frame's own errors name the frames file, or `--span` in a span.
+        let source = if span.is_some() { Path::new("--span") } else { file.as_path() };
+        let mut video = job.shot().video(gpu, job.fps, sink)?;
+        for next in shown(lines, span.as_ref(), job.fps) {
+            let Shown { lines, at } = next?;
+            for (index, mut frame, patches) in lines {
+                apply(&inputs.data, &inputs.scenes, &frame, patches).map_err(|e| blame(&file, index, e))?;
+                // A span shows its own axis coordinate, and flies on from each line that sets a camera.
+                if at.is_some() {
+                    frame.at = None;
+                }
+                steer(views, &frame);
+                if let (Some(at), Some(span)) = (at, &span) {
+                    span.flights.start(views, index, at);
+                }
+            }
+            if let Some(at) = at {
+                steer(views, &Frame::showing(at));
+            }
             // Only invalid input is the frame's fault. An output that fails names itself.
-            let drawn = block(job.deadline, video.frame(&mut self.views.iter_mut().collect::<Vec<_>>()));
-            drawn.map_err(|error| if let Error::Invalid { .. } = error { at(error) } else { error.into() })?;
-            self.report.progress(video.frames(), video.time());
-        }
-        if !any {
-            return Err(Failure::at(Error::invalid("the frames file has no frames"), path));
+            let index = usize::try_from(video.frames()).unwrap_or(usize::MAX);
+            let drawn = block(job.deadline, video.frame(&mut views.iter_mut().collect::<Vec<_>>()));
+            drawn.map_err(|e| if let Error::Invalid { .. } = e { blame(source, index, e) } else { e.into() })?;
+            report.progress(video.frames(), video.time());
         }
         let frames = video.frames();
         block(job.deadline, video.finish())?.commit()?;
-        self.report.done(frames, self.views, self.gpu);
+        report.done(frames, views, gpu);
         Ok(())
     }
 }
@@ -211,7 +334,7 @@ fn steer(views: &mut [View], frame: &Frame) {
             view.set_camera(camera);
         }
         if let Some(camera) = frame.fly.as_ref().and_then(|c| c.of(i)) {
-            view.fly(camera);
+            view.fly(camera, None);
         }
         if let Some(fit) = frame.fit.as_ref().and_then(|f| f.of(i)) {
             view.fit(fit);
@@ -223,17 +346,15 @@ fn steer(views: &mut [View], frame: &Frame) {
 /// datasets, cameras, fonts, and every frame applied in turn.
 pub(crate) fn validate(job: &Job) -> Result<(), Failure> {
     let inputs = Inputs::read(job)?;
-    let Some(path) = &job.frames else { return Ok(()) };
-    let mut frames = Frames::open(path, inputs.host.clone(), job.deadline)?;
-    let mut any = false;
-    while let Some((index, frame, patches)) = frames.next()? {
-        any = true;
-        let at = |error: Error| Failure::at(error.at(index).at("frames"), path);
+    let Some(Playback { lines, file, .. }) = playback(job, &inputs)? else { return Ok(()) };
+    for next in lines {
+        let (index, frame, patches) = next?;
+        let at = |error: Error| blame(&file, index, error);
         if apply(&inputs.data, &inputs.scenes, &frame, patches).map_err(at)? {
             for (_, scene) in &inputs.scenes {
                 scene.validate(&inputs.sources()).map_err(at)?;
             }
         }
     }
-    if any { Ok(()) } else { Err(Failure::at(Error::invalid("the frames file has no frames"), path)) }
+    Ok(())
 }

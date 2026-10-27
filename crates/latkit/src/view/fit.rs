@@ -41,6 +41,14 @@ impl Fitting {
     pub(crate) fn framing(&self) -> bool {
         self.wanted.is_some() || self.reading.context().is_some_and(Option::is_some)
     }
+
+    /// Drops the fit about to move the camera, keeping a plot's measure of its traces.
+    fn cancel(&mut self) {
+        self.wanted = None;
+        if self.reading.context().is_some_and(Option::is_some) {
+            self.reading.cancel();
+        }
+    }
 }
 
 /// What this frame measures: whether only rows marked for a fit count, and the fit it serves.
@@ -73,6 +81,12 @@ impl View {
         if let Ok(bytes) = bytes {
             self.measured(&crate::wire::words(&bytes), fit.as_ref());
         }
+        self.fitted();
+    }
+
+    /// Drops a fit not yet applied, as a camera set or flown afterwards replaces it.
+    pub(super) fn cancel_fit(&mut self) {
+        self.fitting.cancel();
         self.fitted();
     }
 
@@ -210,7 +224,7 @@ impl View {
                     .is_some_and(|s| s[0] >= area[0] && s[0] <= area[2] && s[1] >= area[1] && s[1] <= area[3]);
                 if !inside {
                     let camera = self.camera.centered(middle);
-                    self.fly(camera);
+                    self.fly(camera, None);
                 }
             }
             Some(fit) => {

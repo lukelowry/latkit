@@ -15,6 +15,8 @@ latkit render map.json plot.json -d grid.json -d states=usa.geojson \
   --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4
 latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i - film.webm
 latkit render scene.json -d grid.json --frames frames.jsonl -o frames/%04d.png
+latkit render scene.json -d run.latk -o run.mp4   # plays the recording's span
+latkit render scene.json -d run.latk --frames frames.jsonl --span 0.6,10 --rate 0.4 -o run.mp4
 latkit inspect grid.bin                        # tables, fields, and the axis, as JSON
 latkit query grid.bin '{"of":"Branch","filter":{"gt":["$loading",90]},"limit":20}'
 latkit tile history.bin -o history/            # time tiles, which --tiles opens
@@ -26,8 +28,8 @@ At most one input can read stdin (`-`).
 
 ## Frames
 
-`--frames` is a JSON Lines file with one line per output frame. Line `n` shows at `n / --fps`
-seconds. Every key is optional:
+`--frames` is a JSON Lines file with one line per output frame, or with [`--span`](#spans), lines
+at axis coordinates. Line `n` shows at `n / --fps` seconds. Every key is optional:
 
 ```json
 {
@@ -60,19 +62,33 @@ seconds. Every key is optional:
 | `orbit`  | degrees per second a map or plane turns                                        |
 
 `camera`, `fly`, and `fit` take one value for every view, or a list with one value per view (`null`
-leaves that view unchanged). The CLI reads and loads up to two frames ahead of the one it is
-drawing. Changes ease over each scene's `ease`. Set `"ease": 0` to show each frame's data without
-easing.
+leaves that view unchanged). A camera or flight replaces a pending fit. The CLI loads up to two
+frames ahead of the one it draws. Changes ease over each scene's `ease`; `"ease": 0` shows each
+frame's data as is.
+
+## Spans
+
+`--span FROM,TO` plays an axis interval at `--rate` units per second (default 1). A video or image
+sequence without `--frames` plays the datasets' span.
+
+With `--span`, each line needs `at`, in order, and applies when playback reaches it. Between lines
+that set a view's camera, the view flies from one to the next:
+
+```text
+{"at": 0.6, "camera": {"center": [-92, 36.5], "zoom": 5.09, "pitch": 48, "bearing": -10}}
+{"at": 1, "patch": {"grid": [{"set": {"table": "Branch", "ids": ["b1"], "fields": {"open": [true]}}}]}}
+{"at": 10, "camera": {"center": [-92, 36.5], "zoom": 5.09, "pitch": 48, "bearing": 20}}
+```
 
 ## Outputs
 
-| Output                   | Writes                                                           |
-| ------------------------ | ---------------------------------------------------------------- |
-| `.png`, `.jpg`, `.webp`  | one picture; JPEG at `--quality`                                 |
-| `frame-%04d.png`         | one image per frame (`--frames`)                                 |
-| `.rgba`, `--format rgba` | straight-alpha RGBA, frames back to back                         |
-| `.y4m`                   | YUV4MPEG2, 4:2:0 BT.709, for any encoder (`--frames`)            |
-| `.mp4`                   | H.264 in fragmented MP4 from the platform's encoder (`--frames`) |
+| Output                   | Writes                                              |
+| ------------------------ | --------------------------------------------------- |
+| `.png`, `.jpg`, `.webp`  | one picture; JPEG at `--quality`                    |
+| `frame-%04d.png`         | one image per frame                                 |
+| `.rgba`, `--format rgba` | straight-alpha RGBA, frames back to back            |
+| `.y4m`                   | YUV4MPEG2, 4:2:0 BT.709, for any encoder            |
+| `.mp4`                   | H.264 in fragmented MP4 from the platform's encoder |
 
 A still picture waits until every view is complete and motion has settled. `--elapsed` sets the
 time its animated effects show. A video frame where nothing moved repeats the frame before. An

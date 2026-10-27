@@ -73,11 +73,11 @@ pub(crate) fn dataset(source: &Source, host: &Native, deadline: Duration) -> Res
     block(deadline, Data::read(&bytes, reading)).map_err(|e| Failure::at(e, path))
 }
 
-/// One output frame's changes, from one line of a frames file.
+/// One line of a frames file: an output frame's changes, or with `--span`, changes at `at`.
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Frame {
-    /// The axis coordinate every view shows.
+    /// The axis coordinate every view shows. With `--span`, where the line applies (required).
     pub(crate) at: Option<f64>,
     /// Patches by dataset name, applied in the order written.
     #[serde(default)]
@@ -92,6 +92,13 @@ pub(crate) struct Frame {
     pub(crate) insets: Option<[f32; 4]>,
     /// Degrees per second every map or plane turns.
     pub(crate) orbit: Option<f64>,
+}
+
+impl Frame {
+    /// A frame that shows axis coordinate `at` and changes nothing else.
+    pub(crate) fn showing(at: f64) -> Frame {
+        Frame { at: Some(at), patch: Patches::default(), camera: None, fly: None, fit: None, insets: None, orbit: None }
+    }
 }
 
 /// One value for every view, or one per view in order. `null` leaves a view unchanged.
@@ -145,7 +152,7 @@ impl Frames {
             }
             let index = self.index;
             self.index += 1;
-            let at = |error: Error| Failure::at(error.at(index).at("frames"), &self.path);
+            let at = |error: Error| blame(&self.path, index, error);
             let mut frame: Frame = latkit::from_json(&line).map_err(at)?;
             if frame.at.is_some_and(|a| !a.is_finite()) {
                 return Err(at(Error::invalid("expected a finite number").at("at")));
@@ -156,6 +163,24 @@ impl Frames {
             let patches = block(self.deadline, patches).map_err(|e| at(e.at("patch")))?;
             return Ok(Some((index, frame, patches)));
         }
+    }
+
+    /// Every frame, with its patches loaded, for a span. Each needs `at`, in order.
+    pub(crate) fn ordered(mut self) -> Result<Vec<Next>, Failure> {
+        let mut frames: Vec<Next> = Vec::new();
+        while let Some(next) = self.next()? {
+            let before = frames.last().and_then(|(_, frame, _)| frame.at).unwrap_or(f64::NEG_INFINITY);
+            let error = match next.1.at {
+                None => Error::invalid("expected `at`, where the span applies the frame"),
+                Some(at) if at < before => Error::invalid("expected `at` at or after the frame before"),
+                Some(_) => {
+                    frames.push(next);
+                    continue;
+                }
+            };
+            return Err(blame(&self.path, next.0, error.at("at")));
+        }
+        Ok(frames)
     }
 
     /// Reads and loads frames on a separate thread, a few ahead of the one taken, so their files
@@ -172,6 +197,11 @@ impl Frames {
         });
         Ahead(frames)
     }
+}
+
+/// `error` in frame `index` of the frames file at `path`.
+pub(crate) fn blame(path: &Path, index: usize, error: Error) -> Failure {
+    Failure::at(error.at(index).at("frames"), path)
 }
 
 /// Frames loaded ahead of drawing.
