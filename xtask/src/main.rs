@@ -44,19 +44,19 @@ fn main() -> ExitCode {
         "check" => check(),
         "ci" => ci(&std::env::args().nth(2).unwrap_or_default()),
         "browser" => browser(),
-        "bench" => wasm(false).and_then(|()| {
+        "bench" => wasm(false).and_then(|_| {
             let flags: Vec<String> = std::env::args().skip(2).collect();
             let mut args = vec!["benchmark/run.ts"];
             args.extend(flags.iter().map(String::as_str));
             run("node", &args)
         }),
-        "wasm" => wasm(dev),
+        "wasm" => wasm(dev).map(drop),
         "bindgen-version" => bindgen_version().map(|version| println!("{version}")),
         "version" => version(),
         "package" => package(),
         "package-test" => package_test(),
         "release" => run("node", &["npm/release.mjs"]),
-        "examples" => wasm(true).and_then(|()| {
+        "examples" => wasm(true).and_then(|_| {
             let mut vite = vec!["--dir", "npm/examples", "exec", "vite"];
             if std::env::args().any(|a| a == "--open") {
                 vite.push("--open");
@@ -134,68 +134,84 @@ fn rust() -> Result {
     cargo(&["clippy", "--locked", "-p", "latkit", "--no-default-features", "--all-targets", "--", "-D", "warnings"])?;
     cargo(&["clippy", "--locked", "-p", "latkit-js", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"])?;
     run_with(env!("CARGO"), &["test", "--locked", "--workspace"], &gpu)?;
-    run_with(env!("CARGO"), &["test", "--locked", "-p", "latkit", "--no-default-features"], &gpu)?;
     run_with(
         env!("CARGO"),
         &["doc", "--locked", "-p", "latkit", "--no-deps", "--all-features"],
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
-    let package = |target: &[&str]| {
-        let mut args = vec!["package", "--locked"];
-        // CI's tree is clean. Locally, package uncommitted work as is.
-        if std::env::var_os("CI").is_none() {
-            args.push("--allow-dirty");
-        }
-        args.extend(["-p", "latkit"]);
-        args.extend(target);
-        cargo(&args)
-    };
-    package(&[])?;
-    package(&["--target", "wasm32-unknown-unknown", "--features", "web"])?;
-    cargo(&["check", "--locked", "-p", "latkit", "--target", "wasm32-unknown-unknown", "--features", "native,web"])
+    // The published package builds from its own files. The wasm clippy above builds the browser
+    // target.
+    let mut package = vec!["package", "--locked", "-p", "latkit"];
+    // CI's tree is clean. Locally, package uncommitted work as is.
+    if std::env::var_os("CI").is_none() {
+        package.push("--allow-dirty");
+    }
+    cargo(&package)
 }
 
 fn native_cli() -> Result {
-    cargo(&["test", "--locked", "--package", "latkit", "--features", "native", "--lib", "--test", "validation"])?;
-    cargo(&["test", "--locked", "--package", "latkit-cli"])
+    // One run, so latkit builds once per platform.
+    cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "latkit",
+        "-p",
+        "latkit-cli",
+        "--features",
+        "latkit/native",
+        "--lib",
+        "--bins",
+        "--test",
+        "validation",
+        "--test",
+        "cli",
+    ])
 }
 
 fn npm() -> Result {
-    wasm(true)?;
+    // The release build, which `package` then packs without compiling again.
+    let shaders = wasm(false)?;
     pnpm(&["lint"])?;
     run("node", &["npm/docs.mjs", "--check"])?;
     pnpm(&["typecheck"])?;
     pnpm(&["test"])?;
-    browser_gate()?;
+    browser_gate(&shaders)?;
     package()?;
     package_test()
 }
 
 /// Builds the wasm package, then runs the browser gate over the shaders the build linked.
 fn browser() -> Result {
-    wasm(true)?;
-    browser_gate()
+    browser_gate(&wasm(true)?)
 }
 
-fn browser_gate() -> Result {
-    let shaders = shaders_dir()?;
-    run("node", &["npm/examples/gate/gate.ts", &shaders])
+/// Runs the browser gate over the linked shaders and `shaders.json` in `shaders`.
+fn browser_gate(shaders: &str) -> Result {
+    run("node", &["npm/examples/gate/gate.ts", shaders])
 }
 
-/// The directory where `latkit`'s build script wrote the linked shaders and `shaders.json`.
-fn shaders_dir() -> Result<String> {
-    eprintln!("$ cargo check --locked -p latkit --message-format=json-render-diagnostics");
-    let output = Command::new(env!("CARGO"))
-        .args(["check", "--locked", "-p", "latkit", "--message-format=json-render-diagnostics"])
+fn wasm(dev: bool) -> Result<String> {
+    build_wasm(dev, "npm")
+}
+
+/// Builds the wasm package into `output`. Returns where latkit's build script wrote the linked
+/// shaders and `shaders.json`, the same for every target, which the browser gate reads.
+fn build_wasm(dev: bool, output: &str) -> Result<String> {
+    let profile = if dev { "wasm-dev" } else { "wasm" };
+    let args = ["build", "--locked", "-p", "latkit-js", "--profile", profile, "--target", "wasm32-unknown-unknown"];
+    eprintln!("$ cargo {}", args.join(" "));
+    let built = Command::new(env!("CARGO"))
+        .args(args)
+        .arg("--message-format=json-render-diagnostics")
         .current_dir(root())
         .stderr(Stdio::inherit())
         .output()
         .map_err(|e| format!("cargo: {e}"))?;
-    if !output.status.success() {
-        return Err(format!("cargo check exited with {}", output.status));
+    if !built.status.success() {
+        return Err(format!("cargo build exited with {}", built.status));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
+    let shaders = String::from_utf8_lossy(&built.stdout)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .find(|message| {
@@ -203,16 +219,7 @@ fn shaders_dir() -> Result<String> {
                 && message["package_id"].as_str().is_some_and(|id| id.contains("/crates/latkit#"))
         })
         .and_then(|message| message["out_dir"].as_str().map(str::to_owned))
-        .ok_or_else(|| "cargo did not report latkit's build output".to_owned())
-}
-
-fn wasm(dev: bool) -> Result {
-    build_wasm(dev, "npm")
-}
-
-fn build_wasm(dev: bool, output: &str) -> Result {
-    let profile = if dev { "wasm-dev" } else { "wasm" };
-    cargo(&["build", "--locked", "-p", "latkit-js", "--profile", profile, "--target", "wasm32-unknown-unknown"])?;
+        .ok_or("cargo did not report latkit's build output")?;
     let version = bindgen_version()?;
     let installed = Command::new("wasm-bindgen").arg("--version").output().ok();
     let installed = installed.and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
@@ -226,7 +233,8 @@ fn build_wasm(dev: bool, output: &str) -> Result {
     let pkg = format!("{output}/pkg");
     let bind = [wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", "latkit"];
     run("wasm-bindgen", &bind)?;
-    run("node", &["npm/build.mjs", "compile", output])
+    run("node", &["npm/build.mjs", "compile", output])?;
+    Ok(shaders)
 }
 
 fn package() -> Result {

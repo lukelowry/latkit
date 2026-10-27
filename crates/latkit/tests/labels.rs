@@ -26,6 +26,23 @@ impl Host for Boxes {
     }
 }
 
+/// `Boxes` with 2 blank pixels on each side, as a font host pads every run, so an empty text
+/// rasterizes to a blank box.
+struct Padded;
+
+impl Host for Padded {
+    fn rasterize(&self, run: &TextRun) -> latkit::Result<Raster> {
+        let inner = Boxes.rasterize(run)?;
+        let size = [inner.size[0] + 4, inner.size[1]];
+        let mut coverage = vec![0; (size[0] * size[1]) as usize];
+        for (row, line) in inner.coverage.chunks(inner.size[0].max(1) as usize).enumerate() {
+            let at = row * size[0] as usize + 2;
+            coverage[at..at + line.len()].copy_from_slice(line);
+        }
+        Ok(Raster { size, coverage, baseline: inner.baseline })
+    }
+}
+
 /// `Boxes`, counting the texts it rasterizes.
 struct Counted(Arc<AtomicUsize>);
 
@@ -128,7 +145,7 @@ fn where_labels_would_overlap_the_row_drawn_on_top_shows_its_label() {
 #[test]
 fn an_empty_text_gives_no_label_and_claims_no_room() {
     let Some(gpu) = gpu() else { return };
-    gpu.set_host(Boxes);
+    gpu.set_host(Padded);
     let c = SIZE / 2;
     // The rows of the overlap above, with the second row's text empty: it draws on top but has no
     // label, so the first row's label shows.

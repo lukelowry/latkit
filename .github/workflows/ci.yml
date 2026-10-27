@@ -91,8 +91,11 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Lavapipe, Vulkan on the CPU, runs the GPU tests instead of skipping; text tests need fonts.
-      - name: Install a software Vulkan driver and fonts for the GPU tests
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers fonts-dejavu-core
+      # Cached, since apt took up to 7 minutes.
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: mesa-vulkan-drivers fonts-dejavu-core
+          version: 1
       - run: cargo xtask ci rust
 
   # The CLI's native code on the other platforms it installs on; Linux runs in `rust`.
@@ -113,8 +116,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo xtask ci native-cli
 
-  # The npm package: built from the crate, checked, tested, every pipeline compiled in Chrome on
-  # SwiftShader, and the packed tarball installed and drawn in a consumer.
+  # The npm package: built once from the crate in release, checked, tested, every pipeline compiled
+  # in Chrome on SwiftShader, and that build packed, installed, and drawn in a consumer.
   npm:
     needs: changes
     if: needs.changes.outputs.npm == 'true'
@@ -147,8 +150,10 @@ jobs:
       - name: Install the matching WASM bindings generator
         if: steps.bindgen-cache.outputs.cache-hit != 'true'
         run: cargo install wasm-bindgen-cli --version "${{ steps.bindgen.outputs.version }}" --locked
-      - run: pnpm --dir npm/examples exec playwright-core install --with-deps chromium
+      # The runner's Chrome drives the browser gate.
       - run: cargo xtask ci npm
+        env:
+          LATKIT_CHROME: /usr/bin/google-chrome
 
   # The docs as Read the Docs builds them, from the locked environment: a warning fails.
   docs:

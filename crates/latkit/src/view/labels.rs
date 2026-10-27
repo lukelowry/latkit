@@ -179,21 +179,22 @@ impl View {
                     break 'marks;
                 }
                 let Some(run) = self.run_of(i, code, inner) else { continue };
+                // An empty text gives no label, so it claims no screen cells. A host pads even an
+                // empty run, so it is never rasterized.
+                let blank = run.text.trim().is_empty();
                 let host = inner.host.clone();
-                let Some(glyphs) = inner.atlas.text(host.as_deref(), &run) else {
-                    // With no atlas space left this frame, the remaining texts are asked for again
-                    // once the view changes.
-                    if inner.atlas.full() {
-                        break 'marks;
-                    }
-                    // A text that draws nothing, such as an empty one, gives no label, so it
-                    // claims no screen cells.
-                    set += 1;
-                    self.write_words(slots, code, [wgsl::NONE; 2]);
-                    continue;
-                };
+                let glyphs = if blank { None } else { inner.atlas.text(host.as_deref(), &run) };
+                // With no atlas space left this frame, the remaining texts are asked for again once
+                // the view changes.
+                if glyphs.is_none() && !blank && inner.atlas.full() {
+                    break 'marks;
+                }
                 set += 1;
-                self.write_run(i, slots, code, run, glyphs);
+                match glyphs {
+                    Some(glyphs) => self.write_run(i, slots, code, run, glyphs),
+                    // A text that draws nothing gives no label too.
+                    None => self.write_words(slots, code, [wgsl::NONE; 2]),
+                }
             }
         }
         self.labels.wanting = set > 0 || left;
