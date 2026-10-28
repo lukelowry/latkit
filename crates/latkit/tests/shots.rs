@@ -53,21 +53,6 @@ fn a_picture_draws_the_same_pixels_as_the_view() {
 }
 
 #[test]
-fn pictures_compile_only_the_pipelines_they_draw_with() {
-    let Some(gpu) = gpu() else { return };
-    let (scene, data) = dot(20.0, Color::rgb(1.0, 0.0, 0.0));
-    let mut view = view(&gpu, scene, &data);
-    let shot = Shot::new([SIZE, SIZE]);
-    pollster::block_on(shot.image(&mut [&mut view])).expect("a picture");
-    let made = gpu.work().pipelines;
-    pollster::block_on(shot.image(&mut [&mut view])).expect("a picture");
-    // A picture takes no input, so it never creates the probe pipelines a pointer needs. Every
-    // pipeline it creates was requested up front.
-    assert_eq!(gpu.work().pipelines, made, "another picture compiles no pipeline");
-    assert_eq!(gpu.work().late, 0, "no pipeline compiles at first use");
-}
-
-#[test]
 fn every_kind_of_mark_draws_with_the_pipelines_it_requested() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
@@ -94,7 +79,11 @@ fn every_kind_of_mark_draws_with_the_pipelines_it_requested() {
     let mut view = view(&gpu, scene, &data);
     // A fit measures every mark that frames it.
     view.fit(Fit::All);
-    pollster::block_on(Shot::new([SIZE, SIZE]).image(&mut [&mut view])).expect("a picture");
+    let shot = Shot::new([SIZE, SIZE]);
+    pollster::block_on(shot.image(&mut [&mut view])).expect("first capture");
+    let pipelines = gpu.work().pipelines;
+    pollster::block_on(shot.image(&mut [&mut view])).expect("second capture");
+    assert_eq!(gpu.work().pipelines, pipelines, "another capture reuses its pipelines");
     assert_eq!(gpu.work().late, 0, "every pipeline drawn with was requested, by the same name");
 }
 

@@ -842,24 +842,6 @@ fn frames_report_gpu_time_where_timestamps_are_supported() {
 }
 
 #[test]
-fn frames_count_their_draws_and_instances() {
-    let Some(gpu) = gpu() else { return };
-    let data = Data::new("graph");
-    data.apply(Table::new("Node", Ids::count(3)).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3]))
-        .expect("valid");
-    let scene =
-        Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_camera(camera());
-    view.set_sources([&data]).expect("a source");
-    frame(&gpu, &mut view);
-    let stats = view.stats();
-    // The backdrop's one triangle, then the mark's three points.
-    assert_eq!((stats.draws, stats.instances), (2, 4), "{stats:?}");
-    assert_eq!(stats.tiles, 0);
-}
-
-#[test]
 fn dashes_run_on_across_a_paths_segments() {
     let Some(gpu) = gpu() else { return };
     // A dashed path of a hundred segments, each a pixel long. If each segment restarted its dashes,

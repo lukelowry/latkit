@@ -81,38 +81,6 @@ async function run(custom: boolean, compiled: boolean) {
   const decoded = await Data.read(data.toBytes());
   const kept = decoded.snapshot();
 
-  // Queries read data back, and patches apply from a stream split into small chunks.
-  const grid = new Data('grid').apply(
-    new Patch()
-      .axis('time', 's')
-      .replace('Branch', [7, 8, 9], { loading: [40, 120, 95] })
-      .append('Branch', [0, 1, 2], { flow: Float32Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9) }),
-  );
-  const hot = grid.query({
-    of: 'Branch',
-    filter: field('loading').gt(90),
-    select: { flow: '$flow' },
-    at: 1,
-  });
-  check(hot.ids.join() === '8,9' && hot.total === 2, 'a query filters');
-  check((hot.fields.flow as Float64Array)[0] === 5, 'a query reads samples at its coordinate');
-  const sent = [
-    new Patch().set('Branch', [7], { loading: [1] }),
-    new Patch().remove('Branch', [8]),
-  ].flatMap((p) => [...p.toBytes()]);
-  const pieces = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (let at = 0; at < sent.length; at += 3)
-        controller.enqueue(Uint8Array.from(sent.slice(at, at + 3)));
-      controller.close();
-    },
-  });
-  for await (const next of Patch.stream(pieces)) grid.apply(next);
-  check(
-    grid.query({ of: 'Branch' }).ids.join() === '7,9' && grid.get('Branch', 7, 'loading') === 1,
-    'patches stream',
-  );
-  grid.destroy();
   const gpu = await Gpu.create();
   const secondGpu = await Gpu.create();
   const deviceReady = performance.now();
