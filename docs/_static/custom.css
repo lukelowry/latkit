@@ -115,7 +115,8 @@ article dd {
 
 /* Every picture latkit draws for these pages is 1600 by 1000, so its room is held before it loads. */
 .plot img,
-article img.picture {
+article img.picture,
+article video.picture {
   display: block;
   box-sizing: border-box;
   width: 100%;
@@ -123,6 +124,12 @@ article img.picture {
   aspect-ratio: 16 / 10;
   border: 1px solid var(--color-background-border);
   border-radius: 0.75rem;
+}
+
+/* A film keeps its own shape. */
+article video.picture {
+  aspect-ratio: auto;
+  margin-top: 1rem;
 }
 
 /* The hero is a banner, 2400 by 1000. */

@@ -158,6 +158,14 @@ pub(crate) enum RowIds {
 }
 
 impl RowIds {
+    /// The kind of the ids: numbers or texts.
+    pub(crate) fn kind(&self) -> super::values::Kind {
+        match self {
+            RowIds::Count(_) => super::values::Kind::Number,
+            RowIds::Listed(column) => column.kind(),
+        }
+    }
+
     pub(crate) fn new(ids: &Ids) -> RowIds {
         match &ids.0 {
             IdList::Count(n) => RowIds::Count(*n),

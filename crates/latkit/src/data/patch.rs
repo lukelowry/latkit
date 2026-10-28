@@ -426,9 +426,25 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
                 let ids = old.ids.write(len, &writes, &source.ids).map_err(|e| e.at(&name))?;
                 Field::Reference(Reference { ids, version: Version::next(), inverse: Arc::default(), ..old.clone() })
             }
+            // Missing values fit any kind: a field that holds no value yet becomes a reference, a
+            // reference that names no row yet can name another table, and missing values write
+            // missing references.
             (None, Field::Reference(source)) => {
                 let ids = Column::missing(source.ids.like(), existing.len()).write(len, &writes, &source.ids)?;
                 Field::Reference(Reference::new(source.to, ids))
+            }
+            (Some(old @ (Field::Values(..) | Field::Reference(..))), Field::Reference(source)) if !old.fixed() => {
+                let ids = Column::missing(source.ids.like(), existing.len()).write(len, &writes, &source.ids)?;
+                Field::Reference(Reference::new(source.to, ids))
+            }
+            (Some(Field::Reference(old)), Field::Values(source, _)) if !source.fixed() => {
+                let missing = Column::missing(old.ids.like(), source.len());
+                let ids = old.ids.write(len, &writes, &missing).map_err(|e| e.at(&name))?;
+                Field::Reference(Reference { ids, version: Version::next(), inverse: Arc::default(), ..old.clone() })
+            }
+            (Some(Field::Reference(old)), Field::Reference(source)) => {
+                let reason = format!("a reference to {} can't name rows of {}", old.to, source.to);
+                return Err(Error::invalid(reason).at(&name));
             }
             (Some(old), new) => {
                 let reason = format!("{:?} values for a {:?} field", new.kind(), old.kind());

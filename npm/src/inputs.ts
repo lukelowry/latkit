@@ -201,8 +201,9 @@ export type Camera =
    * its tilt, and its rotation. A diagram is always seen from straight above, upright.
    */ | {
       /**
-       * On the earth, longitude, latitude, and elevation. On a plane or a diagram, x, y, and elevation.
-       * In JSON, `[x, y]` is shorthand for elevation 0.
+       * On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is a
+       * degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON, `[x, y]` is
+       * shorthand for elevation 0.
        */
       center: [number, number] | [number, number, number];
       /** The web mercator zoom level on the earth. Elsewhere, log₂ of CSS pixels per unit. */
@@ -317,9 +318,10 @@ export type Controls =
        */
       turn?: boolean;
       /**
-       * Whether the keyboard controls the view. Defaults to `true`. Tab and Shift+Tab step through the
-       * rows nearest the view's center. Arrow keys step to the nearest row in their direction. Enter
-       * opens the row stepped to, and Space selects it. With no row stepped to, arrow keys pan
+       * Whether the keyboard controls the view. Defaults to `true`. Tab steps to the row nearest the
+       * view's center, and the next Tab or Shift+Tab leaves the view, so it is one stop in the page's
+       * tab order. Arrow keys step to the nearest row in their direction. Enter opens the row stepped
+       * to, Space selects it, and Escape stops stepping. With no row stepped to, arrow keys pan
        * (Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the selection.
        */
       keyboard?: boolean;
@@ -374,7 +376,12 @@ export interface CustomColormap {
    * gradient, or a `[place, color]` pair with a place from 0 to 1. Places must ascend. A categorical
    * map takes one color per category, without places, at most 256.
    */
-  colors: (/** A CSS color, such as `#ffb000` or `rebeccapurple`. */ Color | [number, Color])[];
+  colors: (
+    /**
+     * A CSS color, such as `#ffb000`, `rebeccapurple`, or `oklch(70% 0.15 60)`: hex, a named color,
+     * `transparent`, or `rgb`, `hsl`, `hwb`, `lab`, `lch`, `oklab`, or `oklch`.
+     */ Color | [number, Color]
+  )[];
   /** The category names in category order, shown in legends. Categorical maps only. */
   categories?: string[];
 }
@@ -1204,8 +1211,8 @@ export interface TextTheme {
  * by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
  * names the base and defaults to `dark`. Each option replaces only the base value it sets.
  *
- * Lengths are in CSS pixels, or units in a diagram. The text halo and the focus glow are always in
- * CSS pixels.
+ * Lengths are in CSS pixels, or units in a diagram. The grid spacing, the text halo, and the focus
+ * glow are always in CSS pixels.
  */
 export type Theme =
   | 'dark'
@@ -1215,6 +1222,12 @@ export type Theme =
       background?: Color;
       /** The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule. */
       grid?: Color;
+      /**
+       * The least distance between the lines (or dots) of a plane's or diagram's grid and of the earth's
+       * graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten (and 30° and
+       * 90° on the earth), and the finer step fades out as it nears this distance.
+       */
+      gridSpacing?: number;
       /** The color a colormap gives a missing value, such as a row with no value in the field. */
       missing?: Color;
       /** The dash period: one dash and one gap of equal length. */
@@ -1284,8 +1297,8 @@ export interface Vertices extends MarkOptions {
    */
   geometry?: string | null;
   /**
-   * Height above the ground. On the earth, a fraction of the earth's radius. Defaults to 0. Not
-   * allowed in a diagram, which is flat.
+   * Height above the ground. On the earth, in degrees of arc like every length there (one is about
+   * 111 km). Defaults to 0. Not allowed in a diagram, which is flat.
    */
   elevation?: ExprInput;
   /**
@@ -1309,10 +1322,11 @@ export interface Vertices extends MarkOptions {
    */
   ports?: [reference: string, port: Port][];
   /**
-   * Makes each row a group containing the rows of `table` whose `reference` field names it. A group
-   * draws as a container around its members, with its label as a title in its header. Diagrams only.
+   * Makes each row a group containing, for each `[table, reference]`, the rows of `table` whose
+   * `reference` field names it, so a group can hold rows of several tables. A group draws as a
+   * container around its members, with its label as a title in its header. Diagrams only.
    */
-  contains?: [table: string, reference: string] | null;
+  contains?: [table: string, reference: string][];
   /**
    * Whether each block or group casts a shadow on the sheet, styled by the theme's `diagram.shadow`.
    * Defaults to `false`. Diagrams only.

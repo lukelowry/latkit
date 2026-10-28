@@ -382,13 +382,11 @@ impl Expr {
         }
     }
 
-    /// The first colormap the expression maps through, with its domain when fixed. A legend shows
+    /// The first colormap the expression maps through, with its input and domain. A legend shows
     /// it. A conditional's `otherwise` is searched before its cases, since it is the general case.
-    pub(crate) fn colormap_of(&self) -> Option<(&Colormap, Option<[f64; 2]>)> {
+    pub(crate) fn colormap_of(&self) -> Option<(&Colormap, &Expr, Domain)> {
         match &*self.0 {
-            Node::Colormap { colormap, domain, .. } => {
-                Some((colormap, if let Domain::Fixed(domain) = domain { Some(*domain) } else { None }))
-            }
+            Node::Colormap { colormap, domain, input } => Some((colormap, input, *domain)),
             Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => a.colormap_of(),
             Node::Binary(_, a, b) => a.colormap_of().or_else(|| b.colormap_of()),
             Node::When(c, a, b) => b.colormap_of().or_else(|| a.colormap_of()).or_else(|| c.colormap_of()),

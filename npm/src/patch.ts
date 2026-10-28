@@ -658,6 +658,7 @@ function writeValues(w: Writer, values: Values, path: string): void {
     if (!present(v)) missing = true;
     else if (first === undefined) first = v;
   }
+  // Values that are all missing write as numbers. They fit a field of any kind until it holds a value.
   const kind = first === undefined ? 'number' : Array.isArray(first) ? 'geometry' : typeof first;
   for (let i = 0; i < n; i++) {
     const v = list[i];

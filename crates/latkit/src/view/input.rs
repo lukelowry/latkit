@@ -138,7 +138,8 @@ pub enum Key {
     Up,
     /// Down arrow.
     Down,
-    /// The context menu key.
+    /// A request for a context menu from the keyboard: the menu key or Shift+F10. A canvas sends it
+    /// for each `contextmenu` event no pointer caused.
     Menu,
     /// Any other key.
     Other,

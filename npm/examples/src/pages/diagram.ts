@@ -141,7 +141,7 @@ export default page({
       marks: [
         {
           vertices: data.table('Group'),
-          contains: ['Process', 'group'],
+          contains: [['Process', 'group']],
           label: { text: '$name', size: 11, color: '#7f93a8' },
           shadow: true,
         },

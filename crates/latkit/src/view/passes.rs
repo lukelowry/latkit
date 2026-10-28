@@ -11,7 +11,7 @@
 
 use super::resources::MARK_STRIDE;
 use super::sync::Source;
-use super::variants::{CARRY, EASE, EXPAND_RUNS, GATHER, MarkVariants, NORMALS, TRAVEL};
+use super::variants::{CARRY, Draw, EASE, EXPAND_RUNS, GATHER, MarkVariants, NORMALS, TRAVEL};
 use super::words::Kept;
 use super::{Frame, View};
 use crate::Space;
@@ -113,7 +113,8 @@ struct Marks<'a> {
 }
 
 impl Marks<'_> {
-    /// Draws mark `i`: every instance, or with `lit`, only the rows its focus lights, glowing.
+    /// Draws mark `i`: every instance, only the rows its focus lights, glowing, or every
+    /// instance's depth alone.
     fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -121,13 +122,14 @@ impl Marks<'_> {
         inner: &mut Inner,
         i: usize,
         shown: &super::marks::Shown,
-        lit: bool,
+        draw: Draw,
     ) {
         if shown.compiled.is_none() {
             return;
         }
         let variants = MarkVariants::shown(shown);
-        let (Some(shader), Some(asked)) = (variants.shader(lit), variants.draw(lit, self.format, self.samples)) else {
+        let (Some(shader), Some(asked)) = (variants.shader(draw), variants.draw(draw, self.format, self.samples))
+        else {
             return;
         };
         let pipeline = match asked {
@@ -144,7 +146,7 @@ impl Marks<'_> {
         }
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(2, group, &[]);
-        if lit {
+        if draw == Draw::Lit {
             drawn.draw(pass, corners, shown.lit.rows * shown.lit.pieces);
         } else {
             shown.record(pass, drawn, corners, self.lists);
@@ -261,18 +263,23 @@ impl super::marks::Shown {
     /// a drawing, and the domains read only its own data, nothing the view shows or derives.
     pub(crate) fn fits_data(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
+        let count = compiled.program.domains.len();
+        self.drawing().is_some() && count > 0 && (0..count).all(|d| self.reads_only_data(d))
+    }
+
+    /// Whether fitted domain `d` reads only the mark's data, nothing the view shows or derives, so
+    /// the CPU can fit it over every row.
+    pub(crate) fn reads_only_data(&self, d: usize) -> bool {
+        let Some(compiled) = &self.compiled else { return false };
         let program = &compiled.program;
+        let Some(reads) = program.domains.get(d) else { return false };
         let viewed = Deps::TIME | Deps::POINTER | Deps::FOCUS | Deps::CAMERA | Deps::DOMAIN;
-        let derived = |reads: &Reads| {
-            program
-                .columns
-                .iter()
-                .enumerate()
-                .any(|(c, column)| column.derived && reads.columns & Reads::column(c) != 0)
-        };
-        self.drawing().is_some()
-            && !program.domains.is_empty()
-            && program.domains.iter().all(|reads| !reads.deps.intersects(viewed) && !derived(reads))
+        let derived = program
+            .columns
+            .iter()
+            .enumerate()
+            .any(|(c, column)| column.derived && reads.columns & Reads::column(c) != 0);
+        !reads.deps.intersects(viewed) && !derived
     }
 
     /// Segments per row, for strokes whose rows all have the same count.
@@ -620,32 +627,36 @@ impl View {
     fn data_domains(&mut self, i: usize) -> Vec<u32> {
         let shown = &self.marks[i];
         let Some(compiled) = &shown.compiled else { return Vec::new() };
-        let program = &compiled.program;
-        let Some(source) = Source::of(shown.mark.style(), &self.snapshots, &self.derived) else {
-            return vec![0; 2 * program.domains.len()];
-        };
-        let table = source.table;
-        let rows = Rows::new(table, &self.snapshots).at(self.at);
-        let mut fitted = Vec::with_capacity(program.domains.len());
-        for (d, (reads, input)) in program.domains.iter().zip(&program.fitted).enumerate() {
-            let versions: Vec<Option<crate::data::Version>> = (0..program.columns.len())
-                .filter(|&c| reads.columns & Reads::column(c) != 0)
-                .map(|c| {
-                    let column = &program.columns[c];
-                    source.table_of(column, &self.snapshots)?.1.field_named(&column.name).map(Field::version)
-                })
-                .collect();
-            let sampled = reads.deps.intersects(Deps::SAMPLES).then_some(self.at.to_bits());
-            let stamp = stamp_of((versions, table.structure, sampled));
-            let words = match shown.fitted.get(d) {
-                Some(&(kept, words)) if kept == stamp => words,
-                _ => fit(&rows, input),
-            };
-            fitted.push((stamp, words));
-        }
+        let count = compiled.program.domains.len();
+        let fitted: Vec<(u64, [u32; 2])> =
+            (0..count).map(|d| self.domain_on_cpu(i, d, shown.fitted.get(d).copied()).unwrap_or((0, [0, 0]))).collect();
         let words = fitted.iter().flat_map(|(_, w)| *w).collect();
         self.marks[i].fitted = fitted;
         words
+    }
+
+    /// Fitted domain `d` of mark `i`, computed on the CPU over every row of its table, as
+    /// `lib/reduce.wesl` keeps it, with the stamp of its inputs. `kept` is the last such fit, which
+    /// is reused while the stamp holds. `None` while the mark's table is missing.
+    pub(super) fn domain_on_cpu(&self, i: usize, d: usize, kept: Option<(u64, [u32; 2])>) -> Option<(u64, [u32; 2])> {
+        let shown = &self.marks[i];
+        let program = &shown.compiled.as_ref()?.program;
+        let (reads, input) = (program.domains.get(d)?, program.fitted.get(d)?);
+        let source = Source::of(shown.mark.style(), &self.snapshots, &self.derived)?;
+        let table = source.table;
+        let versions: Vec<Option<crate::data::Version>> = (0..program.columns.len())
+            .filter(|&c| reads.columns & Reads::column(c) != 0)
+            .map(|c| {
+                let column = &program.columns[c];
+                source.table_of(column, &self.snapshots)?.1.field_named(&column.name).map(Field::version)
+            })
+            .collect();
+        let sampled = reads.deps.intersects(Deps::SAMPLES).then_some(self.at.to_bits());
+        let stamp = stamp_of((versions, table.structure, sampled));
+        match kept {
+            Some((at, words)) if at == stamp => Some((stamp, words)),
+            _ => Some((stamp, fit(&Rows::new(table, &self.snapshots).at(self.at), input))),
+        }
     }
 
     /// Whether face normals need summing again: a face or vertex mark wrote its state since the
@@ -676,7 +687,7 @@ impl View {
     /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark
     /// in scene order, and the lit rows. Once the text pipelines are ready, it also builds the
     /// distance fields of text set this frame, and draws the labels and `sprites` overlay sprites.
-    /// Depth is stored when `probing` reads it.
+    /// Depth is stored when `probing` reads it. While the camera is unplaced, it only clears.
     pub(super) fn draw(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -715,6 +726,9 @@ impl View {
             Shader::PointsCustomFocus,
             Shader::StrokesFocus,
             Shader::AreasFocus,
+            Shader::PointsDepth,
+            Shader::PointsCustomDepth,
+            Shader::StrokesDepth,
             Shader::Glyphs,
             Shader::GlyphsPorts,
             Shader::Overlay,
@@ -727,6 +741,10 @@ impl View {
             None => (frame.target, None),
         };
         let mut pass = main_pass(encoder, view, resolve, &depth, background, probing);
+        // Until a fit places the camera, frames show only the background.
+        if self.unplaced() {
+            return;
+        }
         pass.set_bind_group(0, &groups.view, &[]);
         pass.set_bind_group(1, &groups.mark, &[0]);
         pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Backdrop, frame.format, samples)));
@@ -742,18 +760,27 @@ impl View {
             clip: (plot && scissor[2] > 0 && scissor[3] > 0).then_some(scissor),
             size: frame.size,
         };
+        // Where depth varies, points and strokes first write their depth, so wherever marks overlap
+        // the nearest shows, whatever their order.
+        if self.deep() && self.depths_ready(inner, frame.format, samples) {
+            for (i, shown) in self.marks.iter().enumerate() {
+                if shown.drawable() && shown.instances() > 0 {
+                    marks.draw(&mut pass, drawn, inner, i, shown, Draw::Depth);
+                }
+            }
+        }
         for (i, shown) in self.marks.iter().enumerate() {
             if !shown.drawable() || shown.instances() == 0 {
                 continue;
             }
-            marks.draw(&mut pass, drawn, inner, i, shown, false);
+            marks.draw(&mut pass, drawn, inner, i, shown, Draw::Rows);
             marks.ports(&mut pass, drawn, inner, i, shown);
         }
         // Lit rows draw again, glowing, over every mark but labels. Only their own ports cover
         // them. They draw once their pipelines have compiled.
         for (i, shown) in self.marks.iter().enumerate() {
             if self.answers() && shown.drawable() && shown.lit.rows > 0 {
-                marks.draw(&mut pass, drawn, inner, i, shown, true);
+                marks.draw(&mut pass, drawn, inner, i, shown, Draw::Lit);
                 marks.ports(&mut pass, drawn, inner, i, shown);
             }
         }

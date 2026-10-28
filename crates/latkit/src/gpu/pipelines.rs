@@ -251,9 +251,15 @@ fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
     }
 }
 
-/// A render shader's depth state, with reversed depth. The backdrop writes the globe's depth and
-/// triangles write theirs. The overlay and glyphs ignore depth, and every other mark draws only
-/// where nothing nearer was drawn.
+/// Whether `shader` writes only depth: the depth variants of points and strokes, drawn before any
+/// color where depth varies.
+pub(crate) fn depth_only(shader: Shader) -> bool {
+    matches!(shader, Shader::PointsDepth | Shader::PointsCustomDepth | Shader::StrokesDepth)
+}
+
+/// A render shader's depth state, with reversed depth. The backdrop writes the globe's depth,
+/// triangles write theirs, and the depth variants write the depth of points and strokes. The overlay
+/// and glyphs ignore depth, and every other mark draws only where nothing nearer was drawn.
 fn depth(shader: Shader) -> wgpu::DepthStencilState {
     let compare = match shader {
         Shader::Backdrop | Shader::Overlay | Shader::Glyphs => wgpu::CompareFunction::Always,
@@ -261,7 +267,7 @@ fn depth(shader: Shader) -> wgpu::DepthStencilState {
     };
     wgpu::DepthStencilState {
         format: DEPTH,
-        depth_write_enabled: Some(matches!(shader, Shader::Triangles | Shader::Backdrop)),
+        depth_write_enabled: Some(matches!(shader, Shader::Triangles | Shader::Backdrop) || depth_only(shader)),
         depth_compare: Some(compare),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
@@ -619,11 +625,15 @@ impl Pipelines {
                 module,
                 entry_point: Some("fragment"),
                 compilation_options: options(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    // Blend premultiplied colors over what is already drawn.
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
+                targets: &[Some(if depth_only(shader) {
+                    wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::empty() }
+                } else {
+                    wgpu::ColorTargetState {
+                        format,
+                        // Blend premultiplied colors over what is already drawn.
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }
                 })],
             }),
             multiview_mask: None,

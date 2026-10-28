@@ -1,6 +1,10 @@
-//! The graph the scene's marks draw: one vertex mark and one edge mark per table, and how edges
-//! meet vertices, either by two endpoint references or through ports that reference a net.
+//! The graph the scene's marks draw: the vertex marks and the edge mark of each table, and how
+//! edges meet vertices, either by two endpoint references or through ports that reference a net.
 //! Layouts, a diagram's wires, and the stars of nets all read it.
+//!
+//! A table's row is one vertex, however many marks draw it. Its ports are those of every vertex
+//! mark of the table, one for each reference field, as the first mark to give the field a port
+//! declares it.
 
 use crate::data::{Field, Inverse, Name, Reference, Row, Snapshot, Table, Value};
 use crate::expr::cpu::Rows;
@@ -8,9 +12,12 @@ use crate::host::Key;
 use crate::scene::mark::Style;
 use crate::{Edges, Mark, Port, Vertices};
 
-/// The vertex mark that places a table's rows, with the vertex index of the table's first row.
+/// The vertex marks of a table: the one that places its rows, every one that draws them, and the
+/// vertex index of the table's first row.
 pub(crate) struct VertexMark<'a> {
     pub(crate) mark: &'a Vertices,
+    /// Every vertex mark of the table, in scene order.
+    pub(crate) marks: Vec<&'a Vertices>,
     pub(crate) data: &'a Snapshot,
     pub(crate) table: &'a Table,
     pub(crate) first: usize,
@@ -24,7 +31,8 @@ pub(crate) struct EdgeMark<'a> {
 }
 
 /// The scene's vertex and edge marks, one of each kind per table: the table's unnamed mark of that
-/// kind, else its first. Vertex indices number the rows of every vertex mark in turn.
+/// kind, else its first. Each vertex mark also lists every vertex mark of its table. Vertex indices
+/// number the rows of every vertex mark in turn.
 pub(crate) fn marks<'a>(input: &super::Input<'a>) -> (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>) {
     let (mut vertices, mut edges): (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>) = (Vec::new(), Vec::new());
     for mark in &input.scene.marks {
@@ -32,14 +40,15 @@ pub(crate) fn marks<'a>(input: &super::Input<'a>) -> (Vec<VertexMark<'a>>, Vec<E
         let Some(data) = input.data.iter().find(|d| *d.name() == style.data) else { continue };
         let Some(table) = data.table(&style.table) else { continue };
         match mark {
-            Mark::Vertices(v) => {
-                let shown = VertexMark { mark: v, data, table, first: 0 };
-                match taken(vertices.iter().map(|vm| &vm.mark.style), style) {
-                    None => vertices.push(shown),
-                    Some(at) if replaces(&vertices[at].mark.style, style) => vertices[at] = shown,
-                    Some(_) => {}
+            Mark::Vertices(v) => match taken(vertices.iter().map(|vm| &vm.mark.style), style) {
+                None => vertices.push(VertexMark { mark: v, marks: vec![v], data, table, first: 0 }),
+                Some(at) => {
+                    vertices[at].marks.push(v);
+                    if replaces(&vertices[at].mark.style, style) {
+                        vertices[at].mark = v;
+                    }
                 }
-            }
+            },
             Mark::Edges(e) => {
                 let shown = EdgeMark { mark: e, data, table };
                 match taken(edges.iter().map(|em| &em.mark.style), style) {
@@ -96,7 +105,7 @@ pub(crate) fn key_of(row: &Row) -> Key {
 /// The links a layout reads, by vertex index: each edge's two endpoints (self-loops dropped), and
 /// each net's links from its outputs to its inputs (see `net_links`).
 pub(crate) fn links(marks: &[VertexMark<'_>], edge_marks: &[EdgeMark<'_>]) -> Vec<[u32; 2]> {
-    let codes: Vec<Vec<u32>> = marks.iter().map(|vm| port_codes(vm.mark)).collect();
+    let codes: Vec<Vec<u32>> = marks.iter().map(port_codes).collect();
     let mut links = Vec::new();
     for em in edge_marks {
         let joins = Joins::new(marks, &codes, em);
@@ -146,7 +155,7 @@ impl<'a> Joins<'a> {
         let mut ports = Vec::new();
         for (m, vm) in marks.iter().enumerate().filter(|(_, vm)| vm.data.name() == em.data.name()) {
             let vertices: &'a Table = vm.table;
-            for (k, (name, port)) in vm.mark.ports.iter().enumerate() {
+            for (k, (name, port)) in self::ports(&vm.marks).into_iter().enumerate() {
                 if let Some(Field::Reference(r)) = vertices.field_named(name)
                     && r.to == *table.name()
                 {
@@ -176,9 +185,33 @@ impl<'a> Joins<'a> {
     }
 }
 
-/// The code of each port of a vertex mark.
-pub(crate) fn port_codes(mark: &Vertices) -> Vec<u32> {
-    Port::codes(&mark.ports.iter().map(|(_, port)| port).collect::<Vec<_>>())
+/// A table's ports, given its vertex `marks`: each reference field a mark gives a port, once, as the
+/// first mark to give it one declares it.
+pub(crate) fn ports<'a>(marks: &[&'a Vertices]) -> Vec<&'a (Name, Port)> {
+    let mut ports: Vec<&(Name, Port)> = Vec::new();
+    for port in marks.iter().flat_map(|mark| &mark.ports) {
+        if !ports.iter().any(|known| known.0 == port.0) {
+            ports.push(port);
+        }
+    }
+    ports
+}
+
+/// The code of each of a table's [`ports`].
+pub(crate) fn port_codes(vm: &VertexMark<'_>) -> Vec<u32> {
+    codes(&vm.marks)
+}
+
+/// The code of each port of the table that vertex `marks` draw, as [`ports`] lists them.
+pub(crate) fn codes(marks: &[&Vertices]) -> Vec<u32> {
+    Port::codes(&ports(marks).iter().map(|(_, port)| port).collect::<Vec<_>>())
+}
+
+/// The code of each port of `mark`, as one of the vertex `marks` of its table.
+pub(crate) fn codes_of(mark: &Vertices, marks: &[&Vertices]) -> Vec<u32> {
+    let (ports, codes) = (ports(marks), codes(marks));
+    let code = |name: &Name| ports.iter().position(|(known, _)| known == name).map_or(0, |k| codes[k]);
+    mark.ports.iter().map(|(name, _)| code(name)).collect()
 }
 
 /// The links of a net whose terminals are `ends`, each a vertex and whether it drives the net.

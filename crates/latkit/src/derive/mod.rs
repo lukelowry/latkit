@@ -298,7 +298,7 @@ impl Input<'_> {
     }
 
     /// Hashes the inputs to the structure of the scene's marks: each drawn table's rows, and the
-    /// fields that set its places, sizes, groups, ports, wires, and nets. Fields read only for
+    /// fields that set its places, sizes, groups, ports, wires, and nets, with a diagram's labels. Fields read only for
     /// appearance, such as a streaming value, do not affect the hash.
     pub(crate) fn structure(&self, hasher: &mut impl Hasher) {
         self.reads(&mut |read| match read {
@@ -327,13 +327,17 @@ impl Input<'_> {
                     for size in v.size.iter().flatten().chain(&v.radius) {
                         self.read_expr(own, &size.expr, true, read);
                     }
-                    if let Some(label) = &style.label {
+                    // A diagram sizes its blocks to their labels. Elsewhere a label's text places
+                    // nothing, so editing it lays nothing out again.
+                    if let Some(label) =
+                        style.label.as_ref().filter(|_| matches!(self.scene.space, crate::Space::Diagram(_)))
+                    {
                         self.read_expr(own, &label.text, true, read);
                     }
                     for (reference, _) in &v.ports {
                         self.read_field(own, reference, read);
                     }
-                    if let Some((members, reference)) = &v.contains {
+                    for (members, reference) in &v.contains {
                         self.read_field((&style.data, members), reference, read);
                     }
                 }

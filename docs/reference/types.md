@@ -313,9 +313,10 @@ rows pick, select, and drag. These options control the view itself.
 
 {#controls-keyboard .member}
 **`keyboard`**`?: boolean` [¶](#controls-keyboard){.headerlink}
-: Whether the keyboard controls the view. Defaults to `true`. Tab and Shift+Tab step through the
-  rows nearest the view's center. Arrow keys step to the nearest row in their direction. Enter
-  opens the row stepped to, and Space selects it. With no row stepped to, arrow keys pan
+: Whether the keyboard controls the view. Defaults to `true`. Tab steps to the row nearest the
+  view's center, and the next Tab or Shift+Tab leaves the view, so it is one stop in the page's
+  tab order. Arrow keys step to the nearest row in their direction. Enter opens the row stepped
+  to, Space selects it, and Escape stops stepping. With no row stepped to, arrow keys pan
   (Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the selection.
 
 {#controls-hover .member}
@@ -543,8 +544,8 @@ Default colors and sizes for marks, and the look of text, focus, comets, and eac
 by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
 names the base and defaults to `dark`. Each option replaces only the base value it sets.
 
-Lengths are in CSS pixels, or units in a diagram. The text halo and the focus glow are always in
-CSS pixels.
+Lengths are in CSS pixels, or units in a diagram. The grid spacing, the text halo, and the focus
+glow are always in CSS pixels.
 
 {#theme-background .member}
 **`background`**`?:` [`Color`](#color) [¶](#theme-background){.headerlink}
@@ -553,6 +554,12 @@ CSS pixels.
 {#theme-grid .member}
 **`grid`**`?:` [`Color`](#color) [¶](#theme-grid){.headerlink}
 : The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule.
+
+{#theme-gridspacing .member}
+**`gridSpacing`**`?: number` [¶](#theme-gridspacing){.headerlink}
+: The least distance between the lines (or dots) of a plane's or diagram's grid and of the earth's
+  graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten (and 30° and
+  90° on the earth), and the finer step fades out as it nears this distance.
 
 {#theme-missing .member}
 **`missing`**`?:` [`Color`](#color) [¶](#theme-missing){.headerlink}
@@ -999,8 +1006,8 @@ Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
 
 {#vertices-elevation .member}
 **`elevation`**`?:` [`ExprInput`](#exprinput) [¶](#vertices-elevation){.headerlink}
-: Height above the ground. On the earth, a fraction of the earth's radius. Defaults to 0. Not
-  allowed in a diagram, which is flat.
+: Height above the ground. On the earth, in degrees of arc like every length there (one is about
+  111 km). Defaults to 0. Not allowed in a diagram, which is flat.
 
 {#vertices-radius .member}
 **`radius`**`?:` [`Size`](#size) `| null` [¶](#vertices-radius){.headerlink}
@@ -1027,9 +1034,10 @@ Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
   table, without `ends`, draws the nets. Diagrams only.
 
 {#vertices-contains .member}
-**`contains`**`?: [table: string, reference: string] | null` [¶](#vertices-contains){.headerlink}
-: Makes each row a group containing the rows of `table` whose `reference` field names it. A group
-  draws as a container around its members, with its label as a title in its header. Diagrams only.
+**`contains`**`?: [table: string, reference: string][]` [¶](#vertices-contains){.headerlink}
+: Makes each row a group containing, for each `[table, reference]`, the rows of `table` whose
+  `reference` field names it, so a group can hold rows of several tables. A group draws as a
+  container around its members, with its label as a title in its header. Diagrams only.
 
 {#vertices-shadow .member}
 **`shadow`**`?: boolean` [¶](#vertices-shadow){.headerlink}
@@ -1850,8 +1858,9 @@ its tilt, and its rotation. A diagram is always seen from straight above, uprigh
 
 {#camera-center .member}
 **`center`**`: [number, number] | [number, number, number]` [¶](#camera-center){.headerlink}
-: On the earth, longitude, latitude, and elevation. On a plane or a diagram, x, y, and elevation.
-  In JSON, `[x, y]` is shorthand for elevation 0.
+: On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is a
+  degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON, `[x, y]` is
+  shorthand for elevation 0.
 
 {#camera-zoom .member}
 **`zoom`**`: number` [¶](#camera-zoom){.headerlink}
@@ -2024,8 +2033,9 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 
 {#viewevent-menu .member}
 **`'menu'`** [¶](#viewevent-menu){.headerlink}
-: A context menu was requested: by a secondary click, the menu key, or a touch or pen held still.
-  Lists the rows under the trigger's point, for a menu of actions on them.
+: A context menu was requested: by a secondary click (or a Control-click on Apple platforms), the
+  menu key or Shift+F10, or a touch or pen held still. Lists the rows under the trigger's point,
+  for a menu of actions on them.
 
   {#viewevent-menu-hits .member}
   **`hits`**`:` [`Hit`](#hit)`[]` [¶](#viewevent-menu-hits){.headerlink}

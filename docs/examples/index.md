@@ -12,6 +12,10 @@ live in the browser.
 
 [![The speed of 1,456 machines over ten seconds after a fault. Machines near the fault are bright and swing hardest, and far ones are dark](../images/frequency.png) ACTIVSg10k](frequency.md)
 
+[![The ACTIVSg70k grid as a dim web, half a second after its Little Rock to Newark line opens in red. Rings and corridors of branches around it glow amber and white where their flow changed most](../images/rerouting.png) ACTIVSg70k rerouting](rerouting.md)
+
+[![The ACTIVSg25k grid as a dim web, half a second into a fault at a red bus near New York. Corridors of branches spreading southwest from it glow amber and white where their flow changed most](../images/fault.png) ACTIVSg25k fault](fault.md)
+
 [![Great-circle routes between forty of the world's great cities on a globe, with comets flowing along them](../images/globe.png) Globe](globe.md)
 
 [![A microgrid controller as blocks in nested groups, with wires routed port to port and a feedback loop](../images/diagram.png) Diagram](diagram.md)
@@ -37,6 +41,8 @@ live in the browser.
 grid
 texas
 frequency
+rerouting
+fault
 globe
 diagram
 helios

@@ -232,7 +232,7 @@ impl View {
             return view.on_plane(p, 0.0).map_or([0.0; 3], |w| view.position(w));
         };
         let reach = 50.0 * (view.eye - view.world(center)).length();
-        let level = if view.globe >= 0.5 { view.ground(p) } else { view.on_plane(p, center[2]) };
+        let level = if view.globe >= 0.5 { view.ground(p) } else { view.on_plane(p, view.height(center[2])) };
         if let Some(w) = level.filter(|w| view.grazing(p) > 0.1 && (*w - view.eye).length() < reach) {
             view.position(w)
         } else {

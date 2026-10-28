@@ -224,6 +224,33 @@ fn a_dense_view_settles_with_texts_for_the_labels_that_fit() {
     assert!(texts < 200, "texts for the labels that fit: {texts}");
 }
 
+#[test]
+fn a_one_row_label_edit_evaluates_one_page() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    // Twenty thousand labeled rows (five pages), drawn with the default ease.
+    let n = 20_000;
+    let x: Vec<f64> = (0..n).map(|i| f64::from((i * 37) % 128) - 64.0).collect();
+    let y: Vec<f64> = (0..n).map(|i| f64::from((i * 53) % 128) - 64.0).collect();
+    let names: Vec<String> = (0..n).map(|i| format!("row {i}")).collect();
+    let data = Data::new("d");
+    data.apply(Table::new("V", Ids::count(n as u32)).field("x", x).field("y", y).field("name", names)).expect("valid");
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(
+        Vertices::of("d", "V").position(field("x"), field("y")).radius(1.0).label(Label::new(field("name")).size(10.0)),
+    );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(&gpu, &mut view);
+    let before = gpu.work();
+    data.apply(Table::new("V", vec![7_u64]).field("name", vec!["renamed"])).expect("valid");
+    frame(&gpu, &mut view);
+    // A text never eases, so the edit starts no transition: only its page evaluates.
+    let work = gpu.work() - before;
+    assert!(work.evaluated <= 4096, "only one page evaluates: {}", work.evaluated);
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
 /// A block in a diagram, 60 by 20 units, labeled in red at size 10, seen at `zoom`.
 fn diagram_block(gpu: &latkit::Gpu, zoom: f64) -> Vec<[u8; 4]> {
     gpu.set_host(Boxes);

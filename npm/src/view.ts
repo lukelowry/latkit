@@ -9,7 +9,7 @@ import type { Canvas, Rect } from './canvas.js';
 import { Snapshot, sourceOf, Table, type Source } from './data.js';
 import { device, Gpu } from './gpu.js';
 import type { Camera, Fit, Row, Rows, Scene } from './inputs.js';
-import { Handle, inner, thrown, waited, type LatkitError, type Wait } from './internal.js';
+import { Handle, inner, onStop, thrown, waited, type LatkitError, type Wait } from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
 import { Patch } from './patch.js';
 
@@ -62,6 +62,8 @@ export class View extends Handle {
   }
 
   #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
+  /** Stops listening for latkit stopping. */
+  #unstop: () => void;
   #gpu: Gpu;
   #canvas: Canvas | undefined;
   #region: Rect;
@@ -79,6 +81,7 @@ export class View extends Handle {
     const { json, tables } = encoded(scene);
     super(device(gpu).view(json, tell), 'View');
     told.view = this;
+    this.#unstop = onStop((error) => this.#emit('error', error));
     this.#gpu = gpu;
     this.#region = region;
     this.#scene = scene;
@@ -297,8 +300,12 @@ export class View extends Handle {
   }
 
   /**
-   * Frames what `fit` names, keeping pitch and bearing. Defaults to every row. It takes effect on
-   * the next frame, or a frame or two later when the GPU must measure the extent.
+   * Frames what `fit` names, keeping pitch and bearing, and replaces any fit not yet applied.
+   * Defaults to every row. It applies once the rows have their places (their data streamed, any
+   * layout placed them, and they eased there), a frame or two later when the GPU must measure the
+   * extent. With nothing drawn to frame, it frames the rows that arrive later. Until a view's first
+   * fit applies, it shows only its background. A fit frames a diagram at most at its natural size
+   * and the earth at most at zoom 16, which is also where it frames a single point.
    */
   fit(fit: Fit = 'all'): void {
     view(this).fit(JSON.stringify(fit));
@@ -404,15 +411,20 @@ export class View extends Handle {
   #tell(json: string): void {
     if (this.#listeners.size === 0) return;
     for (const told of JSON.parse(json) as ViewEvent[]) {
-      const listeners = this.#listeners.get(told.type) as Set<(event: unknown) => void> | undefined;
-      if (!listeners?.size) continue;
-      const event = told.type === 'error' ? thrown(told.detail) : told.detail;
-      for (const listener of listeners) listener(event);
+      if (!this.#listeners.get(told.type)?.size) continue;
+      this.#emit(told.type, told.type === 'error' ? thrown(told.detail) : told.detail);
     }
+  }
+
+  /** Calls the listeners of `type` with `event`. */
+  #emit(type: keyof ViewEvents, event: unknown): void {
+    const listeners = this.#listeners.get(type) as Set<(event: unknown) => void> | undefined;
+    for (const listener of listeners ?? []) listener(event);
   }
 
   /** @internal Drops the listeners, and takes the view off its canvas and its GPU. */
   protected override freeing(): void {
+    this.#unstop();
     for (const listeners of this.#listeners.values()) listeners.clear();
     this.#listeners.clear();
     this.#canvas?.remove(this);

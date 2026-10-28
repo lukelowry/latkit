@@ -267,7 +267,46 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
     assert!(near(low, [68, 1, 84]), "viridis's low end: {low:?}");
     assert!(near(high, [253, 231, 37]), "viridis's high end: {high:?}");
     let scene = Scene::new(plane()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")).legend(""));
-    assert!(View::new(&gpu, scene).is_err(), "a legend needs a colormap with a domain");
+    assert!(View::new(&gpu, scene).is_err(), "a legend needs a colormap");
+}
+
+#[test]
+fn a_legend_shows_the_domain_a_colormap_fits_to_its_values() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(
+        Table::new("Node", Ids::count(2))
+            .field("x", vec![-1.0, 1.0])
+            .field("y", vec![0.0, 0.0])
+            .field("v", vec![10.0, 20.0]),
+    )
+    .expect("valid");
+    let colors = latkit::field("v").colormap(latkit::Colormap::VIRIDIS);
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0).color(colors).legend(""));
+    let mut view = view(&gpu, scene, &data);
+    let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
+    let y = 200 - 16 - 16 - 4 - 4;
+    let near = |a: [u8; 4], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 24);
+    let (low, high) = (pixel(&image, 400 - 16 - 218, y), pixel(&image, 400 - 16 - 2, y));
+    assert!(near(low, [68, 1, 84]) && near(high, [253, 231, 37]), "viridis across the fitted domain: {low:?} {high:?}");
+}
+
+#[test]
+fn a_colormap_over_equal_values_draws_its_middle() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("v", vec![5.0]))
+        .expect("valid");
+    let colors = latkit::field("v").colormap(latkit::Colormap::VIRIDIS);
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(20.0).color(colors));
+    let mut view = view(&gpu, scene, &data);
+    let image = pollster::block_on(Shot::new([64, 64]).image(&mut [&mut view])).expect("a picture");
+    let middle = pixel(&image, 32, 32);
+    assert!(middle.iter().zip([33, 145, 140]).all(|(x, y)| x.abs_diff(y) <= 24), "viridis's middle: {middle:?}");
 }
 
 #[test]
@@ -320,7 +359,7 @@ fn a_legend_lists_named_categories_by_their_colors() {
     let node = Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0);
     let scene = Scene::new(plane()).theme(plain_theme());
     let unnamed = scene.clone().draw(node.clone().color(field("k").colormap(map.clone())).legend(""));
-    assert!(View::new(&gpu, unnamed).is_err(), "categories without names need a domain");
+    assert!(View::new(&gpu, unnamed).is_ok(), "categories without names show a cell for each");
     let named = field("k").colormap(map.categories(["red", "blue"]));
     let mut view = view(&gpu, scene.draw(node.color(named).legend("")), &data);
     let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");

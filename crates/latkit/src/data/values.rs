@@ -218,6 +218,11 @@ impl Values {
         }
     }
 
+    /// Whether any value is present. Values that are all missing fit a field of any kind.
+    pub(crate) fn holds_any(&self) -> bool {
+        !self.is_empty() && self.valid.as_ref().is_none_or(Bits::any)
+    }
+
     /// Whether value `i` exists and is not missing.
     pub fn is_valid(&self, i: usize) -> bool {
         i < self.len() && self.valid.as_ref().is_none_or(|v| v.get(i))

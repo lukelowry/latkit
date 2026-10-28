@@ -186,6 +186,43 @@ fn references_to_unknown_tables_are_refused() {
 }
 
 #[test]
+fn missing_values_fit_any_kind_until_a_field_holds_a_value() {
+    let data = Data::new("grid");
+    let kind = || data.snapshot().table("Bus").and_then(|t| t.kind("name"));
+    // A field written with no value takes the kind of its first values, and missing values write to
+    // a field of any kind.
+    data.apply(Table::new("Bus", Ids::count(2)).field("name", vec![None::<f64>; 2])).expect("missing values");
+    data.apply(Table::new("Bus", Ids::count(2)).field("name", vec![Some("a"), None])).expect("texts after none");
+    assert_eq!(kind(), Some(crate::Kind::Text));
+    data.apply(Table::new("Bus", Ids::count(2)).field("name", vec![None::<f64>; 2])).expect("missing texts");
+    assert_eq!(kind(), Some(crate::Kind::Text));
+    // Once a field has held a value, its kind is fixed.
+    let error = data.apply(Table::new("Bus", Ids::count(1)).field("name", vec![1.0])).expect_err("a number");
+    assert_eq!(error.to_string(), "patch[0].Bus.name: Number values for a Text field");
+    // A field with no value can become a reference.
+    data.apply(Table::new("Bus", Ids::count(1)).field("feeds", vec![None::<f64>])).expect("missing values");
+    data.apply(Table::new("Bus", Ids::count(1)).reference("feeds", "Bus", vec![1_u64])).expect("a reference");
+    assert_eq!(data.snapshot().get("Bus", 0_u64, "feeds", None), Some(Value::Row(Row::new("grid", "Bus", 1_u64))));
+}
+
+#[test]
+fn a_reference_takes_its_tables_id_kind() {
+    let data = Data::new("grid");
+    let branch = |ids: Ids| Table::new("Branch", Ids::count(1)).reference("to", "Bus", ids);
+    data.apply(Patch::new().set(Table::new("Bus", vec!["a", "b"])).set(branch(vec![None::<u64>].into())))
+        .expect("a reference with no ids yet");
+    data.apply(branch(vec!["b"].into())).expect("the table's text ids");
+    assert_eq!(data.snapshot().get("Branch", 0_u64, "to", None), Some(Value::Row(Row::new("grid", "Bus", "b"))));
+    // Missing ids write to a reference of either kind.
+    data.apply(branch(vec![None::<u64>].into())).expect("missing ids");
+    assert_eq!(data.snapshot().get("Branch", 0_u64, "to", None), None);
+    let error = data
+        .apply(Table::new("Line", Ids::count(1)).reference("to", "Bus", vec![1_u64]))
+        .expect_err("number ids for text ids");
+    assert_eq!(error.to_string(), "Line.to: number ids for table Bus, whose ids are texts");
+}
+
+#[test]
 fn dangling_references_resolve_once_the_row_exists() {
     let data = Data::new("grid");
     data.apply(Patch::new().set(Table::new("Bus", vec![1_u64])).set(Table::new("Branch", Ids::count(1)).reference(

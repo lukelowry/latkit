@@ -14,7 +14,7 @@ use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use common::{Threads, diagram, errors, frame, gpu, plain_theme, step};
+use common::{Threads, diagram, errors, frame, gpu, plain_theme, settle, step};
 use latkit::{
     Camera, Data, Edges, Ids, Layered, Layout, Patch, Port, Row, Scene, Side, Stress, Table, Vertices, View, field,
 };
@@ -289,7 +289,7 @@ fn a_fit_on_a_plane_frames_the_places_its_layout_gives() {
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
-    frame(&gpu, &mut view);
+    settle(&gpu, &mut view);
     let size = common::SIZE as f32;
     for id in [0_u64, 500, 1000, 1500] {
         let pending = view.screen_of(&Row::new("graph", "Node", id));

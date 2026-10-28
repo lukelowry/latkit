@@ -43,16 +43,19 @@ struct Step {
 @group(2) @binding(6) var depth: texture_depth_2d;
 @group(2) @binding(17) var<uniform> step: Step;
 
+// How far the probe lies from an instance, and the instance's nearest point: its depth, and the
+// depth the frame drew it at there, which for a marker is its radius nearer the camera.
 struct Reach {
     distance: f32,
     depth: f32,
     point: vec2f,
     row: u32,
     segment: u32,
+    drawn: f32,
 }
 
 fn unreached() -> Reach {
-    return Reach(1e30, 0.0, vec2f(0.0), NONE, 0u);
+    return Reach(1e30, 0.0, vec2f(0.0), NONE, 0u, 0.0);
 }
 
 // An instance as the frame drew it, on screen, with depth as z: a point's center (and for a port,
@@ -76,6 +79,8 @@ struct Seen {
     front: vec3<bool>,
     // A point's half size, a port's radius as x, a stroke's width as x.
     half: vec2f,
+    // The depth a point's marker draws at.
+    drawn: f32,
 }
 
 // A clip position on screen, with its depth as z.
@@ -107,6 +112,7 @@ fn seen_point(instance: u32) -> Seen {
     s.kept = answers(s.item, s.row, d.leaving);
     s.shown = pt.shown;
     s.a = screen(pt.clip);
+    s.drawn = pt.drawn_z;
     s.front = vec3<bool>(pt.clip.w > 0.0);
     s.half = max(pt.half, vec2f(0.5));
     if instance >= mark.rows {
@@ -184,10 +190,10 @@ fn reach(s: Seen, p: vec2f) -> Reach {
     switch PRIMITIVE {
         case POINTS: {
             if s.part > 0u {
-                return Reach(max(length(p - s.b.xy) - s.half.x, 0.0), s.a.z, s.b.xy, s.row, s.part);
+                return Reach(max(length(p - s.b.xy) - s.half.x, 0.0), s.a.z, s.b.xy, s.row, s.part, s.drawn);
             }
             let d = outline_distance((p - s.a.xy) * vec2f(1.0, -1.0), s.half);
-            return Reach(max(d, 0.0), s.a.z, s.a.xy, s.row, 0u);
+            return Reach(max(d, 0.0), s.a.z, s.a.xy, s.row, 0u, s.drawn);
         }
         case STROKES: {
             let q = nearest_on(p, s.a, s.b);
@@ -196,7 +202,7 @@ fn reach(s: Seen, p: vec2f) -> Reach {
             if mark.kind == MARK_EDGES {
                 end = u32(2u * end >= path_count(s.item));
             }
-            return Reach(max(length(p - q.xy) - 0.5 * s.half.x, 0.0), q.z, q.xy, s.row, end);
+            return Reach(max(length(p - q.xy) - 0.5 * s.half.x, 0.0), q.z, q.xy, s.row, end, q.z);
         }
         default: {
             let a = s.a;
@@ -207,7 +213,8 @@ fn reach(s: Seen, p: vec2f) -> Reach {
                 let wb = ((p.x - a.x) * (c.y - a.y) - (p.y - a.y) * (c.x - a.x)) / area;
                 let wc = ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / area;
                 if wb >= 0.0 && wc >= 0.0 && wb + wc <= 1.0 {
-                    return Reach(0.0, a.z + (b.z - a.z) * wb + (c.z - a.z) * wc, p, s.row, 0u);
+                    let z = a.z + (b.z - a.z) * wb + (c.z - a.z) * wc;
+                    return Reach(0.0, z, p, s.row, 0u, z);
                 }
             }
             var q = nearest_on(p, a, b);
@@ -215,7 +222,7 @@ fn reach(s: Seen, p: vec2f) -> Reach {
             let q3 = nearest_on(p, c, a);
             q = select(q, q2, length(p - q2.xy) < length(p - q.xy));
             q = select(q, q3, length(p - q3.xy) < length(p - q.xy));
-            return Reach(length(p - q.xy), q.z, q.xy, s.row, 0u);
+            return Reach(length(p - q.xy), q.z, q.xy, s.row, 0u, q.z);
         }
     }
 }
@@ -261,7 +268,7 @@ fn drawn_depth(texel: vec2i) -> f32 {
 fn shown(r: Reach) -> bool {
     let size = vec2f(textureDimensions(depth));
     let texel = vec2i(clamp(r.point * eye.pixel_ratio, vec2f(0.0), size - 1.0));
-    return drawn_depth(texel) <= r.depth * 1.01 + 1e-7;
+    return drawn_depth(texel) <= r.drawn * 1.01 + 1e-7;
 }
 
 // The nearest depth drawn around the probe.

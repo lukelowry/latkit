@@ -89,9 +89,9 @@ export default page({
         colors: LEVEL_COLORS,
         categories: [...LEVELS],
       });
-      // On the earth, height is a fraction of its radius: 765 kV stands about 140 km high. Laid out
+      // On the earth, height is in degrees of arc: 765 kV stands about 1.1°, 120 km high. Laid out
       // by topology, it is in the layout's units.
-      const height = s.height === 'kv' ? field('kv').mul(geography ? 2.5e-5 : 0.15) : 0;
+      const height = s.height === 'kv' ? field('kv').mul(geography ? 1.43e-3 : 0.15) : 0;
       const where = geography ? { position: ['$lon', '$lat'] as ['$lon', '$lat'] } : {};
       const marks: Mark[] = [
         ...(geography ? map.marks : []),

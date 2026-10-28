@@ -21,8 +21,10 @@ export interface LatkitError extends Error {
    * - `timeout`: the wait's signal timed out.
    * - `unloaded`: the call needs WebAssembly, and `load()` has not finished.
    * - `destroyed`: the object was destroyed and can't be used.
+   * - `stopped`: latkit hit an internal error and stopped. Every view reports it once, every
+   *   `Gpu` is lost, and every later call throws it. Reload the page to start over.
    */
-  code: Failure['code'] | 'unloaded' | 'destroyed';
+  code: Failure['code'] | 'unloaded' | 'destroyed' | 'stopped';
   /** On `invalid` errors, the invalid part of the input, such as `marks[2].color`. */
   path?: string;
 }
@@ -39,13 +41,51 @@ export interface Wait {
 
 let ready = false;
 
+/** The error every call throws once an internal error stopped latkit. */
+let halted: LatkitError | undefined;
+/** Callbacks to tell when latkit stops. */
+const told = new Set<(error: LatkitError) => void>();
+
 /** @internal Marks the bindings as loaded, so `wasm()` returns them. */
 export function loaded(): void {
   ready = true;
 }
 
-/** @internal Returns the bindings. Throws an `unloaded` error until `load()` has finished. */
+/**
+ * @internal Stops latkit after the panic that `message` describes. A panic aborts wherever it
+ * happens, so the WebAssembly memory can't be used again. Each callback is told once, after the
+ * call that panicked has returned.
+ */
+export function stop(message: string): void {
+  if (halted) return;
+  halted = thrown({
+    code: 'stopped',
+    message: `latkit stopped after an internal error. Reload the page to start over. ${message}`,
+  });
+  const error = halted;
+  queueMicrotask(() => {
+    for (const tell of told) tell(error);
+    told.clear();
+  });
+}
+
+/** @internal Whether an internal error stopped latkit. */
+export function stopped(): boolean {
+  return halted !== undefined;
+}
+
+/** @internal Calls `tell` with the error if latkit stops. Returns a function that stops listening. */
+export function onStop(tell: (error: LatkitError) => void): () => void {
+  told.add(tell);
+  return () => told.delete(tell);
+}
+
+/**
+ * @internal Returns the bindings. Throws an `unloaded` error until `load()` has finished, and a
+ * `stopped` error once latkit has stopped.
+ */
 export function wasm(): typeof bindings {
+  if (halted) throw halted;
   if (!ready)
     throw thrown({ code: 'unloaded', message: 'latkit is not loaded: call `await load()` first' });
   return bindings;
@@ -79,14 +119,21 @@ export abstract class Handle {
     held.set(this, { bound, what });
   }
 
-  /** Frees the object's memory. Calling it again does nothing. */
+  /**
+   * Frees the object's memory. Calling it again does nothing. Once latkit has stopped, it only
+   * drops the object, since its memory can't be used again.
+   */
   destroy(): void {
     const entry = held.get(this);
     const bound = entry?.bound;
     if (!bound) return;
     entry.bound = undefined;
-    this.freeing();
-    bound.free();
+    try {
+      this.freeing();
+      if (!halted) bound.free();
+    } catch (error) {
+      if (!halted) throw error;
+    }
   }
 
   /** @internal Runs once when the object is destroyed, before its memory is freed. */
@@ -98,11 +145,15 @@ export abstract class Handle {
   }
 }
 
-/** @internal Returns `owner`'s bindings object. Throws a `destroyed` error once it is destroyed. */
+/**
+ * @internal Returns `owner`'s bindings object. Throws a `destroyed` error once it is destroyed, and
+ * a `stopped` error once latkit has stopped.
+ */
 export function inner<T>(owner: Handle): T {
   const entry = held.get(owner)!;
   if (!entry.bound)
     throw thrown({ code: 'destroyed', message: `this ${entry.what} has been destroyed` });
+  if (halted) throw halted;
   return entry.bound as T;
 }
 

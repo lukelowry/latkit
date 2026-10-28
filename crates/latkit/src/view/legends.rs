@@ -4,11 +4,17 @@
 //! drawing area (inside a plot's axes), each under its title. A legend is a ticked bar of the
 //! mark's colormap across its domain, a color cell per category, or, for named categories, a swatch
 //! beside each name. Rebuilt each frame as overlay sprites, in O(legends).
+//!
+//! A colormap that fits its values shows the domain fitted on the CPU over every row of the mark's
+//! table, as a paged table's domains are. It is kept until a field it reads changes, so frames do
+//! no work for it. A domain that reads what the view shows (the camera, the pointer, focus, or
+//! time) changes from frame to frame, and its legend is not drawn.
 
 use std::sync::Arc;
 
 use super::View;
 use super::axes::{Align, Writer, label, line, step, ticks};
+use crate::expr::Domain;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
 use crate::{Axis, Color, Colormap, ColormapKind, Theme};
@@ -43,11 +49,50 @@ impl View {
         if lines > 0.0 { 1.5 * MARGIN + lines } else { 0.0 }
     }
 
+    /// Fits the domain each legend shows where its colormap fits its values. Each is kept until the
+    /// fields it reads change.
+    pub(super) fn fit_legends(&mut self) {
+        for i in 0..self.marks.len() {
+            let style = self.marks[i].mark.style();
+            let Some((colormap, input, Domain::Fit)) =
+                style.legend.as_ref().and(style.color.as_ref()).and_then(crate::Expr::colormap_of)
+            else {
+                continue;
+            };
+            let shown = &self.marks[i];
+            let fitted = (colormap.kind() != ColormapKind::Categorical)
+                .then(|| shown.compiled.as_ref()?.program.fitted.iter().position(|f| f == input))
+                .flatten()
+                .filter(|&d| shown.reads_only_data(d));
+            self.marks[i].legend = fitted.and_then(|d| self.domain_on_cpu(i, d, self.marks[i].legend));
+        }
+    }
+
+    /// The domain mark `i`'s legend shows for `colormap` over `domain`: a fixed domain, a
+    /// categorical map's categories, or the domain fitted to the mark's values. `None` while no
+    /// value has been fitted.
+    fn legend_domain(&self, i: usize, colormap: &Colormap, domain: Domain) -> Option<[f64; 2]> {
+        match domain {
+            Domain::Fixed(domain) => Some(domain),
+            Domain::Fit if colormap.kind() == ColormapKind::Categorical => Some([0.0, f64::from(colormap.count())]),
+            Domain::Fit => {
+                let (_, [least, most]) = self.marks.get(i)?.legend?;
+                let decode = |word: u32| f64::from(crate::order::from_number32(word));
+                (least != 0 || most != 0).then(|| [decode(!least), decode(most)])
+            }
+        }
+    }
+
     /// The sprites of the scene's title and subtitle, and of its marks' legends.
     pub(super) fn annotations(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
         let scene = &self.scene;
-        let legends =
-            || scene.marks.iter().filter_map(|m| Some((m.style().legend.as_ref()?, m.style().color.as_ref()?)));
+        let legends = || {
+            scene
+                .marks
+                .iter()
+                .enumerate()
+                .filter_map(|(i, m)| Some((i, m.style().legend.as_ref()?, m.style().color.as_ref()?)))
+        };
         if scene.title.is_none() && scene.subtitle.is_none() && legends().next().is_none() {
             return Vec::new();
         }
@@ -75,12 +120,12 @@ impl View {
         let drawing = self.area();
         let right = drawing[2] - MARGIN;
         let mut base = drawing[3] - MARGIN;
-        for (title, color) in legends() {
-            let Some((colormap, domain)) = color.colormap_of() else { continue };
+        for (i, title, color) in legends() {
+            let Some((colormap, _, domain)) = color.colormap_of() else { continue };
             let write = |s, color, f: &mut dyn FnMut(&mut Writer<'_>)| writer(inner, s, color, f);
             let height = if !colormap.named_categories().is_empty() {
                 categories(&mut sprites, theme, [right, base], colormap, ratio, write, title)
-            } else if let Some(domain) = domain {
+            } else if let Some(domain) = self.legend_domain(i, colormap, domain) {
                 legend(&mut sprites, theme, [right, base], colormap, domain, write, title)
             } else {
                 continue;
@@ -158,7 +203,10 @@ fn legend(
     let [left, top] = [corner[0] - BAR[0], bar_bottom - BAR[1]];
     let color = |t: usize| Color::from_bytes(colormap.texels()[t.min(255)]);
     let text = theme.text.color.alpha(0.85);
-    let across = |v: f64| left + (v - domain[0]) / (domain[1] - domain[0]).max(f64::MIN_POSITIVE) * BAR[0];
+    // Where a value lies along the bar, as the GPU maps it: either way round, and a domain of one
+    // value puts it in the middle.
+    let span = domain[1] - domain[0];
+    let across = |v: f64| left + if span == 0.0 { 0.5 } else { (v - domain[0]) / span } * BAR[0];
     let mut labels: Vec<(String, f64)> = Vec::new();
     if colormap.kind() == ColormapKind::Categorical {
         let first = domain[0].min(domain[1]).ceil() as i64;
@@ -182,9 +230,11 @@ fn legend(
             sprites.push(fill([x(i), top], [x(i + 1), bar_bottom], color(t)));
         }
         let [lo, hi] = [domain[0].min(domain[1]), domain[0].max(domain[1])];
-        let step = step(hi - lo, (BAR[0] / (font * 6.0)).max(1.0));
+        // A domain of one value has one tick, at the middle.
+        let step = if hi > lo { step(hi - lo, (BAR[0] / (font * 6.0)).max(1.0)) } else { 1.0 };
         let axis = Axis::default();
-        for v in ticks([lo, hi], step) {
+        let values: Vec<f64> = if hi > lo { ticks([lo, hi], step).collect() } else { vec![lo] };
+        for v in values {
             let at = across(v);
             sprites.push(line([at, bar_bottom], [at, bar_bottom + 3.0], 1.0, text.alpha(0.5)));
             labels.push((label(v, step, &axis), at));

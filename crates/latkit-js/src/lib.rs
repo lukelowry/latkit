@@ -30,9 +30,32 @@ pub use pending::Task;
 pub use shot::{Image, Video, image, set_encoder, video};
 pub use view::View;
 
+thread_local! {
+    /// The package's callback for a panic, given its message.
+    static STOPPED: std::cell::RefCell<Option<js_sys::Function>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Logs a panic, stops latkit's frames and input, and tells the package, before the panic aborts.
 #[wasm_bindgen(start)]
 fn start() {
-    console_error_panic_hook::set_once();
+    std::panic::set_hook(Box::new(|info| {
+        console_error_panic_hook::hook(info);
+        latkit::web::stop();
+        let message = JsValue::from_str(&info.to_string());
+        STOPPED.with(|stopped| {
+            if let Ok(stopped) = stopped.try_borrow()
+                && let Some(callback) = stopped.as_ref()
+            {
+                let _ = callback.call1(&JsValue::NULL, &message);
+            }
+        });
+    }));
+}
+
+/// Calls `callback` with the message of a panic that stops latkit.
+#[wasm_bindgen(js_name = onStop)]
+pub fn on_stop(callback: js_sys::Function) {
+    STOPPED.with(|stopped| *stopped.borrow_mut() = Some(callback));
 }
 
 /// Deserializes `text` from latkit's JSON form. Error paths are prefixed with `what`.

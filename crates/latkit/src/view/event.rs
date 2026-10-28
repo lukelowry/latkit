@@ -32,8 +32,9 @@ pub enum Event {
         /// How the user opened it.
         trigger: Trigger,
     },
-    /// A context menu was requested: by a secondary click, the menu key, or a touch or pen held
-    /// still. Lists the rows under the trigger's point, for a menu of actions on them.
+    /// A context menu was requested: by a secondary click (or a Control-click on Apple platforms),
+    /// the menu key or Shift+F10, or a touch or pen held still. Lists the rows under the trigger's
+    /// point, for a menu of actions on them.
     Menu {
         /// The rows under the point, nearest first.
         hits: Vec<Hit>,

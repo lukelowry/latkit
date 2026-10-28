@@ -43,11 +43,13 @@ const ENTRIES: &[Entry] = &[
             ("main", &[]),
             ("custom", &["custom"]),
             ("custom_focus", &["custom", "focused"]),
+            ("custom_depth", &["custom", "depth"]),
             ("ports", &["ports"]),
             ("focus", &["focused"]),
+            ("depth", &["depth"]),
         ],
     },
-    Entry { module: "draw::strokes", variants: &[("main", &[]), ("focus", &["focused"])] },
+    Entry { module: "draw::strokes", variants: &[("main", &[]), ("focus", &["focused"]), ("depth", &["depth"])] },
     Entry { module: "draw::triangles", variants: &[("main", &[])] },
     Entry { module: "draw::areas", variants: &[("main", &[]), ("focus", &["focused"])] },
     Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
@@ -57,7 +59,7 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "compute::fields", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "atomic", "custom", "multisampled", "lists", "ports", "focused"];
+const FEATURES: &[&str] = &["writes", "atomic", "custom", "multisampled", "lists", "ports", "focused", "depth"];
 
 /// A placeholder custom marker function, appended to validate the custom variants.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";
@@ -206,8 +208,11 @@ fn manifest_entry(shader: &str, file: &str, module: &naga::Module, types: &naga:
         .iter()
         .map(|c| format!("{{{}}}", c.iter().map(|(n, v)| format!("{n:?}: {v}")).collect::<Vec<_>>().join(", ")))
         .collect();
+    // A depth variant's fragment stage writes no color.
+    let colors =
+        !module.entry_points.iter().any(|e| e.stage == naga::ShaderStage::Fragment && e.function.result.is_none());
     format!(
-        "  {{ \"file\": {file:?}, \"draws\": {draws}, \"compute\": [{}], \"constants\": [{}], \"append\": {:?} }}",
+        "  {{ \"file\": {file:?}, \"draws\": {draws}, \"colors\": {colors}, \"compute\": [{}], \"constants\": [{}], \"append\": {:?} }}",
         compute.join(", "),
         constants.join(", "),
         if custom { CUSTOM_MARKER } else { "" },

@@ -2,13 +2,15 @@
 // containers. A quad covers its marker and any status ring or shadow, plus one pixel of antialiased
 // edge. The focus variant redraws the lit rows over everything, with quads enlarged for their glow.
 // A group glows only around its border, so its contents stay visible. The ports variant draws one
-// quad per port of every row, on its side of the row's marker.
+// quad per port of every row, on its side of the row's marker. The depth variant writes only the
+// depth of each marker's mostly opaque pixels, before any color draws, so where depth varies the
+// nearest marker shows.
 
 import package::lib::types::{STATUS, MARKER_ICON, MARKER_SHAPE, MARKER_BLOCK, GROUP, SHADOW, SPACE_DIAGRAM};
 import package::lib::bind::{frame, eye, mark, word, ramp, program, focused};
 import package::lib::state::extra_at;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
-import package::lib::points::{Point, shown_point, reach, port_at};
+import package::lib::points::{Point, shown_point, reach, port_at, drawn_clip};
 import package::lib::marker::{
     MarkerColor, MarkerFragment, builtin_marker, container, border, dropped, outline_distance, box_distance,
     shape_distance, filled, over, status_ring, glow, premultiplied, theme_text, theme_corner, theme_lift,
@@ -69,7 +71,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let d = drawn(instance);
     let quad = vec2f(f32(corner & 1u), f32(corner >> 1u)) * 2.0 - 1.0;
     var out: Varyings;
-    out.clip = nearer(to_clip(d.center + quad * d.reach, d.p.clip));
+    out.clip = nearer(to_clip(d.center + quad * d.reach, drawn_clip(d.p)));
     out.p = quad * d.reach * vec2f(1.0, -1.0);
     out.row = d.p.row;
     out.color = vec4f(d.p.color.rgb * daylight(d.p.position), d.p.color.a);
@@ -162,10 +164,20 @@ fn shaded(v: Varyings) -> MarkerColor {
     return m;
 }
 
-@if(!focused)
+@if(!focused && !depth)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     return output(premultiplied(shaded(v)));
+}
+
+// Only pixels at least half opaque write depth, so a marker's antialiased edge, glow, and shadow
+// leave what lies behind them showing.
+@if(depth)
+@fragment
+fn fragment(v: Varyings) {
+    if premultiplied(shaded(v)).a < 0.5 {
+        discard;
+    }
 }
 
 @if(focused)

@@ -132,6 +132,7 @@ impl View {
             uniform.query = words;
         }
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
+        self.fit_legends();
         let sprites = self.overlay(&mut inner);
         self.lay_out_blocks();
         self.write_uniforms(&uniform, &eye, &sprites);

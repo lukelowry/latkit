@@ -1,7 +1,8 @@
 // The backdrop under every mark: a plane's or diagram's grid, or the earth's ground and graticule,
 // lit by daylight, with the atmosphere around the globe. Lines are one pixel wide and antialiased
-// per axis. Their spacing steps by powers of ten, and the next coarser spacing fades in as lines
-// get dense, so no seam shows. Lines fade where the view grazes the ground, and on a plane, with
+// per axis. Each axis spaces its lines by the finest step of 1, 2, and 5 times a power of ten (30°
+// and 90° past 10° on the earth) at least the theme's grid spacing apart. The next coarser step
+// always draws, and the finer one fades out as it nears that spacing, so no seam shows. Lines fade where the view grazes the ground, and on a plane, with
 // distance from where the camera looks. The round globe writes its depth slightly below the ground,
 // so marks behind it are hidden and marks on it still draw.
 
@@ -38,13 +39,12 @@ fn vertex(@builtin(vertex_index) i: u32) -> Varyings {
     return Varyings(vec4f(ndc, 0.0, 1.0), ndc);
 }
 
-// Coverage of grid lines `pitch` apart at `p`, where `p` changes by `w` per pixel. Lines are a
-// pixel wide and fade out as their cells shrink to a few pixels.
-fn lines(p: vec2f, w: vec2f, pitch: f32) -> f32 {
+// Coverage of grid lines `pitch` apart on each axis at `p`, where `p` changes by `w` per pixel, per
+// axis. Lines are a pixel wide and fade out as their cells shrink to a few pixels.
+fn lines(p: vec2f, w: vec2f, pitch: vec2f) -> vec2f {
     let cells = max(w / pitch, vec2f(1e-12));
     let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
-    let c = saturate(1.0 - px) * (1.0 - smoothstep(vec2f(0.08), vec2f(0.25), cells));
-    return max(c.x, c.y);
+    return saturate(1.0 - px) * (1.0 - smoothstep(vec2f(0.08), vec2f(0.25), cells));
 }
 
 // Coverage of grid dots `pitch` apart at `p`, where `p` changes by `w` per pixel. Dots are a CSS
@@ -55,18 +55,43 @@ fn dots(p: vec2f, w: vec2f, pitch: f32) -> f32 {
     return saturate(eye.pixel_ratio + 0.5 - length(px)) * (1.0 - smoothstep(0.08, 0.25, max(cells.x, cells.y)));
 }
 
-// Grid lines spaced `pitch` times a power of ten, with the power between `lowest` and `highest`.
-// Lines draw at the spacing just under 20 pixels, and the next coarser spacing fades in as that one
-// gets denser.
-fn grid(p: vec2f, w: vec2f, pitch: f32, lowest: f32, highest: f32, dotted: bool) -> f32 {
-    let level = clamp(log2(max(max(w.x, w.y) * 20.0 / pitch, 1e-30)) * 0.30103, lowest, highest);
-    let k = floor(level);
-    let t = level - k;
-    let step = pitch * exp2(k * 3.3219281);
-    if dotted {
-        return max(dots(p, w, step), dots(p, w, step * 10.0) * t);
+// The finest step at least `least`, in multiples of `pitch` from `lowest` to `highest`: 1, 2, or 5
+// times a power of ten, and on the earth (`degrees`) 30 and 90 past 10.
+fn nice(least: f32, pitch: f32, lowest: f32, highest: f32, degrees: bool) -> f32 {
+    let x = clamp(least / pitch, lowest, highest);
+    var decade = exp2(floor(log2(x) * 0.30103) * 3.3219281);
+    // Rounding can leave the decade a step off.
+    decade = select(decade, decade * 10.0, x > decade * 10.0001);
+    decade = select(decade, decade * 0.1, x < decade * 0.9999);
+    let m = x / decade;
+    var step = select(select(select(10.0, 5.0, m <= 5.0001), 2.0, m <= 2.0001), 1.0, m <= 1.0001) * decade;
+    if degrees && step > 10.0001 {
+        step = select(90.0, 30.0, step <= 30.0001);
     }
-    return max(lines(p, w, step), lines(p, w, step * 10.0) * t);
+    return min(step, highest) * pitch;
+}
+
+// Grid lines (or dots) in multiples of `pitch` from `lowest` to `highest`, at least the theme's
+// grid spacing apart on each axis. The next coarser step draws whole, and the finer one fades out
+// as its lines near that spacing.
+fn grid(p: vec2f, w: vec2f, pitch: f32, lowest: f32, highest: f32, degrees: bool, dotted: bool) -> f32 {
+    let least = frame.grid_spacing * eye.pixel_ratio;
+    let fine = vec2f(
+        nice(least * w.x, pitch, lowest, highest, degrees),
+        nice(least * w.y, pitch, lowest, highest, degrees),
+    );
+    let coarse = vec2f(
+        nice(fine.x * 1.5, pitch, lowest, highest, degrees),
+        nice(fine.y * 1.5, pitch, lowest, highest, degrees),
+    );
+    let fade = smoothstep(vec2f(least), vec2f(2.0 * least), fine / max(w, vec2f(1e-30)));
+    if dotted {
+        // Dots sit where lines would cross, so both axes step alike.
+        let finest = max(fine.x, fine.y);
+        return max(dots(p, w, finest) * min(fade.x, fade.y), dots(p, w, max(coarse.x, coarse.y)));
+    }
+    let shown = max(lines(p, w, fine) * fade, lines(p, w, coarse));
+    return max(shown.x, shown.y);
 }
 
 fn blend(color: vec4f, over: vec4f, coverage: f32) -> vec4f {
@@ -84,7 +109,7 @@ fn plane(g: vec3f, d: vec3f, ahead: bool) -> vec4f {
     }
     let near = 1.0 - smoothstep(0.6, 1.0, length(g.xy) / max(frame.grid_fade, 1e-30));
     let fade = f32(ahead) * smoothstep(0.02, 0.15, abs(d.z)) * select(1.0, near, frame.grid_fade > 0.0);
-    let c = grid(p, w, frame.grid_pitch, 0.0, 30.0, frame.grid_kind == GRID_DOTS) * fade;
+    let c = grid(p, w, frame.grid_pitch, 1.0, 1e30, false, frame.grid_kind == GRID_DOTS) * fade;
     return blend(ground, frame.grid_color, c);
 }
 
@@ -141,7 +166,7 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
         let wrapped = fract(p.x / 360.0) * 360.0;
         let w = vec2f(min(fwidth(p.x), fwidth(wrapped)), fwidth(p.y));
         let fade = select(smoothstep(0.02, 0.15, abs(d.z)), smoothstep(0.0, 0.3, facing), globe);
-        color = blend(color, frame.grid_color, grid(p, w, 1.0, -2.0, 1.0, false) * fade * covered);
+        color = blend(color, frame.grid_color, grid(p, w, 1.0, 0.01, 90.0, true, false) * fade * covered);
     }
     if frame.atmosphere.a > 0.0 && frame.globe > 0.0 {
         // A thin rim of atmosphere over the globe's edge, and a halo out to 1.045 globe radii. It

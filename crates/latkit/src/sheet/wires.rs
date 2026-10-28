@@ -376,7 +376,7 @@ pub(crate) fn paths(
     (routes, routing): (&mut Routes, &mut Option<Routing>),
 ) -> Vec<Vec<usize>> {
     let (vertices, edge_marks) = (context.vertices, context.edges);
-    let codes: Vec<Vec<u32>> = context.marks.iter().map(|vm| port_codes(vm.mark)).collect();
+    let codes: Vec<Vec<u32>> = context.marks.iter().map(port_codes).collect();
     let joins: Vec<Joins<'_>> = edge_marks.iter().map(|em| Joins::new(context.marks, &codes, em)).collect();
     let orthogonal = |e: usize| edge_marks[e].mark.route == Some(Route::Orthogonal);
     // A route near a box that moved routes again.
@@ -441,6 +441,11 @@ pub(crate) fn paths(
                     Some((end, output))
                 })
                 .collect();
+            // A net of one terminal draws a stub out from its port, straight or orthogonal alike.
+            if let [(end, output)] = &ends[..] {
+                wired.parts[e][row] = vec![stub(end, *output, CLEARANCE * context.spacing)];
+                continue;
+            }
             if ends.len() < 2 {
                 continue;
             }
@@ -836,6 +841,20 @@ fn stop_at_rims(part: &mut [Point], ends: &[End]) {
     if let Some(p) = end {
         part[last + 1 - copies..].fill(p);
     }
+}
+
+/// The wire of a net with only `end`: a stub `length` long, out from its port's rim along the
+/// outward direction of its side. An output's stub points away, and an input's arrowhead meets
+/// its port.
+fn stub(end: &End, output: bool, length: f64) -> Vec<Point> {
+    let out = match end.side {
+        Some(Side::Left) => [-1.0, 0.0],
+        Some(Side::Right) => [1.0, 0.0],
+        Some(Side::Top) => [0.0, -1.0],
+        Some(Side::Bottom) | None => [0.0, 1.0],
+    };
+    let (near, far) = (add(end.at, out, end.rim), add(end.at, out, end.rim + length));
+    if output { vec![near, far] } else { vec![far, near] }
 }
 
 /// `end`'s point toward `toward`: on its port's rim, at most halfway there.

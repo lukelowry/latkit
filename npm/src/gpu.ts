@@ -3,7 +3,7 @@
 import type * as bindings from '../pkg/latkit.js';
 import { Canvas, type Target } from './canvas.js';
 import type { Budget } from './inputs.js';
-import { Handle, inner, wasm, waited, type Wait } from './internal.js';
+import { Handle, inner, stopped, wasm, waited, type Wait } from './internal.js';
 import { firstDevice, load } from './load.js';
 import type { Work } from './outputs.js';
 import type { View } from './view.js';
@@ -60,9 +60,12 @@ export class Gpu extends Handle {
     return stop;
   }
 
-  /** Whether the device was lost. Drawing then does nothing, so create a new `Gpu`. */
+  /**
+   * Whether the device was lost. Drawing then does nothing, so create a new `Gpu`. Also true once
+   * an internal error stopped latkit.
+   */
   get lost(): boolean {
-    return device(this).lost;
+    return stopped() || device(this).lost;
   }
 
   /**

@@ -1,5 +1,7 @@
 use std::fmt;
 
+use super::ramp::{gamma, srgb};
+
 /// An sRGB color with straight (not premultiplied) alpha, each channel in `0..=1`, as in CSS.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Color {
@@ -50,29 +52,18 @@ impl Color {
         Some(Color::from_bytes([r, g, b, a]))
     }
 
-    /// A color from CSS: hex, `rgb(…)` or `rgba(…)` (channels 0 to 255 or percentages, alpha 0 to 1
-    /// or a percentage), a named color, or `transparent`. Case-insensitive. `None` if unrecognized.
+    /// A color from CSS: hex, a named color, `transparent`, or a color function: `rgb()`, `hsl()`,
+    /// `hwb()`, `lab()`, `lch()`, `oklab()`, or `oklch()`, each with an optional alpha after a slash
+    /// or a fourth comma, and `rgba()` and `hsla()` as their aliases. Colors outside sRGB are
+    /// clipped to it. Case-insensitive. `None` if unrecognized.
     pub fn css(css: &str) -> Option<Color> {
         let css = css.trim();
         if css.starts_with('#') {
             return Color::hex(css);
         }
         let lower = css.to_ascii_lowercase();
-        if let Some(args) = lower.strip_prefix("rgba(").or_else(|| lower.strip_prefix("rgb(")) {
-            let parts: Vec<&str> = args.strip_suffix(')')?.split([',', '/', ' ']).filter(|p| !p.is_empty()).collect();
-            if !(3..=4).contains(&parts.len()) {
-                return None;
-            }
-            let channel = |p: &str| match p.strip_suffix('%') {
-                Some(percent) => percent.parse::<f32>().ok().map(|v| v / 100.0),
-                None => p.parse::<f32>().ok().map(|v| v / 255.0),
-            };
-            let alpha = |p: &str| match p.strip_suffix('%') {
-                Some(percent) => percent.parse::<f32>().ok().map(|v| v / 100.0),
-                None => p.parse::<f32>().ok(),
-            };
-            let a = parts.get(3).map_or(Some(1.0), |p| alpha(p))?;
-            return Some(Color::rgba(channel(parts[0])?, channel(parts[1])?, channel(parts[2])?, a).clamped());
+        if lower.ends_with(')') {
+            return function(&lower);
         }
         if lower == "transparent" {
             return Some(Color::TRANSPARENT);
@@ -120,6 +111,97 @@ impl fmt::Display for Color {
         write!(f, "#{red:02x}{green:02x}{blue:02x}")?;
         if alpha == 255 { Ok(()) } else { write!(f, "{alpha:02x}") }
     }
+}
+
+/// A color from a CSS color function, lowercase: its name, then three channels and an optional
+/// alpha. A channel is a number, a percentage of its full range, or `none` for zero. A hue is in
+/// degrees, or in `rad`, `grad`, or `turn`.
+fn function(css: &str) -> Option<Color> {
+    let (name, args) = css.strip_suffix(')')?.split_once('(')?;
+    let parts: Vec<&str> = args.split([',', '/', ' ']).filter(|p| !p.is_empty()).collect();
+    if !(3..=4).contains(&parts.len()) {
+        return None;
+    }
+    // A number, or a percentage of `full`.
+    let number = |p: &str, full: f32| match p {
+        "none" => Some(0.0),
+        _ => match p.strip_suffix('%') {
+            Some(percent) => percent.parse::<f32>().ok().map(|v| v / 100.0 * full),
+            None => p.parse::<f32>().ok(),
+        },
+    };
+    let hue = |p: &str| {
+        let units = [("deg", 1.0), ("grad", 0.9), ("rad", 180.0 / std::f32::consts::PI), ("turn", 360.0)];
+        match units.iter().find_map(|&(unit, degrees)| Some((p.strip_suffix(unit)?, degrees))) {
+            Some((value, degrees)) => value.parse::<f32>().ok().map(|v| v * degrees),
+            None => number(p, 360.0),
+        }
+    };
+    let polar = |chroma: f32, degrees: f32| {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        [chroma * cos, chroma * sin]
+    };
+    let [x, y, z] = [parts[0], parts[1], parts[2]];
+    let alpha = parts.get(3).map_or(Some(1.0), |p| number(p, 1.0))?;
+    let [r, g, b] = match name {
+        "rgb" | "rgba" => [number(x, 255.0)? / 255.0, number(y, 255.0)? / 255.0, number(z, 255.0)? / 255.0],
+        "hsl" | "hsla" => hsl(hue(x)?, number(y, 100.0)? / 100.0, number(z, 100.0)? / 100.0),
+        "hwb" => hwb(hue(x)?, number(y, 100.0)? / 100.0, number(z, 100.0)? / 100.0),
+        "lab" => lab(number(x, 100.0)?, number(y, 125.0)?, number(z, 125.0)?),
+        "lch" => {
+            let [a, b] = polar(number(y, 150.0)?, hue(z)?);
+            lab(number(x, 100.0)?, a, b)
+        }
+        "oklab" => {
+            let [r, g, b, _] = srgb([number(x, 1.0)?, number(y, 0.4)?, number(z, 0.4)?, 1.0]);
+            [r, g, b]
+        }
+        "oklch" => {
+            let [a, b] = polar(number(y, 0.4)?, hue(z)?);
+            let [r, g, b, _] = srgb([number(x, 1.0)?, a, b, 1.0]);
+            [r, g, b]
+        }
+        _ => return None,
+    };
+    [r, g, b, alpha].iter().all(|v| v.is_finite()).then(|| Color::rgba(r, g, b, alpha).clamped())
+}
+
+/// sRGB from hue in degrees, saturation, and lightness, each in `0..=1`.
+fn hsl(hue: f32, saturation: f32, lightness: f32) -> [f32; 3] {
+    let chroma = saturation * lightness.min(1.0 - lightness);
+    let channel = |n: f32| {
+        let k = (n + hue / 30.0).rem_euclid(12.0);
+        lightness - chroma * (k - 3.0).min(9.0 - k).clamp(-1.0, 1.0)
+    };
+    [channel(0.0), channel(8.0), channel(4.0)]
+}
+
+/// sRGB from hue in degrees, whiteness, and blackness, each in `0..=1`.
+fn hwb(hue: f32, white: f32, black: f32) -> [f32; 3] {
+    if white + black >= 1.0 {
+        let gray = white / (white + black);
+        return [gray; 3];
+    }
+    hsl(hue, 1.0, 0.5).map(|c| c * (1.0 - white - black) + white)
+}
+
+/// sRGB from CIE Lab under the D50 white point, as CSS defines `lab()`.
+fn lab(l: f32, a: f32, b: f32) -> [f32; 3] {
+    const TO_SRGB: [[f64; 3]; 3] = [
+        [3.134_135_852_900_118_6, -1.617_385_998_018_043_2, -0.490_662_217_911_097_43],
+        [-0.978_795_476_555_777_5, 1.916_254_377_395_988_1, 0.033_442_873_390_366_88],
+        [0.071_955_392_557_947_42, -0.228_976_759_815_181_98, 1.405_386_035_113_118_2],
+    ];
+    const KAPPA: f64 = 24389.0 / 27.0;
+    const EPSILON: f64 = 216.0 / 24389.0;
+    let (l, a, b) = (f64::from(l), f64::from(a), f64::from(b));
+    let fy = (l + 16.0) / 116.0;
+    let (fx, fz) = (fy + a / 500.0, fy - b / 200.0);
+    let cube = |f: f64| if f.powi(3) > EPSILON { f.powi(3) } else { (116.0 * f - 16.0) / KAPPA };
+    let y = if l > KAPPA * EPSILON { fy.powi(3) } else { l / KAPPA };
+    // XYZ under D50, adapted to D65 and converted to linear sRGB by one matrix.
+    let xyz = [cube(fx) * 0.3457 / 0.3585, y, cube(fz) * (1.0 - 0.3457 - 0.3585) / 0.3585];
+    TO_SRGB.map(|row| gamma((row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]) as f32))
 }
 
 /// CSS named colors, sorted by name.
@@ -290,5 +372,25 @@ mod tests {
         assert!(NAMED.windows(2).all(|w| w[0].0 < w[1].0), "sorted for binary search");
         assert_eq!(Color::hex("#336699").unwrap().to_string(), "#336699");
         assert_eq!(Color::hex("#336699").unwrap().packed(), 0xff99_6633);
+    }
+
+    #[test]
+    fn parses_css_color_functions() {
+        let bytes = |css: &str| Color::css(css).map(Color::to_rgba8);
+        let near = |css: &str, want: [u8; 4]| {
+            let got = bytes(css).unwrap_or_else(|| panic!("{css} parses"));
+            assert!(got.iter().zip(want).all(|(&g, w)| g.abs_diff(w) <= 1), "{css}: {got:?}, not {want:?}");
+        };
+        near("hsl(120 100% 25%)", [0, 128, 0, 255]);
+        near("hsla(0.5turn, 100%, 50%, 0.5)", [0, 255, 255, 128]);
+        near("hwb(0 0% 0%)", [255, 0, 0, 255]);
+        near("hwb(90deg 60% 60%)", [128, 128, 128, 255]);
+        near("oklch(62.8% 0.2577 29.23)", [255, 0, 0, 255]);
+        near("oklab(1 0 0)", [255, 255, 255, 255]);
+        near("lab(54.29% 80.82 69.9)", [255, 0, 0, 255]);
+        near("lch(54.29 106.84 40.85deg / 25%)", [255, 0, 0, 64]);
+        near("hsl(none 0% 50%)", [128, 128, 128, 255]);
+        assert_eq!(Color::css("oklch(1 2)"), None);
+        assert_eq!(Color::css("cmyk(0 0 0 0)"), None);
     }
 }

@@ -426,7 +426,7 @@
             },
             "elevation": {
               "$ref": "#/$defs/Expr",
-              "description": "Height above the ground. On the earth, a fraction of the earth's radius. Defaults to 0. Not\nallowed in a diagram, which is flat."
+              "description": "Height above the ground. On the earth, in degrees of arc like every length there (one is about\n111 km). Defaults to 0. Not allowed in a diagram, which is flat."
             },
             "radius": {
               "anyOf": [
@@ -485,22 +485,22 @@
               "tsType": "[reference: string, port: Port][]"
             },
             "contains": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "prefixItems": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "string"
-                }
-              ],
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "Makes each row a group containing the rows of `table` whose `reference` field names it. A\ngroup draws as a container around its members, with its label as a title in its header.\nDiagrams only.",
-              "tsType": "[table: string, reference: string]"
+              "type": "array",
+              "items": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "description": "Makes each row a group containing, for each `[table, reference]`, the rows of `table` whose\n`reference` field names it, so a group can hold rows of several tables. A group draws as a\ncontainer around its members, with its label as a title in its header. Diagrams only.",
+              "tsType": "[table: string, reference: string][]"
             },
             "shadow": {
               "type": "boolean",
@@ -799,7 +799,7 @@
           "items": {
             "anyOf": [
               {
-                "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+                "description": "A CSS color, such as `#ffb000`, `rebeccapurple`, or `oklch(70% 0.15 60)`: hex, a named color, `transparent`, or `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, or `oklch()`.",
                 "type": "string",
                 "tsType": "Color"
               },
@@ -812,7 +812,7 @@
                     "maximum": 1
                   },
                   {
-                    "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+                    "description": "A CSS color, such as `#ffb000`, `rebeccapurple`, or `oklch(70% 0.15 60)`: hex, a named color, `transparent`, or `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, or `oklch()`.",
                     "type": "string",
                     "tsType": "Color"
                   }
@@ -1620,7 +1620,7 @@
                       "description": "Each slice's color.",
                       "type": "array",
                       "items": {
-                        "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+                        "description": "A CSS color, such as `#ffb000`, `rebeccapurple`, or `oklch(70% 0.15 60)`: hex, a named color, `transparent`, or `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, or `oklch()`.",
                         "type": "string",
                         "tsType": "Color"
                       }
@@ -2396,6 +2396,11 @@
               "type": "string",
               "tsType": "Color"
             },
+            "gridSpacing": {
+              "description": "The least distance between the lines (or dots) of a plane's or diagram's grid and of the\nearth's graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten\n(and 30° and 90° on the earth), and the finer step fades out as it nears this distance.",
+              "type": "number",
+              "format": "float"
+            },
             "missing": {
               "description": "The color a colormap gives a missing value, such as a row with no value in the field.",
               "type": "string",
@@ -2462,7 +2467,7 @@
           "additionalProperties": false
         }
       ],
-      "description": "Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped\nby subject: a base theme's name (`\"dark\"` or `\"light\"`), or options that change a base. `base`\nnames the base and defaults to `dark`. Each option replaces only the base value it sets.\n\nLengths are in CSS pixels, or units in a diagram. The text halo and the focus glow are always in\nCSS pixels."
+      "description": "Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped\nby subject: a base theme's name (`\"dark\"` or `\"light\"`), or options that change a base. `base`\nnames the base and defaults to `dark`. Each option replaces only the base value it sets.\n\nLengths are in CSS pixels, or units in a diagram. The grid spacing, the text halo, and the focus\nglow are always in\nCSS pixels."
     },
     "TextTheme": {
       "type": "object",
@@ -2785,7 +2790,7 @@
               "type": "boolean"
             },
             "keyboard": {
-              "description": "Whether the keyboard controls the view. Defaults to `true`. Tab and Shift+Tab step through\nthe rows nearest the view's center. Arrow keys step to the nearest row in their direction.\nEnter opens the row stepped to, and Space selects it. With no row stepped to, arrow keys pan\n(Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the\nselection.",
+              "description": "Whether the keyboard controls the view. Defaults to `true`. Tab steps to the row nearest the\nview's center, and the next Tab or Shift+Tab leaves the view, so it is one stop in the\npage's tab order. Arrow keys step to the nearest row in their direction. Enter opens the row\nstepped to, Space selects it, and Escape stops stepping. With no row stepped to, arrow keys\npan (Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the\nselection.",
               "type": "boolean"
             },
             "hover": {
@@ -3580,7 +3585,7 @@
                   "maxItems": 3
                 }
               ],
-              "description": "On the earth, longitude, latitude, and elevation. On a plane or a diagram, x, y, and\nelevation. In JSON, `[x, y]` is shorthand for elevation 0."
+              "description": "On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is\na degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON,\n`[x, y]` is shorthand for elevation 0."
             },
             "zoom": {
               "type": "number",
@@ -3964,7 +3969,7 @@
             "type",
             "detail"
           ],
-          "description": "A context menu was requested: by a secondary click, the menu key, or a touch or pen held\nstill. Lists the rows under the trigger's point, for a menu of actions on them."
+          "description": "A context menu was requested: by a secondary click (or a Control-click on Apple platforms),\nthe menu key or Shift+F10, or a touch or pen held still. Lists the rows under the trigger's\npoint, for a menu of actions on them."
         },
         {
           "type": "object",
@@ -4536,7 +4541,7 @@
                   "maxItems": 3
                 }
               ],
-              "description": "On the earth, longitude, latitude, and elevation. On a plane or a diagram, x, y, and\nelevation. In JSON, `[x, y]` is shorthand for elevation 0."
+              "description": "On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is\na degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON,\n`[x, y]` is shorthand for elevation 0."
             },
             "zoom": {
               "type": "number",

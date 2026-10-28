@@ -41,9 +41,9 @@ export default async function (): Promise<Picture> {
     Math.asinh((Math.abs(before + moved[e]!) - Math.abs(before)) / 4),
   );
   const hz = frequency();
-  // Height as a fraction of the earth's radius: zero at deviations of -16 mHz and below, rising
-  // with frequency, with the highest peaks compressed by asinh.
-  const height = Float32Array.from(hz, (f) => 0.022 * Math.asinh(Math.max(0, f + 0.016) / 0.03));
+  // Height in degrees of arc: zero at deviations of -16 mHz and below, rising with frequency, with
+  // the highest peaks compressed by asinh.
+  const height = Float32Array.from(hz, (f) => 1.26 * Math.asinh(Math.max(0, f + 0.016) / 0.03));
   // A pole to the ground from one bus of 345 kV or more in each 0.75° cell, so the heights are
   // readable without crowding the view with poles.
   const cells = new Set<string>();

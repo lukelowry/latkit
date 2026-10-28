@@ -95,6 +95,7 @@ pub(crate) fn frame(
     frame.grid_color = theme.grid.to_array();
     frame.grid_kind = grid_kind;
     frame.grid_pitch = grid_pitch as f32;
+    frame.grid_spacing = theme.grid_spacing;
     frame.grid_fade = grid_fade(scene, projected, size) as f32;
     frame.graticule = u32::from(graticule);
     frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.earth.night.clamp(0.0, 1.0)]);

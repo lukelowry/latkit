@@ -474,10 +474,12 @@ struct Frame {
     zoom: f32,
     // A plane's grid: kind, pitch in position units, and the world distance from the center at
     // which it has faded out (0 for no fade). `graticule` is 1 if the earth draws a graticule.
+    // `grid_spacing` is the least distance between lines in CSS pixels.
     grid_kind: u32,
     grid_pitch: f32,
     grid_fade: f32,
     graticule: u32,
+    grid_spacing: f32,
     hover: vec4f,
     selected: vec4f,
     flow: vec4f,

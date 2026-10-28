@@ -687,6 +687,7 @@ fn packing(drawing: &Drawing, source: &Source<'_>, table: &Name, field: Name, wo
         origin: source.data.origin(),
         table: table.clone(),
         field,
+        derived: false,
         words,
         low: false,
         reads: 0,
@@ -775,7 +776,12 @@ impl<'g> Builder<'g> {
         let field = table.field_named(&column.name);
         if let Rows::Held(drawing) = rows {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
-            let packing = packing(drawing, source, &table.name, column.name.clone(), column.words);
+            // A derived field, such as a layout's `x`, shares its table's name, and may share its name
+            // with a field of the data.
+            let packing = Packing {
+                derived: column.derived,
+                ..packing(drawing, source, &table.name, column.name.clone(), column.words)
+            };
             self.held(column, data, field, drawing, packing, inputs, &mut d);
             return d;
         }

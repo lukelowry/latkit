@@ -80,6 +80,19 @@ pub fn frame(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     panic!("the view settles within {SETTLE} frames");
 }
 
+/// Renders frames until the view is complete and settled, including work that lands later, such as
+/// a layout job on another thread, within `DEADLINE`. Returns the last frame's pixels.
+pub fn settle(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
+    let started = std::time::Instant::now();
+    let mut pixels = frame(gpu, view);
+    while !view.complete() {
+        assert!(started.elapsed() < DEADLINE, "the view completes within the deadline, waiting on {}", view.waiting());
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        pixels = frame(gpu, view);
+    }
+    pixels
+}
+
 /// Advances the test clock one tick, renders one frame, and returns the target's pixels.
 pub fn step(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     wait(TICK);

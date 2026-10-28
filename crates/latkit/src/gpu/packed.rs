@@ -21,14 +21,16 @@ use crate::gpu::work::{Count, Counters};
 const KEPT: usize = 4096;
 
 /// The key of one packed column: the order, the dataset (`origin`) and table, the field and how it
-/// is read, and anything else its words depend on (`reads`: a reference's target order, the frame
-/// of samples shown, or the rows a join reads).
+/// is read, whether the field is derived beside the table rather than the table's own, and anything
+/// else its words depend on (`reads`: a reference's target order, the frame of samples shown, or the
+/// rows a join reads).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Packing {
     pub(crate) order: u64,
     pub(crate) origin: Version,
     pub(crate) table: Name,
     pub(crate) field: Name,
+    pub(crate) derived: bool,
     pub(crate) words: Words,
     pub(crate) low: bool,
     pub(crate) reads: u64,
@@ -255,6 +257,7 @@ mod tests {
             origin: Version::next(),
             table: "T".into(),
             field: "v".into(),
+            derived: false,
             words: Words::Values,
             low: false,
             reads: 0,
