@@ -1,5 +1,5 @@
 ---
-'latkit': minor
+'latkit': patch
 ---
 
 Views place their camera once positions settle, draw the nearest mark where depth varies, and stop cleanly after an internal error.
