@@ -13,7 +13,7 @@ use crate::gpu::shaders as wgsl;
 use crate::gpu::{Inner, atlas};
 use crate::scene::compile::{self, Compiled};
 use crate::scene::mark::{Context, Key, MarkKind, Primitive};
-use crate::{Error, Mark, Port, Result, Shape, Snapshot};
+use crate::{Error, Mark, Result, Shape, Snapshot};
 
 /// Where each part of a mark's region lies in the program buffer, as absolute word offsets.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -95,6 +95,9 @@ pub(crate) struct Shown {
     /// For a paged table, each fitted domain computed on the CPU over every row: the stamp of its
     /// inputs, and its words.
     pub(crate) fitted: Vec<(u64, [u32; 2])>,
+    /// The domain its legend shows when its colormap fits its values: fitted on the CPU over every
+    /// row, with the stamp of its inputs.
+    pub(crate) legend: Option<(u64, [u32; 2])>,
     /// Its per-row words, in pages of the arena.
     pub(crate) words: Words,
     /// The index of its first fitted domain in the domains buffer.
@@ -176,6 +179,7 @@ impl Shown {
             holding: None,
             reveal: 1.0,
             fitted: Vec::new(),
+            legend: None,
             words: Words::default(),
             domains: 0,
             dirty: 0,
@@ -464,13 +468,13 @@ impl Shown {
     }
 
     /// Whether any of `columns` holds static values that ease when they change: values a channel
-    /// reads, or the path a stroke follows. A column only shaders read, such as a lane, changes at
-    /// once.
+    /// that eases reads, or the path a stroke follows. A column only shaders read, such as a lane,
+    /// or only a label's text reads, changes at once.
     pub(crate) fn static_columns(&self, columns: u64) -> bool {
         let Some(compiled) = &self.compiled else { return false };
         let program = &compiled.program;
         let geometry = compiled.drawing.geometry;
-        let eased = program.channels.iter().fold(0, |mask, c| mask | c.reads.columns)
+        let eased = program.channels.iter().filter(|c| c.eases).fold(0, |mask, c| mask | c.reads.columns)
             | if geometry == wgsl::NONE { 0 } else { 1 << geometry.min(63) };
         program.columns.iter().enumerate().any(|(i, c)| !c.sampled && columns & eased & (1 << i.min(63)) != 0)
     }
@@ -537,15 +541,15 @@ impl Shown {
         }
     }
 
-    /// Writes its port words: each port's code, shape, reference column, and the atlas corners of
-    /// its label. The host sets each label in `font` the first time.
-    pub(crate) fn write_ports(&mut self, font: &Arc<str>, gpu: &mut Inner) {
+    /// Writes its port words: each port's code (`codes`, among the ports of its table), shape,
+    /// reference column, and the atlas corners of its label. The host sets each label in `font` the
+    /// first time.
+    pub(crate) fn write_ports(&mut self, font: &Arc<str>, codes: &[u32], gpu: &mut Inner) {
         self.ports.clear();
         let Some(compiled) = &self.compiled else { return };
         let ports = &compiled.drawing.ports;
-        let codes = Port::codes(&ports.iter().map(|(_, port, _)| port).collect::<Vec<_>>());
         let host = gpu.host.clone();
-        for ((_, port, column), code) in ports.iter().zip(codes) {
+        for ((_, port, column), &code) in ports.iter().zip(codes) {
             let corners = port.label.as_deref().and_then(|label| {
                 let run = atlas::run(label.into(), font.clone(), compiled.drawing.port_label_size, None);
                 gpu.atlas.text(host.as_deref(), &run)

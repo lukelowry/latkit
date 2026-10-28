@@ -134,10 +134,15 @@ export default function (): Picture {
         diagram: { group: '#151c26' },
       },
       marks: [
-        { vertices: plant.table('Area'), contains: ['Group', 'area'], label: title, shadow: true },
+        {
+          vertices: plant.table('Area'),
+          contains: [['Group', 'area']],
+          label: title,
+          shadow: true,
+        },
         {
           vertices: plant.table('Group'),
-          contains: ['Process', 'group'],
+          contains: [['Process', 'group']],
           label: title,
           color: '#1d2632',
           shadow: true,

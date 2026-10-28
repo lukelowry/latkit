@@ -598,7 +598,7 @@ impl JsonSchema for Color {
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+            "description": "A CSS color, such as `#ffb000`, `rebeccapurple`, or `oklch(70% 0.15 60)`: hex, a named color, `transparent`, or `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, or `oklch()`.",
             "tsType": "Color",
             "type": "string",
         })

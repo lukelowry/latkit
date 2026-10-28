@@ -246,6 +246,19 @@ impl MarkKind {
         }
     }
 
+    /// The shader writing the depth of its rows where depth varies, before any color draws: points
+    /// and strokes. With `custom`, the shader for a vertex mark's custom marker. Faces write their
+    /// depth as they draw, and areas lie on the ground.
+    pub(crate) fn depth_shader(self, custom: bool) -> Option<wgsl::Shader> {
+        use wgsl::Shader;
+        match self {
+            MarkKind::Vertices if custom => Some(Shader::PointsCustomDepth),
+            MarkKind::Vertices => Some(Shader::PointsDepth),
+            MarkKind::Edges | MarkKind::Lines => Some(Shader::StrokesDepth),
+            MarkKind::Areas | MarkKind::Faces => None,
+        }
+    }
+
     /// The bounds shader entry point that measures its extents for a fit. `None` for edges and
     /// faces, since their rows lie between their vertices.
     pub(crate) fn bounds(self) -> Option<&'static str> {
@@ -510,7 +523,7 @@ impl Mark {
         }
         match self {
             Mark::Vertices(v) if !v.ports.is_empty() => Some(("port", ONLY)),
-            Mark::Vertices(v) if v.contains.is_some() => Some(("contains", ONLY)),
+            Mark::Vertices(v) if !v.contains.is_empty() => Some(("contains", ONLY)),
             Mark::Vertices(v) if v.shadow => Some(("shadow", ONLY)),
             Mark::Edges(e) if e.ends.is_none() && !e.poles && e.joins.is_none() => Some(("ends", ONLY)),
             Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => Some(("route", ONLY)),
@@ -572,22 +585,40 @@ impl Mark {
             compiler.check_data("priority", priority)?;
         }
         if let Some(label) = &style.label {
-            compile_label(label, compiler, context, &mut drawing).map_err(|e| e.at("label"))?;
+            // A diagram's sheet writes the text each block shows, cut to fit.
+            let shown = match self {
+                Mark::Vertices(_) if context.diagram() => Some(crate::sheet::shown_label(style.name.as_ref())),
+                _ => None,
+            };
+            compile_label(label, shown, compiler, context, &mut drawing).map_err(|e| e.at("label"))?;
         }
         Ok(drawing)
     }
 }
 
 /// Compiles `label`'s text and color into extra words after the mark's own. In a diagram the text
-/// reads only data, since the sheet sizes blocks around it.
-fn compile_label(label: &Label, c: &mut Compiler<'_>, context: Context<'_>, drawing: &mut Drawing) -> Result<()> {
+/// reads only data, since the sheet sizes blocks around it, and a vertex mark shows the text the
+/// sheet cut to fit, from derived field `shown`.
+fn compile_label(
+    label: &Label,
+    shown: Option<Name>,
+    c: &mut Compiler<'_>,
+    context: Context<'_>,
+    drawing: &mut Drawing,
+) -> Result<()> {
     if context.diagram() {
         c.check_structure("text", [&label.text])?;
     }
     let theme = context.theme;
     let extra = drawing.extras;
     let word = |k: u32| drawing.kind.stride() + extra + k;
-    let column = c.text("text", &label.text, word(wgsl::LABEL_CODE))?;
+    let column = match shown {
+        Some(shown) => {
+            c.text_of("text", &label.text)?;
+            c.derived_text("text", shown, word(wgsl::LABEL_CODE))?
+        }
+        None => c.text("text", &label.text, word(wgsl::LABEL_CODE))?,
+    };
     let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
     match &label.color {
         Some(expr) => c.channel("color", expr, color)?,

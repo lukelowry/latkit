@@ -244,7 +244,7 @@ impl Inner {
                 if !reference.stale(target.order, target.structure) {
                     continue;
                 }
-                let resolved = reference.resolve(target)?;
+                let resolved = reference.resolve(target).map_err(|e| e.at(name).at(&self.tables[t].name))?;
                 self.tables[t].fields[f].1 = Field::Reference(resolved);
             }
         }

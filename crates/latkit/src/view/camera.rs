@@ -13,8 +13,9 @@ pub enum Camera {
     /// A camera over the earth, a plane, or a diagram: the point it looks at and turns about, its
     /// zoom, its tilt, and its rotation. A diagram is always seen from straight above, upright.
     Map {
-        /// On the earth, longitude, latitude, and elevation. On a plane or a diagram, x, y, and
-        /// elevation. In JSON, `[x, y]` is shorthand for elevation 0.
+        /// On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is
+        /// a degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON,
+        /// `[x, y]` is shorthand for elevation 0.
         #[serde(with = "center")]
         #[schemars(with = "center::Center")]
         center: [f64; 3],
@@ -65,6 +66,25 @@ const FOV: f64 = 0.643_501_108_793_284_4;
 pub(crate) const MAX_PITCH: f64 = 75.0;
 const MAX_ZOOM: f64 = 24.0;
 
+/// The closest zoom a fit frames in `space`: a diagram at its natural size, where a unit is a CSS
+/// pixel, and the earth at a neighborhood's scale. A plane has no natural scale.
+fn closest_fit(space: &Space) -> Option<f64> {
+    match space {
+        Space::Diagram(_) => Some(0.0),
+        Space::Earth(_) => Some(16.0),
+        Space::Plane(_) | Space::Plot(_) => None,
+    }
+}
+
+/// CSS pixels per unit of position at `zoom`: per degree of longitude on the earth, otherwise per
+/// unit.
+fn pixels_per_unit(space: &Space, zoom: f64) -> f64 {
+    match space {
+        Space::Earth(_) => 256.0 * zoom.exp2() / 360.0,
+        _ => zoom.exp2(),
+    }
+}
+
 /// A rectangle of the view in CSS pixels: left, top, right, bottom.
 pub(crate) type Area = [f64; 4];
 
@@ -98,13 +118,17 @@ impl Bounds {
 /// The globe zooms out until it spans a third of the area's shorter side, and its longitude wraps.
 /// A plane, a diagram, and a plot set no limits. Fits limit the zoom to 3 levels out past the
 /// widest fit and 8 in past the closest. They keep the center within one box size of the framed
-/// box, and its elevation within the box's. Where the space and the fits disagree, the space wins.
+/// box, or half a view at the widest fit's zoom for a smaller box, and its elevation within the
+/// box's. Where the space and the fits disagree, the space wins.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Reach {
     /// The lowest and highest zoom.
     pub(crate) zoom: [f64; 2],
     /// The box fits have framed.
     framed: Option<Bounds>,
+    /// The least distance the center may stray from the framed box: half the view's span at the
+    /// widest fit's zoom, in units of position.
+    slack: f64,
     /// On a flat map, the size in CSS pixels of the area the camera frames. The world's edges stay
     /// outside it.
     world: Option<[f64; 2]>,
@@ -130,9 +154,14 @@ impl Reach {
             low = low.max(framed.zoom[0] - 3.0);
             high = high.min(framed.zoom[1] + 8.0);
         }
+        let slack = match (framed, room) {
+            (Some(framed), Some([w, h])) => 0.5 * w.max(h) / pixels_per_unit(space, framed.zoom[0]),
+            _ => 0.0,
+        };
         Reach {
             zoom: [low, high.max(low)],
             framed,
+            slack,
             world: room.filter(|_| projection == Some(crate::Projection::Mercator)),
         }
     }
@@ -246,7 +275,7 @@ impl Camera {
         let rig = |p: f64, b: f64| DMat3::from_rotation_z(-b.to_radians()) * DMat3::from_rotation_x(p.to_radians());
         let r = rig(to_pitch, to_bearing) * rig(pitch, bearing).transpose();
         let a = view.world(anchor);
-        let c = DVec3::new(0.0, 0.0, center[2]);
+        let c = DVec3::new(0.0, 0.0, view.height(center[2]));
         let moved = a + r * (c - a);
         let d = moved - c;
         Camera::Map { center: view.shifted(center, d, d.z), zoom, pitch: to_pitch, bearing: to_bearing }
@@ -279,7 +308,7 @@ impl Camera {
                     };
                 }
                 let a = view.world(anchor);
-                let c = DVec3::new(0.0, 0.0, center[2]);
+                let c = DVec3::new(0.0, 0.0, view.height(center[2]));
                 let d = (a + (c - a) * (zoom - to).exp2()) - c;
                 Camera::Map { center: view.shifted(center, d, d.z), zoom: to, pitch, bearing }
             }
@@ -293,7 +322,7 @@ impl Camera {
         let Camera::Map { mut center, zoom, pitch, bearing } = *self else { return *self };
         let zoom = zoom.clamp(reach.zoom[0], reach.zoom[1]);
         if let Some(framed) = reach.framed {
-            let span = (0..2).map(|k| framed.max[k] - framed.min[k]).fold(0.0, f64::max).max(1e-9);
+            let span = (0..2).map(|k| framed.max[k] - framed.min[k]).fold(reach.slack, f64::max).max(1e-9);
             let across = |k: usize| center[k].clamp(framed.min[k] - span, framed.max[k] + span);
             center = [across(0), across(1), center[2].clamp(framed.min[2], framed.max[2])];
         }
@@ -319,15 +348,22 @@ impl Camera {
             Camera::Plot { .. } => (0.0, 0.0),
         };
         let height = min[2].midpoint(max[2]);
-        // A box with no extent, such as one point's, has no zoom of its own, so the camera keeps
-        // its zoom.
+        let closest = closest_fit(space);
+        // A box with no extent, such as one point's, has no zoom of its own. It frames at the
+        // closest zoom a fit frames, or on a plane, which has no natural scale, at the camera's zoom.
         if let Camera::Map { zoom, .. } = *self
             && !matches!(space, Space::Plot(_))
             && max[0] - min[0] <= 1e-9
             && max[1] - min[1] <= 1e-9
         {
-            return Camera::Map { center: [min[0], min[1], height], zoom, pitch, bearing };
+            return Camera::Map { center: [min[0], min[1], height], zoom: closest.unwrap_or(zoom), pitch, bearing };
         }
+        let capped = |camera: Camera| match (camera, closest) {
+            (Camera::Map { center, zoom, pitch, bearing }, Some(most)) => {
+                Camera::Map { center, zoom: zoom.min(most), pitch, bearing }
+            }
+            (camera, _) => camera,
+        };
         match space {
             Space::Plot(_) => {
                 let pad = |lo: f64, hi: f64, px: f64| {
@@ -345,14 +381,14 @@ impl Camera {
                 let px_per_radian = (room[0] / dx).min(room[1] / dy);
                 let zoom = (px_per_radian * TAU / 256.0).log2().clamp(0.0, 22.0);
                 let center = [min[0].midpoint(max[0]), latitude(y0.midpoint(y1)), height];
-                Camera::Map { center, zoom, pitch, bearing }.framed(space, min, max, size, area, room)
+                capped(Camera::Map { center, zoom, pitch, bearing }.framed(space, min, max, size, area, room))
             }
             Space::Plane(_) | Space::Diagram(_) => {
                 let dx = (max[0] - min[0]).max(1e-9);
                 let dy = (max[1] - min[1]).max(1e-9);
                 let zoom = (room[0] / dx).min(room[1] / dy).log2().clamp(-MAX_ZOOM, MAX_ZOOM);
                 let center = [min[0].midpoint(max[0]), min[1].midpoint(max[1]), height];
-                Camera::Map { center, zoom, pitch, bearing }.framed(space, min, max, size, area, room)
+                capped(Camera::Map { center, zoom, pitch, bearing }.framed(space, min, max, size, area, room))
             }
         }
     }
@@ -468,7 +504,7 @@ impl Projected {
             * DMat4::from_rotation_x(-pitch.clamp(0.0, MAX_PITCH).to_radians())
             * DMat4::from_rotation_z(bearing.to_radians())
             * DMat4::from_scale(DVec3::new(px_per_unit[0], up, px_per_unit[0]))
-            * DMat4::from_translation(DVec3::new(0.0, 0.0, -center[2]));
+            * DMat4::from_translation(DVec3::new(0.0, 0.0, -height(space_code, center[2])));
         let middle = [area[0].midpoint(area[2]) / w * 2.0 - 1.0, 1.0 - area[1].midpoint(area[3]) / h * 2.0];
         let offset = DMat4::from_cols(DVec4::X, DVec4::Y, DVec4::Z, DVec4::new(middle[0], middle[1], 0.0, 1.0));
         let clip_from_world = offset * projection * view;
@@ -534,9 +570,15 @@ impl Projected {
         }
     }
 
+    /// The world height of elevation `z`. See [`height`].
+    pub(crate) fn height(&self, z: f64) -> f64 {
+        height(self.space, z)
+    }
+
     /// The world coordinates of `position`: x, y, and elevation.
     pub(crate) fn world(&self, position: [f64; 3]) -> DVec3 {
         let [x, y, z] = position;
+        let z = self.height(z);
         if self.space != wgsl::SPACE_EARTH {
             return DVec3::new(x - self.center[0], y - self.center[1], z);
         }
@@ -558,14 +600,15 @@ impl Projected {
             return [w.x + self.center[0], w.y + self.center[1], w.z];
         }
         if self.globe < 0.5 {
-            return [self.center[0] + w.x.to_degrees(), latitude(w.y + self.mercator_y), w.z];
+            return [self.center[0] + w.x.to_degrees(), latitude(w.y + self.mercator_y), w.z.to_degrees()];
         }
         let lat0 = self.center[1].to_radians();
         let s = DVec3::new(w.x * lat0.cos(), w.y * lat0.cos(), w.z * lat0.cos() + 1.0);
         let r = s.length().max(1e-12);
         let u = s / r;
         let v = DVec3::new(u.x, u.y * lat0.cos() + u.z * lat0.sin(), -u.y * lat0.sin() + u.z * lat0.cos());
-        [wrap(self.center[0] + v.x.atan2(v.z).to_degrees()), v.y.clamp(-1.0, 1.0).asin().to_degrees(), r - 1.0]
+        let elevation = (r - 1.0).to_degrees();
+        [wrap(self.center[0] + v.x.atan2(v.z).to_degrees()), v.y.clamp(-1.0, 1.0).asin().to_degrees(), elevation]
     }
 
     /// Where world point `w` appears: CSS pixels from the top left, and its depth. `None` behind
@@ -628,7 +671,7 @@ impl Projected {
         }
         let lat = latitude(self.mercator_y + d.y).clamp(-MAX_LATITUDE, MAX_LATITUDE);
         let lon = center[0] + d.x.to_degrees();
-        [if self.globe >= 0.5 { wrap(lon) } else { lon }, lat, center[2] + raise]
+        [if self.globe >= 0.5 { wrap(lon) } else { lon }, lat, center[2] + raise.to_degrees()]
     }
 }
 
@@ -656,6 +699,13 @@ fn perspective(fov: f64, aspect: f64, near: f64, far: f64) -> DMat4 {
     ])
 }
 
+/// The world height of elevation `z` in space `space` (a `SPACE_` code). On the earth, elevation is
+/// in degrees of arc, like every length there, and the world is in earth radii. Elsewhere they are
+/// the same.
+fn height(space: u32, z: f64) -> f64 {
+    if space == wgsl::SPACE_EARTH { z.to_radians() } else { z }
+}
+
 /// `x` split into its nearest `f32` and the `f32` remainder.
 pub(crate) fn split(x: f64) -> (f32, f32) {
     let hi = x as f32;
@@ -665,7 +715,7 @@ pub(crate) fn split(x: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Earth, Plane, Projection};
+    use crate::{Diagram, Earth, Plane, Projection};
 
     const SIZE: [f64; 2] = [800.0, 600.0];
     const AREA: Area = [0.0, 0.0, 800.0, 600.0];
@@ -890,10 +940,39 @@ mod tests {
         let east = Camera::Map { center: [200.0, 0.0, 0.0], zoom: 2.0, pitch: 0.0, bearing: 0.0 };
         let Camera::Map { center, .. } = east.within(&reach) else { panic!("a map camera") };
         assert!((center[0] - 180.0 * (1.0 - 800.0 / 1024.0)).abs() < 1e-9, "{center:?}");
-        // A plane sets no limits, so only the fit limits its camera.
-        let framed = Bounds { min: [0.0; 3], max: [10.0, 10.0, 0.0], zoom: [1.0; 2] };
+        // A plane sets no limits, so only the fit limits its camera. At zoom 5 the view spans 25
+        // units, so the center may stray half of that from a box only 10 units wide.
+        let framed = Bounds { min: [0.0; 3], max: [10.0, 10.0, 0.0], zoom: [5.0; 2] };
         let far = Camera::Map { center: [100.0, -100.0, 5.0], zoom: -10.0, pitch: 90.0, bearing: 0.0 };
         let held = far.within(&Reach::new(&plane(), Some(SIZE), Some(framed)));
-        assert_eq!(held, Camera::Map { center: [20.0, -10.0, 0.0], zoom: -2.0, pitch: MAX_PITCH, bearing: 0.0 });
+        assert_eq!(held, Camera::Map { center: [22.5, -12.5, 0.0], zoom: 2.0, pitch: MAX_PITCH, bearing: 0.0 });
+        // A fit of one point still pans half a view from it.
+        let point = Bounds { min: [3.0, 4.0, 0.0], max: [3.0, 4.0, 0.0], zoom: [0.0; 2] };
+        let far = Camera::Map { center: [1000.0, 4.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 };
+        let Camera::Map { center, .. } = far.within(&Reach::new(&plane(), Some(SIZE), Some(point))) else {
+            panic!("a map camera")
+        };
+        assert_eq!(center, [403.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn a_fit_frames_a_diagram_at_most_at_natural_size_and_a_point_at_its_space_scale() {
+        let area = [0.0, 0.0, SIZE[0], SIZE[1]];
+        let start = Camera::Map { center: [0.0; 3], zoom: 1.5, pitch: 0.0, bearing: 0.0 };
+        let Camera::Map { zoom, .. } =
+            start.framing(&Space::Diagram(Diagram::default()), [0.0; 3], [10.0, 10.0, 0.0], SIZE, area)
+        else {
+            panic!("a map camera")
+        };
+        assert_eq!(zoom, 0.0, "a small diagram frames at its natural size");
+        let Camera::Map { zoom, center, .. } = start.framing(&flat(), [10.0, 20.0, 0.0], [10.0, 20.0, 0.0], SIZE, area)
+        else {
+            panic!("a map camera")
+        };
+        assert_eq!((zoom, center), (16.0, [10.0, 20.0, 0.0]), "one point on the earth frames at street scale");
+        let Camera::Map { zoom, .. } = start.framing(&plane(), [1.0; 3], [1.0; 3], SIZE, area) else {
+            panic!("a map camera")
+        };
+        assert_eq!(zoom, 1.5, "a plane has no natural scale, so a point keeps the zoom");
     }
 }

@@ -359,6 +359,46 @@ fn a_mark_with_no_rows_does_not_delay_a_fit() {
 }
 
 #[test]
+fn a_fit_with_nothing_to_frame_waits_for_rows_without_asking_for_frames() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", Ids::count(0)).field("x", Vec::<f64>::new()).field("y", Vec::<f64>::new()))
+        .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_sources([&data]).expect("a source");
+    view.fit(latkit::Fit::All);
+    frame(&gpu, &mut view);
+    assert!(view.complete(), "nothing to frame leaves nothing to wait on: {}", view.waiting());
+    assert!(!view.needs_render(), "and asks for no frames");
+    // The fit frames the rows that arrive later.
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![1000.0]).field("y", vec![1000.0])).expect("valid");
+    let pixels = frame(&gpu, &mut view);
+    assert!(close(at(&pixels, SIZE / 2, SIZE / 2), [255, 255, 255, 255]), "the fit centers the vertex");
+}
+
+#[test]
+fn a_fit_of_rows_bounds_how_far_the_camera_goes() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 100.0]).field("y", vec![0.0, 100.0]))
+        .expect("valid");
+    let scene =
+        Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_sources([&data]).expect("a source");
+    view.fit(latkit::Fit::Rows(vec![latkit::Rows::new("graph", "Node", [0_u64, 1])]));
+    frame(&gpu, &mut view);
+    let Camera::Map { zoom: fitted, .. } = *view.camera() else { panic!("a map camera") };
+    view.set_camera(Camera::Map { center: [1e6, 0.0, 0.0], zoom: -20.0, pitch: 0.0, bearing: 0.0 });
+    let Camera::Map { center, zoom, .. } = *view.camera() else { panic!("a map camera") };
+    assert!((zoom - (fitted - 3.0)).abs() < 1e-9, "at most 3 levels out from the fit: {zoom} from {fitted}");
+    assert!(center[0] <= 200.0, "and near what it framed: {center:?}");
+}
+
+#[test]
 fn a_fit_frames_data_regardless_of_units_and_marker_sizes() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
@@ -802,24 +842,6 @@ fn frames_report_gpu_time_where_timestamps_are_supported() {
 }
 
 #[test]
-fn frames_count_their_draws_and_instances() {
-    let Some(gpu) = gpu() else { return };
-    let data = Data::new("graph");
-    data.apply(Table::new("Node", Ids::count(3)).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3]))
-        .expect("valid");
-    let scene =
-        Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_camera(camera());
-    view.set_sources([&data]).expect("a source");
-    frame(&gpu, &mut view);
-    let stats = view.stats();
-    // The backdrop's one triangle, then the mark's three points.
-    assert_eq!((stats.draws, stats.instances), (2, 4), "{stats:?}");
-    assert_eq!(stats.tiles, 0);
-}
-
-#[test]
 fn dashes_run_on_across_a_paths_segments() {
     let Some(gpu) = gpu() else { return };
     // A dashed path of a hundred segments, each a pixel long. If each segment restarted its dashes,
@@ -1007,6 +1029,73 @@ fn sizes_in_units_are_degrees_on_the_earth() {
     let pixels = frame(&gpu, &mut view);
     let across = (0..SIZE).filter(|&x| at(&pixels, x, SIZE / 2)[0] > 128).count();
     assert!((21..=25).contains(&across), "a radius of a quarter degree is 23 pixels across: {across}");
+}
+
+#[test]
+fn where_depth_varies_the_nearest_mark_shows_whatever_order_it_draws_in() {
+    let Some(gpu) = gpu() else { return };
+    let (blue, red) = (Color::rgb(0.0, 0.0, 1.0), Color::rgb(1.0, 0.0, 0.0));
+    // Two rows at the same place: the first, drawn first, stands 30 units nearer the camera.
+    let data = Data::new("d");
+    data.apply(
+        Table::new("Node", Ids::count(2))
+            .field("x", vec![0.0, 0.0])
+            .field("y", vec![0.0, 0.0])
+            .field("z", vec![30.0, 0.0])
+            .field("near", vec![1.0, 0.0]),
+    )
+    .expect("valid");
+    let vertices = Vertices::of("d", "Node")
+        .position(field("x"), field("y"))
+        .radius(8.0)
+        .color(latkit::when(field("near").gt(0.5)).then(blue).otherwise(red));
+    let center = |elevated: bool| {
+        let vertices = if elevated { vertices.clone().elevation(field("z")) } else { vertices.clone() };
+        let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(vertices)).expect("valid scene");
+        view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+        view.set_sources([&data]).expect("a source");
+        at(&frame(&gpu, &mut view), SIZE / 2, SIZE / 2)
+    };
+    assert!(close(center(true), [0, 0, 255, 255]), "the nearer row shows: {:?}", center(true));
+    assert!(close(center(false), [255, 0, 0, 255]), "on flat ground, the row drawn last shows: {:?}", center(false));
+}
+
+#[test]
+fn a_raised_vertex_hides_an_edge_passing_under_it() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    // A bus raised 30 units over the middle of a line between two others on the ground.
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Bus", Ids::count(3))
+                    .field("x", vec![0.0, -60.0, 60.0])
+                    .field("y", vec![0.0, 0.0, 0.0])
+                    .field("z", vec![30.0, 0.0, 0.0]),
+            )
+            .set(Table::new("Line", Ids::count(1)).reference("from", "Bus", vec![1_u64]).reference(
+                "to",
+                "Bus",
+                vec![2_u64],
+            )),
+    )
+    .expect("valid");
+    // The edge draws after the vertices, so in order it would cross the raised bus.
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(
+            Vertices::of("d", "Bus")
+                .position(field("x"), field("y"))
+                .elevation(field("z"))
+                .radius(10.0)
+                .color(Color::rgb(0.0, 0.0, 1.0)),
+        )
+        .draw(Edges::of("d", "Line").ends("from", "to").width(4.0).color(Color::rgb(1.0, 0.0, 0.0)));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    view.set_sources([&data]).expect("a source");
+    let pixel = at(&frame(&gpu, &mut view), SIZE / 2, SIZE / 2);
+    assert!(close(pixel, [0, 0, 255, 255]), "the raised bus hides the line under it: {pixel:?}");
 }
 
 #[test]

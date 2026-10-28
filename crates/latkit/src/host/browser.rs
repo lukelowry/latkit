@@ -153,27 +153,35 @@ impl Encoder for Script {
 /// Padding in pixels around each run, so antialiasing and overhangs are not clipped.
 const PAD: f64 = 2.0;
 
-/// Breaks `text` at spaces into lines no wider than `max_width`, each with its width. A word wider
-/// than `max_width` gets a line of its own.
+/// Breaks `text` into lines, each with its width: at each newline, then at spaces so no line is
+/// wider than `max_width`. A word wider than `max_width` gets a line of its own.
 fn lines(
     context: &OffscreenCanvasRenderingContext2d,
     text: &str,
     max_width: Option<f64>,
 ) -> Option<Vec<(String, f64)>> {
     let width = |s: &str| context.measure_text(s).ok().map(|m| m.width());
-    let Some(max_width) = max_width else { return Some(vec![(text.to_owned(), width(text)?)]) };
     let mut lines: Vec<(String, f64)> = Vec::new();
-    for word in text.split(' ') {
-        if let Some((line, w)) = lines.last_mut() {
-            let joined = format!("{line} {word}");
-            let joined_width = width(&joined)?;
-            if joined_width <= max_width {
-                *line = joined;
-                *w = joined_width;
-                continue;
+    for paragraph in text.split('\n').map(|p| p.strip_suffix('\r').unwrap_or(p)) {
+        let Some(max_width) = max_width else {
+            lines.push((paragraph.to_owned(), width(paragraph)?));
+            continue;
+        };
+        let first = lines.len();
+        for word in paragraph.split(' ') {
+            if lines.len() > first
+                && let Some((line, w)) = lines.last_mut()
+            {
+                let joined = format!("{line} {word}");
+                let joined_width = width(&joined)?;
+                if joined_width <= max_width {
+                    *line = joined;
+                    *w = joined_width;
+                    continue;
+                }
             }
+            lines.push((word.to_owned(), width(word)?));
         }
-        lines.push((word.to_owned(), width(word)?));
     }
     Some(lines)
 }

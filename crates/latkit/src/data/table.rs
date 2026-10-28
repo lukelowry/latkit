@@ -95,6 +95,16 @@ impl Field {
         }
     }
 
+    /// Whether the field has held a value, which fixes its kind. A field that holds only missing
+    /// values fits any kind.
+    pub(crate) fn fixed(&self) -> bool {
+        match self {
+            Field::Values(column, _) => column.fixed(),
+            Field::Reference(reference) => reference.ids.fixed(),
+            Field::Sampled(..) => true,
+        }
+    }
+
     /// Changes whenever the field's values do.
     pub(crate) fn version(&self) -> Version {
         match self {
@@ -206,8 +216,13 @@ impl Reference {
                 .any(|(page, r)| r.ids != page.id || r.order != order || (r.dangling && r.structure != structure))
     }
 
-    /// Resolves against `target` the pages whose inputs changed, reusing the rest.
+    /// Resolves against `target` the pages whose inputs changed, reusing the rest. Errors when the
+    /// ids are numbers and the target's are texts. Text ids can name numbered rows by their
+    /// decimal text.
     pub(crate) fn resolve(&self, target: &Table) -> Result<Reference> {
+        if self.ids.fixed() && self.ids.kind() == Kind::Number && target.ids.kind() == Kind::Text {
+            return Err(Error::invalid(format!("number ids for table {}, whose ids are texts", self.to)));
+        }
         let index = target.index()?;
         let (order, structure) = (target.order, target.structure);
         let mut pages = Vec::with_capacity(self.ids.pages().len());

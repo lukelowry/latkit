@@ -118,11 +118,21 @@ fn segment_of(v: Varyings) -> Stroke {
     return Stroke(v.a, v.b, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, (v.arrow & 1u) != 0u);
 }
 
-@if(!focused)
+@if(!focused && !depth)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let c = stroke(pixel(v), segment_of(v));
     return output(vec4f(c.rgb * c.a, c.a));
+}
+
+// The depth variant writes only the depth of a stroke's pixels at least half opaque, so its
+// antialiased edge, dash gaps, and comets leave what lies behind them showing.
+@if(depth)
+@fragment
+fn fragment(v: Varyings) {
+    if stroke(pixel(v), segment_of(v)).a < 0.5 {
+        discard;
+    }
 }
 
 @if(focused)

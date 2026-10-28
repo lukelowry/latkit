@@ -9,13 +9,15 @@
 //! many routes) runs as a host job that answers with a patch.
 //!
 //! The sheet is a derivation. It writes a table beside each table it draws, row for row, and marks
-//! read it like data. An edit of the values that size and place rows recomputes only the rows it
+//! read it like data. That includes the text of each label: a block's label wider than the block,
+//! or a group's title wider than its box, shows cut short with "…". An edit of the values that size and place rows recomputes only the rows it
 //! wrote and what they affect: their boxes, the groups around them, and the wires they move.
 
 mod groups;
 mod wires;
 
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHasher};
 
@@ -116,6 +118,9 @@ pub(crate) struct Vertex {
     /// As a group, how many rows it directly holds.
     pub(crate) members: u32,
     pub(crate) shape: Shape,
+    /// The text each of its table's vertex marks labels it with, cut to fit, if the mark has a
+    /// label.
+    pub(crate) shown: Vec<Option<Arc<str>>>,
 }
 
 impl Vertex {
@@ -265,6 +270,8 @@ impl Sheet {
         self.groups = groups::Groups::new(&mut vertices, &framing);
         self.blocks = Boxes::new(vertices.iter().map(obstacle).collect());
         self.place(&vertices, vertex_marks, edge_marks, &header, padding, input, jobs);
+        let every: Vec<usize> = (0..vertices.len()).collect();
+        self.show_labels(vertex_marks, &mut vertices, &every, padding, input);
         let moved = wires::moved(&self.boxes, &vertices);
         let mut drawn = Drawn { vertices, wired: wires::Wired::default(), reads: Vec::new(), from: 0 };
         self.wire(&mut drawn, marks, &wires::Change { moved: &moved, touched: None }, input, jobs);
@@ -329,6 +336,7 @@ impl Sheet {
                 None => self.boxes.remove(&vertex.key),
             };
         }
+        self.show_labels(vertex_marks, &mut drawn.vertices, &touched, padding, input);
         if !write_rows(marks, &drawn, &touched, &written, &mut self.tables) {
             write(vertex_marks, &drawn.vertices, edge_marks, &drawn.wired.parts, &mut self.tables);
         }
@@ -375,7 +383,7 @@ impl Sheet {
         let mut vertices = Vec::with_capacity(vertex_marks.iter().map(|vm| vm.table.len()).sum());
         for (m, vm) in vertex_marks.iter().enumerate() {
             let rows = Rows::new(vm.table, input.data);
-            let (shape, group) = (shape_of(vm.mark), vm.mark.contains.is_some());
+            let (shape, group) = (shape_of(vm.mark), grouping(vm));
             for row in 0..vm.table.len() {
                 let id = vm.table.ids.id(row).expect("every row has an id");
                 vertices.push(Vertex {
@@ -389,36 +397,55 @@ impl Sheet {
                     group,
                     members: 0,
                     shape,
+                    shown: Vec::new(),
                 });
             }
         }
         vertices
     }
 
-    /// Half the width and height of `vm`'s row `row`, in units: from its size, its radius, or else
-    /// a box fitting its label and ports. For a group, it is the size when the group holds nothing,
-    /// with space for its title.
+    /// Half the width and height of `vm`'s row `row`, in units: the largest any of the table's
+    /// vertex marks draws it. See [`half_of`](Sheet::half_of).
     fn half(&mut self, vm: &VertexMark<'_>, rows: &Rows<'_>, row: usize, input: &Input<'_>) -> [f64; 2] {
+        let (group, ports) = (grouping(vm), crate::derive::graph::ports(&vm.marks));
+        let mut half = [0.0_f64; 2];
+        for mark in &vm.marks {
+            let [w, h] = self.half_of(mark, group, &ports, rows, row, input);
+            half = [half[0].max(w), half[1].max(h)];
+        }
+        half
+    }
+
+    /// Half the width and height `mark` draws its row `row` at, in units: from its size, its
+    /// radius, or else a box fitting its label and the table's `ports`. For a group, it is the size
+    /// when the group holds nothing, with space for its title.
+    fn half_of(
+        &mut self,
+        mark: &Vertices,
+        group: bool,
+        ports: &[&(Name, crate::Port)],
+        rows: &Rows<'_>,
+        row: usize,
+        input: &Input<'_>,
+    ) -> [f64; 2] {
         let theme = &input.scene.theme;
         let radius = f64::from(theme.vertex.radius);
-        let group = vm.mark.contains.is_some();
         if !group {
-            if let Some([w, h]) = &vm.mark.size {
+            if let Some([w, h]) = &mark.size {
                 let half = |size: &crate::Size| rows.number(&size.expr, row).map_or(radius, |v| v.max(0.0) / 2.0);
                 return [half(w), half(h)];
             }
-            if let Some(r) = &vm.mark.radius {
+            if let Some(r) = &mark.radius {
                 let r = rows.number(&r.expr, row).map_or(radius, |v| v.max(0.0));
                 return [r, r];
             }
         }
-        let text = self.label(vm.mark, rows, row, input);
+        let text = self.label(mark, rows, row, input);
         if group {
             let padding = f64::from(theme.diagram.group_padding);
             let title = text.map_or(0.0, |([w, _], _)| w);
-            return [title / 2.0 + padding, header(vm.mark, theme) / 2.0 + padding];
+            return [title / 2.0 + padding, header(mark, theme) / 2.0 + padding];
         }
-        let ports = &vm.mark.ports;
         // A row with neither a label nor ports is a dot.
         if text.is_none() && ports.is_empty() {
             return [radius, radius];
@@ -426,7 +453,7 @@ impl Sheet {
         let size = text.map_or(f64::from(theme.text.size), |(_, size)| size);
         let [w, h] = text.map_or([0.0; 2], |(box_, _)| box_);
         // Scale up so a round or pointed outline contains its text's box.
-        let fit = match shape_of(vm.mark) {
+        let fit = match shape_of(mark) {
             Shape::Ellipse => std::f64::consts::SQRT_2,
             Shape::Diamond => 2.0,
             Shape::Rectangle | Shape::Rounded => 1.0,
@@ -485,6 +512,74 @@ impl Sheet {
         Some((measured.map(|v| v * f64::from(size) / f64::from(TEXT_BASE)), f64::from(size)))
     }
 
+    /// Sets the text each vertex mark labels vertices `which` with: the label's text, or where it is
+    /// wider than its room, as much of it as fits followed by "…". A block's room is its width less
+    /// the label's size, and a group's is its box less its padding. A label that wraps or holds
+    /// several lines shows whole.
+    fn show_labels(
+        &mut self,
+        vertex_marks: &[VertexMark<'_>],
+        vertices: &mut [Vertex],
+        which: &[usize],
+        padding: f64,
+        input: &Input<'_>,
+    ) {
+        let rows: Vec<Rows<'_>> = vertex_marks.iter().map(|vm| Rows::new(vm.table, input.data)).collect();
+        let theme = &input.scene.theme;
+        for &v in which {
+            let (m, bounds, group) = (vertices[v].mark, vertices[v].bounds, vertices[v].group);
+            let vm = &vertex_marks[m];
+            let row = v - vm.first;
+            let half_width = bounds.map_or(vertices[v].half[0], |b| (b[2] - b[0]) / 2.0);
+            let shown = vm
+                .marks
+                .iter()
+                .map(|mark| {
+                    let label = mark.style.label.as_ref()?;
+                    let text = rows[m].text(&label.text, row)?;
+                    if label.max_width.is_some() || text.contains('\n') {
+                        return Some(text);
+                    }
+                    let size = label.size.unwrap_or(theme.text.size);
+                    let room = if group { 2.0 * (half_width - padding) } else { 2.0 * half_width - f64::from(size) };
+                    let font = label.font.clone().unwrap_or_else(|| theme.text.font.clone());
+                    self.cut(text, &font, size, room, input)
+                })
+                .collect();
+            vertices[v].shown = shown;
+        }
+    }
+
+    /// `text` as it fits `room` units in `font` at `size`: whole, or cut at a character and ended
+    /// with "…". `None` when not even "…" fits. Each width tried is measured once and cached.
+    fn cut(&mut self, text: Arc<str>, font: &Arc<str>, size: f32, room: f64, input: &Input<'_>) -> Option<Arc<str>> {
+        // A little room is kept back, so the cut text also fits as the GPU measures its glyphs.
+        let room = room - 0.1 * f64::from(size);
+        let mut width = |s: &str| {
+            let run = atlas::run(s.into(), font.clone(), size, None);
+            self.measure(run, input)[0] * f64::from(size) / f64::from(TEXT_BASE)
+        };
+        if width(&text) <= room {
+            return Some(text);
+        }
+        let ends: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+        let mut cut = |k: usize| -> Option<Arc<str>> {
+            let shown: Arc<str> = format!("{}…", text[..ends[k]].trim_end()).into();
+            (width(&shown) <= room).then_some(shown)
+        };
+        // The longest cut that fits: the cut at `lo` fits, and every cut from `over` on is too wide.
+        let mut fits = cut(0)?;
+        let (mut lo, mut over) = (0, ends.len());
+        while over - lo > 1 {
+            let mid = lo.midpoint(over);
+            match cut(mid) {
+                Some(shown) => (lo, fits) = (mid, shown),
+                None => over = mid,
+            }
+        }
+        Some(fits)
+    }
+
     /// The width and height of `run` in base pixels: measured once by the host and cached, or
     /// estimated when there is no host or measuring fails.
     fn measure(&mut self, run: TextRun, input: &Input<'_>) -> [f64; 2] {
@@ -499,7 +594,9 @@ impl Sheet {
                 if let Some(Err(error)) = other {
                     self.errors.push(error);
                 }
-                return [run.text.chars().count() as f64 * 0.6 * base, 1.25 * base];
+                // Without a host, 0.6 em per character of the longest line and 1.25 em per line.
+                let longest = run.text.lines().map(|line| line.chars().count()).max().unwrap_or(0);
+                return [longest as f64 * 0.6 * base, run.text.lines().count().max(1) as f64 * 1.25 * base];
             }
         };
         if self.measured.len() >= MEASURED {
@@ -642,10 +739,15 @@ fn obstacle(v: &Vertex) -> Rect {
     v.bounds.filter(|_| !v.group).map_or(EMPTY, |b| [b[0], -b[3], b[2], -b[1]])
 }
 
+/// Whether a table's rows are groups: one of its vertex marks contains other rows.
+fn grouping(vm: &VertexMark<'_>) -> bool {
+    vm.marks.iter().any(|mark| !mark.contains.is_empty())
+}
+
 /// The outline a vertex mark's markers draw: a rectangle for groups, blocks, icons, and WGSL
 /// markers, an ellipse for pies, else the marker's shape.
 fn shape_of(mark: &Vertices) -> Shape {
-    if mark.contains.is_some() {
+    if !mark.contains.is_empty() {
         return Shape::Rectangle;
     }
     match &mark.marker {
@@ -658,30 +760,20 @@ fn shape_of(mark: &Vertices) -> Shape {
 /// The height in units of the band across the top of a group mark's boxes, where titles sit. 0 for
 /// other marks, or without labels.
 fn header(mark: &Vertices, theme: &Theme) -> f64 {
-    match (&mark.contains, &mark.style.label) {
-        (Some(_), Some(label)) => f64::from(label.size.unwrap_or(theme.text.size) * HEADER_BAND),
+    match &mark.style.label {
+        Some(label) if !mark.contains.is_empty() => f64::from(label.size.unwrap_or(theme.text.size) * HEADER_BAND),
         _ => 0.0,
     }
 }
 
-/// Sets each row's group: the rows of a group mark's contained table belong to the group their
+/// Sets each row's group: the rows of each table a group mark contains belong to the group their
 /// reference names. Then sets how many groups hold each row, dropping the group of a row whose
 /// walk up the groups cycles, and how many rows each group directly holds.
 fn hold(vertex_marks: &[VertexMark<'_>], vertices: &mut [Vertex]) {
+    let contained = |vm: &VertexMark<'_>| vm.marks.iter().flat_map(|mark| &mark.contains).cloned().collect::<Vec<_>>();
     for vm in vertex_marks {
-        let Some((table, reference)) = &vm.mark.contains else { continue };
-        let Some(m) = drawing(vertex_marks, vm.data.name(), table) else { continue };
-        let members = &vertex_marks[m];
-        let Some(Field::Reference(r)) = members.table.field_named(reference) else { continue };
-        if r.to != *vm.table.name() {
-            continue;
-        }
-        for row in 0..members.table.len() {
-            let Some(group_row) = r.target(row) else { continue };
-            let (member, group) = (members.first + row, vm.first + group_row as usize);
-            if member != group {
-                vertices[member].parent = Some(group);
-            }
+        for (table, reference) in contained(vm) {
+            hold_table(vertex_marks, vm, &table, &reference, vertices);
         }
     }
     for v in 0..vertices.len() {
@@ -704,8 +796,54 @@ fn hold(vertex_marks: &[VertexMark<'_>], vertices: &mut [Vertex]) {
     }
 }
 
+/// Puts each row of `table` in the group of `vm`'s table that its `reference` field names.
+fn hold_table(
+    vertex_marks: &[VertexMark<'_>],
+    vm: &VertexMark<'_>,
+    table: &Name,
+    reference: &Name,
+    vertices: &mut [Vertex],
+) {
+    let Some(m) = drawing(vertex_marks, vm.data.name(), table) else { return };
+    let members = &vertex_marks[m];
+    let Some(Field::Reference(r)) = members.table.field_named(reference) else { return };
+    if r.to != *vm.table.name() {
+        return;
+    }
+    for row in 0..members.table.len() {
+        let Some(group_row) = r.target(row) else { continue };
+        let (member, group) = (members.first + row, vm.first + group_row as usize);
+        if member != group {
+            vertices[member].parent = Some(group);
+        }
+    }
+}
+
 /// A derived table to write: its dataset and table, the table it stands beside, and its fields.
-type Writing<'a> = ((Name, Name), &'a Table, Vec<(&'static str, Values)>);
+type Writing<'a> = ((Name, Name), &'a Table, Vec<(Name, Values)>);
+
+/// The derived text field holding the text a vertex mark named `name` labels each block with, cut
+/// to fit. A diagram's label reads it.
+pub(crate) fn shown_label(name: Option<&Name>) -> Name {
+    match name {
+        Some(name) => format!("label of {name}").into(),
+        None => "label".into(),
+    }
+}
+
+/// Each labeled vertex mark of `vm`'s table: its [`shown_label`] field, and its index among the
+/// table's marks.
+fn labeled<'a>(vm: &'a VertexMark<'_>) -> impl Iterator<Item = (Name, usize)> + 'a {
+    let labeled = vm.marks.iter().enumerate().filter(|(_, mark)| mark.style.label.is_some());
+    labeled.map(|(k, mark)| (shown_label(mark.style.name.as_ref()), k))
+}
+
+/// The texts `vertices` show for their table's mark `k`.
+fn shown_texts<'v>(vertices: impl Iterator<Item = &'v Vertex>, k: usize) -> Values {
+    let texts: Vec<Option<String>> =
+        vertices.map(|v| v.shown.get(k).cloned().flatten().map(|t| t.to_string())).collect();
+    Values::from(texts)
+}
 
 /// A derived field of a vertex table: its name, and its value for a vertex.
 type VertexField = (&'static str, fn(&Vertex) -> Option<f64>);
@@ -733,15 +871,16 @@ fn write(
     let mut tables: Vec<Writing<'_>> = Vec::new();
     for vm in vertex_marks {
         let own = &vertices[vm.first..vm.first + vm.table.len()];
-        let fields = VERTEX_FIELDS
+        let mut fields: Vec<(Name, Values)> = VERTEX_FIELDS
             .iter()
-            .map(|&(name, value)| (name, Values::from(own.iter().map(value).collect::<Vec<_>>())))
+            .map(|&(name, value)| (name.into(), Values::from(own.iter().map(value).collect::<Vec<_>>())))
             .collect();
+        fields.extend(labeled(vm).map(|(name, k)| (name, shown_texts(own.iter(), k))));
         tables.push(((vm.data.name().clone(), vm.table.name().clone()), vm.table, fields));
     }
     for (em, paths) in edge_marks.iter().zip(paths) {
         let key = (em.data.name().clone(), em.table.name().clone());
-        let field = ("route", Values::from(paths.clone()));
+        let field = (Name::from("route"), Values::from(paths.clone()));
         match tables.iter_mut().find(|(k, ..)| *k == key) {
             Some((.., fields)) => fields.push(field),
             None => tables.push((key, em.table, vec![field])),
@@ -750,8 +889,13 @@ fn write(
     derived.retain(|key, _| tables.iter().any(|(k, ..)| k == key));
     for (key, source, fields) in tables {
         let before = derived.get(&key);
-        let fields: Vec<(Name, Field)> =
-            fields.into_iter().map(|(name, values)| (name.into(), kept(name, &values, source, before))).collect();
+        let fields: Vec<(Name, Field)> = fields
+            .into_iter()
+            .map(|(name, values)| {
+                let field = kept(&name, &values, source, before);
+                (name, field)
+            })
+            .collect();
         derived.insert(key, beside(source, fields));
     }
 }
@@ -779,6 +923,12 @@ fn write_rows(
             let values =
                 Values::from(rows.iter().map(|&row| value(&drawn.vertices[vm.first + row])).collect::<Vec<_>>());
             if !write_field(table, name, &rows, &values) {
+                return false;
+            }
+        }
+        for (name, k) in labeled(vm) {
+            let values = shown_texts(rows.iter().map(|&row| &drawn.vertices[vm.first + row]), k);
+            if !write_field(table, &name, &rows, &values) {
                 return false;
             }
         }
@@ -935,6 +1085,111 @@ mod tests {
                 assert!(!(b[0] < x && x < b[2] && b[1] < y && y < b[3]), "{parts:?} runs through {b:?}");
             }
         }
+    }
+
+    /// The derived value of field `name` of row `id` of table `table`.
+    fn derived(sheet: &Sheet, table: &str, id: u64, name: &str) -> Option<Value> {
+        sheet.tables.get(&("d".into(), table.into()))?.get(id, name)
+    }
+
+    fn row(table: &str, id: u64) -> Row {
+        Row { data: "d".into(), table: table.into(), id: id.into() }
+    }
+
+    #[test]
+    fn a_group_holds_rows_of_several_tables() {
+        let scene = Scene::new(Diagram { grid: Grid::Off })
+            .draw(Vertices::of("d", "Unit").contains("Machine", "unit").contains("Exciter", "unit"))
+            .draw(Vertices::of("d", "Machine").position(field("x"), field("y")))
+            .draw(Vertices::of("d", "Exciter").position(field("x"), field("y")));
+        let member = |name: &str, x: f64| {
+            Table::new(name, vec![1_u64]).field("x", vec![x]).field("y", vec![0.0]).reference(
+                "unit",
+                "Unit",
+                vec![1_u64],
+            )
+        };
+        let data = Data::new("d");
+        data.apply(
+            Patch::new().set(Table::new("Unit", vec![1_u64])).set(member("Machine", 0.0)).set(member("Exciter", 300.0)),
+        )
+        .expect("valid");
+        let mut sheet = Sheet::default();
+        derive(&mut sheet, &scene, &data);
+        let unit = sheet.bounds(&row("Unit", 1)).expect("the group has a box");
+        for table in ["Machine", "Exciter"] {
+            let b = sheet.bounds(&row(table, 1)).expect("placed");
+            assert!(unit[0] < b[0] && unit[1] < b[1] && b[2] < unit[2] && b[3] < unit[3], "{table} {b:?} in {unit:?}");
+        }
+    }
+
+    #[test]
+    fn a_net_of_one_port_draws_a_stub_out_from_it() {
+        let scene = Scene::new(Diagram { grid: Grid::Off })
+            .draw(Edges::of("d", "N"))
+            .draw(Vertices::of("d", "B").position(field("x"), field("y")).port("out", Port::output(Side::Right)));
+        let data = Data::new("d");
+        data.apply(Patch::new().set(Table::new("N", vec![1_u64])).set(
+            Table::new("B", vec![1_u64]).field("x", vec![0.0]).field("y", vec![0.0]).reference("out", "N", vec![1_u64]),
+        ))
+        .expect("valid");
+        let mut sheet = Sheet::default();
+        derive(&mut sheet, &scene, &data);
+        let b = sheet.bounds(&row("B", 1)).expect("placed");
+        let Some(Value::Parts(parts)) = derived(&sheet, "N", 1, "route") else { panic!("a route") };
+        let [part] = &parts[..] else { panic!("one stub: {parts:?}") };
+        let [from, to] = part[..] else { panic!("a straight stub: {part:?}") };
+        assert!(from[0] >= b[2] && to[0] > from[0] && from[1] == to[1], "out to the right of {b:?}: {part:?}");
+    }
+
+    #[test]
+    fn every_vertex_mark_of_a_table_gives_its_blocks_ports_and_size() {
+        // The second mark of the table adds an output port, and is drawn larger.
+        let scene = Scene::new(Diagram { grid: Grid::Off })
+            .draw(Edges::of("d", "N"))
+            .draw(Vertices::of("d", "B").position(field("x"), field("y")).size(40.0, 20.0).port("in", Side::Left))
+            .draw(
+                Vertices::of("d", "B")
+                    .named("outputs")
+                    .position(field("x"), field("y"))
+                    .size(60.0, 30.0)
+                    .port("out", Port::output(Side::Right)),
+            );
+        let data = Data::new("d");
+        let blocks = Table::new("B", vec![1_u64, 2])
+            .field("x", vec![0.0, 200.0])
+            .field("y", vec![0.0, 0.0])
+            .reference("out", "N", vec![Some(1_u64), None])
+            .reference("in", "N", vec![None, Some(1_u64)]);
+        data.apply(Patch::new().set(Table::new("N", vec![1_u64])).set(blocks)).expect("valid");
+        let mut sheet = Sheet::default();
+        derive(&mut sheet, &scene, &data);
+        assert_eq!(derived(&sheet, "B", 1, "half_x"), Some(Value::Number(30.0)), "the larger mark's size");
+        let Some(Value::Parts(parts)) = derived(&sheet, "N", 1, "route") else { panic!("a route") };
+        let [part] = &parts[..] else { panic!("one wire: {parts:?}") };
+        let (first, last) = (part[0], part[part.len() - 1]);
+        assert!(first[0] >= 30.0 && last[0] <= 170.0, "from block 1's output to block 2's input: {part:?}");
+    }
+
+    #[test]
+    fn a_label_wider_than_its_block_ends_in_an_ellipsis() {
+        let scene = Scene::new(Diagram { grid: Grid::Off }).draw(
+            Vertices::of("d", "B").position(field("x"), field("y")).size(80.0, 20.0).label(Label::new(field("name"))),
+        );
+        let data = Data::new("d");
+        let names = vec!["ok", "a label much too long for its block"];
+        data.apply(
+            Table::new("B", vec![1_u64, 2])
+                .field("x", vec![0.0, 0.0])
+                .field("y", vec![0.0, 100.0])
+                .field("name", names),
+        )
+        .expect("valid");
+        let mut sheet = Sheet::default();
+        derive(&mut sheet, &scene, &data);
+        assert_eq!(derived(&sheet, "B", 1, "label"), Some(Value::Text("ok".into())), "a label that fits shows whole");
+        let Some(Value::Text(cut)) = derived(&sheet, "B", 2, "label") else { panic!("a label") };
+        assert!(cut.ends_with('…') && cut.len() < 20 && "a label much".starts_with(cut.trim_end_matches('…')), "{cut}");
     }
 
     #[test]

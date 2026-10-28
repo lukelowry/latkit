@@ -317,12 +317,14 @@ fn the_keys_step_open_and_select() {
         _ => None,
     });
     assert_eq!(selected, vec![Rows::from(link)]);
-    // Shift+Tab past the first row goes unused, so focus leaves the view and the hover clears.
-    let back = Input::Key { key: Key::Tab, down: true, modifiers: Modifiers { shift: true, ..Modifiers::default() } };
-    assert!(!view.input(&back, common::now()), "focus leaves the view");
+    // The next Tab goes unused, so focus leaves the view and the hover clears. Shift+Tab leaves
+    // too: the view is one stop in the page's tab order.
+    assert!(!view.input(&key(Key::Tab), common::now()), "focus leaves the view");
     let left =
         after(&gpu, &mut view, &[], |e| if let Event::Hovered { hit, .. } = e { Some(hit.clone()) } else { None });
     assert_eq!(left, None);
+    let back = Input::Key { key: Key::Tab, down: true, modifiers: Modifiers { shift: true, ..Modifiers::default() } };
+    assert!(!view.input(&back, common::now()), "Shift+Tab leaves the view");
 }
 
 #[test]

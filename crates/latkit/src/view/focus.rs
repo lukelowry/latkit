@@ -45,6 +45,16 @@ impl Focus {
     pub(crate) fn take_lit(&mut self) -> Option<Vec<u32>> {
         self.lit.take()
     }
+
+    /// Follows a scene change: the words written for each mark move with its pages to its new index
+    /// in `moved` (old index to new), and those of dropped marks, whose pages went with them, go.
+    pub(crate) fn renumber(&mut self, moved: &FxHashMap<usize, usize>) {
+        self.written = std::mem::take(&mut self.written)
+            .into_iter()
+            .filter_map(|((mark, row), word)| Some(((*moved.get(&mark)?, row), word)))
+            .collect();
+        self.dirty = true;
+    }
 }
 
 /// Where a mark's lit rows lie in the lit buffer, how many, and the instances each draws.

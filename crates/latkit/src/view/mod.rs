@@ -130,6 +130,9 @@ pub struct View {
     derived: Derivations,
     marks: Vec<Shown>,
     camera: Camera,
+    /// Whether a fit, a camera set, or a flight has placed the camera since the view started with
+    /// its space's default camera.
+    placed: bool,
     rig: Rig,
     /// CSS pixels kept clear at the top, right, bottom, and left.
     insets: [f32; 4],
@@ -220,6 +223,7 @@ impl View {
             derived: Derivations::default(),
             marks: Vec::new(),
             camera,
+            placed: false,
             rig: Rig::default(),
             insets: [0.0; 4],
             gutters: (0, axes::Gutters::default()),
@@ -302,26 +306,32 @@ impl View {
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
         let easing = !scene.ease.is_zero() && self.moves_with(&scene.controls);
+        // Each new mark's index before, for a mark that keeps its state or takes over another's.
+        let mut came_from: rustc_hash::FxHashMap<usize, usize> = rustc_hash::FxHashMap::default();
         self.marks = scene
             .marks
             .iter()
             .zip(fresh)
-            .map(|(mark, fresh)| {
+            .enumerate()
+            .map(|(i, (mark, fresh))| {
                 let Some(mut shown) = fresh else {
-                    let mut kept = old
-                        .iter_mut()
-                        .find(|s| s.as_ref().is_some_and(|s| s.mark.draws_like(mark)))
-                        .and_then(Option::take)
+                    let at = old
+                        .iter()
+                        .position(|s| s.as_ref().is_some_and(|s| s.mark.draws_like(mark)))
                         .expect("the unchanged mark's previous state");
+                    let mut kept = old[at].take().expect("taken once");
+                    came_from.insert(at, i);
                     kept.mark = mark.clone();
                     return kept;
                 };
                 // A changed mark takes over the rows of the old mark with its key, and eases from
                 // them.
-                let before = old.iter_mut().find(|s| s.as_ref().is_some_and(|s| s.key == shown.key));
-                if let Some(mut before) = before.and_then(Option::take) {
+                let before = old.iter().position(|s| s.as_ref().is_some_and(|s| s.key == shown.key));
+                if let Some(at) = before {
+                    let mut before = old[at].take().expect("taken once");
                     before.tables.release(&mut inner);
                     shown.inherit(&mut before);
+                    came_from.insert(at, i);
                     if easing && shown.compiled.is_some() {
                         shown.begin(None);
                     }
@@ -339,9 +349,14 @@ impl View {
         for shown in self.marks.iter_mut().filter(|s| s.failure.is_none()) {
             shown.failure = absent(shown, &self.snapshots, &self.derived.tiles).map(|error| (error, false));
         }
+        // State kept by mark index follows the new marks at once: the label slots, so texts read
+        // back for the old marks are dropped, and the focus words, whose pages moved with them.
+        self.lay_out_labels(&mut inner);
+        self.focus.renumber(&came_from);
         drop(inner);
         if !self.camera.fits(&scene.space) {
             self.camera = Camera::default_for(&scene.space);
+            self.placed = false;
             self.plot_y = None;
         }
         // Fit bounds and running motion refer to the old space's positions, so they do not carry
@@ -547,14 +562,16 @@ impl View {
     ///
     /// Every camera move stays within the camera's zoom and pan limits. On the earth, the limits
     /// are those [`Earth`](crate::Earth) describes, for the part of the view inside the
-    /// [`insets`](View::insets). After a fit, the camera zooms at most 3 levels out and 8 in from
-    /// the fit, and its center stays within one box size of the box the fit framed. The view learns
-    /// its size from its first frame. When its size, insets, or space change, the next frame moves
-    /// the camera back within the limits and emits a [`Camera`](Event::Camera) event.
+    /// [`insets`](View::insets). After the first fit of any kind, the camera zooms at most 3 levels
+    /// out and 8 in from the fits, and its center stays within one box size of the box they framed,
+    /// or half a view at the widest fit's zoom for a smaller box. The view learns its size from its
+    /// first frame. When its size, insets, or space change, the next frame moves the camera back
+    /// within the limits and emits a [`Camera`](Event::Camera) event.
     pub fn set_camera(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
             self.cancel_fit();
             self.rig.hold();
+            self.placed = true;
             self.place_camera(camera);
         }
     }
@@ -598,6 +615,7 @@ impl View {
             let seconds = seconds.unwrap_or_else(|| self.ease().max(least) * 2).max(least).as_secs_f64();
             let to = camera.within(&self.reach());
             self.rig.fly(self.camera, to, self.clock.now(), seconds);
+            self.placed = true;
             self.wake();
         }
     }
@@ -642,7 +660,12 @@ impl View {
         }
     }
 
-    /// Frames what `fit` names on the next frame, keeping pitch and bearing.
+    /// Frames what `fit` names, keeping pitch and bearing, and replacing any fit not yet applied.
+    /// It applies once positions settle: data has streamed, shapes are triangulated, any layout has
+    /// placed the rows, and vertices have eased to their places. With nothing drawn to frame, it
+    /// frames the rows that arrive later. A fit frames a diagram at most at its natural size (zoom
+    /// 0) and the earth at most at zoom 16, which is also where it frames a single point. Until the
+    /// first fit applies, frames show only the background.
     pub fn fit(&mut self, fit: Fit) {
         self.focus.fitting = match &fit {
             Fit::Rows(rows) => Rows::flatten(rows.iter().cloned()),
@@ -650,7 +673,7 @@ impl View {
             _ => Vec::new(),
         };
         self.focus.dirty = true;
-        self.fitting.wanted = Some(fit);
+        self.fitting.want(fit);
         self.wake();
     }
 
@@ -978,6 +1001,16 @@ impl View {
 
     /// The projection through `camera`. A plot camera without a value range uses the fitted one,
     /// as the frame does.
+    /// Whether depth varies across the view, so marks hide one another by depth instead of by the
+    /// order they draw in: on a plane or the earth, the camera is tilted, the globe shows, or a
+    /// vertex mark raises its rows.
+    pub(super) fn deep(&self) -> bool {
+        let space = &self.scene.space;
+        let tilted = matches!(self.camera, Camera::Map { pitch, .. } if pitch > 0.0);
+        let raised = || self.scene.marks.iter().any(|m| matches!(m, crate::Mark::Vertices(v) if v.raised()));
+        matches!(space, Space::Plane(_) | Space::Earth(_)) && (tilted || Projected::globe_of(space) > 0.0 || raised())
+    }
+
     fn projected_with(&self, camera: &Camera) -> Projected {
         let camera = match *camera {
             Camera::Plot { x, y: None } => Camera::Plot { x, y: Some(self.plot_y.unwrap_or([0.0, 1.0])) },

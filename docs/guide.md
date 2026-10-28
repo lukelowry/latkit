@@ -34,7 +34,8 @@ const grid = new Data('grid')
 
 - Ids are nonnegative safe integers or strings, or `{ count: n }` for rows `0` to `n - 1`.
 - Values are one column per field: typed arrays, or arrays of numbers, booleans, strings, or
-  geometries, with `null` for missing. A `Uint8Array` holds booleans.
+  geometries, with `null` for missing. A `Uint8Array` holds booleans. A field's first
+  value sets its kind. Until then, a field of only `null` fits any kind, and reads as missing.
 - Geometries are `[x, y]` points, paths of points, parts (a polygon's rings), or polygons.
 - References name rows of another table by id: `reference(table, ids)`.
 
@@ -185,12 +186,15 @@ vertices, edges, faces, and a plot's traces. Set `pick: true` to make areas and 
 | `areas`    | the area a polygon field covers                                          |
 | `faces`    | a triangle between three vertices                                        |
 
-`flow` animates comets along a stroke. In a diagram, vertices are blocks with `ports`. A vertices
-mark with `contains` draws each row as a group around the rows that reference it. An edges mark
-without `ends` draws each row as a net that joins the ports that reference it.
+`flow` animates comets along a stroke. In a diagram, vertices are blocks with `ports`, and each row
+is one block however many marks draw it. A vertices mark with `contains: [[table, reference], …]`
+draws each row as a group around the rows of those tables that reference it. An edges mark without
+`ends` draws each row as a net that joins the ports that reference it, and a net with one port
+draws a short stub.
 
 `label` shows a text field beside each row, inside a block, or along a stroke, when the row is
-visible and the text fits. Labels never overlap. Where two would, the row drawn on top keeps its
+visible and the text fits. In a diagram, a label wider than its block or group ends in "…". Labels
+never overlap. Where two would, the row drawn on top keeps its
 label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit.
 A row whose text is missing has no label, so a `when` that picks between the field and `null`
 labels only some rows, as in the scene above.
@@ -263,8 +267,12 @@ view.orbit = 6; // degrees a second
 
 Camera moves stay within the camera's zoom and pan limits. A flat map shows one world. Its camera
 zooms out only until the whole world fits, and pans only until the world's edges meet the view's
-edges. A globe zooms out until it spans a third of the view. After a fit, the camera stays near the
-area the fit framed ([`View.camera`](reference/api.md#view)).
+edges. A globe zooms out until it spans a third of the view. After a fit of any kind, the camera stays
+near the area the fit framed ([`View.camera`](reference/api.md#view)).
+
+A fit applies once the rows have their places, and until the first one applies the view shows only
+its background. A fit frames a diagram at most at its natural size and the earth at most at street
+scale, and one with nothing to frame waits for rows.
 
 ### Events
 

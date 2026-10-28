@@ -8,11 +8,7 @@
 
 mod common;
 
-use std::future::Future;
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
-
-use common::{SIZE, at, camera, diagram, errors, frame, gpu, plain_theme, plane, step};
+use common::{SIZE, answer, at, camera, diagram, errors, frame, gpu, plain_theme, plane, step};
 use latkit::{Data, Edges, Ids, Patch, Port, Scene, Side, Table, Vertices, View, field};
 
 const C: u32 = SIZE / 2;
@@ -31,19 +27,6 @@ fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
 fn nodes(x: Vec<f64>, y: Vec<f64>) -> Table {
     let ids: Vec<u64> = (1..=x.len() as u64).collect();
     Table::new("Node", ids).field("x", x).field("y", y)
-}
-
-/// Renders frames until `pending` resolves, within `SETTLE` frames.
-fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
-    let mut pending = pin!(pending);
-    let mut context = Context::from_waker(Waker::noop());
-    for _ in 0..common::SETTLE {
-        if let Poll::Ready(value) = pending.as_mut().poll(&mut context) {
-            return value.expect("an answer");
-        }
-        step(gpu, view);
-    }
-    panic!("the query answers within {} frames", common::SETTLE);
 }
 
 #[test]

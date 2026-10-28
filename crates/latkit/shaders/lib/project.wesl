@@ -43,10 +43,12 @@ fn on_sphere(hi: vec2f, lo: vec2f) -> vec3f {
 
 // World coordinates: plane or plot units relative to the center, or Mercator radians morphing onto
 // the globe. Only a morph in progress computes both projections.
-fn world(hi: vec2f, lo: vec2f, z: f32) -> vec3f {
+fn world(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
     if frame.space != SPACE_EARTH {
-        return vec3f(relative(hi, lo), z);
+        return vec3f(relative(hi, lo), elevation);
     }
+    // On the earth, elevation is in degrees of arc and the world in earth radii.
+    let z = radians(elevation);
     if frame.globe <= 0.0 {
         return vec3f(mercator(hi, lo), z);
     }
@@ -94,6 +96,20 @@ fn to_screen(clip: vec4f) -> vec2f {
 fn to_clip(screen: vec2f, at: vec4f) -> vec4f {
     let ndc = screen / eye.size * 2.0 - 1.0;
     return vec4f(vec2f(ndc.x, -ndc.y) * at.w, at.z, at.w);
+}
+
+// `clip`, of world point `w`, with its depth moved toward the camera by `px` CSS pixels of world
+// length there, at most halfway to the camera. A CSS pixel spans 1 / px_per_unit world units at the
+// focal distance, 1.5 view heights from the camera, and proportionally more further away.
+fn toward_eye(clip: vec4f, w: vec3f, px: f32) -> vec4f {
+    let toward = eye.position.xyz - w;
+    let away = length(toward);
+    if !(away > 0.0) || !(px > 0.0) || !(clip.w > 0.0) {
+        return clip;
+    }
+    let along = min(px * clip.w / (1.5 * eye.size.y * eye.px_per_unit.x), 0.5 * away);
+    let moved = clip_of(w + toward / away * along);
+    return vec4f(clip.xy, moved.z / moved.w * clip.w, clip.w);
 }
 
 // `clip` moved slightly toward the camera, so a mark lying on a face draws over it.

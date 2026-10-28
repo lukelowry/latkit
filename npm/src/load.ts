@@ -2,7 +2,7 @@
 
 import init, * as bindings from '../pkg/latkit.js';
 import { encoder } from './encoder.js';
-import { loaded, thrown } from './internal.js';
+import { loaded, stop, thrown } from './internal.js';
 import { jobs } from './jobs.js';
 
 let configured: { wasm?: string | WebAssembly.Module; worker?: () => Worker } | undefined;
@@ -60,6 +60,7 @@ export function load(
  */
 async function initialize(options: { wasm?: string | WebAssembly.Module; worker?: () => Worker }) {
   await init(options.wasm === undefined ? undefined : { module_or_path: options.wasm });
+  bindings.onStop(stop);
   if (options.worker || typeof Worker === 'function')
     bindings.setJobs(jobs(bindings.module() as WebAssembly.Module, options.worker));
   if (typeof VideoEncoder === 'function') bindings.setEncoder(encoder);

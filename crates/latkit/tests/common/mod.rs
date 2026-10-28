@@ -4,6 +4,9 @@
 #![allow(dead_code, unreachable_pub, reason = "each test file uses some")]
 
 use std::cell::Cell;
+use std::future::Future;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 
 use latkit::host::{Host, Job, Raster, TextRun};
 use latkit::{Camera, Color, Diagram, Frame, Gpu, Grid, Pending, Plane, Theme, View};
@@ -63,6 +66,19 @@ pub const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// The most frames a view may take to settle: uploads, probes, and a two-second transition.
 pub const SETTLE: u32 = 600;
 
+/// Renders frames until `pending` resolves, within `SETTLE` frames.
+pub fn answer<T>(gpu: &Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
+    let mut pending = pin!(pending);
+    let mut context = Context::from_waker(Waker::noop());
+    for _ in 0..SETTLE {
+        if let Poll::Ready(value) = pending.as_mut().poll(&mut context) {
+            return value.expect("an answer");
+        }
+        step(gpu, view);
+    }
+    panic!("the query answers within {SETTLE} frames");
+}
+
 pub fn finish(gpu: &Gpu) {
     let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(DEADLINE) };
     gpu.device().poll(wait).expect("the GPU finishes within the deadline");
@@ -78,6 +94,19 @@ pub fn frame(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
         pixels = step(gpu, view);
     }
     panic!("the view settles within {SETTLE} frames");
+}
+
+/// Renders frames until the view is complete and settled, including work that lands later, such as
+/// a layout job on another thread, within `DEADLINE`. Returns the last frame's pixels.
+pub fn settle(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
+    let started = std::time::Instant::now();
+    let mut pixels = frame(gpu, view);
+    while !view.complete() {
+        assert!(started.elapsed() < DEADLINE, "the view completes within the deadline, waiting on {}", view.waiting());
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        pixels = frame(gpu, view);
+    }
+    pixels
 }
 
 /// Advances the test clock one tick, renders one frame, and returns the target's pixels.

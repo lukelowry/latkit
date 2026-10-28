@@ -86,8 +86,7 @@ impl View {
     /// limits.
     pub(super) fn reach(&self) -> Reach {
         let area = self.area();
-        let sized = self.size[0] > 0.0 && self.size[1] > 0.0;
-        let room = sized.then(|| [area[2] - area[0], area[3] - area[1]]);
+        let room = self.sized().then(|| [area[2] - area[0], area[3] - area[1]]);
         Reach::new(&self.scene.space, room, self.rig.bounds)
     }
 

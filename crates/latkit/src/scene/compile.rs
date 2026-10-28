@@ -53,6 +53,14 @@ impl Fields for Schema<'_> {
         }
     }
 
+    fn empty(&self, from: Option<&(Name, Name)>, name: &str) -> bool {
+        let table = match from {
+            None => Some(self.table),
+            Some((data, table)) => self.all.iter().find(|d| d.name() == data).and_then(|d| d.table(table)),
+        };
+        table.and_then(|t| t.field_named(name)).is_some_and(|field| !field.fixed())
+    }
+
     fn target(&self, name: &str) -> Option<Name> {
         match self.table.field_named(name)? {
             crate::data::Field::Reference(reference) => Some(reference.to.clone()),

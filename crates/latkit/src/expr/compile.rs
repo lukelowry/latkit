@@ -156,6 +156,8 @@ impl Reads {
 pub(crate) struct Channel {
     pub(crate) name: Name,
     pub(crate) reads: Reads,
+    /// Whether its value eases when it changes. A label's text changes at once.
+    pub(crate) eases: bool,
 }
 
 impl Program {
@@ -180,6 +182,9 @@ pub(crate) trait Fields {
     fn kind(&self, from: Option<&(Name, Name)>, name: &str) -> Option<Kind>;
     /// The table that reference field `name` of the mark's table points to.
     fn target(&self, name: &str) -> Option<Name>;
+    /// Whether `name` holds no value yet, so its kind is not fixed. Such a field reads as missing,
+    /// whatever kind its use needs.
+    fn empty(&self, from: Option<&(Name, Name)>, name: &str) -> bool;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -346,22 +351,48 @@ impl<'a> Compiler<'a> {
         self.program.ends.push(EndUse { table: table.clone(), column: wgsl::NONE });
     }
 
+    /// The text field that label text `expr` (of channel `name`) shows: the field itself, or the
+    /// field a `when` returns. An error if `expr` is anything else, or the field holds no text.
+    pub(crate) fn text_of<'e>(&self, name: &str, expr: &'e Expr) -> Result<&'e FieldRef> {
+        let Some(f) = text_field(expr, None).map_err(|e| e.at(name))? else {
+            return Err(invalid("a label's text needs a text field").at(name));
+        };
+        if !self.fits(f, Kind::Text) {
+            return Err(invalid("not a text field").at(&f.name).at(name));
+        }
+        Ok(f)
+    }
+
+    /// Compiles channel `name`, which stores at `word` the dictionary code of derived text field
+    /// `field`, as a diagram's sheet writes its labels. Returns the program column whose dictionary
+    /// decodes the codes.
+    pub(crate) fn derived_text(&mut self, name: &str, field: Name, word: u32) -> Result<u32> {
+        let start = self.begin();
+        let column = self.column(ColumnUse::derived(field, Words::Codes));
+        self.deps |= Deps::DATA;
+        self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
+        self.op(wgsl::OP_STORE_CODE, word, 0, 0, 1, 0)?;
+        self.close(name, start);
+        if let Some(channel) = self.program.channels.last_mut() {
+            channel.eases = false;
+        }
+        Ok(column)
+    }
+
     /// Compiles channel `name`, which stores at `word` the dictionary code of text field `expr`.
     /// `expr` can also be a `when` that returns that field or missing. A missing code draws no
     /// label. Returns the program column whose dictionary decodes the codes.
     pub(crate) fn text(&mut self, name: &str, expr: &Expr, word: u32) -> Result<u32> {
-        let Some(f) = text_field(expr, None).map_err(|e| e.at(name))? else {
-            return Err(invalid("a label's text needs a text field").at(name));
-        };
-        if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Text) {
-            return Err(invalid("not a text field").at(&f.name).at(name));
-        }
+        let f = self.text_of(name, expr)?;
         let start = self.begin();
         // The values compile like any conditional's, and a missing value as the missing code.
         self.expect(expr, Ty::Text).map_err(|e| e.at(name))?;
         let column = self.field_column(f, Words::Codes, false);
         self.op(wgsl::OP_STORE_CODE, word, 0, 0, 1, 0)?;
         self.close(name, start);
+        if let Some(channel) = self.program.channels.last_mut() {
+            channel.eases = false;
+        }
         Ok(column)
     }
 
@@ -396,7 +427,7 @@ impl<'a> Compiler<'a> {
     fn close(&mut self, name: &str, start: u32) {
         self.program.ranges.push([start, self.program.code.len() as u32]);
         let reads = Reads { deps: self.deps, columns: self.columns_read };
-        self.program.channels.push(Channel { name: name.into(), reads });
+        self.program.channels.push(Channel { name: name.into(), reads, eases: true });
     }
 
     /// Compiles channel `name` storing the theme's value in `slot`, for an option left unset.
@@ -453,8 +484,22 @@ impl<'a> Compiler<'a> {
         self.expect(e, Ty::Number)
     }
 
+    /// Whether `e` is missing: `null`, or a field that holds no value yet.
+    fn missing(&self, e: &Expr) -> bool {
+        match &*e.0 {
+            Node::Missing => true,
+            Node::Field(f) => self.fields.empty(f.from.as_ref(), &f.name),
+            _ => false,
+        }
+    }
+
+    /// Whether field `f` has kind `kind`, or holds no value yet and so fits any kind.
+    fn fits(&self, f: &FieldRef, kind: Kind) -> bool {
+        self.fields.kind(f.from.as_ref(), &f.name) == Some(kind) || self.fields.empty(f.from.as_ref(), &f.name)
+    }
+
     fn expect(&mut self, e: &Expr, want: Ty) -> Result<()> {
-        if let Node::Missing = &*e.0 {
+        if self.missing(e) {
             let word = match want {
                 Ty::Color => wgsl::MISSING_COLOR,
                 Ty::Bool => 0,
@@ -483,6 +528,7 @@ impl<'a> Compiler<'a> {
             Node::Bool(b) => self.constant(f32::from(u8::from(*b)).to_bits(), Ty::Bool),
             Node::Color(c) => self.constant(c.packed(), Ty::Color),
             Node::Missing => self.push(wgsl::OP_MISSING, 0, Ty::Number),
+            Node::Field(f) if self.fields.empty(f.from.as_ref(), &f.name) => self.push(wgsl::OP_MISSING, 0, Ty::Number),
             Node::Field(f) => self.field(f),
             Node::State(State::Selected) => self.state(wgsl::OP_SELECTED, Deps::FOCUS, Ty::Bool),
             Node::State(State::Hovered) => self.state(wgsl::OP_HOVERED, Deps::FOCUS, Ty::Bool),
@@ -504,16 +550,15 @@ impl<'a> Compiler<'a> {
                 self.expect(c, Ty::Bool).map_err(|e| e.at("when"))?;
                 // A missing value takes the other branch's type, so it must compile second. A
                 // missing first branch swaps the branches and negates the condition.
-                let (a, b) = match (&*a.0, &*b.0) {
-                    (Node::Missing, Node::Missing) => (a, b),
-                    (Node::Missing, _) => {
+                let (a, b) = match (self.missing(a), self.missing(b)) {
+                    (true, false) => {
                         self.op(unary_code(Unary::Not), 0, 0, 0, 1, 1)?;
                         (b, a)
                     }
                     _ => (a, b),
                 };
                 let ta = self.emit(a)?;
-                if let Node::Missing = &*b.0 {
+                if self.missing(b) {
                     self.expect(b, ta)?;
                     self.op(wgsl::OP_SELECT, 0, 0, 0, 3, 1)?;
                     return Ok(ta);
@@ -530,7 +575,7 @@ impl<'a> Compiler<'a> {
                 // The view computes each row's match on the CPU, as a derived field alongside the
                 // mark's own table.
                 let Node::Field(f) = &*a.0 else { return Err(invalid("contains needs a text field")) };
-                if f.from.is_some() || self.fields.kind(None, &f.name) != Some(Kind::Text) {
+                if f.from.is_some() || !self.fits(f, Kind::Text) {
                     return Err(invalid("contains needs a text field of the mark's own table").at(&f.name));
                 }
                 let name = crate::derive::matches::contains_of(&f.name, text);
@@ -541,7 +586,7 @@ impl<'a> Compiler<'a> {
             }
             Node::Is(a, text) => {
                 let Node::Field(f) = &*a.0 else { return Err(invalid("is needs a text field")) };
-                if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Text) {
+                if !self.fits(f, Kind::Text) {
                     return Err(invalid("is needs a text field").at(&f.name));
                 }
                 let column = self.field_column(f, Words::Codes, false);

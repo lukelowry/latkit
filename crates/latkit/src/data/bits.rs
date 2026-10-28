@@ -40,6 +40,16 @@ impl Bits {
         Bits { words: words.into(), offset: 0, len }
     }
 
+    /// Whether any bit is set.
+    pub(crate) fn any(&self) -> bool {
+        if self.offset != 0 {
+            return (0..self.len).any(|i| self.get(i));
+        }
+        let (full, rest) = (self.len / 64, self.len % 64);
+        let mask = (1_u64 << rest).wrapping_sub(1);
+        self.words[..full].iter().any(|&w| w != 0) || (rest != 0 && self.words[full] & mask != 0)
+    }
+
     pub(crate) fn all(&self) -> bool {
         if self.offset != 0 {
             return (0..self.len).all(|i| self.get(i));

@@ -112,7 +112,7 @@ export default [
     "layout": { "stress": { "gap": 50 } },
     "controls": { "connect": true, "delete": true },
     "marks": [
-      { "vertices": ["plant", "Area"], "contains": ["Device", "area"], "label": "$name", "shadow": true },
+      { "vertices": ["plant", "Area"], "contains": [["Device", "area"]], "label": "$name", "shadow": true },
       { "edges": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "arrows": true, "width": { "px": 1.5 } },
       { "edges": ["plant", "Net"], "route": "orthogonal", "arrows": true },
       {

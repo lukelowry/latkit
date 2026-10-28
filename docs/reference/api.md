@@ -51,7 +51,7 @@ device for [`Gpu.create()`](#gpu-create).
 The error latkit throws: an `Error` with a `code` that names the kind of failure.
 
 {#latkiterror-code .member}
-**`code`**`:` [`Failure`](#failure)`['code'] | 'unloaded' | 'destroyed'` [¶](#latkiterror-code){.headerlink}
+**`code`**`:` [`Failure`](#failure)`['code'] | 'unloaded' | 'destroyed' | 'stopped'` [¶](#latkiterror-code){.headerlink}
 : The kind of failure:
 
   - `invalid`: the input is malformed or does not fit. `path` says where.
@@ -63,6 +63,8 @@ The error latkit throws: an `Error` with a `code` that names the kind of failure
   - `timeout`: the wait's signal timed out.
   - `unloaded`: the call needs WebAssembly, and [`load()`](#load) has not finished.
   - `destroyed`: the object was destroyed and can't be used.
+  - `stopped`: latkit hit an internal error and stopped. Every view reports it once, every
+    `Gpu` is lost, and every later call throws it. Reload the page to start over.
 
 {#latkiterror-path .member}
 **`path`**`?: string` [¶](#latkiterror-path){.headerlink}
@@ -99,7 +101,8 @@ An object that holds WebAssembly memory (and GPU memory, for a [`Gpu`](#gpu)) un
 
 {#handle-destroy .member}
 **`destroy`**`(): void` [¶](#handle-destroy){.headerlink}
-: Frees the object's memory. Calling it again does nothing.
+: Frees the object's memory. Calling it again does nothing. Once latkit has stopped, it only
+  drops the object, since its memory can't be used again.
 
 ## Data and patches
 
@@ -1212,8 +1215,12 @@ const view = await View.create(canvas, {
 
 {#view-fit .member}
 **`fit`**`(fit?:` [`Fit`](#fit)`): void` [¶](#view-fit){.headerlink}
-: Frames what `fit` names, keeping pitch and bearing. Defaults to every row. It takes effect on
-  the next frame, or a frame or two later when the GPU must measure the extent.
+: Frames what `fit` names, keeping pitch and bearing, and replaces any fit not yet applied.
+  Defaults to every row. It applies once the rows have their places (their data streamed, any
+  layout placed them, and they eased there), a frame or two later when the GPU must measure the
+  extent. With nothing drawn to frame, it frames the rows that arrive later. Until a view's first
+  fit applies, it shows only its background. A fit frames a diagram at most at its natural size
+  and the earth at most at zoom 16, which is also where it frames a single point.
 
 {#view-fly .member}
 **`fly`**`(camera:` [`Camera`](#camera)`, seconds?: number): void` [¶](#view-fly){.headerlink}
@@ -1341,7 +1348,8 @@ destroys its views and frame listeners. Other GPUs and datasets stay usable.
 
 {#gpu-lost .member}
 `readonly` **`lost`**`: boolean` [¶](#gpu-lost){.headerlink}
-: Whether the device was lost. Drawing then does nothing, so create a new [`Gpu`](#gpu).
+: Whether the device was lost. Drawing then does nothing, so create a new [`Gpu`](#gpu). Also true once
+  an internal error stopped latkit.
 
 {#gpu-budget .member}
 **`budget`**`:` [`Budget`](#budget) [¶](#gpu-budget){.headerlink}

@@ -76,16 +76,18 @@ fn bytes(color: [f32; 4]) -> [u8; 4] {
     color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
+/// An sRGB channel in linear light.
 fn linear(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-fn gamma(c: f32) -> f32 {
+/// A linear-light channel encoded as sRGB.
+pub(crate) fn gamma(c: f32) -> f32 {
     if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.max(0.0).powf(1.0 / 2.4) - 0.055 }
 }
 
 /// Converts a straight-alpha sRGB color to OKLab, keeping alpha.
-fn oklab([r, g, b, a]: [f32; 4]) -> [f32; 4] {
+pub(crate) fn oklab([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     let [r, g, b] = [r, g, b].map(linear);
     let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
     let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
@@ -99,7 +101,7 @@ fn oklab([r, g, b, a]: [f32; 4]) -> [f32; 4] {
 }
 
 /// Converts an OKLab color to straight-alpha sRGB, keeping alpha.
-fn srgb([l, a, b, alpha]: [f32; 4]) -> [f32; 4] {
+pub(crate) fn srgb([l, a, b, alpha]: [f32; 4]) -> [f32; 4] {
     let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
     let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
     let s_ = (l - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);

@@ -61,10 +61,12 @@ const examples = path.dirname(here);
 const args = process.argv.slice(2);
 const software = args.includes('--software') || process.platform === 'linux';
 
-/** A shader variant listed in shaders.json. `append` is source added after the file's own. */
+/** A shader variant listed in shaders.json. `append` is source added after the file's own. A draw
+ * variant without `colors` writes only depth. */
 interface Variant {
   file: string;
   draws: boolean;
+  colors: boolean;
   compute: string[];
   constants: Record<string, number>[];
   append: string;
@@ -75,6 +77,7 @@ interface Pipeline {
   label: string;
   code: string;
   draws: boolean;
+  colors: boolean;
   entry: string;
   constants: Record<string, number>;
 }
@@ -105,6 +108,7 @@ function pipelines(dir: string): Pipeline[] {
         label: [name, variant.draws ? '' : entry, ...set].filter(Boolean).join(' '),
         code,
         draws: variant.draws,
+        colors: variant.colors,
         entry,
         constants,
       }));
@@ -159,7 +163,7 @@ async function time({
             module,
             entryPoint: 'fragment',
             constants,
-            targets: [{ format: 'rgba8unorm' }],
+            targets: [{ format: 'rgba8unorm', writeMask: pipeline.colors ? 0xf : 0 }],
           },
           primitive: { topology: 'triangle-list' },
           depthStencil: {

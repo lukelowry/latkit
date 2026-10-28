@@ -21,10 +21,11 @@ pub struct Controls {
     /// Whether dragging with the secondary button, or with Shift, rotates and tilts a map or plane.
     /// Defaults to `true`.
     pub turn: bool,
-    /// Whether the keyboard controls the view. Defaults to `true`. Tab and Shift+Tab step through
-    /// the rows nearest the view's center. Arrow keys step to the nearest row in their direction.
-    /// Enter opens the row stepped to, and Space selects it. With no row stepped to, arrow keys pan
-    /// (Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the
+    /// Whether the keyboard controls the view. Defaults to `true`. Tab steps to the row nearest the
+    /// view's center, and the next Tab or Shift+Tab leaves the view, so it is one stop in the
+    /// page's tab order. Arrow keys step to the nearest row in their direction. Enter opens the row
+    /// stepped to, Space selects it, and Escape stops stepping. With no row stepped to, arrow keys
+    /// pan (Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the
     /// selection.
     pub keyboard: bool,
     /// Whether the hovered row glows and a hovered vertex sized in CSS pixels grows. Defaults to

@@ -32,10 +32,7 @@ export default defineConfig([
         ...globals.node,
       },
       parserOptions: {
-        projectService: {
-          allowDefaultProject: ['*.ts', '*.mjs'],
-          defaultProject: 'tsconfig.eslint.json',
-        },
+        projectService: true,
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -58,12 +55,7 @@ export default defineConfig([
     },
   },
   {
-    files: [
-      '**/*.test.ts',
-      'npm/examples/test/**/*.ts',
-      'npm/examples/gate/**/*.ts',
-      'benchmark/**/*.ts',
-    ],
+    files: ['npm/examples/gate/**/*.ts', 'benchmark/**/*.ts'],
     rules: {
       '@typescript-eslint/no-empty-function': 'off',
       '@typescript-eslint/no-explicit-any': 'off',

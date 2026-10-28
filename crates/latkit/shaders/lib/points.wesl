@@ -7,7 +7,7 @@ import package::lib::types::{
 };
 import package::lib::bind::{frame, mark, program};
 import package::lib::state::{row_at, vertex_at, Vertex};
-import package::lib::project::{world, clip_of, shows, to_screen};
+import package::lib::project::{world, clip_of, toward_eye, shows, to_screen};
 import package::lib::focus::{focus_of, faded, growth};
 import package::lib::read::bits_value;
 import package::lib::mark::{px, px_per_length, fringe, within};
@@ -16,6 +16,9 @@ import package::lib::drawn::drawn_row;
 
 struct Point {
     clip: vec4f,
+    // The depth its marker draws at, as clip z over w: its nearest side's, its radius toward the
+    // camera, so where marks hide each other an edge meeting its center ends inside it.
+    drawn_z: f32,
     world: vec3f,
     // Its position, in position units.
     position: vec2f,
@@ -51,6 +54,8 @@ fn point(row: u32) -> Point {
     p.world = world(v.hi, v.lo, v.elevation);
     p.position = v.hi + v.lo;
     p.clip = clip_of(p.world);
+    let front = toward_eye(p.clip, p.world, max(half.x, half.y));
+    p.drawn_z = front.z / front.w;
     p.half = max(half, vec2f(0.0));
     p.color = vec4f(color.rgb, color.a * faded(row, v.flags));
     p.status = unpack4x8unorm(v.status);
@@ -59,6 +64,11 @@ fn point(row: u32) -> Point {
     p.focus = focus;
     p.shown = (v.flags & VISIBLE) != 0u && placed(v) && shows(p.world) && p.clip.w > 0.0;
     return p;
+}
+
+// `p`'s clip position at the depth its marker draws at.
+fn drawn_clip(p: Point) -> vec4f {
+    return vec4f(p.clip.xy, p.drawn_z * p.clip.w, p.clip.w);
 }
 
 // The marker of drawn row `item`, faded and scaled while its tile fades in or out.

@@ -12,7 +12,8 @@ use crate::Color;
 /// by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
 /// names the base and defaults to `dark`. Each option replaces only the base value it sets.
 ///
-/// Lengths are in CSS pixels, or units in a diagram. The text halo and the focus glow are always in
+/// Lengths are in CSS pixels, or units in a diagram. The grid spacing, the text halo, and the focus
+/// glow are always in
 /// CSS pixels.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
@@ -22,6 +23,10 @@ pub struct Theme {
     pub background: Color,
     /// The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule.
     pub grid: Color,
+    /// The least distance between the lines (or dots) of a plane's or diagram's grid and of the
+    /// earth's graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten
+    /// (and 30° and 90° on the earth), and the finer step fades out as it nears this distance.
+    pub grid_spacing: f32,
     /// The color a colormap gives a missing value, such as a row with no value in the field.
     pub missing: Color,
     /// The dash period: one dash and one gap of equal length.
@@ -315,6 +320,7 @@ impl Theme {
         Theme {
             background: hex("#0f141a"),
             grid: Color::WHITE.alpha(0.07),
+            grid_spacing: 24.0,
             missing: hex("#6b7480"),
             dash: 8.0,
             shading: 0.6,

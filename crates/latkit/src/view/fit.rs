@@ -5,6 +5,12 @@
 //! on the GPU, read back, and framed a frame or two later. A plot without a value range measures
 //! its traces whenever they or the camera change. It grows its range with headroom so the axes
 //! stay still.
+//!
+//! A fit measures once positions settle in every space: data has streamed, shapes are
+//! triangulated, any layout has placed the rows, and vertices have eased to their places. Until
+//! then it asks for no frames, since the work it waits on wakes the view. A fit with nothing to
+//! frame waits the same way, and frames the rows that arrive later. A newer fit replaces one being
+//! read back, and extents measured for another scene are measured again.
 
 use super::View;
 use super::camera::Bounds;
@@ -20,10 +26,22 @@ use crate::{Camera, Space};
 pub(crate) struct Fitting {
     /// A fit waiting for its frame.
     pub(crate) wanted: Option<Fit>,
-    /// The extents being read back, and the fit they are measured for.
-    reading: Working<Option<Fit>, Readback>,
+    /// Why the wanted fit cannot measure yet, if it cannot.
+    stalled: Option<Stall>,
+    /// The extents being read back, the scene version they were measured in, and the fit they are
+    /// measured for.
+    reading: Working<(u64, Option<Fit>), Readback>,
     /// Whether a plot's traces changed since they were last measured.
     pub(crate) plot_due: bool,
+}
+
+/// Why a fit cannot measure yet. Either way it asks for no frames: what it waits for wakes the view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stall {
+    /// Positions have not settled: data, shapes, a layout, or eased vertices are on their way.
+    Work,
+    /// Nothing is drawn to frame.
+    Empty,
 }
 
 impl Fitting {
@@ -32,20 +50,30 @@ impl Fitting {
         self.reading.busy()
     }
 
-    /// Whether a fit is waiting to be measured. Always false while extents are being read back.
+    /// Whether a fit is waiting to be measured. Always false while extents are being read back, and
+    /// while the fit waits for positions to settle or for rows to frame.
     pub(crate) fn due(&self) -> bool {
-        self.wanted.is_some() && !self.reading.busy()
+        self.wanted.is_some() && self.stalled.is_none() && !self.reading.busy()
     }
 
-    /// Whether a fit is about to move the camera: one waiting, or its extents being read back.
+    /// Whether a fit is about to move the camera: one waiting for something to frame, or its
+    /// extents being read back.
     pub(crate) fn framing(&self) -> bool {
-        self.wanted.is_some() || self.reading.context().is_some_and(Option::is_some)
+        (self.wanted.is_some() && self.stalled != Some(Stall::Empty))
+            || self.reading.context().is_some_and(|(_, fit)| fit.is_some())
+    }
+
+    /// Sets `fit` as the wanted fit, replacing any fit waiting or being read back.
+    pub(crate) fn want(&mut self, fit: Fit) {
+        self.cancel();
+        self.wanted = Some(fit);
     }
 
     /// Drops the fit about to move the camera, keeping a plot's measure of its traces.
     fn cancel(&mut self) {
         self.wanted = None;
-        if self.reading.context().is_some_and(Option::is_some) {
+        self.stalled = None;
+        if self.reading.context().is_some_and(|(_, fit)| fit.is_some()) {
             self.reading.cancel();
         }
     }
@@ -60,7 +88,7 @@ pub(crate) struct Measure {
 impl View {
     /// Applies a box fit, a plot's fit to its traces' span, or measured extents that arrived.
     pub(super) fn settle_fit(&mut self) {
-        if self.size[0] <= 0.0 {
+        if !self.sized() {
             return;
         }
         match &self.fitting.wanted {
@@ -77,7 +105,14 @@ impl View {
             }
             _ => {}
         }
-        let Some((_, fit, bytes)) = self.fitting.reading.landed() else { return };
+        let Some((_, (scene, fit), bytes)) = self.fitting.reading.landed() else { return };
+        // Extents measured for another scene's marks are measured again.
+        if scene != self.scene_version {
+            if self.fitting.wanted.is_none() {
+                self.fitting.wanted = fit;
+            }
+            return;
+        }
         if let Ok(bytes) = bytes {
             self.measured(&crate::wire::words(&bytes), fit.as_ref());
         }
@@ -100,7 +135,7 @@ impl View {
 
     /// What this frame measures, if anything: a fit whose marks are drawn, or a plot's traces.
     pub(super) fn measuring(&mut self) -> Option<Measure> {
-        if self.fitting.reading.busy() || self.size[0] <= 0.0 {
+        if self.fitting.reading.busy() || !self.sized() {
             return None;
         }
         // A plot with traces fits everything to their whole span once their data is available.
@@ -109,14 +144,11 @@ impl View {
         if plot && matches!(self.fitting.wanted, Some(Fit::All)) && self.traces() {
             return None;
         }
-        // A fit waits until data has streamed, shapes are triangulated and bent, and any layout has
-        // placed the rows. In a diagram it also waits until vertices reach where the sheet puts
-        // them.
-        let easing = matches!(self.scene.space, Space::Diagram(_))
-            && self
-                .marks
-                .iter()
-                .any(|m| m.kind() == MarkKind::Vertices && (m.transition.is_some() || m.begin.is_some()));
+        // Positions settle once data has streamed, shapes are triangulated and bent, any layout has
+        // placed the rows, and vertices have eased to their places.
+        let easing =
+            self.marks.iter().any(|m| m.kind() == MarkKind::Vertices && (m.transition.is_some() || m.begin.is_some()));
+        let settled = !self.derived.placing() && !self.derived.shaping() && !easing;
         let all = matches!(self.fitting.wanted, Some(Fit::All));
         // Fitting everything uses a tiled table's row bounds, regardless of what is drawn. A mark
         // with no rows has nothing to frame. It only delays a fit while no mark has rows.
@@ -124,28 +156,30 @@ impl View {
         let staged = |m: &Shown| self.staged.get(&m.mark.style().data).is_some_and(|s| !s.is_empty());
         let drawn = |m: &Shown| (m.drawable() && !staged(m)) || (all && self.tiled_bounds(m).is_some());
         let empty = |m: &Shown| m.tables.synced() && m.held() == 0;
-        let ready = compiled().any(&drawn)
-            && compiled().all(|m| drawn(m) || empty(m))
-            && !self.derived.placing()
-            && !self.derived.shaping()
-            && !easing;
+        let ready = compiled().any(&drawn) && compiled().all(|m| drawn(m) || empty(m)) && settled;
         if let Some(fit) = self.fitting.wanted.clone().filter(|f| matches!(f, Fit::All | Fit::Rows(_) | Fit::Reveal(_)))
         {
-            let measurable = self.marks.iter().any(|m| m.compiled.is_some() && m.measured());
-            if !measurable {
-                self.fitting.wanted = None;
-                return None;
-            }
             if let Some(b) = self.known(&fit, ready) {
                 self.fitting.wanted = None;
+                self.fitting.stalled = None;
                 self.frame_fit([b[0], b[1], 0.0], [b[2], b[3], 0.0], Some(&fit));
                 self.fitted();
                 return None;
             }
             if !ready {
+                // Nothing to frame: every mark fits measure has failed, or has synced and holds no
+                // rows. Rows arriving wake the view.
+                let nothing = settled
+                    && self
+                        .marks
+                        .iter()
+                        .filter(|m| m.measured())
+                        .all(|m| m.failure.is_some() || (m.compiled.is_some() && empty(m)));
+                self.fitting.stalled = Some(if nothing { Stall::Empty } else { Stall::Work });
                 return None;
             }
             self.fitting.wanted = None;
+            self.fitting.stalled = None;
             return Some(Measure { rows: !matches!(fit, Fit::All), fit: Some(fit) });
         }
         let auto = matches!(self.camera, Camera::Plot { y: None, .. });
@@ -157,7 +191,7 @@ impl View {
     }
 
     pub(super) fn measuring_started(&mut self, readback: Readback, fit: Option<Fit>) {
-        self.fitting.reading.start(0, readback, fit);
+        self.fitting.reading.start(0, readback, (self.scene_version, fit));
     }
 
     /// Frames the extents measured for `fit`, or fits a plot's value range to its traces.
@@ -242,9 +276,9 @@ impl View {
         self.derived.tiled.bounds(&style.data, &style.table)
     }
 
-    /// Frames the box `min..max` at once, within the camera's zoom and pan limits. A fit to
-    /// everything sets the box that narrows the limits. A fit to part of it grows that box and
-    /// never shrinks it.
+    /// Frames the box `min..max` at once, within the camera's zoom and pan limits. The first fit
+    /// of any kind sets the box that narrows the limits. A fit to everything replaces that box,
+    /// and a fit to part of it grows the box and never shrinks it.
     fn frame_box(&mut self, min: [f64; 3], max: [f64; 3], everything: bool) {
         let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area());
         self.rig.hold();
@@ -255,8 +289,9 @@ impl View {
         self.rig.bounds = match (self.rig.bounds, framed) {
             _ if everything => framed,
             (Some(bounds), Some(framed)) => Some(bounds.with(framed)),
-            (bounds, _) => bounds,
+            (bounds, framed) => bounds.or(framed),
         };
+        self.placed = true;
         self.move_camera(camera);
     }
 
@@ -290,6 +325,21 @@ impl View {
         spans
             .reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])])
             .map(|[a, b]| if b > a { [a, b] } else { [a - 0.5, a + 0.5] })
+    }
+}
+
+impl View {
+    /// Whether a frame has given the view a size in both directions. A view without one measures
+    /// and fits nothing.
+    pub(super) fn sized(&self) -> bool {
+        self.size[0] > 0.0 && self.size[1] > 0.0
+    }
+
+    /// Whether frames show only the background: the camera has not been placed yet, and a fit is
+    /// about to place it. The first frame drawn then shows what the fit frames, not the camera a
+    /// view starts with.
+    pub(super) fn unplaced(&self) -> bool {
+        !self.placed && self.fitting.framing()
     }
 }
 

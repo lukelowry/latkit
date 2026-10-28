@@ -16,10 +16,10 @@
 //! Menus and connections report the rows under their point once a pick resolves, in their place
 //! among the intents.
 //!
-//! Keys can point at rows too. Tab steps through the rows nearest the view's middle, and past the
-//! last one lets focus leave the view. An arrow steps to the nearest row in its direction. Enter
-//! opens the row and Space toggles it in the selection. The row the keys point at stays hovered
-//! until the pointer acts.
+//! Keys can point at rows too. Tab steps to the row nearest the view's middle, and the next Tab
+//! or Shift+Tab lets focus leave the view. An arrow steps to the nearest row in its direction.
+//! Enter opens the row and Space toggles it in the selection. The row the keys point at stays
+//! hovered until the pointer acts.
 
 use super::View;
 use super::event::{Awaited, Cursor, End, Event, Fit, Hit, Phase, Trigger};
@@ -186,7 +186,7 @@ impl View {
     /// the time between inputs. Returns whether the view used the input, so the platform can skip
     /// its default handling: scrolling the page, its context menu, or moving focus.
     pub fn input(&mut self, input: &Input, time: f64) -> bool {
-        if self.size[0] <= 0.0 {
+        if !self.sized() {
             return false;
         }
         if time.is_finite() {
@@ -779,13 +779,20 @@ impl View {
         true
     }
 
-    /// Steps the row the keys point at: Tab to the next row nearest the view's middle, Shift+Tab
-    /// back, an arrow to the nearest row in its direction. Tab uses the rows as last picked and
-    /// waits only for the first pick. An arrow waits for rows picked where the current frame draws
-    /// them. Past either end, Tab is not used, so focus leaves the view. Returns whether the key
-    /// was used.
+    /// Steps the row the keys point at: Tab to the row nearest the view's middle, an arrow to the
+    /// nearest row in its direction. The view is one stop in the page's tab order: Tab steps to a
+    /// row once, and the next Tab or any Shift+Tab is not used, so focus leaves the view. Tab uses
+    /// the rows as last picked and waits only for the first pick. An arrow waits for rows picked
+    /// where the current frame draws them. Returns whether the key was used.
     fn step(&mut self, key: Key, modifiers: Modifiers) -> bool {
         let tab = key == Key::Tab;
+        let entering = self.gestures.keys.queued.iter().any(|(queued, _)| *queued == Key::Tab);
+        if tab && (modifiers.shift || entering || self.gestures.keys.at.is_some()) {
+            if self.gestures.keys.at.take().is_some() {
+                self.hover(None, Trigger { point: self.middle(), modifiers, device: Device::Keyboard });
+            }
+            return false;
+        }
         if !self.gestures.keys.fresh && self.gestures.keys.picking.is_none() {
             if !self.marks.iter().any(Shown::probed) {
                 return false;
@@ -801,18 +808,11 @@ impl View {
         }
         let rows = keys.rows.as_deref().unwrap_or_default();
         let next = match (key, keys.at) {
-            (Key::Tab, None) => (!rows.is_empty()).then_some(0),
-            (Key::Tab, Some(i)) if modifiers.shift => i.checked_sub(1),
-            (Key::Tab, Some(i)) => Some(i + 1).filter(|&j| j < rows.len()),
+            (Key::Tab, _) => (!rows.is_empty()).then_some(0),
             (arrow, Some(i)) => toward(rows, i, arrow),
             (_, None) => None,
         };
-        let Some(next) = next else {
-            if tab && self.gestures.keys.at.take().is_some() {
-                self.hover(None, Trigger { point: self.middle(), modifiers, device: Device::Keyboard });
-            }
-            return false;
-        };
+        let Some(next) = next else { return false };
         let hit = rows[next].clone();
         self.gestures.keys.at = Some(next);
         self.hover(Some(hit.clone()), Trigger { point: hit.point, modifiers, device: Device::Keyboard });

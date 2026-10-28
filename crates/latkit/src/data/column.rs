@@ -79,12 +79,18 @@ impl Page {
 
 /// A field's values in pages of [`PAGE_ROWS`] rows. Writes replace only the pages they touch. The
 /// others keep their ids.
+///
+/// Missing values fit any kind. A column's kind is fixed once it holds a value: until then, values
+/// of any kind can be written to it, and it takes their kind. Values that are all missing can be
+/// written to a column of any kind.
 #[derive(Clone, Debug)]
 pub(crate) struct Column {
     len: usize,
     pages: Arc<[Page]>,
     /// An empty slice with the column's storage type, so an empty column still knows its kind.
     like: Values,
+    /// Whether the column has held a value. Until then its kind is not fixed.
+    fixed: bool,
 }
 
 impl Column {
@@ -93,12 +99,12 @@ impl Column {
         let pages = (0..len.div_ceil(PAGE_ROWS))
             .map(|p| Page::new(values.slice(p * PAGE_ROWS..len.min((p + 1) * PAGE_ROWS))))
             .collect();
-        Column { len, pages, like: values.slice(0..0) }
+        Column { len, pages, like: values.slice(0..0), fixed: values.holds_any() }
     }
 
     /// A column of `len` missing values with the storage of `like`.
     pub(crate) fn missing(like: &Values, len: usize) -> Column {
-        let empty = Column { len: 0, pages: Arc::new([]), like: like.slice(0..0) };
+        let empty = Column { len: 0, pages: Arc::new([]), like: like.slice(0..0), fixed: false };
         empty.write(len, &[], &empty).expect("same storage")
     }
 
@@ -107,7 +113,8 @@ impl Column {
     pub(crate) fn from_pages(pages: Vec<Values>, like: &Values) -> Column {
         debug_assert!(pages.iter().rev().skip(1).all(|p| p.len() == PAGE_ROWS));
         let len = pages.iter().map(Values::len).sum();
-        Column { len, pages: pages.into_iter().map(Page::new).collect(), like: like.slice(0..0) }
+        let fixed = pages.iter().any(Values::holds_any);
+        Column { len, pages: pages.into_iter().map(Page::new).collect(), like: like.slice(0..0), fixed }
     }
 
     /// A column of existing `pages`, keeping their ids. Every page but the last must hold
@@ -115,7 +122,8 @@ impl Column {
     pub(crate) fn of_pages(pages: Vec<Page>, like: &Values) -> Column {
         debug_assert!(pages.iter().rev().skip(1).all(|p| p.values.len() == PAGE_ROWS));
         let len = pages.iter().map(|p| p.values.len()).sum();
-        Column { len, pages: pages.into(), like: like.slice(0..0) }
+        let fixed = pages.iter().any(|p| p.values.holds_any());
+        Column { len, pages: pages.into(), like: like.slice(0..0), fixed }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -124,6 +132,11 @@ impl Column {
 
     pub(crate) fn kind(&self) -> Kind {
         self.like.kind()
+    }
+
+    /// Whether the column has held a value, which fixes its kind.
+    pub(crate) fn fixed(&self) -> bool {
+        self.fixed
     }
 
     pub(crate) fn pages(&self) -> &[Page] {
@@ -165,8 +178,17 @@ impl Column {
     ///
     /// `writes` are `(row, source row)` pairs sorted by row, each row at most once. Pages that no
     /// write touches and that keep their length keep their ids. New rows not written are missing.
-    /// Returns an error if `source` holds another kind of value.
+    /// Returns an error if both hold values, of different kinds. A column that holds no value takes
+    /// the kind of `source`, and a `source` that holds none writes missing values of this kind.
     pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &Column) -> Result<Column> {
+        if self.kind() != source.kind() {
+            if !self.fixed {
+                return Column::missing(&source.like, self.len).write(len, writes, source);
+            }
+            if !source.fixed {
+                return self.write(len, writes, &Column::missing(&self.like, source.len));
+            }
+        }
         debug_assert!(len >= self.len);
         debug_assert!(writes.windows(2).all(|w| w[0].0 < w[1].0));
         let count = len.div_ceil(PAGE_ROWS);
@@ -175,6 +197,7 @@ impl Column {
         sources.extend(source.pages.iter().map(|p| &p.values));
         sources.push(&source.like);
         let mut next = 0;
+        let mut fixed = self.fixed;
         for p in 0..count {
             let start = p * PAGE_ROWS;
             let page_len = (len - start).min(PAGE_ROWS);
@@ -198,6 +221,7 @@ impl Column {
             sources[0] = old.map_or(&self.like, |o| &o.values);
             let kept = sources[0].len();
             let values = Values::assemble(&sources, Picks::Writes { from: &from, kept })?;
+            fixed |= source.fixed && values.holds_any();
             pages.push(match old {
                 // Record the rows written, plus the rows added past the old page's end.
                 Some(old) => {
@@ -208,7 +232,7 @@ impl Column {
                 None => Page::new(values),
             });
         }
-        Ok(Column { len, pages: pages.into(), like: self.like.clone() })
+        Ok(Column { len, pages: pages.into(), like: self.like.clone(), fixed })
     }
 
     /// The rows written since `before`, in order, where this column was written from `before` a
@@ -314,7 +338,8 @@ impl Column {
             let chunk = &rows[p * PAGE_ROWS..rows.len().min((p + 1) * PAGE_ROWS)];
             pages.push(Page::new(Values::assemble(&sources, Picks::Rows(chunk)).expect("one storage")));
         }
-        Column { len: rows.len(), pages: pages.into(), like: self.like.clone() }
+        let fixed = self.fixed && pages.iter().any(|p| p.values.holds_any());
+        Column { len: rows.len(), pages: pages.into(), like: self.like.clone(), fixed }
     }
 }
 

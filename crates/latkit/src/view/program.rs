@@ -39,13 +39,40 @@ fn changed(was: &[u32], words: &[u32]) -> Vec<[usize; 2]> {
 }
 
 impl View {
+    /// The codes of mark `i`'s ports, among the ports of every vertex mark of its table. Empty for
+    /// a mark with no ports.
+    fn port_codes(&self, i: usize) -> Vec<u32> {
+        let crate::Mark::Vertices(mark) = &self.marks[i].mark else { return Vec::new() };
+        if mark.ports.is_empty() {
+            return Vec::new();
+        }
+        let style = &mark.style;
+        let table: Vec<&crate::Vertices> = self
+            .marks
+            .iter()
+            .filter_map(|m| match &m.mark {
+                crate::Mark::Vertices(v) if v.style.data == style.data && v.style.table == style.table => Some(v),
+                _ => None,
+            })
+            .collect();
+        crate::derive::graph::codes_of(mark, &table)
+    }
+
     /// Writes every changed mark's words into its region of the program buffer. When the buffer
     /// grows, `encoder` copies the old contents over, and later writes are ordered after the copy.
     pub(super) fn pack(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
         let gpu = self.gpu.clone();
         let font = self.scene.theme.text.font.clone();
-        for shown in self.marks.iter_mut().filter(|m| !m.packed) {
-            shown.write_ports(&font, inner);
+        // Each vertex mark's port codes, among the ports of every vertex mark of its table. A mark
+        // whose codes changed, as when another mark of its table adds ports, writes them again.
+        let codes: Vec<Vec<u32>> = (0..self.marks.len()).map(|i| self.port_codes(i)).collect();
+        for (shown, codes) in self.marks.iter_mut().zip(&codes) {
+            if !shown.ports.chunks(5).map(|words| words[0]).eq(codes.iter().copied()) {
+                shown.packed = false;
+            }
+        }
+        for (shown, codes) in self.marks.iter_mut().zip(&codes).filter(|(m, _)| !m.packed) {
+            shown.write_ports(&font, codes, inner);
             let Some(compiled) = &mut shown.compiled else { continue };
             let markers = &mut compiled.drawing.markers;
             if !markers.icons.is_empty() {

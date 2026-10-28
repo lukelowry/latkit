@@ -231,12 +231,8 @@ impl Scene {
                 return Err(Error::invalid(reason).at(option).at(i).at("marks"));
             }
             let style = mark.style();
-            let shown = match style.color.as_ref().and_then(crate::Expr::colormap_of) {
-                Some((colormap, domain)) => domain.is_some() || !colormap.named_categories().is_empty(),
-                None => false,
-            };
-            if style.legend.is_some() && !shown {
-                let reason = "a legend needs a color mapped through a colormap with a domain or named categories";
+            if style.legend.is_some() && style.color.as_ref().and_then(crate::Expr::colormap_of).is_none() {
+                let reason = "a legend needs a color mapped through a colormap";
                 return Err(Error::invalid(reason).at("legend").at(i).at("marks"));
             }
         }

@@ -23,8 +23,8 @@ Vertices("vertices") {
     /// The point field that places rows when `position` is not set. Defaults to the field named
     /// `geometry`.
     geometry: Option<Name>,
-    /// Height above the ground. On the earth, a fraction of the earth's radius. Defaults to 0. Not
-    /// allowed in a diagram, which is flat.
+    /// Height above the ground. On the earth, in degrees of arc like every length there (one is about
+    /// 111 km). Defaults to 0. Not allowed in a diagram, which is flat.
     elevation: Expr = "crate::scene::mark::zero",
     /// Each row's radius in CSS pixels, or units in a diagram, unless given with `px` or `units`.
     /// A diagram does not accept `px`. Defaults to the theme's `vertex.radius`.
@@ -40,10 +40,10 @@ Vertices("vertices") {
     /// Ports on each row, one for each reference field that names a net. An `edges` mark of the net
     /// table, without `ends`, draws the nets. Diagrams only.
     ports: Vec<(Name, Port)> as "[reference: string, port: Port][]",
-    /// Makes each row a group containing the rows of `table` whose `reference` field names it. A
-    /// group draws as a container around its members, with its label as a title in its header.
-    /// Diagrams only.
-    contains: Option<(Name, Name)> as "[table: string, reference: string]",
+    /// Makes each row a group containing, for each `[table, reference]`, the rows of `table` whose
+    /// `reference` field names it, so a group can hold rows of several tables. A group draws as a
+    /// container around its members, with its label as a title in its header. Diagrams only.
+    contains: Vec<(Name, Name)> as "[table: string, reference: string][]",
     /// Whether each block or group casts a shadow on the sheet, styled by the theme's
     /// `diagram.shadow`. Defaults to `false`. Diagrams only.
     shadow: bool,
@@ -62,7 +62,7 @@ impl Vertices {
             marker: Marker::default(),
             ring: None,
             ports: Vec::new(),
-            contains: None,
+            contains: Vec::new(),
             shadow: false,
         }
     }
@@ -78,12 +78,14 @@ impl Vertices {
         self
     }
 
-    /// Makes each row a group containing the rows of `table` whose `reference` field names it. A
-    /// group draws as a container around its members, with its label as a title in its header.
-    /// Diagrams only.
+    /// Makes each row a group containing the rows of `table` whose `reference` field names it. Call
+    /// it again to add another table. It replaces any earlier reference for `table`. A group draws
+    /// as a container around its members, with its label as a title in its header. Diagrams only.
     #[must_use]
     pub fn contains(mut self, table: impl Into<Name>, reference: impl Into<Name>) -> Vertices {
-        self.contains = Some((table.into(), reference.into()));
+        let table = table.into();
+        self.contains.retain(|(known, _)| *known != table);
+        self.contains.push((table, reference.into()));
         self
     }
 
@@ -108,7 +110,7 @@ impl Vertices {
         self
     }
 
-    /// Sets the height above the ground. On the earth, a fraction of the earth's radius. Not
+    /// Sets the height above the ground. On the earth, in degrees of arc like every length there. Not
     /// allowed in a diagram, which is flat.
     #[must_use]
     pub fn elevation(mut self, z: impl Into<Expr>) -> Vertices {
@@ -156,8 +158,13 @@ impl Vertices {
         self
     }
 
+    /// Whether its rows may stand above the ground: its elevation is not zero.
+    pub(crate) fn raised(&self) -> bool {
+        self.elevation != crate::scene::mark::zero()
+    }
+
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
-        let group = self.contains.is_some();
+        let group = !self.contains.is_empty();
         let inputs = self.marker.inputs();
         if inputs.len() > 8 {
             return Err(crate::Error::invalid("a marker reads at most eight inputs").at("marker"));

@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -73,6 +74,20 @@ thread_local! {
     static FRAMES: RefCell<Vec<Rc<RefCell<Frames>>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Set once a panic stops latkit. A panic aborts wherever it happens, so the state it left borrowed
+/// or half changed can't be used again. Frames, input, and wakes then do nothing.
+static STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// Stops latkit after a panic: no frame, input, or wake reaches a view again. A panic hook calls it
+/// before the panic aborts.
+pub fn stop() {
+    STOPPED.store(true, Ordering::Relaxed);
+}
+
+fn stopped() -> bool {
+    STOPPED.load(Ordering::Relaxed)
+}
+
 fn frames_of(gpu: &Gpu) -> Rc<RefCell<Frames>> {
     FRAMES.with(|all| {
         let mut all = all.borrow_mut();
@@ -129,9 +144,12 @@ fn scope() -> Option<Scope> {
     global.dyn_ref::<web_sys::DedicatedWorkerGlobalScope>().map(|worker| Scope::Worker(worker.clone()))
 }
 
-/// Requests an animation frame, unless one is already requested or a harness steps the frames. Also
-/// wakes every [`landed`] future.
+/// Requests an animation frame, unless one is already requested, a harness steps the frames, or a
+/// panic stopped latkit. Also wakes every [`landed`] future.
 fn schedule(frames: &Rc<RefCell<Frames>>) {
+    if stopped() {
+        return;
+    }
     let landing = {
         let mut f = frames.borrow_mut();
         if !f.stepped
@@ -151,6 +169,9 @@ fn schedule(frames: &Rc<RefCell<Frames>>) {
 }
 
 fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
+    if stopped() {
+        return;
+    }
     frames.borrow_mut().scheduled = None;
     let listeners = frames.borrow().listeners.clone();
     for (id, listener) in &listeners {
@@ -464,6 +485,8 @@ struct Painted {
     captured: Vec<(u32, usize)>,
     hovered: Option<usize>,
     focus: usize,
+    /// When a pointer was last released, in milliseconds on the events' clock.
+    released: f64,
     cursor: Cursor,
     handlers: Vec<Handler>,
     resize: Option<Resizing>,
@@ -530,6 +553,7 @@ impl Canvas {
             captured: Vec::new(),
             hovered: None,
             focus: 0,
+            released: f64::NEG_INFINITY,
             cursor: Cursor::Default,
             handlers: Vec::new(),
             resize: None,
@@ -575,40 +599,45 @@ impl Canvas {
         }
     }
 
-    /// The canvas's size in CSS pixels: its pixels over its pixels per CSS pixel.
+    /// The canvas's size in CSS pixels: its pixels over its pixels per CSS pixel. Zero while it
+    /// has no box.
     pub fn css_size(&self) -> [f32; 2] {
-        let (size, ratio) = self.0.borrow().measure();
-        size.map(|side| side as f32 / ratio)
+        self.0.borrow().measure().map_or([0.0; 2], |(size, ratio)| size.map(|side| side as f32 / ratio))
     }
 }
 
 impl Painted {
-    /// The canvas's size in pixels, and its pixels per CSS pixel.
-    fn measure(&self) -> ([u32; 2], f32) {
-        match &self.target {
+    /// The canvas's size in pixels, and its pixels per CSS pixel. `None` while it has no box, as
+    /// when it or a parent is `display: none`.
+    fn measure(&self) -> Option<([u32; 2], f32)> {
+        let (size, ratio) = match &self.target {
             Target::Element(element) => {
                 let ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
-                let side = |css: i32| (f64::from(css) * ratio).round().max(1.0) as u32;
+                let side = |css: i32| (f64::from(css) * ratio).round().max(0.0) as u32;
                 ([side(element.client_width()), side(element.client_height())], ratio as f32)
             }
-            Target::Offscreen { canvas, pixel_ratio } => {
-                ([canvas.width().max(1), canvas.height().max(1)], *pixel_ratio)
-            }
-        }
+            Target::Offscreen { canvas, pixel_ratio } => ([canvas.width(), canvas.height()], *pixel_ratio),
+        };
+        (size[0] > 0 && size[1] > 0).then_some((size, ratio))
     }
 
     /// Whether a frame is due: the canvas changed, or a view it shows wants to draw. Never while
-    /// every view it shows is lent to a shot, since it keeps their last frames.
+    /// the canvas has no box, since its views have nothing to draw into until the resize observer
+    /// sees one, and never while every view it shows is lent to a shot, since it keeps their last
+    /// frames.
     fn wants_frame(&self) -> bool {
-        self.views.iter().any(|v| !v.lent()) && (self.due || self.views.iter().any(PageView::wants_frame))
+        self.measure().is_some()
+            && self.views.iter().any(|v| !v.lent())
+            && (self.due || self.views.iter().any(PageView::wants_frame))
     }
 
     /// Records a frame if one is needed, first sizing the canvas to its CSS box. Each view that
     /// needs to draw renders into its panel, or straight into the canvas when one view fills it. A
     /// view lent to a shot, or whose pipelines still compile, keeps its panel's previous contents.
-    /// While no view can draw, the canvas keeps its current frame.
+    /// While no view can draw, or the canvas has no box, the canvas keeps its current frame. Its
+    /// views then derive, sync, and fit nothing.
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, time: f64) -> Option<wgpu::SurfaceTexture> {
-        let (size, ratio) = self.measure();
+        let (size, ratio) = self.measure()?;
         let resized = size != self.surface.size();
         if self.views.is_empty() || !(resized || self.wants_frame()) {
             return None;
@@ -734,7 +763,7 @@ impl Painted {
     /// Each panel in CSS pixels at the canvas's current size, used before the first frame records
     /// them.
     fn css_rects(&self) -> Vec<[f32; 4]> {
-        let (size, ratio) = self.measure();
+        let Some((size, ratio)) = self.measure() else { return Vec::new() };
         self.panels.rects(size, [1, 1]).map(|rects| rects.iter().map(|r| css(*r, ratio)).collect()).unwrap_or_default()
     }
 }
@@ -911,7 +940,21 @@ fn listen(state: &Rc<RefCell<Painted>>, element: &HtmlCanvasElement) -> Result<(
         let weak = Rc::downgrade(state);
         let target = element.clone();
         let handler = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-            let Some(state) = weak.upgrade() else { return };
+            let Some(state) = weak.upgrade().filter(|_| !stopped()) else { return };
+            if matches!(kind, "pointerup" | "pointercancel") {
+                state.borrow_mut().released = event.time_stamp();
+            }
+            // The page asks for a menu with `contextmenu`, which also follows a secondary click, a
+            // Control-click on Apple platforms, and a held touch. Their gestures already open menus,
+            // so only a `contextmenu` no pointer caused reaches the views: Shift+F10, the menu key,
+            // or a screen reader's command.
+            if kind == "contextmenu" {
+                event.prevent_default();
+                let state = state.borrow();
+                if !state.captured.is_empty() || event.time_stamp() - state.released < POINTER_MENU {
+                    return;
+                }
+            }
             let Some(input) = handle(&target, &event) else { return };
             let routed = state.borrow_mut().route(input);
             let time = event.time_stamp() / 1000.0;
@@ -979,8 +1022,8 @@ fn listen(state: &Rc<RefCell<Painted>>, element: &HtmlCanvasElement) -> Result<(
         })
     })?;
     add("contextmenu", |_, event| {
-        event.prevent_default();
-        None
+        let event = event.dyn_ref::<web_sys::MouseEvent>()?;
+        Some(Input::Key { key: Key::Menu, down: true, modifiers: modifiers!(event) })
     })?;
     for kind in ["keydown", "keyup"] {
         add(kind, |_, event| keyed(event))?;
@@ -1010,10 +1053,31 @@ macro_rules! modifiers {
 }
 use modifiers;
 
-/// Reads a pointer press, focusing the element and capturing the pointer.
+/// Milliseconds after a pointer's release in which a `contextmenu` is taken as caused by it.
+const POINTER_MENU: f64 = 100.0;
+
+/// Whether the page runs on an Apple platform, where Control with the primary mouse button is the
+/// secondary button.
+fn apple() -> bool {
+    thread_local! {
+        static APPLE: bool = web_sys::window()
+            .and_then(|window| window.navigator().platform().ok())
+            .is_some_and(|platform| platform.starts_with("Mac") || platform.starts_with("iP"));
+    }
+    APPLE.with(|apple| *apple)
+}
+
+/// Reads a pointer press, focusing the element and capturing the pointer. On Apple platforms a
+/// Control press of the primary mouse button is a secondary press without Control, so it opens a
+/// menu or turns the camera as a right press does.
 fn pressed(element: &HtmlCanvasElement, event: &web_sys::Event) -> Option<Input> {
     let event = event.dyn_ref::<PointerEvent>()?;
+    let mut modifiers = modifiers!(event);
     let button = match event.button() {
+        0 if modifiers.control && device(event) == Device::Mouse && apple() => {
+            modifiers.control = false;
+            Button::Secondary
+        }
         0 => Button::Primary,
         1 => Button::Middle,
         2 => Button::Secondary,
@@ -1025,7 +1089,7 @@ fn pressed(element: &HtmlCanvasElement, event: &web_sys::Event) -> Option<Input>
         pointer: event.pointer_id() as u32,
         point: point(element, event),
         button,
-        modifiers: modifiers!(event),
+        modifiers,
         device: device(event),
     })
 }
@@ -1056,7 +1120,6 @@ fn keyed(event: &web_sys::Event) -> Option<Input> {
         "ArrowRight" => Key::Right,
         "ArrowUp" => Key::Up,
         "ArrowDown" => Key::Down,
-        "ContextMenu" => Key::Menu,
         _ => Key::Other,
     };
     Some(Input::Key { key, down: event.type_() == "keydown", modifiers: modifiers!(event) })
