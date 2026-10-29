@@ -8,6 +8,8 @@
 
 use std::path::Path;
 
+use serde_json::Value;
+
 #[test]
 fn npm_schema_matches_the_input_schemas() {
     blessed("npm/schema.json", &latkit::schemas());
@@ -39,23 +41,49 @@ fn npm_colormaps_match_the_catalog() {
             serde_json::json!({ "name": map.name(), "label": map.label(), "kind": map.kind(), "colors": colors })
         })
         .collect();
-    blessed("npm/colormaps.json", &serde_json::Value::from(catalog));
+    // The platform's `powf` and `cbrt` round some colors a step apart, so channels may differ by one.
+    blessed_by("npm/colormaps.json", &serde_json::Value::from(catalog), within_a_step);
 }
 
-/// Checks that file `path`, from the repository's root, holds `value` as pretty JSON, or writes it
+/// Checks that file `path`, from the repository's root, holds `value`, or writes it as pretty JSON
 /// with `LATKIT_BLESS` set.
-fn blessed(path: &str, value: &serde_json::Value) {
+fn blessed(path: &str, value: &Value) {
+    blessed_by(path, value, |committed, value| committed == value);
+}
+
+/// [`blessed`], with the committed JSON compared to `value` by `same`. Both are read from their text,
+/// so numbers compare as written.
+fn blessed_by(path: &str, value: &Value, same: impl Fn(&Value, &Value) -> bool) {
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path);
     let text = serde_json::to_string_pretty(value).expect("values serialize") + "\n";
     if std::env::var_os("LATKIT_BLESS").is_some() {
         std::fs::write(&file, &text).expect("the file written");
         return;
     }
-    let committed = std::fs::read_to_string(&file).unwrap_or_default().replace("\r\n", "\n");
+    let read = |text: &str| serde_json::from_str::<Value>(text).ok();
+    let committed = std::fs::read_to_string(&file).ok().and_then(|committed| read(&committed));
     assert!(
-        committed == text,
+        committed.zip(read(&text)).is_some_and(|(committed, value)| same(&committed, &value)),
         "{path} is out of date: run LATKIT_BLESS=1 cargo test -p latkit --test schema, then node npm/build.mjs schema"
     );
+}
+
+/// Whether `a` and `b` are the same JSON, except that `#rrggbb` colors may differ by one in each
+/// channel.
+fn within_a_step(a: &Value, b: &Value) -> bool {
+    let channels =
+        |s: &str| s.strip_prefix('#').and_then(|hex| u32::from_str_radix(hex, 16).ok()).map(u32::to_be_bytes);
+    match (a, b) {
+        (Value::String(a), Value::String(b)) if a.len() == 7 && b.len() == 7 => match (channels(a), channels(b)) {
+            (Some(a), Some(b)) => a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1),
+            _ => a == b,
+        },
+        (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| within_a_step(a, b)),
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len() && a.iter().all(|(key, a)| b.get(key).is_some_and(|b| within_a_step(a, b)))
+        }
+        _ => a == b,
+    }
 }
 
 #[test]
