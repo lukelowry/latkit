@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "latkit"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "latkit-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "clap",
  "latkit",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "latkit-js"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "console_error_panic_hook",
  "futures-util",
@@ -2265,7 +2265,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "serde_json",
  "toml_edit",
