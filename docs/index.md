@@ -41,7 +41,7 @@ A **dataset** is a set of named tables of columns, and you change it in place. A
 describes what to draw: marks that draw a dataset's tables, in a space, with a theme and controls.
 A **view** draws a scene on a canvas and into pictures. Scenes and expressions are plain data, and
 `JSON.stringify` writes the JSON the command line reads. `load()` loads the WebAssembly that
-datasets and drawing need. `View.create()`, `Data.read()`, and `Patch.read()` call it for you.
+datasets and drawing need. `View.create()` and `Data.read()` call it for you.
 
 ## Examples
 

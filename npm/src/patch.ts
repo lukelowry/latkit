@@ -16,7 +16,6 @@ import {
   type ReadableBytes,
   type Wait,
 } from './internal.js';
-import { load } from './load.js';
 
 /**
  * Row ids: a list of numbers or strings, `{ count }` for ids `0` to `count - 1`, or a `Uint32Array`
@@ -155,7 +154,8 @@ export class Patch {
    * its method name and holds the method's parameters by name, such as
    * `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`. A field may be a slice of a
    * binary file, `{file, dtype, offset, count}`, which is fetched right away. Bytes are read
-   * without WebAssembly.
+   * without WebAssembly. JSON needs it, so call `await load()` first, or this rejects with an
+   * `unloaded` error.
    */
   static async read(
     source: ByteSource | object,
@@ -171,7 +171,6 @@ export class Patch {
     const { bytes, base } = await bytesOf(source, options);
     if (MAGIC.every((byte, i) => bytes[i] === byte))
       return Patch.#owning(bytes.slice(), options.limit);
-    await load();
     const read = wasm().readPatch(bytes, options.base ?? base);
     return Patch.#owning(await waited<Uint8Array>(read, options, 'reading a patch'), options.limit);
   }

@@ -84,7 +84,8 @@ pub fn stop() {
     STOPPED.store(true, Ordering::Relaxed);
 }
 
-fn stopped() -> bool {
+/// Whether a panic stopped latkit.
+pub fn stopped() -> bool {
     STOPPED.load(Ordering::Relaxed)
 }
 
@@ -519,10 +520,9 @@ impl Canvas {
         canvas.set_layout(layout)?;
         let weak = Rc::downgrade(&canvas.0);
         let resized = Closure::<dyn FnMut(JsValue)>::new(move |_: JsValue| {
-            if let Some(state) = weak.upgrade() {
-                state.borrow_mut().due = true;
-                schedule(&state.borrow().frames);
-            }
+            let Some(state) = weak.upgrade().filter(|_| !stopped()) else { return };
+            state.borrow_mut().due = true;
+            schedule(&state.borrow().frames);
         });
         let observer = ResizeObserver::new(resized.as_ref().unchecked_ref())
             .map_err(|_| Error::Unsupported("no ResizeObserver".into()))?;

@@ -898,9 +898,9 @@ Every class, function, and type the \`latkit\` package exports. Scenes and their
 [scene and result types](types.md). These rules apply everywhere, so the entries below don't
 repeat them:
 
-- Scenes, expressions, and patches are plain data. Datasets, views, pictures, and the colormap
-  functions need latkit's WebAssembly, and throw an \`unloaded\` error until \`load()\` finishes.
-  \`View.create()\`, \`Gpu.create()\`, \`Data.read()\`, and \`Patch.read()\` of JSON call it
+- Scenes, expressions, and patches are plain data. Datasets, views, pictures, the colormap
+  functions, and \`Patch.read()\` of JSON need latkit's WebAssembly, and throw an \`unloaded\` error
+  until \`load()\` finishes. \`View.create()\`, \`Gpu.create()\`, and \`Data.read()\` call it
   themselves.
 - Everything latkit throws or rejects with is a \`LatkitError\`. Input it can't use fails with an
   \`invalid\` error and changes nothing. The error's \`path\` names the bad part, such as

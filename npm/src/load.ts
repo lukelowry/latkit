@@ -71,7 +71,7 @@ async function initialize(options: {
   if (worker || typeof Worker === 'function')
     bindings.setJobs(jobs(bindings.module() as WebAssembly.Module, worker));
   if (typeof VideoEncoder === 'function') bindings.setEncoder(encoder);
-  loaded();
+  loaded(bindings);
   // Request the first device now, so drawing does not wait for it later. The device compiles
   // nothing until a view is created.
   if ((globalThis.navigator as { gpu?: unknown } | undefined)?.gpu) {
