@@ -4,7 +4,7 @@
  * `ReadableBytes` are public.
  */
 
-import * as bindings from '../pkg/latkit.js';
+import type * as Bindings from '../pkg/latkit.js';
 import type { Failure } from './outputs.js';
 
 /** The error latkit throws: an `Error` with a `code` that names the kind of failure. */
@@ -22,7 +22,8 @@ export interface LatkitError extends Error {
    * - `unloaded`: the call needs WebAssembly, and `load()` has not finished.
    * - `destroyed`: the object was destroyed and can't be used.
    * - `stopped`: latkit hit an internal error and stopped. Every view reports it once, every
-   *   `Gpu` is lost, and every later call throws it. Reload the page to start over.
+   *   `Gpu` is lost, every pending wait rejects with it, and every later call throws it. Reload
+   *   the page to start over.
    */
   code: Failure['code'] | 'unloaded' | 'destroyed' | 'stopped';
   /** On `invalid` errors, the invalid part of the input, such as `marks[2].color`. */
@@ -39,16 +40,20 @@ export interface Wait {
   signal?: AbortSignal;
 }
 
-let ready = false;
+/**
+ * The bindings, once `load()` has instantiated them. They are held here rather than imported, so a
+ * bundle that never uses `load()` leaves them out.
+ */
+let bindings: typeof Bindings | undefined;
 
 /** The error every call throws once an internal error stopped latkit. */
 let halted: LatkitError | undefined;
 /** Callbacks to tell when latkit stops. */
 const told = new Set<(error: LatkitError) => void>();
 
-/** @internal Marks the bindings as loaded, so `wasm()` returns them. */
-export function loaded(): void {
-  ready = true;
+/** @internal Holds the instantiated bindings, so `wasm()` returns them. */
+export function loaded(instantiated: typeof Bindings): void {
+  bindings = instantiated;
 }
 
 /**
@@ -84,9 +89,9 @@ export function onStop(tell: (error: LatkitError) => void): () => void {
  * @internal Returns the bindings. Throws an `unloaded` error until `load()` has finished, and a
  * `stopped` error once latkit has stopped.
  */
-export function wasm(): typeof bindings {
+export function wasm(): typeof Bindings {
   if (halted) throw halted;
-  if (!ready)
+  if (!bindings)
     throw thrown({ code: 'unloaded', message: 'latkit is not loaded: call `await load()` first' });
   return bindings;
 }
@@ -285,24 +290,29 @@ export async function* chunks(
  * defaults to a 30-second timeout. If the signal aborts first, a task is cancelled so its work is
  * skipped, and the call rejects with an error naming `what`: `timeout` for a timeout, else
  * `cancelled`. Work that fails after the signal aborted, such as a fetch given the same signal,
- * rejects the same way. A task is always freed.
+ * rejects the same way. A task's wait rejects with the `stopped` error as soon as latkit stops. A
+ * task is always freed, unless latkit has stopped.
  */
 export async function waited<T>(
-  pending: Promise<T> | bindings.Task,
+  pending: Promise<T> | Bindings.Task,
   { signal = AbortSignal.timeout(30_000) }: Wait,
   what: string,
 ): Promise<T> {
   const task = pending instanceof Promise ? undefined : pending;
   const promise = (task ? task.promise : pending) as Promise<T>;
   let stop = (): void => {};
+  let halt = (_: LatkitError): void => {};
   const aborted = new Promise<never>((_, reject) => {
     stop = () => {
-      task?.cancel();
+      if (!halted) task?.cancel();
       reject(abortError(signal, what));
     };
+    halt = reject;
   });
   if (signal.aborted) stop();
   else signal.addEventListener('abort', stop, { once: true });
+  // A task's work ends when latkit stops, so its wait rejects with the `stopped` error at once.
+  const unstop = task ? onStop(halt) : undefined;
   try {
     return await Promise.race([promise, aborted]);
   } catch (error) {
@@ -310,7 +320,8 @@ export async function waited<T>(
     throw signal.aborted ? abortError(signal, what) : error;
   } finally {
     signal.removeEventListener('abort', stop);
-    task?.free();
+    unstop?.();
+    if (!halted) task?.free();
   }
 }
 

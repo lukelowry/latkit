@@ -420,7 +420,11 @@ fn samples(drawn: &[(&Table, &Planned)], ends: &[Option<usize>]) -> (Vec<u32>, V
         .iter()
         .enumerate()
         .map(|(e, (table, planned))| {
-            let ends = ends[e].filter(|&i| planned.draw != Draw::Whole && drawn[i].1.draw != Draw::Whole);
+            // A table drawn whole takes every row, even when it has none.
+            if planned.draw == Draw::Whole {
+                return 1;
+            }
+            let ends = ends[e].filter(|&i| drawn[i].1.draw != Draw::Whole);
             let room = ends.map_or(u32::MAX, |i| {
                 let references = match &planned.place {
                     Place::Ends(fields) => fields.len().max(1) as u32,
@@ -696,6 +700,15 @@ mod tests {
         assert!(order.sampled() <= 300, "lifted rows count toward the sample's 300 rows");
         let again = lift(&drawn, &[1], &[10, 10], 0, 300, Some(&(from, lifted, step)));
         assert_eq!(again.0, from, "computed once while its edges are unchanged");
+    }
+
+    #[test]
+    fn a_table_drawn_whole_steps_by_one_even_when_empty() {
+        let data = Data::new("g");
+        data.apply(Patch::new().set(Table::new("V", Ids::count(0)).field("x", Vec::<f64>::new()))).expect("valid");
+        let data = data.snapshot();
+        let whole = Planned { draw: Draw::Whole, priority: None, place: Place::Nowhere };
+        assert_eq!(samples(&[(data.table("V").expect("set"), &whole)], &[None]), (vec![0], vec![1]));
     }
 
     #[test]

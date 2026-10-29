@@ -4,9 +4,9 @@ Every class, function, and type the `latkit` package exports. Scenes and their o
 [scene and result types](types.md). These rules apply everywhere, so the entries below don't
 repeat them:
 
-- Scenes, expressions, and patches are plain data. Datasets, views, pictures, and the colormap
-  functions need latkit's WebAssembly, and throw an `unloaded` error until [`load()`](#load) finishes.
-  [`View.create()`](#view-create), [`Gpu.create()`](#gpu-create), [`Data.read()`](#data-read), and [`Patch.read()`](#patch-read) of JSON call it
+- Scenes, expressions, and patches are plain data. Datasets, views, pictures, the colormap
+  functions, and [`Patch.read()`](#patch-read) of JSON need latkit's WebAssembly, and throw an `unloaded` error
+  until [`load()`](#load) finishes. [`View.create()`](#view-create), [`Gpu.create()`](#gpu-create), and [`Data.read()`](#data-read) call it
   themselves.
 - Everything latkit throws or rejects with is a [`LatkitError`](#latkiterror). Input it can't use fails with an
   `invalid` error and changes nothing. The error's `path` names the bad part, such as
@@ -65,7 +65,8 @@ The error latkit throws: an `Error` with a `code` that names the kind of failure
   - `unloaded`: the call needs WebAssembly, and [`load()`](#load) has not finished.
   - `destroyed`: the object was destroyed and can't be used.
   - `stopped`: latkit hit an internal error and stopped. Every view reports it once, every
-    [`Gpu`](#gpu) is lost, and every later call throws it. Reload the page to start over.
+    [`Gpu`](#gpu) is lost, every pending wait rejects with it, and every later call throws it. Reload
+    the page to start over.
 
 {#latkiterror-path .member}
 **`path`**`?: string` [¶](#latkiterror-path){.headerlink}
@@ -496,7 +497,8 @@ const patch = new Patch('grid')
   its method name and holds the method's parameters by name, such as
   `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`. A field may be a slice of a
   binary file, `{file, dtype, offset, count}`, which is fetched right away. Bytes are read
-  without WebAssembly.
+  without WebAssembly. JSON needs it, so call `await load()` first, or this rejects with an
+  `unloaded` error.
 
   {#patch-read-base .member}
   **`base`**`?: string` [¶](#patch-read-base){.headerlink}
