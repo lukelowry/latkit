@@ -5,16 +5,25 @@ name: CI
 # Rust run their steps as `cargo xtask ci <job>`, and `cargo xtask check` runs every job's steps.
 # Frame budgets and the benchmark need a GPU, which runners lack: run `cargo xtask check` and
 # `cargo xtask bench` locally.
+#
+# CI checks pull requests. Branch protection requires `CI passed` on a branch up to date with main,
+# so every commit on main is a tree that passed, and the release publishes it without checking it
+# again. A push to main that changes dependencies runs everything once more, to save the caches
+# pull requests restore.
 on:
   pull_request:
   push:
     branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# A new push to a pull request cancels its older run; every commit to main runs to the end, since
-# the release waits on it.
+# A new push to a pull request cancels its older run.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -24,42 +33,22 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # What a pull request touched; a push to main checks everything, once per tree. A push whose tree a
-  # pull request's run passed checks nothing again, nor does the version pull request or its merge,
-  # which change only versions and the changelog (the release packages and tests the commit it
-  # publishes). macOS, whose runners queue for minutes, runs on pull requests that touch native
-  # code, and before every publish.
+  # What a pull request touched; a push to main checks everything. The version pull request changes
+  # only versions and the changelog, so it checks formatting alone: the release packages and tests
+  # what it publishes. macOS, whose runners queue for minutes, runs when native code changes, which
+  # holds all of its platform code.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: read
       contents: read
       pull-requests: read
     outputs:
-      tree: ${{ steps.tested.outputs.tree }}
-      rust: ${{ steps.tested.outputs.fresh == 'true' && github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true') }}
-      native: ${{ steps.tested.outputs.fresh == 'true' && github.head_ref != 'changeset-release/main' && github.event_name == 'pull_request' && steps.filter.outputs.native == 'true' }}
-      npm: ${{ steps.tested.outputs.fresh == 'true' && github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.npm == 'true') }}
-      docs: ${{ steps.tested.outputs.fresh == 'true' && github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.docs == 'true') }}
+      rust: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true') }}
+      native: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.native == 'true') }}
+      npm: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.npm == 'true') }}
+      docs: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.docs == 'true') }}
     steps:
-      - uses: actions/checkout@v6
-      - name: Find whether this tree already passed
-        id: tested
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tree=$(git rev-parse 'HEAD^{tree}')
-          echo "tree=$tree" >> "$GITHUB_OUTPUT"
-          fresh=true
-          if [ "$GITHUB_EVENT_NAME" = push ]; then
-            # Only this repository's runs count, so a fork's pull request cannot vouch for a tree.
-            passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=passed-$tree" \
-              --jq '[.artifacts[] | select(.workflow_run.head_repository_id == ${{ github.repository_id }})] | length')
-            merged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.ref // ""')
-            if [ "$passed" -gt 0 ] || [ "$merged" = changeset-release/main ]; then fresh=false; fi
-          fi
-          echo "fresh=$fresh" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name == 'pull_request'
@@ -93,6 +82,7 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.cargo/**'
+              - '.github/workflows/ci.yml'
 
   # Prettier over every file: cheap, and any pull request can unformat one.
   format:
@@ -130,7 +120,7 @@ jobs:
       - run: cargo xtask ci rust
 
   # The CLI's native code on the other platforms it installs on; Linux runs in `rust`. Windows runs
-  # with `rust`, and macOS only when native code changed: the release checks it before publishing.
+  # with `rust`, and macOS when native code changes.
   native-cli:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -201,8 +191,7 @@ jobs:
       - run: uv sync --locked --project docs --group docs
       - run: uv run --locked --project docs sphinx-build -W --keep-going -b html docs target/docs
 
-  # The one check branch protection requires: every job above passed, or was not needed. A pull
-  # request's pass records its tree, so main's run after the merge checks nothing again.
+  # The one check branch protection requires: every job above passed, or was not needed.
   passed:
     name: CI passed
     if: always()
@@ -212,11 +201,3 @@ jobs:
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.changes.result != 'success'
         run: exit 1
-      - if: github.event_name == 'pull_request'
-        run: echo "${{ github.sha }}" > passed.txt
-      - if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: passed-${{ needs.changes.outputs.tree }}
-          path: passed.txt
-          retention-days: 14

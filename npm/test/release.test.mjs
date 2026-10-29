@@ -25,6 +25,9 @@ test('a partial release resumes only missing artifacts', async () => {
   await ensureArtifacts(artifacts);
   assert.deepEqual(writes, ['cli']);
   await assert.rejects(ensureArtifacts([{ ...artifacts[0], digest: 'different' }]), /must match/);
+  // A registry slow to list a new version does not fail its publish.
+  await ensureArtifacts([{ ...artifacts[2], name: 'slow', lookup: async () => undefined }]);
+  assert.deepEqual(writes, ['cli', 'cli']);
 });
 
 test('registry failures are not mistaken for unpublished versions', async (t) => {
