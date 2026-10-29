@@ -301,12 +301,6 @@ impl Gpu {
     ) -> Gpu {
         let lost = Arc::new(AtomicBool::new(false));
         let errors: Arc<Mutex<Vec<Error>>> = Arc::default();
-        if instance.is_some() {
-            let events = DeviceEvents { lost: lost.clone(), errors: errors.clone() };
-            let loss = events.clone();
-            device.set_device_lost_callback(move |_, _| loss.lost());
-            device.on_uncaptured_error(Arc::new(move |error| events.error(&error)));
-        }
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("latkit ramp"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -357,7 +351,21 @@ impl Gpu {
         if let Some(window) = web_sys::window() {
             let _ = shared.samples.set(samples_at(window.device_pixel_ratio() as f32));
         }
-        Gpu(shared)
+        let gpu = Gpu(shared);
+        if gpu.0.instance.is_some() {
+            let events = gpu.device_events();
+            let loss = events.clone();
+            // In a page, a lost device wakes the views, so their next frame reports it.
+            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            let wake = crate::web::waker(&gpu);
+            gpu.0.device.set_device_lost_callback(move |_, _| {
+                loss.lost();
+                #[cfg(all(feature = "web", target_arch = "wasm32"))]
+                wake.wake_by_ref();
+            });
+            gpu.0.device.on_uncaptured_error(Arc::new(move |error| events.error(&error)));
+        }
+        gpu
     }
 
     /// Exact counts of the work this GPU has done since it was created. The counts repeat for the

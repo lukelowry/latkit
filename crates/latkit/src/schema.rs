@@ -28,7 +28,8 @@ pub fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
 /// Every input and output JSON Schema in one document.
 ///
 /// Inputs, and the types they are built from, are under `$defs` by name: `Scene`, `Data` (a
-/// dataset's document), `Patch`, `Query`, `EnvelopeRequest`, `Camera`, `Fit`, `Budget`, and `Shot`.
+/// dataset's document), `Patch`, `Query`, `EnvelopeRequest`, `Camera`, `Fit`, `Arrange`, `Budget`,
+/// and `Shot`.
 /// Outputs, in their serialized form, are under `outputs`: `ViewEvent`, `Stats`, `Work`,
 /// `Description`, `Rows`, `Camera`, `Budget`, `Value`, and `Failure` (an error).
 ///
@@ -47,6 +48,7 @@ pub fn schemas() -> serde_json::Value {
     inputs.subschema_for::<crate::EnvelopeRequest>();
     inputs.subschema_for::<crate::Camera>();
     inputs.subschema_for::<crate::Fit>();
+    inputs.subschema_for::<crate::Arrange>();
     inputs.subschema_for::<crate::Budget>();
     inputs.subschema_for::<crate::Shot>();
     let mut settings = settings().for_serialize();

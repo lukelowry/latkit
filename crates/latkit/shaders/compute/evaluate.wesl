@@ -20,7 +20,7 @@ import package::lib::types::{
     OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MIN, OP_MAX, OP_MOD, OP_POW,
     OP_LT, OP_LE, OP_GT, OP_GE, OP_EQ, OP_NE, OP_AND, OP_OR,
     OP_SELECT, OP_SCALE, OP_COLORMAP, OP_STORE, OP_STORE_COLOR, OP_STORE_FLAG, OP_STORE_POSITION,
-    OP_POSITION, OP_STORE_CODE, OP_REDUCE,
+    OP_POSITION, OP_STORE_CODE, OP_REDUCE, OP_FALLBACK,
 };
 import package::lib::bind::{frame, program, mark, pages, theme_word};
 import package::lib::state::{travel_words, pack_range, record_at};
@@ -218,10 +218,12 @@ fn ease_number(row: u32, w: u32, now: u32, flags: u32) -> u32 {
 }
 
 fn ease_color(row: u32, w: u32, now: u32, flags: u32) -> u32 {
-    if !easing() || entering(row, flags) {
+    let before = was(row, w);
+    // A missing color, which blends an edge's ends, changes at once.
+    if !easing() || entering(row, flags) || now == MISSING_COLOR || before == MISSING_COLOR {
         return now;
     }
-    return pack4x8unorm(mix(unpack4x8unorm(was(row, w)), unpack4x8unorm(now), mark.motion));
+    return pack4x8unorm(mix(unpack4x8unorm(before), unpack4x8unorm(now), mark.motion));
 }
 
 // A position's high word `w` (x or y), moved by the remaining offset from the old position, so the
@@ -302,6 +304,11 @@ fn run(row: u32, start: u32, end: u32) {
                 sp -= 2u;
                 stack[sp - 1u] = select(stack[sp + 1u], stack[sp], number(stack[sp - 1u]) > 0.5);
             }
+            case OP_FALLBACK: {
+                sp--;
+                let x = stack[sp - 1u];
+                stack[sp - 1u] = select(x, stack[sp], select(missing_bits(x), x == MISSING_COLOR, a == 1u));
+            }
             case OP_SCALE: {
                 let range = vec2f(constant_float(b), constant_float(b + 1u));
                 stack[sp - 1u] = bits(scale(number(stack[sp - 1u]), domain(a), range));
@@ -315,7 +322,13 @@ fn run(row: u32, start: u32, end: u32) {
             }
             case OP_STORE_COLOR: {
                 sp--;
-                store(row, a, select(stack[sp], theme_word(b), stack[sp] == MISSING_COLOR));
+                // A missing color takes the theme's color in slot `b`, or stays missing with
+                // `NONE`, as an edge colored by its ends does.
+                var color = stack[sp];
+                if color == MISSING_COLOR && b != NONE {
+                    color = theme_word(b);
+                }
+                store(row, a, color);
             }
             case OP_STORE_CODE: {
                 sp--;

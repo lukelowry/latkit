@@ -23,11 +23,13 @@ impl Gpu {
     /// as a JSON array of `{ type, detail }`. A canvas shows it. A shot draws it with or without
     /// a canvas.
     pub fn view(&self, scene: &str, tell: js_sys::Function) -> Result<View, Error> {
-        let view = latkit::web::PageView::new(latkit::View::new(&self.0, json("scene", scene)?)?);
-        let telling = view.on(move |events| {
-            let _ = tell.call1(&JsValue::NULL, &JsValue::from_str(&to_json(&events)));
-        });
-        Ok(View { view, _telling: telling })
+        Ok(telling(latkit::View::new(&self.0, json("scene", scene)?)?, tell))
+    }
+
+    /// Creates a view like `view` that draws with this GPU and sends its events to `tell`, as after
+    /// `view`'s device was lost.
+    pub fn rebuild(&self, view: &View, tell: js_sys::Function) -> Result<View, Error> {
+        Ok(telling(view.view.read(|v| v.rebuilt(&self.0))?, tell))
     }
 
     /// Creates a canvas showing `views` in `target`, each at its four fractions of `at`. `target`
@@ -120,6 +122,15 @@ impl Gpu {
             Ok(JsValue::UNDEFINED)
         })
     }
+}
+
+/// `view` for the page, sending its events to `tell`, each batch as a JSON array.
+fn telling(view: latkit::View, tell: js_sys::Function) -> View {
+    let view = latkit::web::PageView::new(view);
+    let telling = view.on(move |events| {
+        let _ = tell.call1(&JsValue::NULL, &JsValue::from_str(&to_json(&events)));
+    });
+    View { view, _telling: telling }
 }
 
 /// A frame listener. Freeing it stops it.

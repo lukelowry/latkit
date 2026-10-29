@@ -13,7 +13,7 @@ use crate::gpu::shaders as wgsl;
 use crate::gpu::{Inner, atlas};
 use crate::scene::compile::{self, Compiled};
 use crate::scene::mark::{Context, Key, MarkKind, Primitive};
-use crate::{Error, Mark, Result, Shape, Snapshot};
+use crate::{Error, Mark, Shape, Snapshot};
 
 /// Where each part of a mark's region lies in the program buffer, as absolute word offsets.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -123,9 +123,12 @@ pub(crate) struct Shown {
     /// Whether this frame's ease pass writes the mark's shown state from its frozen and settled
     /// words.
     pub(crate) easing: bool,
-    /// The program's code and constants, with colormap layers and text codes filled in.
+    /// The program's code and constants, with colormap layers, text codes, and the domains over
+    /// sampled fields' histories filled in. `histories` holds the field version each such domain was
+    /// filled from.
     pub(crate) code: Vec<[u32; 4]>,
     pub(crate) constants: Vec<u32>,
+    pub(crate) histories: Vec<(u32, Version)>,
     /// The end table of each endpoint reference: where the vertex rows it references are held.
     pub(crate) ends: Vec<End>,
     /// A vertex mark's port words, `PORT_WORDS` per port, including the atlas corners of its label.
@@ -161,9 +164,11 @@ pub(crate) struct Shown {
     pub(crate) place_version: u64,
     /// The rows its focus draw lights.
     pub(crate) lit: super::focus::Lit,
-    /// Why it no longer compiles against the data, kept until the data fits again, and whether a
-    /// frame has reported it. The next frame reports it unless a new scene replaces the mark first.
-    pub(crate) failure: Option<(Error, bool)>,
+    /// Why its options, or the whole mark when it is not compiled, do not fit the data, kept until
+    /// the data fits again. `told` counts those a frame has reported. The next frame reports the
+    /// rest unless a new scene replaces the mark first.
+    pub(crate) failures: Vec<Error>,
+    pub(crate) told: usize,
 }
 
 impl Shown {
@@ -194,6 +199,7 @@ impl Shown {
             easing: false,
             code: Vec::new(),
             constants: Vec::new(),
+            histories: Vec::new(),
             ends: Vec::new(),
             ports: Vec::new(),
             region: None,
@@ -211,8 +217,14 @@ impl Shown {
             version: 0,
             place_version: 0,
             lit: super::focus::Lit::default(),
-            failure: None,
+            failures: Vec::new(),
+            told: 0,
         }
+    }
+
+    /// Whether it draws nothing because it does not fit the data.
+    pub(crate) fn failed(&self) -> bool {
+        self.compiled.is_none() && !self.failures.is_empty()
     }
 
     pub(crate) fn kind(&self) -> MarkKind {
@@ -516,25 +528,33 @@ impl Shown {
         }
     }
 
-    /// Compiles the mark against the datasets `all` in `context`. It stays uncompiled while its
-    /// dataset or table is missing.
-    pub(crate) fn compile(&mut self, all: &[Snapshot], context: Context<'_>, gpu: &mut Inner) -> Result<()> {
+    /// Compiles the mark against the datasets `all` in `context`, and keeps its failures. It stays
+    /// uncompiled while its dataset or table is missing, or with its error when it does not fit.
+    pub(crate) fn compile(&mut self, all: &[Snapshot], context: Context<'_>, gpu: &mut Inner) {
         self.tables.release(gpu);
         self.compiled = None;
         self.packed = false;
-        let Some(compiled) = compile::compile(&self.mark, all, context)? else { return Ok(()) };
-        self.code.clone_from(&compiled.program.code);
-        self.constants.clone_from(&compiled.program.constants);
-        self.compiled = Some(compiled);
-        self.all_dirty();
-        Ok(())
+        self.told = 0;
+        self.failures = match compile::compile(&self.mark, all, context) {
+            Ok(Some(mut compiled)) => {
+                self.code.clone_from(&compiled.program.code);
+                self.constants.clone_from(&compiled.program.constants);
+                self.histories.clear();
+                let failures = std::mem::take(&mut compiled.failures);
+                self.compiled = Some(compiled);
+                self.all_dirty();
+                failures
+            }
+            Ok(None) => Vec::new(),
+            Err(error) => vec![error],
+        };
     }
 
-    /// Whether `data` changes a schema the mark compiled against, or is the dataset an uncompiled
-    /// mark waits for.
+    /// Whether `data` changes a schema the mark compiled against, or is a dataset an uncompiled
+    /// mark reads.
     pub(crate) fn stale(&self, data: &Snapshot) -> bool {
         match &self.compiled {
-            None => *data.name() == self.mark.style().data,
+            None => *data.name() == self.mark.style().data || self.mark.joins().contains(data.name()),
             Some(compiled) => {
                 compiled.schemas.iter().any(|(name, schema)| name == data.name() && *schema != data.schema())
             }

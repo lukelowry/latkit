@@ -16,7 +16,7 @@ export interface LatkitError extends Error {
    * - `unsupported`: the browser or device cannot do what was asked.
    * - `limit`: a budget or device limit would be exceeded.
    * - `io`: reading or writing external bytes failed, such as loading latkit or fetching a file.
-   * - `device-lost`: the GPU device was lost. Create a new `Gpu`.
+   * - `device-lost`: the GPU device was lost, and latkit could not get a new one.
    * - `cancelled`: the wait's signal aborted, or the work was cancelled.
    * - `timeout`: the wait's signal timed out.
    * - `unloaded`: the call needs WebAssembly, and `load()` has not finished.
@@ -155,6 +155,17 @@ export function inner<T>(owner: Handle): T {
     throw thrown({ code: 'destroyed', message: `this ${entry.what} has been destroyed` });
   if (halted) throw halted;
   return entry.bound as T;
+}
+
+/**
+ * @internal Holds `bound` as `owner`'s bindings object and returns the one it replaces, as when the
+ * owner moves to a new GPU device. The caller frees the old one.
+ */
+export function rebind<T>(owner: Handle, bound: { free(): void }): T {
+  const entry = held.get(owner)!;
+  const old = entry.bound as T;
+  entry.bound = bound;
+  return old;
 }
 
 /** A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Uint8Array`. */

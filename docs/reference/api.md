@@ -23,7 +23,7 @@ What every part of the package shares.
 ### `load()`
 
 {.signature}
-`function load(options?: { wasm?: string | URL | WebAssembly.Module; worker?: () => Worker }): Promise<void>`
+`function load(options?: { wasm?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
 
 Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
 load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
@@ -37,9 +37,10 @@ device for [`Gpu.create()`](#gpu-create).
   bundled asset.
 
 {#load-worker .member}
-**`worker`**`?: () => Worker` [¶](#load-worker){.headerlink}
-: Creates a worker that runs the standalone `latkit/worker` bundle. Defaults to the bundled
-  worker.
+**`worker`**`?: string | URL | (() => Worker)` [¶](#load-worker){.headerlink}
+: The URL of this version's standalone `latkit/worker` asset, or a function that creates a
+  worker running it. A URL on another origin, such as a CDN, starts through a script on the
+  page's origin, since browsers start workers only from there. Defaults to the bundled worker.
 
 (latkiterror)=
 
@@ -58,13 +59,13 @@ The error latkit throws: an `Error` with a `code` that names the kind of failure
   - `unsupported`: the browser or device cannot do what was asked.
   - `limit`: a budget or device limit would be exceeded.
   - `io`: reading or writing external bytes failed, such as loading latkit or fetching a file.
-  - `device-lost`: the GPU device was lost. Create a new [`Gpu`](#gpu).
+  - `device-lost`: the GPU device was lost, and latkit could not get a new one.
   - `cancelled`: the wait's signal aborted, or the work was cancelled.
   - `timeout`: the wait's signal timed out.
   - `unloaded`: the call needs WebAssembly, and [`load()`](#load) has not finished.
   - `destroyed`: the object was destroyed and can't be used.
   - `stopped`: latkit hit an internal error and stopped. Every view reports it once, every
-    `Gpu` is lost, and every later call throws it. Reload the page to start over.
+    [`Gpu`](#gpu) is lost, and every later call throws it. Reload the page to start over.
 
 {#latkiterror-path .member}
 **`path`**`?: string` [¶](#latkiterror-path){.headerlink}
@@ -284,13 +285,17 @@ snapshot draws that version, and keeps drawing it after the snapshot is destroye
 {.signature}
 `class Tiles`
 
-A dataset fetched in pieces as views need them. It is plain data: a dataset name and a URL. Each
-view fetches the pieces its camera and plot window need, and views on one GPU share them. The
-first bytes at `url` decide the kind:
+A dataset fetched in pieces as views need them. Each view fetches the pieces its camera and plot
+window need, and views on one GPU share them. The first bytes at `url` decide the kind:
 
 - Time tiles: a `frames.json` manifest written by `latkit tile`. A line that traces a sampled
   field fetches the detail its plot window shows. Other marks fetch the frames around the view's
-  `at`. While a span loads, the coarser span that contains it shows.
+  `at`. While a span loads, the coarser span that contains it shows. The manifest is
+  `{ data, chunk, url, frames: [{ table, field, levels, frames: [first, end] }] }`: `data` is the
+  dataset without the listed fields' entries, and each span at `url` (such as
+  `{field}/{level}/{index}.latk`) is a patch of `chunk` entries of one level. A server that
+  records more frames rewrites the manifest and the spans past the old end, then the app calls
+  `refresh()`.
 - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
@@ -301,7 +306,7 @@ first bytes at `url` decide the kind:
 ```
 
 {#tiles-new .member}
-**`new Tiles`**`(name: string, url: string)` [¶](#tiles-new){.headerlink}
+**`new Tiles`**`(name: string, url: string, { fetch }?:` [`TilesOptions`](#tilesoptions)`)` [¶](#tiles-new){.headerlink}
 : Tiles at `url`, drawn as the dataset named `name`.
 
 ```{rubric} Properties
@@ -321,6 +326,27 @@ first bytes at `url` decide the kind:
 {#tiles-table .member}
 **`table`**`(name: string):` [`Table`](#table) [¶](#tiles-table){.headerlink}
 : Returns table `name`, such as a vector tile layer, for a mark to draw.
+
+{#tiles-refresh .member}
+**`refresh`**`(): void` [¶](#tiles-refresh){.headerlink}
+: Fetches the index again, as when a running simulation records more frames, and redraws what
+  changed in every view drawing the tiles. Time tiles keep the spans the earlier frames cover.
+  Vector tiles start over.
+
+(tilesoptions)=
+
+### `TilesOptions`
+
+{.signature}
+`interface TilesOptions`
+
+How [`Tiles`](#tiles) fetch their files.
+
+{#tilesoptions-fetch .member}
+**`fetch`**`?: (url: string, range?: [start: number, end: number]) => Promise<`[`ByteSource`](#bytesource)`>` [¶](#tilesoptions-fetch){.headerlink}
+: Fetches a file in place of the browser, such as with credentials or from the app's own store:
+  the index at `url`, the pieces at URLs resolved against it, and bytes `[start, end)` of an
+  archive. A 404 or 204 `Response` is a missing piece.
 
 (source)=
 
@@ -456,6 +482,10 @@ const patch = new Patch('grid')
 : The name of the dataset this patch is for, if any. [`Data.apply`](#data-apply) rejects it for a dataset with
   another name.
 
+{#patch-bytelength .member}
+`readonly` **`byteLength`**`: number` [¶](#patch-bytelength){.headerlink}
+: The length of `toBytes()` in bytes, without copying them.
+
 ```{rubric} Methods
 ```
 
@@ -542,8 +572,8 @@ const patch = new Patch('grid')
 **`frames`**`(table: string, field: string, run:` [`Run`](#run)`): this` [¶](#patch-frames){.headerlink}
 : Stores a run of entries of sampled field `field` in `table`, at one level of detail. This is
   what a time tile from `latkit tile` holds. At level 0 each entry is a frame. At level `k` each
-  entry is a bucket of `8^k` frames. None of the entries may already be stored. Entries past the
-  field's last frame extend it.
+  entry is a bucket of `8^k` frames. A run that covers a level's last entry replaces the entries
+  it covers, such as the last bucket while it fills. Entries past the field's last frame extend it.
 
 {#patch-extend .member}
 **`extend`**`(next: Patch): this` [¶](#patch-extend){.headerlink}
@@ -585,7 +615,7 @@ A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Ui
 `type RowIds =` [`Ids`](#ids) `| readonly (`[`Id`](#id) `| null)[] | Uint32Array | Float64Array`
 
 Row ids: a list of numbers or strings, `{ count }` for ids `0` to `count - 1`, or a `Uint32Array`
-or `Float64Array` of numbers.
+or `Float64Array` of numbers. In a reference, `null` or NaN names no row.
 
 (values)=
 
@@ -624,7 +654,7 @@ A reference field: for each row, a row of another table.
 
 {#reference-ids .member}
 **`ids`**`:` [`RowIds`](#rowids) [¶](#reference-ids){.headerlink}
-: For each row, the id of the row it references, or `null` to reference none.
+: For each row, the id of the row it references, or `null` or NaN to reference none.
 
 (reference-function)=
 
@@ -785,6 +815,10 @@ a conditional that chooses between colors.
 **`or`**`(other:` [`ExprInput`](#exprinput)`): Expr` [¶](#expr-or){.headerlink}
 : 1 where this value or `other` is above 0.5, else 0.
 
+{#expr-fallback .member}
+**`fallback`**`(other:` [`ExprInput`](#exprinput)`): Expr` [¶](#expr-fallback){.headerlink}
+: This value, or `other` where this value is missing. Numbers and colors both work.
+
 {#expr-not .member}
 **`not`**`(): Expr` [¶](#expr-not){.headerlink}
 : 1 where this value is at most 0.5, else 0.
@@ -865,8 +899,15 @@ A value mapped through a colormap or onto a range. Its input domain can be set.
 
 {#mapped-domain .member}
 **`domain`**`(low: number, high: number): Mapped` [¶](#mapped-domain){.headerlink}
-: Sets the input values that map to the ends of the colormap or range. Without it, the domain
-  fits the values shown.
+: Sets the input values that map to the ends of the colormap or range. `'all'` spans every value
+  the input field holds, in every frame of a sampled field, so colors stay put as `at` moves.
+  Without it, the domain fits the values shown.
+
+{.member}
+**`domain`**`(all: 'all'): Mapped`
+: Sets the input values that map to the ends of the colormap or range. `'all'` spans every value
+  the input field holds, in every frame of a sampled field, so colors stay put as `at` moves.
+  Without it, the domain fits the values shown.
 
 (color)=
 
@@ -980,6 +1021,16 @@ A size in position units (degrees on the earth) in any space, so it scales as th
 map and never shrinks below 2 pixels. A marker keeps its proportions, and the limits apply to its
 larger side. Given only a number, the result also works as a theme length.
 
+(meters)=
+
+### `meters()`
+
+{.signature}
+`function meters(length:` [`ExprInput`](#exprinput)`):` [`Expr`](#expr)
+
+A length given in meters, in degrees of arc: the earth's unit for positions, elevations, and
+sizes in `units`. A degree is 111,194.93 meters on a sphere of the earth's mean radius.
+
 (selected)=
 
 ### `selected()`
@@ -1061,10 +1112,10 @@ RGBA pixels with straight alpha, rows top to bottom. A browser `ImageData` has t
 ### `colormaps()`
 
 {.signature}
-`function colormaps(): { name:` [`ColormapName`](#colormapname)`; label: string; kind:` [`ColormapKind`](#colormapkind) `}[]`
+`function colormaps(): typeof CATALOG`
 
 Returns the catalog's colormaps in order, each with its name, its label such as `'Red / Blue'`,
-and its kind.
+its kind, and its colors as a custom colormap takes them. Needs no WebAssembly.
 
 (colormapcss)=
 
@@ -1116,8 +1167,9 @@ const view = await View.create(canvas, {
 {#view-scene .member}
 **`scene`**`:` [`Scene`](#scene) [¶](#view-scene){.headerlink}
 : The scene drawn. A mark that matches one in the previous scene by kind, dataset, table, and
-  name keeps its state and eases to its new options. An invalid scene leaves the current one in
-  place.
+  name keeps its state and eases to its new options. An option that does not fit the data draws
+  as if unset, and a mark that does not fit draws nothing. Both are listed in `failures` until
+  the data fits. A scene that is invalid on its own throws and leaves the current one in place.
 
 {#view-sources .member}
 **`sources`**`: readonly` [`Source`](#source)`[]` [¶](#view-sources){.headerlink}
@@ -1135,8 +1187,9 @@ const view = await View.create(canvas, {
 {#view-camera .member}
 **`camera`**`:` [`Camera`](#camera) [¶](#view-camera){.headerlink}
 : Where the view looks. Setting it moves the camera at once, replacing a flight or a fit not yet
-  applied. Use [`View.fly()`](#view-fly) to ease. A camera of the wrong kind for the space, such as a plot
-  camera on a map, is ignored.
+  applied. Fields left out keep their values, and setting only pitch and bearing keeps that fit,
+  which then frames at them. Use [`View.fly()`](#view-fly) to ease. A camera of the wrong kind for the
+  space, such as a plot camera on a map, is ignored.
 
   Camera moves stay within the camera's zoom and pan limits. On the earth, the space sets the
   limits inside the insets, as [`Earth`](#earth) describes. A fit narrows them to 3 zoom levels out and 8
@@ -1168,12 +1221,14 @@ const view = await View.create(canvas, {
 
 {#view-complete .member}
 `readonly` **`complete`**`: boolean` [¶](#view-complete){.headerlink}
-: Whether the last frame was complete, with nothing in `waiting`. Shots wait for this.
+: Whether the last frame was complete, with nothing in `waiting`. False until the first frame.
+  Shots wait for this.
 
 {#view-failures .member}
 `readonly` **`failures`**`: readonly` [`LatkitError`](#latkiterror)`[]` [¶](#view-failures){.headerlink}
-: An error for each mark that draws nothing because its data no longer fits it, such as a missing
-  table. Each error's `path` names the mark.
+: An error for each option that draws as if unset, and each mark that draws nothing, because the
+  data does not fit it, such as a missing field or table. Each error's `path` names the mark and
+  option, such as `marks[2].color`.
 
 {#view-stats .member}
 `readonly` **`stats`**`:` [`Stats`](#stats) [¶](#view-stats){.headerlink}
@@ -1187,18 +1242,20 @@ const view = await View.create(canvas, {
 ```
 
 {#view-create .member}
-`static` **`create`**`(canvas: HTMLCanvasElement | OffscreenCanvas | null, scene:` [`Scene`](#scene)`, options?: { region?:` [`Rect`](#rect)`; camera?:` [`Camera`](#camera)`; sources?: readonly` [`Source`](#source)`[]; gpu?:` [`Gpu`](#gpu)`; pixelRatio?: number }): Promise<View>` [¶](#view-create){.headerlink}
+`static` **`create`**`(canvas: HTMLCanvasElement | OffscreenCanvas | null, scene:` [`Scene`](#scene)`, options?: { region?:` [`Rect`](#rect)`; camera?: Partial<`[`Camera`](#camera)`>; sources?: readonly` [`Source`](#source)`[]; gpu?:` [`Gpu`](#gpu)`; pixelRatio?: number } &` [`Wait`](#wait)`): Promise<View>` [¶](#view-create){.headerlink}
 : Creates a view that draws `scene` on `canvas`, in `options.region`, over any views already
   there. With a `null` canvas, the view draws only into pictures. The view loads every dataset
-  its scene uses. Unless given a camera, it frames everything when it first draws.
+  its scene uses. Unless given a camera, it frames everything when it first draws. Creating the
+  default GPU waits within `options`.
 
   {#view-create-region .member}
   **`region`**`?:` [`Rect`](#rect) [¶](#view-create-region){.headerlink}
   : The part of the canvas, and of pictures, that the view draws in. Defaults to all of it.
 
   {#view-create-camera .member}
-  **`camera`**`?:` [`Camera`](#camera) [¶](#view-create-camera){.headerlink}
-  : Where the view looks first. Without one, it frames everything drawn.
+  **`camera`**`?: Partial<`[`Camera`](#camera)`>` [¶](#view-create-camera){.headerlink}
+  : Where the view looks first. Without a center and zoom (or a plot's `x`), it frames
+    everything drawn, at the camera's pitch and bearing.
 
   {#view-create-sources .member}
   **`sources`**`?: readonly` [`Source`](#source)`[]` [¶](#view-create-sources){.headerlink}
@@ -1213,21 +1270,27 @@ const view = await View.create(canvas, {
   : Pixels per CSS pixel of an `OffscreenCanvas`. Defaults to 1. The first view on the canvas
     sets it.
 
+{#view-done .member}
+**`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#view-done){.headerlink}
+: Resolves once a frame draws the view complete, at once if the last frame did.
+
 {#view-fit .member}
-**`fit`**`(fit?:` [`Fit`](#fit)`): void` [¶](#view-fit){.headerlink}
-: Frames what `fit` names, keeping pitch and bearing, and replaces any fit not yet applied.
-  Defaults to every row. It applies once the rows have their places (their data streamed, any
-  layout placed them, and they eased there), a frame or two later when the GPU must measure the
-  extent. With nothing drawn to frame, it frames the rows that arrive later. Until a view's first
-  fit applies, it shows only its background. A fit frames a diagram at most at its natural size
-  and the earth at most at zoom 16, which is also where it frames a single point.
+**`fit`**`(fit?:` [`Fit`](#fit)`, wait?:` [`Wait`](#wait)`): Promise<`[`Camera`](#camera) `| null>` [¶](#view-fit){.headerlink}
+: Frames what `fit` names, keeping pitch and bearing, and replaces any fit not yet applied. A
+  reveal asked for while another fit is due follows that fit instead. Defaults to every row. It
+  applies once the rows have their places (their data streamed, any layout placed them, and they
+  eased there), a frame or two later when the GPU must measure the extent. With nothing drawn to
+  frame, it frames the rows that arrive later. Until a view's first fit applies, it shows only
+  its background. A fit frames a diagram at most at its natural size and the earth at most at
+  zoom 16, which is also where it frames a single point. Resolves to the camera it framed, or to
+  `null` when a camera move or another fit replaces it.
 
 {#view-fly .member}
-**`fly`**`(camera:` [`Camera`](#camera)`, seconds?: number): void` [¶](#view-fly){.headerlink}
+**`fly`**`(camera: Partial<`[`Camera`](#camera)`>, seconds?: number): void` [¶](#view-fly){.headerlink}
 : Eases the camera to `camera` over `seconds`, or over twice the scene's ease time without it,
-  replacing a fit not yet applied. When motion is reduced, it moves at once. The camera stays
-  within its limits, as [`View.camera`](#view-camera) describes. A camera of the wrong kind for the space is
-  ignored.
+  replacing a fit not yet applied. Fields left out keep their values. When motion is reduced, it
+  moves at once. The camera stays within its limits, as [`View.camera`](#view-camera) describes. A camera
+  of the wrong kind for the space is ignored.
 
 {#view-screen .member}
 **`screen`**`(position:` [`Position`](#position)`):` [`Point`](#point) `| null` [¶](#view-screen){.headerlink}
@@ -1241,9 +1304,13 @@ const view = await View.create(canvas, {
   looks past the ground.
 
 {#view-screenof .member}
-**`screenOf`**`(row:` [`Row`](#row)`, wait?:` [`Wait`](#wait)`): Promise<`[`Point`](#point) `| null>` [¶](#view-screenof){.headerlink}
-: Resolves to where `row` is on screen once a frame draws the view, or to `null` when no mark
-  draws it in view. A diagram's vertices resolve at once.
+**`screenOf`**`(row:` [`Row`](#row)`, options?: { port?: string } &` [`Wait`](#wait)`): Promise<`[`Point`](#point) `| null>` [¶](#view-screenof){.headerlink}
+: Resolves to where `row`, or its port, is on screen once a frame draws the view, or to `null`
+  when no mark draws it in view. A diagram's vertices and ports resolve at once.
+
+  {#view-screenof-port .member}
+  **`port`**`?: string` [¶](#view-screenof-port){.headerlink}
+  : A port of the row, by the reference field naming its net. Only a diagram has ports.
 
 {#view-pick .member}
 **`pick`**`(point:` [`Point`](#point)`, options?: { radius?: number } &` [`Wait`](#wait)`): Promise<`[`Hit`](#hit)`[]>` [¶](#view-pick){.headerlink}
@@ -1260,13 +1327,14 @@ const view = await View.create(canvas, {
   nets, or the vertices of an edge or net. The cost is proportional to the row's degree.
 
 {#view-arrange .member}
-**`arrange`**`(wait?:` [`Wait`](#wait)`): Promise<`[`Patch`](#patch)`[]>` [¶](#view-arrange){.headerlink}
-: Lays out again every vertex row that has no position, and resolves to one patch per dataset.
-  Each patch writes each row's place into its mark's position fields, so applying it makes the
-  places part of the data. Marks that don't read their position from fields are left out.
+**`arrange`**`(rows?:` [`Arrange`](#arrange)`, wait?:` [`Wait`](#wait)`): Promise<`[`Patch`](#patch)`[]>` [¶](#view-arrange){.headerlink}
+: Lays out again the vertex rows that `rows` names, those without a position or all of them, and
+  resolves to one patch per dataset. Each patch writes each row's place into its mark's position
+  fields, so applying it makes the places part of the data. Marks that don't read their position
+  from fields are left out.
 
   ```ts
-  for (const patch of await view.arrange()) if (patch.data === grid.name) grid.apply(patch);
+  for (const patch of await view.arrange('all')) if (patch.data === grid.name) grid.apply(patch);
   ```
 
 {#view-snapshot .member}
@@ -1340,16 +1408,18 @@ and latitude; on a plot, the axis coordinate and the value.
 
 A WebGPU device that views draw with. Views on one `Gpu` share its memory and draw together in
 each animation frame, so linked views always show the same moment. Views use the first `Gpu`
-created unless given another, and [`View.create`](#view-create) creates one if none exists. Destroying a `Gpu`
-destroys its views and frame listeners. Other GPUs and datasets stay usable.
+created unless given another, and [`View.create`](#view-create) creates one if none exists. When the device is
+lost, latkit requests a new one and moves the views, their canvases, and the frame listeners to
+it. Destroying a `Gpu` destroys its views and frame listeners. Other GPUs and datasets stay
+usable.
 
 ```{rubric} Properties
 ```
 
 {#gpu-lost .member}
 `readonly` **`lost`**`: boolean` [¶](#gpu-lost){.headerlink}
-: Whether the device was lost. Drawing then does nothing, so create a new [`Gpu`](#gpu). Also true once
-  an internal error stopped latkit.
+: Whether the device is lost. latkit then requests a new one, so this is true only until it
+  arrives, or when there is none. Also true once an internal error stopped latkit.
 
 {#gpu-budget .member}
 **`budget`**`:` [`Budget`](#budget) [¶](#gpu-budget){.headerlink}
@@ -1374,10 +1444,11 @@ destroys its views and frame listeners. Other GPUs and datasets stay usable.
 ```
 
 {#gpu-create .member}
-`static` **`create`**`(): Promise<Gpu>` [¶](#gpu-create){.headerlink}
+`static` **`create`**`(wait?:` [`Wait`](#wait)`): Promise<Gpu>` [¶](#gpu-create){.headerlink}
 : Requests a WebGPU device. The first call takes the device [`load()`](#load) requested. Create one before
   any view to set its `budget` first, or create another for views that should not share memory
-  with the rest. Rejects with an `unsupported` error when the browser has no WebGPU device.
+  with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
+  when the browser has no WebGPU device.
 
 {#gpu-on .member}
 **`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}

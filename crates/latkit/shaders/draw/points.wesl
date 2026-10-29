@@ -3,8 +3,8 @@
 // edge. The focus variant redraws the lit rows over everything, with quads enlarged for their glow.
 // A group glows only around its border, so its contents stay visible. The ports variant draws one
 // quad per port of every row, on its side of the row's marker. The depth variant writes only the
-// depth of each marker's mostly opaque pixels, before any color draws, so where depth varies the
-// nearest marker shows.
+// depth of each marker's opaque pixels, before any color draws, so where depth varies the nearest
+// marker shows.
 
 import package::lib::types::{STATUS, MARKER_ICON, MARKER_SHAPE, MARKER_BLOCK, GROUP, SHADOW, SPACE_DIAGRAM};
 import package::lib::bind::{frame, eye, mark, word, ramp, program, focused};
@@ -17,12 +17,13 @@ import package::lib::marker::{
 };
 import package::lib::daylight::daylight;
 import package::lib::mark::fringe;
-import package::lib::color::output;
+import package::lib::color::{output, OPAQUE};
 
 @group(2) @binding(15) var icons: texture_2d_array<f32>;
 
 struct Varyings {
-    @builtin(position) clip: vec4f,
+    // Invariant, so the depth variant and the color draws compute the same depth.
+    @invariant @builtin(position) clip: vec4f,
     @location(0) p: vec2f,
     @location(1) @interpolate(flat) row: u32,
     @location(2) color: vec4f,
@@ -170,12 +171,12 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     return output(premultiplied(shaded(v)));
 }
 
-// Only pixels at least half opaque write depth, so a marker's antialiased edge, glow, and shadow
-// leave what lies behind them showing.
+// Only opaque pixels write depth, so a marker's antialiased edge, glow, and shadow leave what lies
+// behind them showing.
 @if(depth)
 @fragment
 fn fragment(v: Varyings) {
-    if premultiplied(shaded(v)).a < 0.5 {
+    if premultiplied(shaded(v)).a < OPAQUE {
         discard;
     }
 }

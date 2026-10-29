@@ -262,14 +262,31 @@ export class Snapshot extends Dataset {
   }
 }
 
+/** How {@link Tiles} fetch their files. */
+export interface TilesOptions {
+  /**
+   * Fetches a file in place of the browser, such as with credentials or from the app's own store:
+   * the index at `url`, the pieces at URLs resolved against it, and bytes `[start, end)` of an
+   * archive. A 404 or 204 `Response` is a missing piece.
+   */
+  fetch?: (url: string, range?: [start: number, end: number]) => Promise<ByteSource>;
+}
+
+/** Each `Tiles`' fetch, and the bindings source its views share once one draws it. */
+const tiled = new WeakMap<Tiles, { fetch?: TilesOptions['fetch']; bound?: bindings.Source }>();
+
 /**
- * A dataset fetched in pieces as views need them. It is plain data: a dataset name and a URL. Each
- * view fetches the pieces its camera and plot window need, and views on one GPU share them. The
- * first bytes at `url` decide the kind:
+ * A dataset fetched in pieces as views need them. Each view fetches the pieces its camera and plot
+ * window need, and views on one GPU share them. The first bytes at `url` decide the kind:
  *
  * - Time tiles: a `frames.json` manifest written by `latkit tile`. A line that traces a sampled
  *   field fetches the detail its plot window shows. Other marks fetch the frames around the view's
- *   `at`. While a span loads, the coarser span that contains it shows.
+ *   `at`. While a span loads, the coarser span that contains it shows. The manifest is
+ *   `{ data, chunk, url, frames: [{ table, field, levels, frames: [first, end] }] }`: `data` is the
+ *   dataset without the listed fields' entries, and each span at `url` (such as
+ *   `{field}/{level}/{index}.latk`) is a patch of `chunk` entries of one level. A server that
+ *   records more frames rewrites the manifest and the spans past the old end, then the app calls
+ *   `refresh()`.
  * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
  *   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
  *   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
@@ -283,14 +300,24 @@ export class Tiles {
   readonly url: string;
 
   /** Tiles at `url`, drawn as the dataset named `name`. */
-  constructor(name: string, url: string) {
+  constructor(name: string, url: string, { fetch }: TilesOptions = {}) {
     this.name = name;
     this.url = url;
+    tiled.set(this, { fetch });
   }
 
   /** Returns table `name`, such as a vector tile layer, for a mark to draw. */
   table(name: string): Table {
     return new Table(this, name);
+  }
+
+  /**
+   * Fetches the index again, as when a running simulation records more frames, and redraws what
+   * changed in every view drawing the tiles. Time tiles keep the spans the earlier frames cover.
+   * Vector tiles start over.
+   */
+  refresh(): void {
+    tiled.get(this)!.bound?.refresh();
   }
 }
 
@@ -299,6 +326,22 @@ export type Source = Data | Snapshot | Tiles;
 
 /** @internal Converts `source` to a new bindings `Source` on every call. */
 export function sourceOf(source: Source): bindings.Source {
-  if (source instanceof Tiles) return wasm().Source.tiles(source.name, source.url);
-  return inner<Reads>(source).source();
+  if (!(source instanceof Tiles)) return inner<Reads>(source).source();
+  const entry = tiled.get(source)!;
+  entry.bound ??= wasm().Source.tiles(
+    source.name,
+    source.url,
+    entry.fetch && bytesFrom(entry.fetch),
+  );
+  return entry.bound.copy();
+}
+
+/** `fetch`, resolving to the bytes the bindings take: none for a missing piece. */
+function bytesFrom(fetch: NonNullable<TilesOptions['fetch']>) {
+  return async (url: string, range?: [number, number]): Promise<Uint8Array> => {
+    const got = await fetch(url, range);
+    if (got instanceof Response && (got.status === 404 || got.status === 204))
+      return new Uint8Array();
+    return (await bytesOf(got, {})).bytes;
+  };
 }

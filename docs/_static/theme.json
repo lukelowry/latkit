@@ -4,6 +4,7 @@
     "grid": "rgba(0, 0, 0, 0.08)",
     "gridSpacing": 24.0,
     "missing": "rgba(154, 163, 173, 1)",
+    "contrast": 1.0,
     "dash": 8.0,
     "shading": 0.6000000238418579,
     "text": {
@@ -69,6 +70,7 @@
     "grid": "rgba(255, 255, 255, 0.07)",
     "gridSpacing": 24.0,
     "missing": "rgba(107, 116, 128, 1)",
+    "contrast": 1.0,
     "dash": 8.0,
     "shading": 0.6000000238418579,
     "text": {

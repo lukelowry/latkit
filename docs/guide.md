@@ -197,7 +197,8 @@ visible and the text fits. In a diagram, a label wider than its block or group e
 never overlap. Where two would, the row drawn on top keeps its
 label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit.
 A row whose text is missing has no label, so a `when` that picks between the field and `null`
-labels only some rows, as in the scene above.
+labels only some rows, as in the scene above. A number label is written on the GPU each frame, so it
+can follow a sampled field: `label: { text: field('vm'), precision: 3, unit: ' pu' }`.
 
 ### Expressions
 
@@ -211,7 +212,9 @@ import { field, when, selected, zoom, units, px } from 'latkit';
 
 field('load').div(field('capacity')).clamp(0, 1); // arithmetic and comparisons
 field('vm').colormap('balance').domain(0.95, 1.05); // a color through a colormap
+field('vm').colormap('viridis').domain('all'); // over every value, in every frame
 field('kv').scale(2, 8); // onto a range
+field('rating').fallback(100); // another value where one is missing
 when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10')); // colors
 when(zoom().ge(6)).then(field('name')).otherwise(null); // a label's text, from zoom 6 on
 units('$radius', { atLeast: 2 }); // a size in position units, kept within pixels
@@ -221,8 +224,8 @@ field('vm').from(weather.table('Station')); // read from another dataset, joined
 
 Sizes are in CSS pixels, or in position units in a diagram. Wrap a size in `px()` or `units()` to
 choose its unit. State expressions read the view: `selected()`, `hovered()`, `pointer()`,
-`elapsed()`, and `zoom()`. `colormaps()` lists the colormap catalog, and `colormapCss(map)` returns
-a colormap as a CSS gradient, for legends drawn in HTML.
+`elapsed()`, and `zoom()`. `colormaps()` lists the colormap catalog with each map's colors, and
+`colormapCss(map)` returns a colormap as a CSS gradient, for legends drawn in HTML.
 
 ### Themes, controls, and layouts
 
@@ -252,13 +255,18 @@ first `Gpu` created, and `View.create` creates one if there is none. Create a `G
 A view draws each `Data` at its latest version. `view.sources` adds datasets to the scene's, or
 replaces one with the same name. Use a `Snapshot` to show a past version, or
 [`Tiles`](reference/api.md#tiles) to fetch only the pieces the view needs from time tiles or vector
-tiles.
+tiles. Give `Tiles` a `fetch` to fetch their files your own way, and call `refresh()` when they
+change.
+
+When the GPU device is lost, latkit requests a new one and moves the views to it as they were.
 
 ### Camera
 
 ```ts
 view.fit(); // everything drawn, as a new view does
 view.fit({ rows: [{ data: 'grid', table: 'Bus', ids: [101, 102] }] });
+const framed = await view.fit({ tables: [grid.table('Bus')] }); // the camera, or null if replaced
+view.camera = { pitch: 45 }; // a partial camera keeps the rest
 view.fly({ center: [-97.7, 30.3], zoom: 8, pitch: 40, bearing: 0 }); // ease there
 view.camera = { x: [0, 60], y: null }; // a plot's camera: the axis range, values fitted
 view.insets = [48, 0, 0, 320]; // CSS pixels kept clear: top, right, bottom, left
@@ -282,7 +290,7 @@ state, which the property of the same name also holds. Setting a property fires 
 
 ```ts
 view.on('click', ({ hit }) => console.log(hit.row, hit.point));
-view.on('drag', ({ hit, position }) => move(hit.row, position)); // where the row goes, as grabbed
+view.on('drag', ({ patch }) => patch && grid.apply(patch)); // the dragged row's new place
 view.on('selection', ({ rows }) => inspect(rows));
 view.on('error', (error) => console.error(error.code, error.path, error.message));
 ```
@@ -300,9 +308,9 @@ const at = await view.screenOf({ data: 'grid', table: 'Bus', id: 101 }); // [x, 
 
 ### Layouts into data
 
-`view.arrange()` lays out every vertex row that has no position again. It resolves to one patch per
-dataset, which writes the new places into the mark's position fields. Apply the patches to make the
-places part of the data:
+`view.arrange()` lays out every vertex row that has no position again, and `view.arrange('all')`
+every row. It resolves to one patch per dataset, which writes the new places into the mark's
+position fields. Apply the patches to make the places part of the data:
 
 ```ts
 for (const patch of await view.arrange()) if (patch.data === grid.name) grid.apply(patch);
@@ -474,14 +482,15 @@ import { load } from 'latkit';
 import wasmUrl from 'latkit/wasm?url';
 import workerUrl from 'latkit/worker?url';
 
-await load({ wasm: wasmUrl, worker: () => new Worker(workerUrl) });
+await load({ wasm: wasmUrl, worker: workerUrl });
 ```
 
-`latkit/worker` is a standalone classic worker, so it also works from a Blob URL. Workers start when
-needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on the calling
+`latkit/worker` is a standalone classic worker. A worker URL on another origin, such as a CDN,
+starts through a Blob URL on the page's origin. Workers start when needed and stop after 30 idle
+seconds. Where workers are unavailable, jobs run on the calling
 thread. Your Content Security Policy must allow the WASM asset and data origins in `connect-src`,
 WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), and the worker URL in
-`worker-src`.
+`worker-src` (with `blob:` for one on another origin).
 
 ### Server-side builders and data
 

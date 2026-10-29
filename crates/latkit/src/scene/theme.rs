@@ -29,6 +29,10 @@ pub struct Theme {
     pub grid_spacing: f32,
     /// The color a colormap gives a missing value, such as a row with no value in the field.
     pub missing: Color,
+    /// The least contrast ratio with the background, as WCAG measures it, that colormap colors
+    /// keep. A color with less is made lighter or darker, keeping its hue. Defaults to 1, which
+    /// changes no color. 3 is WCAG's minimum for graphics.
+    pub contrast: f32,
     /// The dash period: one dash and one gap of equal length.
     pub dash: f32,
     /// How much faces darken as they turn away from the camera, from 0 to 1.
@@ -86,8 +90,9 @@ pub struct VertexTheme {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
 pub struct EdgeTheme {
-    /// The edge color. `None` blends the colors of each edge's two vertices. With `None`, a
-    /// diagram's wires and edges without `ends` (nets and poles) use the text color.
+    /// The edge color. `None` blends the colors of each edge's two vertices, also for rows whose
+    /// own color is missing. With `None`, a diagram's wires and edges without `ends` (nets and
+    /// poles) use the text color.
     pub color: Option<Color>,
     /// The edge width, in the space's unit.
     pub width: f32,
@@ -322,6 +327,7 @@ impl Theme {
             grid: Color::WHITE.alpha(0.07),
             grid_spacing: 24.0,
             missing: hex("#6b7480"),
+            contrast: 1.0,
             dash: 8.0,
             shading: 0.6,
             text: TextTheme {

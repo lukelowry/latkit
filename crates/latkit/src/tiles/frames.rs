@@ -24,7 +24,8 @@ use crate::{Error, Pending};
 const MAX_SPANS: usize = 64;
 
 /// The spans of one manifest's sampled fields, shared by every set drawing them. Holds the base
-/// dataset without their entries, and each field's fetched and decoded spans.
+/// dataset without their entries, each field's fetched and decoded spans, and how many times the
+/// manifest was refreshed.
 pub(crate) struct Fetched {
     manifest: Manifest,
     /// The spans' URL template, resolved against the manifest's URL.
@@ -32,6 +33,7 @@ pub(crate) struct Fetched {
     base: Base,
     /// Each listed field's spans.
     fields: Vec<Tiling<Span>>,
+    refreshes: u64,
 }
 
 /// The base dataset, without its sampled fields' entries, as it arrives.
@@ -51,7 +53,29 @@ impl Fetched {
             base: Base::Fetching(base),
             fields: manifest.fields.iter().map(|_| Tiling::default()).collect(),
             manifest,
+            refreshes: 0,
         }
+    }
+
+    /// Takes `manifest`, a newer version of this one, fetched again from `url`. Fetches the base
+    /// dataset again. Each field keeps the spans within the frames it held, and drops the spans
+    /// that reach past them, which the new manifest may extend.
+    pub(crate) fn refresh(&mut self, url: &str, manifest: Manifest, jobs: &Jobs<'_>) {
+        let mut fresh = Fetched::open(url, manifest, jobs);
+        fresh.refreshes = self.refreshes + 1;
+        let chunk = u64::from(self.manifest.chunk);
+        for (k, listed) in fresh.manifest.fields.iter().enumerate() {
+            let held =
+                self.manifest.fields.iter().position(|old| old.table == listed.table && old.field == listed.field);
+            let Some(old) = held.filter(|_| fresh.manifest.chunk == self.manifest.chunk) else { continue };
+            let end = self.manifest.fields[old].frames.end;
+            let mut tiling = std::mem::take(&mut self.fields[old]);
+            tiling.forget(|span| {
+                (span.index + 1).saturating_mul(chunk).saturating_mul(bucket_frames(u32::from(span.level))) <= end
+            });
+            fresh.fields[k] = tiling;
+        }
+        *self = fresh;
     }
 
     /// Fetches and decodes in progress.
@@ -77,16 +101,21 @@ impl Fetched {
     }
 }
 
-/// What one set draws of time tiles: whether its dataset holds the base dataset yet, and for each
-/// listed field, the spans it draws with the runs each added.
+/// What one set draws of time tiles: the refresh it draws, whether its dataset holds the base
+/// dataset yet, and for each listed field, the spans it draws with the runs each added.
 pub(crate) struct Drawing {
+    refreshes: u64,
     based: bool,
     fields: Vec<FxHashMap<Span, Vec<Run>>>,
 }
 
 impl Drawing {
     pub(crate) fn new(fetched: &Fetched) -> Drawing {
-        Drawing { based: false, fields: fetched.fields.iter().map(|_| FxHashMap::default()).collect() }
+        Drawing {
+            refreshes: fetched.refreshes,
+            based: false,
+            fields: fetched.fields.iter().map(|_| FxHashMap::default()).collect(),
+        }
     }
 
     /// Spans drawn.
@@ -107,6 +136,14 @@ impl Drawing {
         jobs: &Jobs<'_>,
     ) -> (bool, bool, Option<Error>) {
         fetched.settle();
+        // Once a refreshed source's base arrives, the set draws it from scratch. Until then it
+        // keeps drawing what it drew.
+        if self.refreshes != fetched.refreshes {
+            if matches!(fetched.base, Base::Fetching(_)) {
+                return (false, true, None);
+            }
+            *self = Drawing::new(fetched);
+        }
         let mut changed = false;
         if !self.based {
             match &fetched.base {

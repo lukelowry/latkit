@@ -49,8 +49,20 @@ where
             Segment::Unknown => None,
         });
         let path = steps.chain(within.into_iter().flat_map(|path| path.0)).collect();
-        Error::Invalid { path: Path(path), reason: error.into_inner().to_string().into() }
+        Error::Invalid { path: Path(path), reason: unplaced(error.into_inner().to_string()).into() }
     })
+}
+
+/// `reason` without the position that `serde_json` appends, such as ` at line 1 column 42`. The path
+/// already says where the error is.
+fn unplaced(reason: String) -> String {
+    let number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    match reason.rsplit_once(" at line ") {
+        Some((before, place)) if place.split_once(" column ").is_some_and(|(l, c)| number(l) && number(c)) => {
+            before.to_owned()
+        }
+        _ => reason,
+    }
 }
 
 thread_local! {
@@ -82,7 +94,7 @@ mod tests {
         let grid = at(r#"{"space": {"plane": {"grid": "bogus"}}, "marks": []}"#);
         assert!(grid.starts_with("space.plane.grid:"), "{grid}");
         let mark = at(r#"{"space": "plane", "marks": [{"vertices": ["d", "t"], "colour": "x"}]}"#);
-        assert!(mark.starts_with("marks[0].colour:"), "{mark}");
+        assert!(mark.starts_with("marks[0].colour:") && !mark.contains(" at line "), "{mark}");
         // An option before the key naming the mark's kind still names its own path.
         let radius =
             at(r#"{"space": "plane", "marks": [{"edges": ["d", "e"]}, {"radius": [1], "vertices": ["d", "t"]}]}"#);

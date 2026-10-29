@@ -140,7 +140,7 @@ export default page({
       label: 'The bunny: drag it to fling it, click it to poke it',
     });
     // The room fills the view, seen from the camera's angle.
-    space.fit({ bounds: { min: [-ROOM, -ROOM, 0], max: [ROOM, ROOM, 2.4] } });
+    void space.fit({ bounds: { min: [-ROOM, -ROOM, 0], max: [ROOM, ROOM, 2.4] } });
     const plot = await view(
       () => ({
         space: { plot: { x: { label: 'Time (s)' } } },

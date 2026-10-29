@@ -21,4 +21,5 @@ mod shaders;
 mod colormaps;
 
 #[path = "src/expr/ramp.rs"]
+#[allow(dead_code, reason = "the build bakes only the catalog's texels")]
 mod ramp;

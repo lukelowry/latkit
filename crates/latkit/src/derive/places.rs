@@ -13,10 +13,10 @@ use rustc_hash::FxHashMap;
 
 use super::graph::{key_of, links, marks, position};
 use super::{Derive, Input, Jobs, Tables, Working, answers, beside, kept, stamp_of, stamp_with};
-use crate::Layout;
 use crate::data::{Name, Row, Value, Values};
 use crate::expr::cpu::Rows;
 use crate::host::{Job, Key, Placement};
+use crate::{Arrange, Layout};
 
 #[derive(Default)]
 pub(crate) struct Places {
@@ -27,8 +27,8 @@ pub(crate) struct Places {
     stamp: u64,
     /// Bumps when places start over, so answers to earlier layouts are dropped.
     generation: u64,
-    /// Whether every row without a position is to be laid out again.
-    arranging: bool,
+    /// Which rows are to be laid out again, if any.
+    arranging: Option<Arrange>,
     /// The result of the last arrange, until the view takes it.
     arranged: Option<Vec<(Row, [f64; 2])>>,
     /// The layout job, for the stamp of the inputs it lays out.
@@ -48,8 +48,7 @@ impl Derive for Places {
         if matches!(input.scene.layout, Layout::None) {
             let had = !self.tables.is_empty();
             self.clear();
-            if self.arranging {
-                self.arranging = false;
+            if self.arranging.take().is_some() {
                 self.arranged = Some(Vec::new());
             }
             return had;
@@ -91,9 +90,9 @@ impl Derive for Places {
 }
 
 impl Places {
-    /// Lays out every row without a position again, dropping any pending layout.
-    pub(crate) fn arrange(&mut self) {
-        self.arranging = true;
+    /// Lays out the rows `rows` names again, dropping any pending layout.
+    pub(crate) fn arrange(&mut self, rows: Arrange) {
+        self.arranging = Some(rows);
         self.placing.cancel();
         self.generation += 1;
         self.stamp = 0;
@@ -117,7 +116,7 @@ impl Places {
                     placed.push((row.clone(), [*x, *y]));
                 }
             }
-            if std::mem::take(&mut self.arranging) {
+            if self.arranging.take().is_some() {
                 self.arranged = Some(placed);
             }
         }
@@ -138,11 +137,12 @@ impl Places {
                 pins.push(position(vm.mark, &rows, row));
             }
         }
-        let arranging = self.arranging;
-        let wanted = |i: usize| pins[i].is_none() && (arranging || !self.laid.contains_key(&keys[i]));
+        let (arranging, all) = (self.arranging.is_some(), self.arranging == Some(Arrange::All));
+        let pin = |i: usize| pins[i].filter(|_| !all);
+        let wanted = |i: usize| pin(i).is_none() && (arranging || !self.laid.contains_key(&keys[i]));
         if self.placing.may_start(inputs) && (0..keys.len()).any(wanted) {
             let pinned: Vec<Option<[f64; 2]>> = (0..keys.len())
-                .map(|i| pins[i].or_else(|| (!arranging).then(|| self.laid.get(&keys[i]).copied()).flatten()))
+                .map(|i| pin(i).or_else(|| (!arranging).then(|| self.laid.get(&keys[i]).copied()).flatten()))
                 .collect();
             let mut rows = FxHashMap::default();
             let job_keys: Vec<Option<Key>> = (0..keys.len())
@@ -164,9 +164,9 @@ impl Places {
             };
             let pending = jobs.spawn(Job::layout(&input.scene.layout, &placement));
             self.placing.start(inputs, pending, Placing { generation: self.generation, rows });
-        } else if self.arranging && !self.placing.busy() {
+        } else if arranging && !self.placing.busy() {
             // Nothing to lay out: the arrange finishes with no rows.
-            self.arranging = false;
+            self.arranging = None;
             self.arranged = Some(Vec::new());
         }
         let mut tables = Tables::default();
@@ -220,7 +220,7 @@ mod tests {
         }
         assert_eq!(host.jobs(), 1, "one job for these inputs, not one per frame");
         assert_eq!(errors.lock().expect("unpoisoned").len(), 1, "its failure is reported once");
-        places.arrange();
+        places.arrange(Arrange::Unplaced);
         frame(&mut places);
         assert_eq!(host.jobs(), 2, "laying out again asks again");
     }

@@ -30,7 +30,7 @@ use crate::gpu::shaders::{HEADER_BAND, TEXT_BASE};
 use crate::host::{Job, Key, Placement, TextRun};
 use crate::layout::boxes::Boxes;
 use crate::layout::rect::{EMPTY, Rect, around, union, valid};
-use crate::{Layout, Marker, Pending, Shape, Side, Theme, Vertices};
+use crate::{Arrange, Layout, Marker, Pending, Shape, Side, Theme, Vertices};
 
 /// The number of measured texts beyond which the sheet clears its measurement cache.
 const MEASURED: usize = 1 << 16;
@@ -59,9 +59,9 @@ pub(crate) struct Sheet {
     stamp: u64,
     /// Bumps when places start over, so answers to earlier layouts are dropped.
     generation: u64,
-    /// Whether every row without a position is to be laid out again. Rows stay where they are
-    /// until the layout answers.
-    arranging: bool,
+    /// Which rows are to be laid out again, if any. Rows stay where they are until the layout
+    /// answers.
+    arranging: Option<Arrange>,
     /// The result of the last arrange, until the view takes it.
     arranged: Option<Vec<(Row, [f64; 2])>>,
     /// The layout the places were made with.
@@ -134,7 +134,7 @@ impl Derive for Sheet {
     fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
         if self.layout != Some(input.scene.layout) {
             if self.layout.is_some() {
-                self.arrange();
+                self.arrange(Arrange::Unplaced);
             }
             self.layout = Some(input.scene.layout);
         }
@@ -181,10 +181,9 @@ impl Sheet {
         self.placing.is_some()
     }
 
-    /// Lays out every row without a position again. Rows stay where they are until the layout
-    /// answers.
-    pub(crate) fn arrange(&mut self) {
-        self.arranging = true;
+    /// Lays out the rows `rows` names again. Rows stay where they are until the layout answers.
+    pub(crate) fn arrange(&mut self, rows: Arrange) {
+        self.arranging = Some(rows);
         self.placing = None;
         self.generation += 1;
         self.stamp = 0;
@@ -226,7 +225,7 @@ impl Sheet {
                         placed.push((row.clone(), [*x, -*y]));
                     }
                 }
-                if std::mem::take(&mut self.arranging) {
+                if self.arranging.take().is_some() {
                     self.arranged = Some(placed);
                 }
             }
@@ -608,8 +607,8 @@ impl Sheet {
     }
 
     /// Starts a layout job, unless one is pending, to place every block and empty group that has no
-    /// place (while arranging, no position). Other rows are pinned, and groups lay out around their
-    /// members.
+    /// place (while arranging, no position, or any when arranging all). Other rows are pinned, and
+    /// groups lay out around their members.
     #[allow(clippy::too_many_arguments, reason = "one layout request")]
     fn place(
         &mut self,
@@ -622,15 +621,18 @@ impl Sheet {
         jobs: &Jobs<'_>,
     ) {
         let layout = input.scene.layout;
-        let arranging = self.arranging;
-        let placed = |v: &Vertex| if arranging { v.pin.is_some() } else { v.bounds.is_some() };
+        let placed = |v: &Vertex| match self.arranging {
+            Some(Arrange::All) => false,
+            Some(Arrange::Unplaced) => v.pin.is_some(),
+            None => v.bounds.is_some(),
+        };
         let wanted = |v: &Vertex| !placed(v) && (!v.group || v.members == 0);
         if self.placing.is_some() {
             return;
         }
         if matches!(layout, Layout::None) || !vertices.iter().any(wanted) {
             // Nothing to lay out: the arrange finishes with no rows.
-            if std::mem::take(&mut self.arranging) {
+            if self.arranging.take().is_some() {
                 self.arranged = Some(Vec::new());
             }
             return;
@@ -1228,7 +1230,7 @@ mod tests {
                 data.apply(edit).expect("valid edit");
             }
             redrawn += usize::from(derive(&mut edits, &scene, &data));
-            whole.drawn = None;
+            (whole.drawn, whole.stamp) = (None, 0);
             derive(&mut whole, &scene, &data);
             if let Some(difference) = differ(&edits.tables, &whole.tables) {
                 panic!("step {step}: {difference}");

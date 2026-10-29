@@ -3,7 +3,8 @@
 //! A press decides what it does once the pointer moves a few pixels. With Shift it selects a box
 //! when box selection is on, otherwise it turns a map or plane. On a port, a vertex with Alt held,
 //! or an edge, it draws a connection when connecting is on. On a row of a draggable mark it drags
-//! the row. Elsewhere it pans. A press that does not move clicks. With Shift, Control, or Meta it
+//! the row. Elsewhere it pans, or on a plot with scrubbing on, it moves the coordinate shown, as a
+//! click there does too. A press that does not move clicks. With Shift, Control, or Meta it
 //! toggles its row in the selection. With cycling on, clicking again where nothing moved selects
 //! the next row under the point. A secondary press turns once it moves and opens a menu when it
 //! does not, as does a touch or pen held still. The wheel and pinches zoom, as the controls allow,
@@ -86,6 +87,10 @@ pub(crate) enum Gesture {
         pointer: u32,
         anchor: [f64; 3],
         last: [f32; 2],
+    },
+    /// A drag across a plot that moves the coordinate shown with the pointer.
+    Scrub {
+        pointer: u32,
     },
     Turn {
         pointer: u32,
@@ -295,6 +300,7 @@ impl View {
                 self.pressed();
             }
             Gesture::Drag { pointer: p, .. } if *p == pointer => self.drag(Phase::Move, pointing),
+            Gesture::Scrub { pointer: p } if *p == pointer => self.seek(point),
             Gesture::Box { pointer: p, to, .. } if *p == pointer => *to = point,
             Gesture::Connect { pointer: p, to, .. } if *p == pointer => {
                 *to = point;
@@ -368,7 +374,9 @@ impl View {
                 }
                 self.gestures.now = Gesture::Idle;
             }
-            Gesture::Held { pointer: p } if *p == pointer => self.gestures.now = Gesture::Idle,
+            Gesture::Held { pointer: p } | Gesture::Scrub { pointer: p } if *p == pointer => {
+                self.gestures.now = Gesture::Idle;
+            }
             Gesture::Pinch { pointers } if pointers.iter().any(|(p, _)| *p == pointer) => {
                 self.gestures.now = Gesture::Idle;
             }
@@ -471,7 +479,7 @@ impl View {
             && let Some((from, edge, anchor)) =
                 answer.hit.as_ref().and_then(|probed| self.connect_from(probed, trigger.modifiers))
         {
-            let locating = anchor.is_none().then(|| self.screen_of(&from.row));
+            let locating = anchor.is_none().then(|| self.screen_of(&from.row, None));
             self.gestures.now = Gesture::Connect { pointer, from, edge, anchor, locating, to };
             return;
         }
@@ -482,6 +490,10 @@ impl View {
                 let grab = [probed.hit.point[0] - from[0], probed.hit.point[1] - from[1]];
                 self.gestures.now = Gesture::Drag { pointer, probed, grab };
                 self.drag(Phase::Start, trigger);
+            }
+            _ if self.scrubs() => {
+                self.gestures.now = Gesture::Scrub { pointer };
+                self.seek(to);
             }
             _ if self.scene.controls.pan => {
                 let anchor = self.anchor(from, Some(&answer));
@@ -494,11 +506,15 @@ impl View {
         }
     }
 
-    /// A press released where it began: a click, or a menu for the secondary button.
+    /// A press released where it began: a click, or a menu for the secondary button. On a plot with
+    /// scrubbing on, a click also seeks.
     fn tap(&mut self, button: Button, hit: Option<Probed>, trigger: Trigger) {
         if button == Button::Secondary {
             self.menu(trigger);
         } else {
+            if self.scrubs() {
+                self.seek(trigger.point);
+            }
             self.click(hit, trigger);
         }
     }
@@ -575,7 +591,24 @@ impl View {
                 *v = (*v / pitch).round() * pitch;
             }
         }
-        self.events.tell(Event::Drag { phase, hit: probed.hit.clone(), position, trigger });
+        let place = [position[0], position[1]];
+        let patch = super::arranged(&self.scene, vec![(probed.hit.row.clone(), place)]).into_iter().next();
+        self.events.tell(Event::Drag { phase, hit: probed.hit.clone(), position, patch, trigger });
+    }
+
+    /// Shows the axis coordinate under `point` on a plot, reporting it when it changes.
+    fn seek(&mut self, point: [f32; 2]) {
+        if let Some([at, ..]) = self.position(point)
+            && at != self.at
+        {
+            self.set_at(at);
+            self.events.tell(Event::At(at));
+        }
+    }
+
+    /// Whether a primary press seeks: on a plot with scrubbing on.
+    fn scrubs(&self) -> bool {
+        self.scene.controls.scrub && matches!(self.scene.space, Space::Plot(_))
     }
 
     /// Whether a row is being dragged. Rows it moves then update without easing.

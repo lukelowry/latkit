@@ -1,6 +1,6 @@
-//! A plot's axes, drawn over its marks: grid lines at round values, tick labels and titles in the
-//! theme's font, and the playhead at the shown coordinate. Rebuilt each frame as overlay sprites,
-//! in O(ticks). The space they take around the plot area is measured with the host's text metrics.
+//! A plot's axes: grid lines at round values under its marks, and over them tick labels and titles
+//! in the theme's font and the playhead at the shown coordinate. Rebuilt each frame as overlay
+//! sprites, in O(ticks). The space they take around the plot area is measured with the host's text metrics.
 
 use std::sync::Arc;
 
@@ -177,15 +177,16 @@ impl Writer<'_> {
 }
 
 impl View {
-    /// The sprites drawn over the marks this frame: a plot's axes, the title and legends, and a box
-    /// being selected or a connection being drawn.
-    pub(super) fn overlay(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
+    /// This frame's overlay sprites, and how many of them come first and draw under the marks: a
+    /// plot's grid lines. The rest draw over the marks: a plot's axes, the title and legends, and a
+    /// box being selected or a connection being drawn.
+    pub(super) fn overlay(&self, inner: &mut Inner) -> (Vec<wgsl::Sprite>, u32) {
         let evictions = inner.atlas.evictions;
-        let mut sprites = self.written(inner);
+        let (mut sprites, under) = self.written(inner);
         // If the atlas evicted texts while setting this frame's text, set it again on the new
         // packing.
         if inner.atlas.evictions != evictions {
-            sprites = self.written(inner);
+            sprites = self.written(inner).0;
         }
         let theme = &self.scene.theme;
         let color = theme.focus.selected.unwrap_or(theme.focus.hover);
@@ -201,20 +202,20 @@ impl View {
             }
             _ => {}
         }
-        sprites
+        (sprites, under)
     }
 
     /// The overlay's text sprites and the lines that go with them: a plot's axes, the title, and
-    /// the legends.
-    fn written(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
-        let mut sprites = self.axes_sprites(inner);
+    /// the legends. The plot's grid lines come first, and their count.
+    fn written(&self, inner: &mut Inner) -> (Vec<wgsl::Sprite>, u32) {
+        let (mut sprites, under) = self.axes_sprites(inner);
         sprites.extend(self.annotations(inner));
-        sprites
+        (sprites, under)
     }
 
-    fn axes_sprites(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
-        let Space::Plot(plot) = &self.scene.space else { return Vec::new() };
-        let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return Vec::new() };
+    fn axes_sprites(&self, inner: &mut Inner) -> (Vec<wgsl::Sprite>, u32) {
+        let Space::Plot(plot) = &self.scene.space else { return (Vec::new(), 0) };
+        let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return (Vec::new(), 0) };
         self.axes(inner, plot, self.area(), x, y)
     }
 
@@ -247,7 +248,8 @@ impl View {
         self.gutters = (stamp, measured);
     }
 
-    fn axes(&self, inner: &mut Inner, plot: &Plot, area: Area, x: [f64; 2], y: [f64; 2]) -> Vec<wgsl::Sprite> {
+    /// The plot's grid lines, then its axes and playhead, and the number of grid lines.
+    fn axes(&self, inner: &mut Inner, plot: &Plot, area: Area, x: [f64; 2], y: [f64; 2]) -> (Vec<wgsl::Sprite>, u32) {
         let [left, top, right, bottom] = area;
         let across = |v: f64| left + (v - x[0]) / (x[1] - x[0]) * (right - left);
         let up = |v: f64| bottom - (v - y[0]) / (y[1] - y[0]) * (bottom - top);
@@ -263,13 +265,13 @@ impl View {
             color: theme.text.color,
         };
         let axis = theme.text.color.alpha(0.35);
-        let mut sprites = Vec::new();
+        let (mut grid, mut sprites) = (Vec::new(), Vec::new());
         if !plot.x.hidden {
             let step = step(x[1] - x[0], (right - left) / (font * 8.0));
             for (v, text) in axis_ticks(&plot.x, x, step) {
                 let at = across(v);
                 if plot.x.grid {
-                    sprites.push(line([at, top], [at, bottom], 1.0, theme.grid));
+                    grid.push(line([at, top], [at, bottom], 1.0, theme.grid));
                 }
                 sprites.push(line([at, bottom], [at, bottom + TICK], 1.0, axis));
                 sprites.extend(writer.text(&text, [at, bottom + TICK + GAP], Align::Below));
@@ -285,7 +287,7 @@ impl View {
             for (v, text) in axis_ticks(&plot.y, y, step) {
                 let at = up(v);
                 if plot.y.grid {
-                    sprites.push(line([left, at], [right, at], 1.0, theme.grid));
+                    grid.push(line([left, at], [right, at], 1.0, theme.grid));
                 }
                 sprites.push(line([left - TICK, at], [left, at], 1.0, axis));
                 sprites.extend(writer.text(&text, [left - TICK - GAP, at], Align::Left));
@@ -300,7 +302,9 @@ impl View {
             let at = across(self.at);
             sprites.push(line([at, top], [at, bottom], 1.5, theme.plot.playhead));
         }
-        sprites
+        let under = grid.len() as u32;
+        grid.extend(sprites);
+        (grid, under)
     }
 }
 

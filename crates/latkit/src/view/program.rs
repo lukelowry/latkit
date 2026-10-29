@@ -41,7 +41,7 @@ fn changed(was: &[u32], words: &[u32]) -> Vec<[usize; 2]> {
 impl View {
     /// The codes of mark `i`'s ports, among the ports of every vertex mark of its table. Empty for
     /// a mark with no ports.
-    fn port_codes(&self, i: usize) -> Vec<u32> {
+    pub(super) fn port_codes(&self, i: usize) -> Vec<u32> {
         let crate::Mark::Vertices(mark) = &self.marks[i].mark else { return Vec::new() };
         if mark.ports.is_empty() {
             return Vec::new();
@@ -62,7 +62,8 @@ impl View {
     /// grows, `encoder` copies the old contents over, and later writes are ordered after the copy.
     pub(super) fn pack(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
         let gpu = self.gpu.clone();
-        let font = self.scene.theme.text.font.clone();
+        let theme = &self.scene.theme;
+        let (font, background, contrast) = (theme.text.font.clone(), theme.background, theme.contrast);
         // Each vertex mark's port codes, among the ports of every vertex mark of its table. A mark
         // whose codes changed, as when another mark of its table adds ports, writes them again.
         let codes: Vec<Vec<u32>> = (0..self.marks.len()).map(|i| self.port_codes(i)).collect();
@@ -82,6 +83,7 @@ impl View {
                 }
             }
             for (at, colormap) in &compiled.program.colormaps {
+                let colormap = &colormap.legible(background, contrast);
                 match inner.colormaps.colormap(&gpu.0.device, &gpu.0.queue, colormap) {
                     Ok(layer) => shown.code[*at as usize][1] = layer | colormap.kind().code() << 16,
                     Err(error) => self.events.tell(Event::Error(error)),

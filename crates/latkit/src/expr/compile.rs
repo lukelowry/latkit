@@ -134,6 +134,9 @@ pub(crate) struct Program {
     /// Each row's ends, in order. The end pass writes the GPU row holding end `i` into kind word
     /// `i`.
     pub(crate) ends: Vec<EndUse>,
+    /// Each domain over a sampled field's history: its constant, and the field's column. The view
+    /// fills in the least and greatest values the field holds.
+    pub(crate) histories: Vec<(u32, u32)>,
     /// Bit mask of the state words stored in position units.
     pub(crate) units: u32,
 }
@@ -167,13 +170,26 @@ impl Program {
     }
 }
 
-/// Where a channel stores its value.
+/// Where a channel stores its value. A fallback is the theme slot a missing value takes. `unset` is
+/// a flag's value when its option is unset.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Store {
     Number { word: u32, fallback: Option<u32> },
     Size { word: u32, units: bool, fallback: Option<u32> },
     Color { word: u32, fallback: u32 },
-    Flag { word: u32, bit: u32 },
+    Flag { word: u32, bit: u32, unset: bool },
+}
+
+impl Store {
+    /// What an unset option stores: a flag's unset value, the theme's value where there is a
+    /// fallback, and otherwise 0.
+    fn unset(self) -> Expr {
+        match self {
+            Store::Flag { unset, .. } => unset.into(),
+            Store::Number { fallback: None, .. } | Store::Size { fallback: None, .. } => 0.0.into(),
+            Store::Number { .. } | Store::Size { .. } | Store::Color { .. } => Expr::missing(),
+        }
+    }
 }
 
 /// The fields a mark's expressions can read.
@@ -206,6 +222,8 @@ pub(crate) struct Compiler<'a> {
     /// Code of each fitted domain's reduction, placed after the channels by `finish`.
     reductions: Vec<Vec<[u32; 4]>>,
     reducing: bool,
+    /// Why options did not fit the data. Each such option stores what it stores unset.
+    pub(crate) failures: Vec<Error>,
 }
 
 fn invalid(reason: impl Into<std::borrow::Cow<'static, str>>) -> Error {
@@ -222,6 +240,7 @@ impl<'a> Compiler<'a> {
             columns_read: 0,
             reductions: Vec::new(),
             reducing: false,
+            failures: Vec::new(),
         }
     }
 
@@ -230,12 +249,51 @@ impl<'a> Compiler<'a> {
         self.fields.kind(None, name)
     }
 
-    /// Compiles `expr` into channel `name`, stored by `store`.
+    /// Compiles `expr` into channel `name`, stored by `store`. When `expr` does not fit the data,
+    /// such as a missing field or one of the wrong kind, the channel stores what the option stores
+    /// unset, and the error joins `failures`.
     pub(crate) fn channel(&mut self, name: &str, expr: &Expr, store: Store) -> Result<()> {
+        if self.option(|c| c.stored(name, expr, store)).is_none() {
+            self.stored(name, &store.unset(), store)?;
+        }
+        Ok(())
+    }
+
+    fn stored(&mut self, name: &str, expr: &Expr, store: Store) -> Result<()> {
         let start = self.begin();
         self.store(expr, store).map_err(|e| e.at(name))?;
         self.close(name, start);
         Ok(())
+    }
+
+    /// Runs `compile` for an option that may not fit the data. If it fails, it adds nothing to the
+    /// program, its error joins `failures`, and this returns `None`.
+    pub(crate) fn option<T>(&mut self, compile: impl FnOnce(&mut Self) -> Result<T>) -> Option<T> {
+        let kept = (self.program.clone(), self.reductions.len());
+        match compile(self) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                (self.program, self.reducing) = (kept.0, false);
+                self.reductions.truncate(kept.1);
+                self.failures.push(error);
+                None
+            }
+        }
+    }
+
+    /// Runs `compile` for the part of an option at `step`, which its errors and failures name.
+    pub(crate) fn within<T>(
+        &mut self,
+        step: impl Into<crate::Step>,
+        compile: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let step = step.into();
+        let before = self.failures.len();
+        let compiled = compile(self).map_err(|e| e.at(step.clone()));
+        for failure in &mut self.failures[before..] {
+            *failure = failure.clone().at(step.clone());
+        }
+        compiled
     }
 
     /// Compiles a position channel. Plain number fields and point fields keep full precision.
@@ -363,6 +421,14 @@ impl<'a> Compiler<'a> {
         Ok(f)
     }
 
+    /// Whether label text `expr` is a number: anything but a text field, or a `when` choosing
+    /// between one and missing.
+    pub(crate) fn writes_number(&self, expr: &Expr) -> bool {
+        let Ok(Some(f)) = text_field(expr, None) else { return true };
+        let from = f.from.as_ref();
+        !self.fields.empty(from, &f.name) && self.fields.kind(from, &f.name).is_some_and(|kind| kind != Kind::Text)
+    }
+
     /// Compiles channel `name`, which stores at `word` the dictionary code of derived text field
     /// `field`, as a diagram's sheet writes its labels. Returns the program column whose dictionary
     /// decodes the codes.
@@ -394,6 +460,12 @@ impl<'a> Compiler<'a> {
             channel.eases = false;
         }
         Ok(column)
+    }
+
+    /// Compiles channel `name`, which stores at `word` the number label text `expr` writes. A
+    /// missing number stays missing, so it draws no label.
+    pub(crate) fn number(&mut self, name: &str, expr: &Expr, word: u32) -> Result<()> {
+        self.stored(name, expr, Store::Number { word, fallback: None })
     }
 
     /// The column of sampled field `name` that a line traces over the axis. Errors if `name` is not
@@ -458,7 +530,7 @@ impl<'a> Compiler<'a> {
                 self.op(wgsl::OP_STORE, word, slot(fallback), 0, 1, 0)
             }
             Store::Color { word, fallback } => self.op(wgsl::OP_STORE_COLOR, word, fallback, 0, 1, 0),
-            Store::Flag { word, bit } => self.op(wgsl::OP_STORE_FLAG, word, bit, 0, 1, 0),
+            Store::Flag { word, bit, .. } => self.op(wgsl::OP_STORE_FLAG, word, bit, 0, 1, 0),
         }
     }
 
@@ -610,7 +682,7 @@ impl<'a> Compiler<'a> {
                 self.expect(input, Ty::Number)?;
                 // A categorical map bins values by their integer part, so it has nothing to fit.
                 let domain = match domain {
-                    Domain::Fit if colormap.kind() == ColormapKind::Categorical => {
+                    Domain::Fit | Domain::All if colormap.kind() == ColormapKind::Categorical => {
                         Domain::Fixed([0.0, f64::from(colormap.count())])
                     }
                     _ => *domain,
@@ -662,6 +734,10 @@ impl<'a> Compiler<'a> {
     }
 
     fn binary(&mut self, op: Binary, a: &Expr, b: &Expr) -> Result<Ty> {
+        // A missing side of a fallback leaves the other side, of whatever type.
+        if op == Binary::Fallback && (self.missing(a) || self.missing(b)) {
+            return self.emit(if self.missing(a) { b } else { a });
+        }
         let (ta, tb) = (self.emit(a)?, self.emit(b)?);
         let numbers = matches!(ta, Ty::Number | Ty::Bool) && matches!(tb, Ty::Number | Ty::Bool);
         let bools = ta == Ty::Bool && tb == Ty::Bool;
@@ -680,24 +756,36 @@ impl<'a> Compiler<'a> {
             }
             Binary::Lt | Binary::Le | Binary::Gt | Binary::Ge | Binary::Eq | Binary::Ne if numbers => Ty::Bool,
             Binary::Eq | Binary::Ne if ta == Ty::Color && tb == Ty::Color => Ty::Bool,
-            Binary::And | Binary::Or if bools => Ty::Bool,
+            Binary::And | Binary::Or | Binary::Fallback if bools => Ty::Bool,
+            Binary::Fallback if numbers => Ty::Number,
+            Binary::Fallback if ta == Ty::Color && tb == Ty::Color => Ty::Color,
             _ => {
                 let hint = if ta == Ty::Text || tb == Ty::Text { "; compare text with is" } else { "" };
                 let reason = format!("{} of {} and {}{hint}", binary_name(op), ty_name(ta), ty_name(tb));
                 return Err(invalid(reason));
             }
         };
-        self.op(binary_code(op), 0, 0, 0, 2, 1)?;
+        self.op(binary_code(op), u32::from(ty == Ty::Color), 0, 0, 2, 1)?;
         Ok(ty)
     }
 
     /// Adds a domain record to the constants and returns its index. A fitted domain also compiles a
-    /// reduction of its input.
+    /// reduction of its input. A domain over a sampled field's history leaves its values to the
+    /// view, and over any other field fits the values shown, which are all of them.
     fn domain(&mut self, input: &Expr, domain: Domain) -> Result<u32> {
         let at = self.program.constants.len() as u32;
         match domain {
             Domain::Fixed([a, b]) => {
                 self.program.constants.extend([0, (a as f32).to_bits(), (b as f32).to_bits(), 0]);
+            }
+            Domain::All => {
+                let Node::Field(f) = &*input.0 else { return Err(invalid("a domain over all values needs a field")) };
+                if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Sampled) {
+                    return self.domain(input, Domain::Fit);
+                }
+                let column = self.field_column(f, Words::Values, true);
+                self.program.constants.extend([0, 0, 1.0_f32.to_bits(), 0]);
+                self.program.histories.push((at, column));
             }
             Domain::Fit => {
                 if self.reducing {
@@ -773,6 +861,7 @@ fn unary_code(op: Unary) -> u32 {
 
 fn binary_code(op: Binary) -> u32 {
     match op {
+        Binary::Fallback => wgsl::OP_FALLBACK,
         Binary::Add => wgsl::OP_ADD,
         Binary::Sub => wgsl::OP_SUB,
         Binary::Mul => wgsl::OP_MUL,
@@ -794,6 +883,7 @@ fn binary_code(op: Binary) -> u32 {
 
 fn binary_name(op: Binary) -> &'static str {
     match op {
+        Binary::Fallback => "fallback",
         Binary::Add => "sum",
         Binary::Sub => "difference",
         Binary::Mul => "product",

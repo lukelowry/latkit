@@ -121,22 +121,33 @@ impl Edges {
             return Err(Error::invalid("not a path field").at(bends).at("bends"));
         }
         let mut flags = if self.arrows { wgsl::ARROWS } else { 0 };
-        let color = Store::Color { word: wgsl::EDGE_COLOR, fallback: wgsl::THEME_EDGE };
+        // Without a theme edge color, a row with ends outside a diagram whose color is missing
+        // blends the colors of its ends.
+        let blends = context.theme.edge.color.is_none() && !context.diagram() && self.ends.is_some();
+        if blends {
+            flags |= wgsl::ENDS_COLOR;
+        }
+        let fallback = if blends { wgsl::NONE } else { wgsl::THEME_EDGE };
+        let color = Store::Color { word: wgsl::EDGE_COLOR, fallback };
         match (&self.style.color, context.theme.edge.color) {
             (Some(expr), _) => c.channel("color", expr, color)?,
             (None, Some(_)) => c.theme("color", wgsl::THEME_EDGE, color)?,
+            (None, None) if blends => c.channel("color", &crate::Expr::missing(), color)?,
             // A diagram's wires, and edges without ends to blend (nets and poles), take the text
             // color.
-            (None, None) if context.diagram() || self.ends.is_none() => {
+            (None, None) => {
                 c.theme(
                     "color",
                     wgsl::THEME_TEXT,
                     Store::Color { word: wgsl::EDGE_COLOR, fallback: wgsl::THEME_TEXT },
                 )?;
             }
-            (None, None) => flags |= wgsl::ENDS_COLOR,
         }
-        c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::EDGE_FLAGS, bit: wgsl::VISIBLE })?;
+        c.channel(
+            "visible",
+            &self.style.visible,
+            Store::Flag { word: wgsl::EDGE_FLAGS, bit: wgsl::VISIBLE, unset: true },
+        )?;
         let words = StrokeWords {
             width: wgsl::EDGE_WIDTH,
             flow: wgsl::EDGE_FLOW,

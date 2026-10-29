@@ -1,7 +1,8 @@
 //! Labels.
 //!
 //! In the labels buffer, each labeled mark keeps a run table that maps its text codes to where the
-//! atlas holds each text. Both words are 0 until the text is set. Draws place every label from its
+//! atlas holds each text. Both words are 0 until the text is set. A number label's codes are the
+//! characters it writes, so the GPU writes any number from a few texts. Draws place every label from its
 //! anchor each frame. A label shows when its text is set, its row is visible, and the text fits,
 //! for example inside a block. No label depends on another label or on an earlier frame. A row
 //! whose text is missing has no label.
@@ -34,7 +35,6 @@ use crate::Name;
 use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
 use crate::gpu::atlas::{self, Glyphs};
-use crate::gpu::dictionary::Dictionary;
 use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
@@ -55,21 +55,46 @@ pub(crate) struct Slots {
     codes: u32,
 }
 
-/// How a labeled mark sets its texts: the field its codes index, as dataset, table, and field, and
-/// the font, size, and wrap width of its runs. A run table holds texts set one way.
+/// How a labeled mark sets its texts, and the font, size, and wrap width of its runs. A run table
+/// holds texts set one way.
 #[derive(Clone, PartialEq, Debug)]
 struct Setting {
-    field: [Name; 3],
+    texts: Texts,
     font: Arc<str>,
     size: f32,
     max_width: Option<f32>,
 }
 
+/// What a labeled mark's codes index: a text field, as dataset, table, and field, or the
+/// characters a number label writes, with its unit.
+#[derive(Clone, PartialEq, Debug)]
+enum Texts {
+    Field([Name; 3]),
+    Number(Option<Arc<str>>),
+}
+
 impl Setting {
-    /// The dictionary of the field's codes.
-    fn dictionary<'g>(&self, inner: &'g mut Inner) -> &'g mut Dictionary {
-        let [data, table, field] = &self.field;
-        inner.dictionaries.field(data, table, field)
+    /// The text of `code`.
+    fn text(&self, code: u32, inner: &mut Inner) -> Option<Arc<str>> {
+        match &self.texts {
+            Texts::Field([data, table, field]) => inner.dictionaries.field(data, table, field).text(code).cloned(),
+            Texts::Number(unit) => match code {
+                0..=9 => Some(code.to_string().into()),
+                wgsl::CHAR_POINT => Some(".".into()),
+                wgsl::CHAR_MINUS => Some("-".into()),
+                wgsl::CHAR_EXPONENT => Some("e".into()),
+                wgsl::CHAR_UNIT => unit.clone(),
+                _ => None,
+            },
+        }
+    }
+
+    /// The number of codes so far.
+    fn codes(&self, inner: &mut Inner) -> u32 {
+        match &self.texts {
+            Texts::Field([data, table, field]) => inner.dictionaries.field(data, table, field).len() as u32,
+            Texts::Number(_) => wgsl::NUMBER_CODES,
+        }
     }
 }
 
@@ -107,35 +132,35 @@ impl Labels {
 }
 
 impl View {
-    /// How mark `i` sets its label texts, wherever its text field is: in the mark's table, a joined
-    /// one, or a table derived beside it. `None` while the mark has no label or the table with its
-    /// text is missing.
+    /// How mark `i` sets its label texts: as a number's characters, or from its text field wherever
+    /// it is, in the mark's table, a joined one, or a table derived beside it. `None` while the mark
+    /// has no label or the table with its text is missing.
     fn setting(&self, i: usize) -> Option<Setting> {
         let shown = &self.marks[i];
         let compiled = shown.compiled.as_ref()?;
         let labeling = compiled.drawing.label.as_ref()?;
-        let column = &compiled.program.columns[labeling.column as usize];
-        let source = Source::of(shown.mark.style(), &self.snapshots, &self.derived)?;
-        let (data, table) = source.table_of(column, &self.snapshots)?;
-        Some(Setting {
-            field: [data.clone(), table.name.clone(), column.name.clone()],
-            font: labeling.font.clone(),
-            size: labeling.size,
-            max_width: labeling.max_width,
-        })
+        let (texts, max_width) = if let Some((_, unit)) = &labeling.number {
+            (Texts::Number(unit.clone()), None)
+        } else {
+            let column = &compiled.program.columns[labeling.column as usize];
+            let source = Source::of(shown.mark.style(), &self.snapshots, &self.derived)?;
+            let (data, table) = source.table_of(column, &self.snapshots)?;
+            (Texts::Field([data.clone(), table.name.clone(), column.name.clone()]), labeling.max_width)
+        };
+        Some(Setting { texts, font: labeling.font.clone(), size: labeling.size, max_width })
     }
 
     /// The text run for code `code` of mark `i`'s label text, at the base size regardless of the
     /// size it shows at, as a diagram's sheet measures it.
     fn run_of(&self, i: usize, code: u32, inner: &mut Inner) -> Option<TextRun> {
         let setting = self.setting(i)?;
-        let text = setting.dictionary(inner).text(code)?.clone();
+        let text = setting.text(code, inner)?;
         Some(atlas::run(text, setting.font, setting.size, setting.max_width))
     }
 
     /// The number of codes mark `i`'s label text has so far.
     fn codes_of(&self, i: usize, inner: &mut Inner) -> u32 {
-        self.setting(i).map_or(0, |setting| setting.dictionary(inner).len() as u32)
+        self.setting(i).map_or(0, |setting| setting.codes(inner))
     }
 
     /// Sets the texts the last texts pass asked for, within the frame's budget. The next pass asks
@@ -425,10 +450,14 @@ impl View {
             if slots.is_none() || shown.rows == 0 {
                 continue;
             }
+            // A number label draws each character as an instance.
+            let numbered =
+                shown.compiled.as_ref().and_then(|c| c.drawing.label.as_ref()).is_some_and(|l| l.number.is_some());
+            let per = if numbered { wgsl::NUMBER_CHARS } else { 1 };
             pass.set_pipeline(&inner.pipelines.render(device, MarkVariants::shown(shown).glyphs(format, samples)));
             pass.set_bind_group(2, labels_group, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-            drawn.draw(pass, 4, shown.rows);
+            drawn.draw(pass, 4, shown.rows * per);
         }
         for (i, shown) in self.marks.iter().enumerate() {
             let labeled =

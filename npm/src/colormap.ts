@@ -1,6 +1,7 @@
 /** The colormap catalog, and colormaps as CSS gradients for legends drawn in HTML. */
 
-import type { Colormap, ColormapKind, ColormapName } from './inputs.js';
+import { CATALOG } from './catalog.js';
+import type { Colormap } from './inputs.js';
 import { wasm } from './internal.js';
 
 /**
@@ -14,8 +15,8 @@ export function colormapCss(map: Colormap, direction = 'to right'): string {
 
 /**
  * Returns the catalog's colormaps in order, each with its name, its label such as `'Red / Blue'`,
- * and its kind.
+ * its kind, and its colors as a custom colormap takes them. Needs no WebAssembly.
  */
-export function colormaps(): { name: ColormapName; label: string; kind: ColormapKind }[] {
-  return JSON.parse(wasm().colormaps()) as ReturnType<typeof colormaps>;
+export function colormaps(): typeof CATALOG {
+  return CATALOG;
 }

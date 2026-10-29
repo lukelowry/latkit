@@ -289,6 +289,49 @@ fn time_tiles_draw_the_spans_a_plot_window_needs() {
 }
 
 #[test]
+fn time_tiles_the_app_fetches_refresh_as_frames_are_recorded() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("signals");
+    data.apply(Patch::new().axis("time", "s").set(Table::new("Signal", Ids::count(1)))).expect("valid");
+    let record = |frames: std::ops::Range<u32>| {
+        let times: Vec<f64> = frames.map(f64::from).collect();
+        data.apply(Patch::new().append("Signal", &times, [("v", vec![0.5; times.len()])])).expect("frames");
+    };
+    let files = Arc::new(Mutex::new(BTreeMap::<String, Vec<u8>>::new()));
+    let write = || {
+        let mut files = files.lock().expect("unpoisoned");
+        data.snapshot()
+            .to_tiles(64, |path, bytes| {
+                files.insert(path.to_owned(), bytes.to_vec());
+                Ok(())
+            })
+            .expect("tiles");
+    };
+    record(0..100);
+    write();
+    let served = files.clone();
+    let tiles = Tiles::new("signals", "frames.json").fetch(move |request: &Request| {
+        let file = served.lock().expect("unpoisoned").get(&*request.url).cloned();
+        Pending::ready(file.ok_or_else(|| latkit::Error::Io("no such file".into())))
+    });
+    let scene = Scene::new(Plot::default()).theme(plain_theme()).draw(Lines::of("signals", "Signal").trace("v"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_sources([tiles.clone()]).expect("a source");
+    view.set_camera(Camera::Plot { x: [0.0, 300.0], y: Some([0.0, 1.0]) });
+    let mut last = || {
+        frame(&gpu, &mut view);
+        view.snapshot("signals").and_then(|data| data.describe().span).map_or(0.0, |[_, last]| last)
+    };
+    let before = last();
+    assert!((90.0..100.0).contains(&before), "fetched without a host, up to frame {before}");
+    record(100..250);
+    write();
+    tiles.refresh();
+    let after = last();
+    assert!((240.0..250.0).contains(&after), "the frames the refreshed index lists, up to {after}");
+}
+
+#[test]
 fn geojson_draws_as_lines_and_vertices_on_the_globe() {
     let Some(gpu) = gpu() else { return };
     let bytes = br#"{"type": "FeatureCollection", "features": [

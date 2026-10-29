@@ -198,8 +198,8 @@ export default page({
 
     // A drag moves a block at once and is undone as one edit.
     let dragging = false;
-    shown.on('drag', ({ phase, hit, position: [x, y] }) => {
-      const move = () => data.set(hit.row.table, [hit.row.id], { x: [x], y: [y] });
+    shown.on('drag', ({ phase, patch }) => {
+      const move = () => patch && data.apply(patch);
       if (phase === 'start' && !dragging) {
         dragging = true;
         edit(move);
@@ -244,10 +244,12 @@ export default page({
         key: 'a',
         // The layout places every block again and writes the places into its x and y fields.
         run: () => {
-          void shown.arrange().then((patches) => edit(() => patches.forEach((p) => data.apply(p))));
+          void shown
+            .arrange('all')
+            .then((patches) => edit(() => patches.forEach((p) => data.apply(p))));
         },
       },
-      { label: 'Fit', key: 'home', run: () => shown.fit() },
+      { label: 'Fit', key: 'home', run: () => void shown.fit() },
     ]);
 
     return {
@@ -258,7 +260,7 @@ export default page({
         [...undo.splice(0), ...redo.splice(0)].forEach((snapshot) => snapshot.destroy());
         return () => {
           old.destroy();
-          shown.fit();
+          void shown.fit();
           count();
         };
       },

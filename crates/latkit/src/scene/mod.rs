@@ -34,7 +34,7 @@ pub use mark::Mark;
 pub use marker::{Marker, Shape};
 pub use port::{Port, Side};
 pub(crate) use space::sun;
-pub use space::{Axis, Diagram, Earth, Format, Grid, Plane, Plot, Projection, Space};
+pub use space::{Axis, Diagram, Earth, Grid, Plane, Plot, Projection, Space};
 pub use theme::{
     AreaTheme, DiagramTheme, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, Length, LineTheme, PlotTheme, ShadowTheme,
     TextTheme, Theme, VertexTheme,
@@ -198,12 +198,11 @@ impl Scene {
             if let Some(error) = mark.absent_from(dataset) {
                 return Err(error.at(i).at("marks"));
             }
-            compile::compile(
-                mark,
-                &snapshots,
-                mark::Context { theme: &self.theme, space: &self.space, layout: &self.layout },
-            )
-            .map_err(|error| error.at(i).at("marks"))?;
+            let context = mark::Context { theme: &self.theme, space: &self.space, layout: &self.layout };
+            let compiled = compile::compile(mark, &snapshots, context).map_err(|error| error.at(i).at("marks"))?;
+            if let Some(failure) = compiled.and_then(|c| c.failures.into_iter().next()) {
+                return Err(failure.at(i).at("marks"));
+            }
         }
         Ok(())
     }

@@ -194,6 +194,8 @@ pub(crate) const FRAME_WORK: u32 = 4000;
 pub(crate) struct Jobs<'a> {
     errors: &'a Arc<Mutex<Vec<crate::Error>>>,
     host: Option<&'a dyn Host>,
+    /// Fetches in place of the host, for tiles given their own fetch.
+    fetch: Option<&'a crate::tiles::Fetch>,
     waker: &'a Waker,
     /// Counts the jobs spawned.
     counters: &'a Counters,
@@ -210,7 +212,7 @@ impl<'a> Jobs<'a> {
         errors: &'a Arc<Mutex<Vec<crate::Error>>>,
         left: u32,
     ) -> Jobs<'a> {
-        Jobs { errors, host, waker, counters, left }
+        Jobs { errors, host, fetch: None, waker, counters, left }
     }
 
     /// Whether `cost` microseconds fit the rest of the frame's budget. Spends them if so.
@@ -235,7 +237,12 @@ impl<'a> Jobs<'a> {
     /// The same host's jobs and fetches, but waking `waker` instead of this frame's view, and with
     /// no inline budget. Used for work shared by every view that draws its result.
     pub(crate) fn waking<'b>(&'b self, waker: &'b Waker) -> Jobs<'b> {
-        Jobs { errors: self.errors, host: self.host, waker, counters: self.counters, left: 0 }
+        Jobs { errors: self.errors, host: self.host, fetch: self.fetch, waker, counters: self.counters, left: 0 }
+    }
+
+    /// The same jobs, with fetches made by `fetch` when given.
+    pub(crate) fn fetching(self, fetch: Option<&'a crate::tiles::Fetch>) -> Jobs<'a> {
+        Jobs { fetch: fetch.or(self.fetch), ..self }
     }
 
     /// Spends `cost` microseconds of the budget even when it does not fit, for work the frame
@@ -256,11 +263,13 @@ impl<'a> Jobs<'a> {
         pending
     }
 
-    /// Fetches `request` through the host. Without a host, the fetch fails as unsupported.
+    /// Fetches `request` with the tiles' own fetch, or through the host. Without either, the fetch
+    /// fails as unsupported.
     pub(crate) fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
-        let pending = match self.host {
-            Some(host) => host.fetch(request),
-            None => Pending::ready(Err(crate::Error::Unsupported("fetching needs a host".into()))),
+        let pending = match (self.fetch, self.host) {
+            (Some(fetch), _) => fetch(request),
+            (None, Some(host)) => host.fetch(request),
+            (None, None) => Pending::ready(Err(crate::Error::Unsupported("fetching needs a host".into()))),
         };
         pending.notify(self.waker);
         pending
@@ -462,10 +471,10 @@ impl Derivations {
         changed
     }
 
-    /// Lays out every vertex row without a position again: through the sheet in a diagram, else
-    /// through the places.
-    pub(crate) fn arrange(&mut self, diagram: bool) {
-        if diagram { self.sheet.arrange() } else { self.places.arrange() }
+    /// Lays out the vertex `rows` names again: through the sheet in a diagram, else through the
+    /// places.
+    pub(crate) fn arrange(&mut self, diagram: bool, rows: crate::Arrange) {
+        if diagram { self.sheet.arrange(rows) } else { self.places.arrange(rows) }
     }
 
     /// Takes the result of the last `arrange` once it arrives: each row laid out and its position,

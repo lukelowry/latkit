@@ -5,9 +5,11 @@
 //! (reducing fitted domains first), resolves endpoints, eases marks in transition, moves comets,
 //! numbers segments, sums face normals when their corners moved, and measures extents when asked.
 //!
-//! The render pass draws the backdrop, then every mark's primitive and ports in scene order with
-//! depth, then the labels and the overlay. A pending probe then reads what the frame drew, through
-//! the same geometry.
+//! The render pass draws the backdrop and a plot's grid lines, then every mark's primitive and ports
+//! in scene order with depth, then the labels and the rest of the overlay. A pending probe then
+//! reads what the frame drew, through the same geometry.
+
+use std::ops::Range;
 
 use super::resources::MARK_STRIDE;
 use super::sync::Source;
@@ -89,8 +91,13 @@ pub(super) struct Drawn {
 impl Drawn {
     /// Draws and counts `instances` instances of `corners` vertices each.
     pub(super) fn draw(&mut self, pass: &mut wgpu::RenderPass<'_>, corners: u32, instances: u32) {
-        pass.draw(0..corners, 0..instances);
-        self.count(instances);
+        self.draw_range(pass, corners, 0..instances);
+    }
+
+    /// Draws and counts instances `instances` of `corners` vertices each.
+    pub(super) fn draw_range(&mut self, pass: &mut wgpu::RenderPass<'_>, corners: u32, instances: Range<u32>) {
+        self.count(instances.len() as u32);
+        pass.draw(0..corners, instances);
     }
 
     fn count(&mut self, instances: u32) {
@@ -686,15 +693,16 @@ impl View {
 
     /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark
     /// in scene order, and the lit rows. Once the text pipelines are ready, it also builds the
-    /// distance fields of text set this frame, and draws the labels and `sprites` overlay sprites.
-    /// Depth is stored when `probing` reads it. While the camera is unplaced, it only clears.
+    /// distance fields of text set this frame, and draws the labels and the overlay's
+    /// `[under, sprites]` sprites, the first `under` before the marks. Depth is stored when
+    /// `probing` reads it. While the camera is unplaced, it only clears.
     pub(super) fn draw(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         drawn: &mut Drawn,
         frame: &Frame<'_>,
-        sprites: u32,
+        [under, sprites]: [u32; 2],
         probing: bool,
     ) {
         let gpu = self.gpu.clone();
@@ -750,6 +758,14 @@ impl View {
         pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Backdrop, frame.format, samples)));
         pass.set_bind_group(2, group(Shader::Backdrop), &[]);
         drawn.draw(&mut pass, 3, 1);
+        let overlay = |pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, inner: &mut Inner, sprites: Range<u32>| {
+            pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Overlay, frame.format, samples)));
+            pass.set_bind_group(2, group(Shader::Overlay), &[]);
+            drawn.draw_range(pass, 4, sprites);
+        };
+        if texts && under > 0 {
+            overlay(&mut pass, drawn, inner, 0..under);
+        }
         let marks = Marks {
             device,
             format: frame.format,
@@ -789,10 +805,8 @@ impl View {
         }
         let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(group);
         self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, glyphs);
-        if sprites > 0 {
-            pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Overlay, frame.format, samples)));
-            pass.set_bind_group(2, group(Shader::Overlay), &[]);
-            drawn.draw(&mut pass, 4, sprites);
+        if sprites > under {
+            overlay(&mut pass, drawn, inner, under..sprites);
         }
     }
 

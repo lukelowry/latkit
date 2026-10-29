@@ -365,6 +365,15 @@ fn take_out<T: Copy>(log: &mut Log<Page<T>>, entries: &Range<u64>) {
     }
 }
 
+/// Drops the entries of `log` from entry `at` on.
+fn cut<T: Copy>(log: &mut Log<Page<T>>, at: u64) {
+    let (keep, len) = log.read(|pages| (pages.partition_point(|p| p.first < at), pages.len()));
+    if keep < len {
+        log.edit(|pages| pages.truncate(keep));
+    }
+    cap(log, at);
+}
+
 /// Forgets the pages of `log` whose entries all lie before entry `index`.
 fn forget_before<T: Copy>(log: &mut Log<Page<T>>, index: u64) {
     let dropped = log.read(|pages| pages.partition_point(|p| p.end() <= index));
@@ -715,6 +724,26 @@ impl Samples {
         for block in &mut logs.blocks {
             for side in 0..sides(run.level) {
                 take_out(&mut block[slot(run.level, side)], &run.entries);
+            }
+        }
+        self.keep(logs);
+    }
+
+    /// Drops `run`'s level from its first entry on when `run` covers that level's last entry, so
+    /// the run can write those entries again, as when a level's last bucket fills.
+    pub(crate) fn truncate(&mut self, run: &Run) {
+        let visible = self.visible(run.level);
+        let Some(log) = self.axes.get(run.level as usize) else { return };
+        let held =
+            |entries: Range<u64>| first_held(log, entries.start.max(visible.start)..entries.end.min(visible.end));
+        if held(run.entries.clone()).is_none() || held(run.entries.end..u64::MAX).is_some() {
+            return;
+        }
+        let mut logs = self.logs_at(0, run.level);
+        cut(&mut logs.axes[run.level as usize], run.entries.start);
+        for block in &mut logs.blocks {
+            for side in 0..sides(run.level) {
+                cut(&mut block[slot(run.level, side)], run.entries.start);
             }
         }
         self.keep(logs);

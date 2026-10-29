@@ -234,7 +234,7 @@ A tick in JSON: a value, or `[value, label]`.
 {.signature}
 `type Format = 'auto' | 'fixed' | 'scientific' | 'engineering'`
 
-How an axis formats its tick values.
+How an axis writes its tick values, or a label its number.
 
 {#format-auto .member}
 **`'auto'`** [¶](#format-auto){.headerlink}
@@ -349,6 +349,11 @@ rows pick, select, and drag. These options control the view itself.
 **`cycle`**`?: boolean` [¶](#controls-cycle){.headerlink}
 : Whether clicking again at the same point, with the camera unmoved, selects the next row under
   the pointer, nearest first. This lets overlapping rows each be selected. Defaults to `false`.
+
+{#controls-scrub .member}
+**`scrub`**`?: boolean` [¶](#controls-scrub){.headerlink}
+: Whether clicking or dragging across a plot moves the coordinate shown to the pointer, instead of
+  panning. Moves are reported as a `'at'` event. Defaults to `false`.
 
 {#controls-press .member}
 **`press`**`?: number` [¶](#controls-press){.headerlink}
@@ -565,6 +570,12 @@ glow are always in CSS pixels.
 **`missing`**`?:` [`Color`](#color) [¶](#theme-missing){.headerlink}
 : The color a colormap gives a missing value, such as a row with no value in the field.
 
+{#theme-contrast .member}
+**`contrast`**`?: number` [¶](#theme-contrast){.headerlink}
+: The least contrast ratio with the background, as WCAG measures it, that colormap colors keep. A
+  color with less is made lighter or darker, keeping its hue. Defaults to 1, which changes no
+  color. 3 is WCAG's minimum for graphics.
+
 {#theme-dash .member}
 **`dash`**`?: number` [¶](#theme-dash){.headerlink}
 : The dash period: one dash and one gap of equal length.
@@ -670,8 +681,9 @@ Defaults for edges, and how parallel edges and arrowheads look.
 
 {#edgetheme-color .member}
 **`color`**`?:` [`Color`](#color) `| null` [¶](#edgetheme-color){.headerlink}
-: The edge color. `null` blends the colors of each edge's two vertices. With `null`, a diagram's
-  wires and edges without `ends` (nets and poles) use the text color.
+: The edge color. `null` blends the colors of each edge's two vertices, also for rows whose own
+  color is missing. With `null`, a diagram's wires and edges without `ends` (nets and poles) use
+  the text color.
 
 {#edgetheme-width .member}
 **`width`**`?: number` [¶](#edgetheme-width){.headerlink}
@@ -1384,8 +1396,8 @@ How a line runs between its samples.
 `type Label =` [`ExprInput`](#exprinput) `| { … }`
 
 Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
-field, or options. A label shows when its row is visible and its text fits, for example inside a
-block.
+field, a number, or options. A label shows when its row is visible and its text fits, for
+example inside a block.
 
 Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
 its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
@@ -1395,9 +1407,10 @@ wherever it fits its vertex.
 
 {#label-text .member}
 **`text`**`:` [`ExprInput`](#exprinput) [¶](#label-text){.headerlink}
-: The text field to show, or a `when` that returns that field or missing. A row whose text is
-  missing or empty has no label. In a diagram, the text may read only data, since the sheet sizes
-  blocks around it.
+: The text field to show, a number to write, or a `when` that returns either or missing. A row
+  whose text is missing or empty has no label. The GPU writes a number each frame, so it can
+  follow a sampled field. In a diagram, a text may read only data, since the sheet sizes blocks
+  around it, and a number shows where it fits its block.
 
 {#label-size .member}
 **`size`**`?: number | null` [¶](#label-size){.headerlink}
@@ -1414,6 +1427,19 @@ wherever it fits its vertex.
 {#label-font .member}
 **`font`**`?: string | null` [¶](#label-font){.headerlink}
 : The CSS font family list for the text. Defaults to the theme's `text.font`.
+
+{#label-format .member}
+**`format`**`?:` [`Format`](#format) [¶](#label-format){.headerlink}
+: How a number is written, as an axis writes its ticks. Defaults to `auto`.
+
+{#label-precision .member}
+**`precision`**`?: number | null` [¶](#label-precision){.headerlink}
+: Decimal places of a number, or of the significand in scientific and engineering formats. At most
+  7. Defaults to at most 2, without trailing zeros.
+
+{#label-unit .member}
+**`unit`**`?: string | null` [¶](#label-unit){.headerlink}
+: Text written after a number, such as `" kV"` or `"%"`.
 
 (size)=
 
@@ -1519,7 +1545,7 @@ View state of each row, such as whether it is selected.
 ### `CallNode`
 
 {.signature}
-`type CallNode = { neg: [`[`ExprInput`](#exprinput)`] } | { not: [`[`ExprInput`](#exprinput)`] } | { abs: [`[`ExprInput`](#exprinput)`] } | { sqrt: [`[`ExprInput`](#exprinput)`] } | { sin: [`[`ExprInput`](#exprinput)`] } | { cos: [`[`ExprInput`](#exprinput)`] } | { floor: [`[`ExprInput`](#exprinput)`] } | { ln: [`[`ExprInput`](#exprinput)`] } | { exp: [`[`ExprInput`](#exprinput)`] } | { add: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { sub: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { mul: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { div: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { rem: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { pow: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { min: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { max: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { lt: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { le: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { gt: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { ge: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { eq: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { ne: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { and: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { or: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { is: [field:` [`ExprInput`](#exprinput)`, text: string] } | { contains: [field:` [`ExprInput`](#exprinput)`, text: string] }`
+`type CallNode = { neg: [`[`ExprInput`](#exprinput)`] } | { not: [`[`ExprInput`](#exprinput)`] } | { abs: [`[`ExprInput`](#exprinput)`] } | { sqrt: [`[`ExprInput`](#exprinput)`] } | { sin: [`[`ExprInput`](#exprinput)`] } | { cos: [`[`ExprInput`](#exprinput)`] } | { floor: [`[`ExprInput`](#exprinput)`] } | { ln: [`[`ExprInput`](#exprinput)`] } | { exp: [`[`ExprInput`](#exprinput)`] } | { add: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { sub: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { mul: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { div: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { rem: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { pow: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { min: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { max: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { lt: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { le: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { gt: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { ge: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { eq: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { ne: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { and: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { or: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { fallback: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { is: [field:` [`ExprInput`](#exprinput)`, text: string] } | { contains: [field:` [`ExprInput`](#exprinput)`, text: string] }`
 
 An operation, written as an object with one key: the operation's name, holding its arguments.
 For example `{ "add": ["$a", 1] }`. The second argument of `is` and `contains` is plain text,
@@ -1626,6 +1652,10 @@ not a field or a color.
 `{` **`or`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-or){.headerlink}
 : 1 where either value is above 0.5, else 0.
 
+{#callnode-fallback .member}
+`{` **`fallback`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-fallback){.headerlink}
+: The first value, or the second where the first is missing.
+
 {#callnode-is .member}
 `{` **`is`**`: [field:` [`ExprInput`](#exprinput)`, text: string] }` [¶](#callnode-is){.headerlink}
 : Whether a text field equals the plain text exactly.
@@ -1670,8 +1700,9 @@ A value mapped linearly onto a range, clamped to the range.
 : The value mapped.
 
 {#scalenode-domain .member}
-**`domain`**`?: [low: number, high: number] | null` [¶](#scalenode-domain){.headerlink}
-: The values mapped to the range's ends. Defaults to the extent of the values shown.
+**`domain`**`?: [low: number, high: number] | 'all'` [¶](#scalenode-domain){.headerlink}
+: The values mapped to the range's ends, or `all` for every value a field holds, in every frame of
+  a sampled field. Defaults to the extent of the values shown.
 
 (colormapnode)=
 
@@ -1691,9 +1722,9 @@ A value mapped through a colormap.
 : The value mapped. A categorical map takes each value's integer part as its category.
 
 {#colormapnode-domain .member}
-**`domain`**`?: [low: number, high: number] | null` [¶](#colormapnode-domain){.headerlink}
-: The values mapped to the colormap's ends. Defaults to the extent of the values shown. A
-  categorical map ignores it.
+**`domain`**`?: [low: number, high: number] | 'all'` [¶](#colormapnode-domain){.headerlink}
+: The values mapped to the colormap's ends, or `all` for every value a field holds, in every frame
+  of a sampled field. Defaults to the extent of the values shown. A categorical map ignores it.
 
 (state)=
 
@@ -1889,7 +1920,7 @@ A plot camera: the x range shown, and the value range, or `null` to fit the valu
 ### `Fit`
 
 {.signature}
-`type Fit = 'all' | { rows:` [`Rows`](#rows)`[] } | { reveal:` [`Row`](#row) `} | { bounds: { … } }`
+`type Fit = 'all' | { rows:` [`Rows`](#rows)`[] } | { tables:` [`TableInput`](#tableinput)`[] } | { reveal:` [`Row`](#row) `} | { bounds: { … } }`
 
 The target of a view's fit.
 
@@ -1901,9 +1932,14 @@ The target of a view's fit.
 `{` **`rows`**`:` [`Rows`](#rows)`[] }` [¶](#fit-rows){.headerlink}
 : These rows.
 
+{#fit-tables .member}
+`{` **`tables`**`:` [`TableInput`](#tableinput)`[] }` [¶](#fit-tables){.headerlink}
+: Every row of these tables, each `[data, table]`.
+
 {#fit-reveal .member}
 `{` **`reveal`**`:` [`Row`](#row) `}` [¶](#fit-reveal){.headerlink}
-: Brings this row into view, keeping the zoom.
+: Brings this row into view, keeping the zoom. Asked for while another fit is due, it follows that
+  fit.
 
 {#fit-bounds .member}
 `{` **`bounds`**`: { min: [number, number, number]; max: [number, number, number] } }` [¶](#fit-bounds){.headerlink}
@@ -1916,6 +1952,23 @@ The target of a view's fit.
   {#fit-bounds-max .member}
   **`max`**`: [number, number, number]` [¶](#fit-bounds-max){.headerlink}
   : The maximum corner.
+
+(arrange)=
+
+### `Arrange`
+
+{.signature}
+`type Arrange = 'unplaced' | 'all'`
+
+Which vertex rows [`view.arrange`](#view-arrange) lays out.
+
+{#arrange-unplaced .member}
+**`'unplaced'`** [¶](#arrange-unplaced){.headerlink}
+: The rows without a position.
+
+{#arrange-all .member}
+**`'all'`** [¶](#arrange-all){.headerlink}
+: Every row, positions given or not.
 
 (query)=
 
@@ -2003,7 +2056,7 @@ View events and hits, dataset descriptions and values, and frame statistics.
 ### `ViewEvent`
 
 {.signature}
-`type ViewEvent = { type: 'click'; detail: { … } } | { type: 'open'; detail: { … } } | { type: 'menu'; detail: { … } } | { type: 'drag'; detail: { … } } | { type: 'connect'; detail: { … } } | { type: 'delete'; detail: { … } } | { type: 'hovered'; detail: { … } } | { type: 'selection'; detail: { … } } | { type: 'camera'; detail:` [`Camera`](#camera) `} | { type: 'waiting'; detail:` [`Waiting`](#waiting) `} | { type: 'error'; detail:` [`Failure`](#failure) `}`
+`type ViewEvent = { type: 'click'; detail: { … } } | { type: 'open'; detail: { … } } | { type: 'menu'; detail: { … } } | { type: 'drag'; detail: { … } } | { type: 'connect'; detail: { … } } | { type: 'delete'; detail: { … } } | { type: 'hovered'; detail: { … } } | { type: 'selection'; detail: { … } } | { type: 'camera'; detail:` [`Camera`](#camera) `} | { type: 'at'; detail: number } | { type: 'waiting'; detail:` [`Waiting`](#waiting) `} | { type: 'error'; detail:` [`Failure`](#failure) `}`
 
 Something that happened in a view, as [`view.on`](#view-on) reports it.
 
@@ -2063,6 +2116,11 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   : The row's new position in the space's coordinates. It is the hit point moved with the pointer
     since the press, at the depth where the drag started, so a vertex keeps its offset from the
     pointer. Snapped to a diagram's grid dots when the grid snaps.
+
+  {#viewevent-drag-patch .member}
+  **`patch`**`:` [`Patch`](#patch) `| null` [¶](#viewevent-drag-patch){.headerlink}
+  : The patch that moves the row there, by writing its mark's position fields or point geometry.
+    `null` when its position is not a pair of fields.
 
   {#viewevent-drag-trigger .member}
   **`trigger`**`:` [`Trigger`](#trigger) [¶](#viewevent-drag-trigger){.headerlink}
@@ -2129,6 +2187,11 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 **`'camera'`**`:` [`Camera`](#camera) [¶](#viewevent-camera){.headerlink}
 : The camera moved: [`view.camera`](#view-camera). A gesture, fit, flight, coast, or orbit moved it, or it moved
   back within its zoom and pan limits after the view's size, insets, or space changed.
+
+{#viewevent-at .member}
+**`'at'`**`: number` [¶](#viewevent-at){.headerlink}
+: The axis coordinate shown changed: [`view.at`](#view-at). A press on a plot with [`controls.scrub`](#controls-scrub) on moved
+  it.
 
 {#viewevent-waiting .member}
 **`'waiting'`**`:` [`Waiting`](#waiting) [¶](#viewevent-waiting){.headerlink}

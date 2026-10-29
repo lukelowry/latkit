@@ -1,8 +1,9 @@
 //! Labels show beside their rows once the host rasterizes their text, or inside a block while they
 //! fit. Where labels would overlap, the label of the row drawn on top shows. An empty text gives no
 //! label. Only labels that show near the view have their text rasterized, so a dense view settles.
-//! A conditional text labels only the rows it names, and a label keeps showing while its mark gains
-//! texts. A diagram's labels scale with the sheet and fade out once too small to read.
+//! A conditional text labels only the rows it names, a number label writes its value, and a label
+//! keeps showing while its mark gains texts. A diagram's labels scale with the sheet and fade out
+//! once too small to read.
 
 #![cfg(feature = "gpu")]
 
@@ -337,6 +338,34 @@ fn a_conditional_text_labels_only_the_rows_it_names() {
     assert!(labeled(45.0) && labeled(15.0), "the rows the text names are labeled");
     assert!(!labeled(-15.0) && !labeled(-45.0), "the rest have no label");
     assert_eq!(set.load(Ordering::Relaxed), 2, "only the texts shown are rasterized");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_number_label_writes_its_value_as_an_axis_writes_ticks() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    // Boxes sets each character as a box about 6 pixels wide: "12.34%", "3e7%", and "-0.5%".
+    let data = Data::new("d");
+    let rows = Table::new("V", Ids::count(3)).field("x", vec![-60.0, -15.0, 25.0]).field("y", vec![0.0; 3]);
+    data.apply(rows.field("v", vec![12.345, 3.0e7, -0.5])).expect("valid");
+    let label = Label::new(field("v")).size(10.0).unit("%").color(Color::rgb(1.0, 0.0, 0.0));
+    let marks = Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).pick(false);
+    let scene = Scene::new(plane()).theme(haloless()).draw(marks.color(Color::rgb(0.0, 0.0, 1.0)).label(label));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    // Each label's width: from its first red pixel to its last.
+    let width = |columns: std::ops::Range<u32>| {
+        let red: Vec<u32> = columns.filter(|&x| at(&pixels, x, c)[0] > 200).collect();
+        red.last().zip(red.first()).map_or(0.0, |(last, first)| (last - first + 1) as f32)
+    };
+    let widths = [width(c - 60..c - 15), width(c - 15..c + 25), width(c + 25..SIZE)];
+    let chars = [6.0, 4.0, 5.0];
+    assert!(widths.iter().zip(chars).all(|(w, n)| (w - n * 6.0).abs() <= 2.5), "{widths:?}");
+    assert!(view.complete(), "waiting on {}", view.waiting());
     assert_eq!(errors(&mut view), Vec::new());
 }
 

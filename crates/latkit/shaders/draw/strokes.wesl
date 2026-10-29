@@ -9,18 +9,19 @@ import package::lib::path::PATH;
 import package::lib::bind::{frame, mark, eye};
 import package::lib::project::{to_clip, nearer, culled};
 import package::lib::path::{
-    segment, segment_screen, stroke_style, ends_colored, ends_part, path_count, path_length,
+    segment, segment_screen, stroke_style, ends_part, path_count, path_length,
 };
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::focus::focus_of;
 import package::lib::mark::{fringe, px_per_length};
 import package::lib::stroke::{Stroke, stroke, stroke_distance};
 import package::lib::daylight::daylight;
-import package::lib::color::output;
+import package::lib::color::{output, OPAQUE};
 
 struct Varyings {
-    // The corner in clip space. In the fragment, the target pixel, which `pixel` reads.
-    @builtin(position) clip: vec4f,
+    // The corner in clip space. In the fragment, the target pixel, which `pixel` reads. Invariant,
+    // so the depth variant and the color draws compute the same depth.
+    @invariant @builtin(position) clip: vec4f,
     @location(0) @interpolate(flat) a: vec2f,
     @location(1) @interpolate(flat) b: vec2f,
     @location(2) @interpolate(flat) row: u32,
@@ -82,7 +83,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     // This corner's fraction along the whole segment, at the start or end of the drawn part.
     let f = mix(on.kept.x, on.kept.y, t);
     var color = style.color;
-    if ends_colored() {
+    if style.blends {
         color *= mix(ends[0].color, ends[1].color, f);
     }
     let light = daylight(mix(ends[0].position.xy, ends[1].position.xy, f));
@@ -125,12 +126,12 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     return output(vec4f(c.rgb * c.a, c.a));
 }
 
-// The depth variant writes only the depth of a stroke's pixels at least half opaque, so its
-// antialiased edge, dash gaps, and comets leave what lies behind them showing.
+// The depth variant writes only the depth of a stroke's opaque pixels, so its antialiased edge,
+// dash gaps, and comets leave what lies behind them showing.
 @if(depth)
 @fragment
 fn fragment(v: Varyings) {
-    if stroke(pixel(v), segment_of(v)).a < 0.5 {
+    if stroke(pixel(v), segment_of(v)).a < OPAQUE {
         discard;
     }
 }

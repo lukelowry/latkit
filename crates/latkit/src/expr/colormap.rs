@@ -184,6 +184,18 @@ impl Colormap {
         }
     }
 
+    /// This colormap with each color made lighter or darker, keeping its hue, until its contrast
+    /// ratio with `background` is at least `ratio`, as WCAG measures it. Unchanged for a ratio of 1
+    /// or less.
+    pub(crate) fn legible(&self, background: Color, ratio: f32) -> Colormap {
+        if ratio <= 1.0 {
+            return self.clone();
+        }
+        let texels = ramp::legible(self.texels(), background.to_array(), ratio);
+        let categories = self.named_categories().to_vec();
+        Colormap(Map::Custom(Arc::new(Custom { kind: self.kind(), count: self.count(), texels, categories })))
+    }
+
     /// The same colors in reverse order.
     #[must_use]
     pub fn reversed(&self) -> Colormap {

@@ -151,7 +151,7 @@ impl<'a> Rows<'a> {
                 }
                 let [lo, hi] = match domain {
                     Domain::Fixed(d) => *d,
-                    Domain::Fit => self.fit(input),
+                    Domain::Fit | Domain::All => self.fit(input),
                 };
                 let span = hi - lo;
                 let t = if span == 0.0 { 0.5 } else { (x - lo) / span };
@@ -200,6 +200,13 @@ fn unary(op: Unary, a: f64) -> f64 {
 fn binary(op: Binary, a: f64, b: f64) -> f64 {
     let truth = |v: bool| f64::from(u8::from(v));
     match op {
+        Binary::Fallback => {
+            if a.is_finite() {
+                a
+            } else {
+                b
+            }
+        }
         Binary::Add => a + b,
         Binary::Sub => a - b,
         Binary::Mul => a * b,
@@ -237,6 +244,8 @@ mod tests {
         assert_eq!((0..3).map(|r| rows.number(&pick, r)).collect::<Vec<_>>(), [Some(1.0), Some(2.0), Some(1.0)]);
         let scaled: Expr = field("w").scale(0.0..=1.0).into();
         assert_eq!(rows.number(&scaled, 2), Some(1.0), "a fitted domain spans the values");
+        let filled = field("w").fallback(5.0);
+        assert_eq!((0..3).map(|r| rows.number(&filled, r)).collect::<Vec<_>>(), [Some(10.0), Some(5.0), Some(30.0)]);
     }
 
     #[test]

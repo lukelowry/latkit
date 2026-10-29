@@ -113,7 +113,11 @@ impl Lines {
             Some(expr) => c.channel("color", expr, color)?,
             None => c.theme("color", wgsl::THEME_LINE, color)?,
         }
-        c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::LINE_FLAGS, bit: wgsl::VISIBLE })?;
+        c.channel(
+            "visible",
+            &self.style.visible,
+            Store::Flag { word: wgsl::LINE_FLAGS, bit: wgsl::VISIBLE, unset: true },
+        )?;
         let words = StrokeWords {
             width: wgsl::LINE_WIDTH,
             flow: wgsl::LINE_FLOW,

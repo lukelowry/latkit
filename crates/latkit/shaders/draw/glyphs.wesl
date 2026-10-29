@@ -8,7 +8,7 @@
 
 import package::lib::types::{
     NONE, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD,
-    SPACE_DIAGRAM, THEME_TEXT,
+    SPACE_DIAGRAM, THEME_TEXT, NUMBER_CHARS,
 };
 import package::lib::bind::{frame, eye, mark, word, program, ramp};
 import package::lib::state::extra_at;
@@ -16,7 +16,8 @@ import package::lib::read::missing_bits;
 import package::lib::points::{shown_point, port_at, port_inward};
 import package::lib::marker::theme_port_size;
 import package::lib::label::{
-    anchor, length_px, legibility, text_at, fits, Text, claims_room, claim_key, cells_of, cell, Cells,
+    anchor, length_px, legibility, text_at, fits, Text, label_chars, char_at, run_size, label_box, claims_room,
+    claim_key, cells_of, cell, Cells,
 };
 import package::lib::project::{culled, to_clip};
 import package::lib::color::output;
@@ -68,37 +69,63 @@ fn unshown() -> Varyings {
     return out;
 }
 
+// Each instance draws one run of a row's label: the row's text, or one character of its number.
 @if(!ports)
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
-    if instance >= mark.rows {
+    let per = select(NUMBER_CHARS, 1u, mark.number == NONE);
+    let item = instance / per;
+    let k = instance % per;
+    if item >= mark.rows {
         return unshown();
     }
-    let drawn = drawn_row(instance);
+    let drawn = drawn_row(item);
     let row = drawn.row;
-    let code_bits = word(extra_at(row, mark.label + LABEL_CODE));
-    if missing_bits(code_bits) {
+    let bits = word(extra_at(row, mark.label + LABEL_CODE));
+    if missing_bits(bits) {
         return unshown();
     }
-    let code = u32(bitcast<f32>(code_bits));
-    let uv0 = labels[mark.runs + 2u * code];
-    let uv1 = labels[mark.runs + 2u * code + 1u];
-    // Nothing to draw until the text is set, or when it draws nothing.
-    if (uv0 == 0u && uv1 == 0u) || uv0 == NONE {
+    let chars = label_chars(bits);
+    if k >= chars.count {
         return unshown();
     }
-    let a = anchor(instance);
+    let own = run(char_at(chars, k));
+    if own.x == NONE {
+        return unshown();
+    }
+    // The label's size, and where this run starts in it.
     let size = length_px(mark.label_size);
-    let t = text_at(uv0, uv1, size, a.at, a.align);
+    var extent = vec2f(0.0);
+    var before = 0.0;
+    for (var j = 0u; j < chars.count; j++) {
+        let corners = run(char_at(chars, j));
+        // Nothing to draw until every text is set.
+        if all(corners == vec2u(0u)) {
+            return unshown();
+        }
+        let s = run_size(corners, size);
+        before += select(0.0, s.x, j < k);
+        extent = vec2f(extent.x + s.x, max(extent.y, s.y));
+    }
+    let a = anchor(item);
+    let whole = label_box(a, extent);
     // A label shows while its row shows, it fits, and it kept its claimed cells. Its opacity
     // follows its legibility at this size and its row's tile fade.
-    let room = fits(t.hi - t.lo, a.room) && (!claims_room(a) || keeps(cells_of(t), claim_key(instance)));
+    let room = fits(extent, a.room) && (!claims_room(a) || keeps(cells_of(whole), claim_key(item)));
     let alpha = f32(a.shown && room) * legibility(size) * drawn.presence;
     if !(alpha > 0.0) {
         return unshown();
     }
     let color = unpack4x8unorm(word(extra_at(row, mark.label + LABEL_COLOR)));
+    let t = text_at(own.x, own.y, size, whole.lo + vec2f(before, 0.0), vec2f(0.0));
     return quad(t, corner, vec4f(color.rgb, color.a * alpha));
+}
+
+// The run table entry of `code`: its atlas corners, both 0 until its text is set, and NONE when it
+// draws nothing.
+fn run(code: u32) -> vec2u {
+    let at = mark.runs + 2u * code;
+    return vec2u(labels[at], labels[at + 1u]);
 }
 
 // A port's label: beside the port, inside its marker, aligned away from the port's side. It shows

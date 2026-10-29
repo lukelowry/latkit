@@ -177,9 +177,9 @@ export default page({
 
     /** Frames the grid's buses. */
     const frame = () => {
-      if (settings.layout !== 'geography') return shown.fit();
+      if (settings.layout !== 'geography') return void shown.fit();
       const [west, south, east, north] = extent(grid.positions);
-      shown.fit({ bounds: { min: [west, south, 0], max: [east, north, 0] } });
+      void shown.fit({ bounds: { min: [west, south, 0], max: [east, north, 0] } });
     };
     /** Swaps in map `id` once its datasets are read, unless another map was chosen meanwhile. */
     const showMap = async (id: typeof settings.map) => {

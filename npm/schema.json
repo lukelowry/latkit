@@ -348,7 +348,7 @@
           "description": "A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`."
         }
       ],
-      "description": "How an axis formats its tick values."
+      "description": "How an axis writes its tick values, or a label its number."
     },
     "Diagram": {
       "type": "object",
@@ -670,18 +670,34 @@
           "description": "The value mapped."
         },
         "domain": {
-          "type": [
-            "array",
-            "null"
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "all"
+                  ],
+                  "description": "The name `\"all\"`."
+                }
+              ],
+              "description": "A domain's JSON form: `[low, high]`, or `\"all\"` for every value a field holds."
+            },
+            {
+              "type": "null"
+            }
           ],
-          "items": {
-            "type": "number",
-            "format": "double"
-          },
-          "minItems": 2,
-          "maxItems": 2,
-          "description": "The values mapped to the range's ends. Defaults to the extent of the values shown.",
-          "tsType": "[low: number, high: number]"
+          "description": "The values mapped to the range's ends, or `all` for every value a field holds, in every\nframe of a sampled field. Defaults to the extent of the values shown.",
+          "tsType": "[low: number, high: number] | 'all'"
         }
       },
       "required": [
@@ -703,18 +719,34 @@
           "description": "The value mapped. A categorical map takes each value's integer part as its category."
         },
         "domain": {
-          "type": [
-            "array",
-            "null"
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "all"
+                  ],
+                  "description": "The name `\"all\"`."
+                }
+              ],
+              "description": "A domain's JSON form: `[low, high]`, or `\"all\"` for every value a field holds."
+            },
+            {
+              "type": "null"
+            }
           ],
-          "items": {
-            "type": "number",
-            "format": "double"
-          },
-          "minItems": 2,
-          "maxItems": 2,
-          "description": "The values mapped to the colormap's ends. Defaults to the extent of the values shown. A\ncategorical map ignores it.",
-          "tsType": "[low: number, high: number]"
+          "description": "The values mapped to the colormap's ends, or `all` for every value a field holds, in\nevery frame of a sampled field. Defaults to the extent of the values shown. A categorical\nmap ignores it.",
+          "tsType": "[low: number, high: number] | 'all'"
         }
       },
       "required": [
@@ -1417,6 +1449,29 @@
         {
           "type": "object",
           "properties": {
+            "fallback": {
+              "description": "The first value, or the second where the first is missing.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "fallback"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
             "is": {
               "description": "Whether a text field equals the plain text exactly.",
               "type": "array",
@@ -1851,7 +1906,7 @@
           "type": "object",
           "properties": {
             "text": {
-              "description": "The text field to show, or a `when` that returns that field or missing. A row whose text is\nmissing or empty has no label. In a diagram, the text may read only data, since the sheet\nsizes blocks around it.",
+              "description": "The text field to show, a number to write, or a `when` that returns either or missing. A\nrow whose text is missing or empty has no label. The GPU writes a number each frame, so it\ncan follow a sampled field. In a diagram, a text may read only data, since the sheet sizes\nblocks around it, and a number shows where it fits its block.",
               "$ref": "#/$defs/Expr"
             },
             "size": {
@@ -1887,6 +1942,27 @@
                 "string",
                 "null"
               ]
+            },
+            "format": {
+              "description": "How a number is written, as an axis writes its ticks. Defaults to `auto`.",
+              "$ref": "#/$defs/Format"
+            },
+            "precision": {
+              "description": "Decimal places of a number, or of the significand in scientific and engineering formats. At\nmost 7. Defaults to at most 2, without trailing zeros.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 7
+            },
+            "unit": {
+              "description": "Text written after a number, such as `\" kV\"` or `\"%\"`.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "additionalProperties": false,
@@ -1895,7 +1971,7 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, or options. A label shows when its row is visible and its text fits, for example inside\na block.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows. In a diagram, a label scales with the zoom, fades out when too small to read, and\nshows wherever it fits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible and its text fits, for\nexample inside a block.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows. In a diagram, a label scales with the zoom, fades out when too small to read, and\nshows wherever it fits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
     },
     "MarkOptions": {
       "type": "object",
@@ -2406,6 +2482,11 @@
               "type": "string",
               "tsType": "Color"
             },
+            "contrast": {
+              "description": "The least contrast ratio with the background, as WCAG measures it, that colormap colors\nkeep. A color with less is made lighter or darker, keeping its hue. Defaults to 1, which\nchanges no color. 3 is WCAG's minimum for graphics.",
+              "type": "number",
+              "format": "float"
+            },
             "dash": {
               "description": "The dash period: one dash and one gap of equal length.",
               "type": "number",
@@ -2517,7 +2598,7 @@
       "additionalProperties": false,
       "properties": {
         "color": {
-          "description": "The edge color. `None` blends the colors of each edge's two vertices. With `None`, a\ndiagram's wires and edges without `ends` (nets and poles) use the text color.",
+          "description": "The edge color. `None` blends the colors of each edge's two vertices, also for rows whose\nown color is missing. With `None`, a diagram's wires and edges without `ends` (nets and\npoles) use the text color.",
           "tsType": "Color",
           "type": [
             "string",
@@ -2816,6 +2897,10 @@
             },
             "cycle": {
               "description": "Whether clicking again at the same point, with the camera unmoved, selects the next row\nunder the pointer, nearest first. This lets overlapping rows each be selected. Defaults to\n`false`.",
+              "type": "boolean"
+            },
+            "scrub": {
+              "description": "Whether clicking or dragging across a plot moves the coordinate shown to the pointer,\ninstead of panning. Moves are reported as [`Event::At`](crate::Event). Defaults to `false`.",
               "type": "boolean"
             },
             "press": {
@@ -3673,6 +3758,33 @@
         {
           "type": "object",
           "properties": {
+            "tables": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "tsType": "TableInput[]"
+            }
+          },
+          "required": [
+            "tables"
+          ],
+          "additionalProperties": false,
+          "description": "Every row of these tables, each `[data, table]`."
+        },
+        {
+          "type": "object",
+          "properties": {
             "reveal": {
               "$ref": "#/$defs/Row"
             }
@@ -3681,7 +3793,7 @@
             "reveal"
           ],
           "additionalProperties": false,
-          "description": "Brings this row into view, keeping the zoom."
+          "description": "Brings this row into view, keeping the zoom. Asked for while another fit is due, it follows\nthat fit."
         },
         {
           "type": "object",
@@ -3773,6 +3885,21 @@
         "id"
       ],
       "description": "One row, identified by dataset name, table name, and id. It stays valid across any change that\nkeeps those names and the id."
+    },
+    "Arrange": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "unplaced",
+          "description": "The rows without a position."
+        },
+        {
+          "type": "string",
+          "const": "all",
+          "description": "Every row, positions given or not."
+        }
+      ],
+      "description": "Which vertex rows [`View::arrange`](crate::View::arrange) lays out."
     },
     "Budget": {
       "type": "object",
@@ -3999,6 +4126,20 @@
                   "minItems": 3,
                   "maxItems": 3
                 },
+                "patch": {
+                  "description": "The patch that moves the row there, by writing its mark's position fields or point\ngeometry. `None` when its position is not a pair of fields.",
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "integer",
+                    "format": "uint8",
+                    "minimum": 0,
+                    "maximum": 255
+                  },
+                  "tsType": "Patch"
+                },
                 "trigger": {
                   "description": "The pointer.",
                   "$ref": "#/outputs/Trigger"
@@ -4008,6 +4149,7 @@
                 "phase",
                 "hit",
                 "position",
+                "patch",
                 "trigger"
               ]
             }
@@ -4202,6 +4344,24 @@
             "detail"
           ],
           "description": "The camera moved: [`View::camera`](crate::View::camera). A gesture, fit, flight, coast, or\norbit moved it, or it moved back within its zoom and pan limits after the view's size,\ninsets, or space changed."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "at"
+            },
+            "detail": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "required": [
+            "type",
+            "detail"
+          ],
+          "description": "The axis coordinate shown changed: [`View::at`](crate::View::at). A press on a plot with\n[`Controls::scrub`](crate::Controls) on moved it."
         },
         {
           "type": "object",

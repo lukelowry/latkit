@@ -211,6 +211,7 @@ pub(crate) fn mark(
     mark.frozen_geometry = wgsl::NONE;
     mark.lane = wgsl::NONE;
     mark.label = wgsl::NONE;
+    mark.number = wgsl::NONE;
     [mark.size_min, mark.size_max] = crate::Size::ANY;
     if let Some(slots) = labels.slots(index) {
         mark.runs = slots.runs;
@@ -243,6 +244,7 @@ pub(crate) fn mark(
         if let Some(labeling) = &drawing.label {
             mark.label = labeling.extra;
             mark.label_size = labeling.size;
+            mark.number = labeling.number.as_ref().map_or(wgsl::NONE, |(number, _)| *number);
         }
         if shown.kind() == MarkKind::Lines {
             mark.per_row = shown.segments_per_row();

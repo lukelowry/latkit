@@ -68,13 +68,24 @@ impl View {
         }
     }
 
-    /// The domain mark `i`'s legend shows for `colormap` over `domain`: a fixed domain, a
-    /// categorical map's categories, or the domain fitted to the mark's values. `None` while no
-    /// value has been fitted.
-    fn legend_domain(&self, i: usize, colormap: &Colormap, domain: Domain) -> Option<[f64; 2]> {
+    /// The domain mark `i`'s legend shows for `colormap` of `input` over `domain`: a fixed domain, a
+    /// categorical map's categories, the domain over the input field's history, or the domain
+    /// fitted to the mark's values. `None` while no value has been fitted.
+    fn legend_domain(&self, i: usize, colormap: &Colormap, input: &crate::Expr, domain: Domain) -> Option<[f64; 2]> {
         match domain {
             Domain::Fixed(domain) => Some(domain),
-            Domain::Fit if colormap.kind() == ColormapKind::Categorical => Some([0.0, f64::from(colormap.count())]),
+            Domain::Fit | Domain::All if colormap.kind() == ColormapKind::Categorical => {
+                Some([0.0, f64::from(colormap.count())])
+            }
+            Domain::All => {
+                let shown = self.marks.get(i)?;
+                let program = &shown.compiled.as_ref()?.program;
+                let name = input.field_name()?;
+                let &(at, _) =
+                    program.histories.iter().find(|&&(_, column)| program.columns[column as usize].name == *name)?;
+                let word = |k: u32| shown.constants.get((at + k) as usize).map(|&w| f64::from(f32::from_bits(w)));
+                Some([word(1)?, word(2)?])
+            }
             Domain::Fit => {
                 let (_, [least, most]) = self.marks.get(i)?.legend?;
                 let decode = |word: u32| f64::from(crate::order::from_number32(word));
@@ -121,11 +132,12 @@ impl View {
         let right = drawing[2] - MARGIN;
         let mut base = drawing[3] - MARGIN;
         for (i, title, color) in legends() {
-            let Some((colormap, _, domain)) = color.colormap_of() else { continue };
+            let Some((colormap, input, domain)) = color.colormap_of() else { continue };
+            let colormap = &colormap.legible(theme.background, theme.contrast);
             let write = |s, color, f: &mut dyn FnMut(&mut Writer<'_>)| writer(inner, s, color, f);
             let height = if !colormap.named_categories().is_empty() {
                 categories(&mut sprites, theme, [right, base], colormap, ratio, write, title)
-            } else if let Some(domain) = self.legend_domain(i, colormap, domain) {
+            } else if let Some(domain) = self.legend_domain(i, colormap, input, domain) {
                 legend(&mut sprites, theme, [right, base], colormap, domain, write, title)
             } else {
                 continue;

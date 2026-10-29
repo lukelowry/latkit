@@ -715,6 +715,7 @@ const sections = {
         'Data',
         'Snapshot',
         'Tiles',
+        'TilesOptions',
         'Source',
         'Table',
         'TableInput',
@@ -747,6 +748,7 @@ const sections = {
         'Next',
         'px',
         'units',
+        'meters',
         'selected',
         'hovered',
         'pointer',
@@ -861,7 +863,7 @@ const sections = {
     [
       'Rows, cameras, and queries',
       'Identifying rows, framing them, and querying them.',
-      ['Id', 'Ids', 'Row', 'Rows', 'Camera', 'Fit', 'Query', 'EnvelopeRequest'],
+      ['Id', 'Ids', 'Row', 'Rows', 'Camera', 'Fit', 'Arrange', 'Query', 'EnvelopeRequest'],
     ],
     [
       'Results',

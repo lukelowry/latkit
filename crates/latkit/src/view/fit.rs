@@ -20,7 +20,7 @@ use crate::derive::Working;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
-use crate::{Camera, Space};
+use crate::{Camera, Pending, Resolver, Rows, Space};
 
 #[derive(Default)]
 pub(crate) struct Fitting {
@@ -33,6 +33,11 @@ pub(crate) struct Fitting {
     reading: Working<(u64, Option<Fit>), Readback>,
     /// Whether a plot's traces changed since they were last measured.
     pub(crate) plot_due: bool,
+    /// Callers waiting for the fit asked for to apply: each gets the camera it framed, or `None`
+    /// when a camera move or another fit replaced it.
+    answers: Vec<Resolver<Option<Camera>>>,
+    /// A reveal asked for while another fit was due, and its callers. It follows that fit.
+    next: Option<(Fit, Vec<Resolver<Option<Camera>>>)>,
 }
 
 /// Why a fit cannot measure yet. Either way it asks for no frames: what it waits for wakes the view.
@@ -63,8 +68,13 @@ impl Fitting {
             || self.reading.context().is_some_and(|(_, fit)| fit.is_some())
     }
 
+    /// The fit asked for that has yet to apply, if any: waiting for its frame, or being read back.
+    pub(super) fn asked(&self) -> Option<&Fit> {
+        self.wanted.as_ref().or_else(|| self.reading.context().and_then(|(_, fit)| fit.as_ref()))
+    }
+
     /// Sets `fit` as the wanted fit, replacing any fit waiting or being read back.
-    pub(crate) fn want(&mut self, fit: Fit) {
+    fn want(&mut self, fit: Fit) {
         self.cancel();
         self.wanted = Some(fit);
     }
@@ -76,6 +86,23 @@ impl Fitting {
         if self.reading.context().is_some_and(|(_, fit)| fit.is_some()) {
             self.reading.cancel();
         }
+        answer(&mut self.answers, None);
+    }
+}
+
+/// Resolves every caller in `answers` to `camera`.
+fn answer(answers: &mut Vec<Resolver<Option<Camera>>>, camera: Option<Camera>) {
+    for answer in answers.drain(..) {
+        answer.resolve(Ok(camera));
+    }
+}
+
+/// Whether `fit` frames the rows `shown` draws: any fit but one of other tables.
+fn fits_table(fit: Option<&Fit>, shown: &Shown) -> bool {
+    let style = shown.mark.style();
+    match fit {
+        Some(Fit::Tables(tables)) => tables.iter().any(|(data, table)| *data == style.data && *table == style.table),
+        _ => true,
     }
 }
 
@@ -86,6 +113,43 @@ pub(crate) struct Measure {
 }
 
 impl View {
+    /// Frames what `fit` names, keeping pitch and bearing, and replacing any fit not yet applied.
+    /// A reveal asked for while another fit is due follows that fit instead. It applies once
+    /// positions settle: data has streamed, shapes are triangulated, any layout has placed the
+    /// rows, and vertices have eased to their places. With nothing drawn to frame, it frames the
+    /// rows that arrive later. A fit frames a diagram at most at its natural size (zoom 0) and the
+    /// earth at most at zoom 16, which is also where it frames a single point. Until the first fit
+    /// applies, frames show only the background. [`framed`](View::framed) says when it applies.
+    pub fn fit(&mut self, fit: Fit) {
+        if matches!(fit, Fit::Reveal(_)) && self.fitting.asked().is_some_and(|f| !matches!(f, Fit::Reveal(_))) {
+            if let Some((_, mut replaced)) = self.fitting.next.replace((fit, Vec::new())) {
+                answer(&mut replaced, None);
+            }
+            return;
+        }
+        self.focus.fitting = match &fit {
+            Fit::Rows(rows) => Rows::flatten(rows.iter().cloned()),
+            Fit::Reveal(row) => vec![row.clone()],
+            _ => Vec::new(),
+        };
+        self.focus.dirty = true;
+        self.fitting.want(fit);
+        self.wake();
+    }
+
+    /// Resolves once the last fit asked for applies, to the camera it framed, or to `None` when a
+    /// camera move or another fit replaces it, or no fit is due.
+    pub fn framed(&mut self) -> Pending<Option<Camera>> {
+        let (pending, resolver) = Pending::new();
+        let asked = self.fitting.asked().is_some();
+        match &mut self.fitting.next {
+            Some((_, answers)) => answers.push(resolver),
+            None if asked => self.fitting.answers.push(resolver),
+            None => resolver.resolve(Ok(None)),
+        }
+        pending
+    }
+
     /// Applies a box fit, a plot's fit to its traces' span, or measured extents that arrived.
     pub(super) fn settle_fit(&mut self) {
         if !self.sized() {
@@ -94,13 +158,15 @@ impl View {
         match &self.fitting.wanted {
             &Some(Fit::Bounds { min, max }) => {
                 self.fitting.wanted = None;
-                self.frame_box(min, max, false);
+                self.frame_box(min, max, 0.0, false);
+                self.applied();
             }
             Some(Fit::All) if matches!(self.scene.space, Space::Plot(_)) => {
                 if let Some(span) = self.traced_span() {
                     self.fitting.wanted = None;
                     self.plot_y = None;
                     self.move_camera(Camera::Plot { x: span, y: None });
+                    self.applied();
                 }
             }
             _ => {}
@@ -116,13 +182,31 @@ impl View {
         if let Ok(bytes) = bytes {
             self.measured(&crate::wire::words(&bytes), fit.as_ref());
         }
+        if fit.is_some() {
+            self.applied();
+        }
+    }
+
+    /// Drops a fit not yet applied, and a reveal following it, as a camera set or flown afterwards
+    /// replaces them.
+    pub(super) fn cancel_fit(&mut self) {
+        self.fitting.cancel();
+        if let Some((_, mut answers)) = self.fitting.next.take() {
+            answer(&mut answers, None);
+        }
         self.fitted();
     }
 
-    /// Drops a fit not yet applied, as a camera set or flown afterwards replaces it.
-    pub(super) fn cancel_fit(&mut self) {
-        self.fitting.cancel();
+    /// Answers the callers of the fit that just applied with the camera it framed, and asks for a
+    /// reveal that followed it.
+    fn applied(&mut self) {
         self.fitted();
+        let camera = self.rig.destination().unwrap_or(self.camera);
+        answer(&mut self.fitting.answers, Some(camera));
+        if let Some((fit, answers)) = self.fitting.next.take() {
+            self.fit(fit);
+            self.fitting.answers = answers;
+        }
     }
 
     /// Clears the rows marked for a fit once it framed them.
@@ -149,7 +233,7 @@ impl View {
         let easing =
             self.marks.iter().any(|m| m.kind() == MarkKind::Vertices && (m.transition.is_some() || m.begin.is_some()));
         let settled = !self.derived.placing() && !self.derived.shaping() && !easing;
-        let all = matches!(self.fitting.wanted, Some(Fit::All));
+        let all = matches!(self.fitting.wanted, Some(Fit::All | Fit::Tables(_)));
         // Fitting everything uses a tiled table's row bounds, regardless of what is drawn. A mark
         // with no rows has nothing to frame. It only delays a fit while no mark has rows.
         let compiled = || self.marks.iter().filter(|m| m.compiled.is_some());
@@ -157,13 +241,12 @@ impl View {
         let drawn = |m: &Shown| (m.drawable() && !staged(m)) || (all && self.tiled_bounds(m).is_some());
         let empty = |m: &Shown| m.tables.synced() && m.held() == 0;
         let ready = compiled().any(&drawn) && compiled().all(|m| drawn(m) || empty(m)) && settled;
-        if let Some(fit) = self.fitting.wanted.clone().filter(|f| matches!(f, Fit::All | Fit::Rows(_) | Fit::Reveal(_)))
-        {
+        if let Some(fit) = self.fitting.wanted.clone().filter(|f| !matches!(f, Fit::Bounds { .. })) {
             if let Some(b) = self.known(&fit, ready) {
                 self.fitting.wanted = None;
                 self.fitting.stalled = None;
-                self.frame_fit([b[0], b[1], 0.0], [b[2], b[3], 0.0], Some(&fit));
-                self.fitted();
+                self.frame_fit([b[0], b[1], 0.0], [b[2], b[3], 0.0], 0.0, Some(&fit));
+                self.applied();
                 return None;
             }
             if !ready {
@@ -174,13 +257,13 @@ impl View {
                         .marks
                         .iter()
                         .filter(|m| m.measured())
-                        .all(|m| m.failure.is_some() || (m.compiled.is_some() && empty(m)));
+                        .all(|m| m.failed() || (m.compiled.is_some() && empty(m)));
                 self.fitting.stalled = Some(if nothing { Stall::Empty } else { Stall::Work });
                 return None;
             }
             self.fitting.wanted = None;
             self.fitting.stalled = None;
-            return Some(Measure { rows: !matches!(fit, Fit::All), fit: Some(fit) });
+            return Some(Measure { rows: matches!(fit, Fit::Rows(_) | Fit::Reveal(_)), fit: Some(fit) });
         }
         let auto = matches!(self.camera, Camera::Plot { y: None, .. });
         if auto && self.fitting.plot_due && ready && self.marks.iter().any(|m| m.kind() == MarkKind::Lines) {
@@ -199,11 +282,14 @@ impl View {
         let stride = wgsl::EXTENT_WORDS as usize;
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
+        let mut margin = 0.0_f64;
         for (i, shown) in self.marks.iter().enumerate() {
-            if !shown.measured() {
+            if !shown.measured() || !fits_table(fit, shown) {
                 continue;
             }
-            if let Some([w, s, e, n]) = self.tiled_bounds(shown).filter(|_| matches!(fit, Some(Fit::All))) {
+            if let Some([w, s, e, n]) =
+                self.tiled_bounds(shown).filter(|_| matches!(fit, Some(Fit::All | Fit::Tables(_))))
+            {
                 lo = [lo[0].min(w), lo[1].min(s), lo[2].min(0.0)];
                 hi = [hi[0].max(e), hi[1].max(n), hi[2].max(0.0)];
                 continue;
@@ -216,8 +302,11 @@ impl View {
                 lo[k] = lo[k].min(f64::from(crate::order::from_number32(!e[k])));
                 hi[k] = hi[k].max(f64::from(crate::order::from_number32(e[3 + k])));
             }
+            if e[6] != 0 {
+                margin = margin.max(f64::from(crate::order::from_number32(e[6])));
+            }
         }
-        self.frame_fit(lo, hi, fit);
+        self.frame_fit(lo, hi, margin, fit);
     }
 
     /// The box `fit` frames, if known without measuring, as `[min x, min y, max x, max y]`. In a
@@ -241,9 +330,10 @@ impl View {
         measured().filter_map(|m| self.tiled_bounds(m)).reduce(union)
     }
 
-    /// Frames `lo..hi` as `fit` asks. With no fit, fits a plot's value range. For `Fit::Reveal`,
-    /// centers the camera on the row if it is out of view. Otherwise frames the box.
-    fn frame_fit(&mut self, lo: [f64; 3], hi: [f64; 3], fit: Option<&Fit>) {
+    /// Frames `lo..hi` as `fit` asks, keeping `margin` CSS pixels clear around it. With no fit, fits
+    /// a plot's value range. For `Fit::Reveal`, centers the camera on the row if it is out of view.
+    /// Otherwise frames the box.
+    fn frame_fit(&mut self, lo: [f64; 3], hi: [f64; 3], margin: f64, fit: Option<&Fit>) {
         if lo[0] > hi[0] {
             return;
         }
@@ -258,14 +348,14 @@ impl View {
                     .is_some_and(|s| s[0] >= area[0] && s[0] <= area[2] && s[1] >= area[1] && s[1] <= area[3]);
                 if !inside {
                     let camera = self.camera.centered(middle);
-                    self.fly(camera, None);
+                    self.fly_to(camera, None);
                 }
             }
             Some(fit) => {
                 if let Camera::Plot { y: None, .. } = self.camera {
                     self.plot_y = None;
                 }
-                self.frame_box(lo, hi, matches!(fit, Fit::All));
+                self.frame_box(lo, hi, margin, matches!(fit, Fit::All | Fit::Tables(_)));
             }
         }
     }
@@ -276,11 +366,12 @@ impl View {
         self.derived.tiled.bounds(&style.data, &style.table)
     }
 
-    /// Frames the box `min..max` at once, within the camera's zoom and pan limits. The first fit
-    /// of any kind sets the box that narrows the limits. A fit to everything replaces that box,
-    /// and a fit to part of it grows the box and never shrinks it.
-    fn frame_box(&mut self, min: [f64; 3], max: [f64; 3], everything: bool) {
-        let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area());
+    /// Frames the box `min..max` at once with `margin` CSS pixels clear around it, within the
+    /// camera's zoom and pan limits. The first fit of any kind sets the box that narrows the
+    /// limits. A fit to everything replaces that box, and a fit to part of it grows the box and
+    /// never shrinks it.
+    fn frame_box(&mut self, min: [f64; 3], max: [f64; 3], margin: f64, everything: bool) {
+        let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area(), margin);
         self.rig.hold();
         let framed = match camera {
             Camera::Map { zoom, .. } => Some(Bounds { min, max, zoom: [zoom; 2] }),

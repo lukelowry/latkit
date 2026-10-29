@@ -56,12 +56,17 @@ impl View {
         self.record(encoder, frame, false);
     }
 
+    /// Whether the device is lost, reporting it once as an error event.
+    pub(crate) fn tell_lost(&mut self) -> bool {
+        if self.gpu.lost() && !self.told_lost {
+            self.told_lost = true;
+            self.events.tell(Event::Error(Error::DeviceLost));
+        }
+        self.gpu.lost()
+    }
+
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>, input: bool) {
-        if self.gpu.lost() {
-            if !self.told_lost {
-                self.told_lost = true;
-                self.events.tell(Event::Error(Error::DeviceLost));
-            }
+        if self.tell_lost() {
             return;
         }
         // Set the frame's size first, so the sources load the tiles this frame shows. Clear the
@@ -133,7 +138,7 @@ impl View {
         }
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
         self.fit_legends();
-        let sprites = self.overlay(&mut inner);
+        let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
         self.write_uniforms(&uniform, &eye, &sprites);
         if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
@@ -143,7 +148,7 @@ impl View {
         let mut drawn = super::passes::Drawn::default();
         self.place_labels(encoder, &mut inner, &eye);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
-        self.draw(encoder, &mut inner, &mut drawn, frame, sprites.len() as u32, depth);
+        self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
         if let Some(point) = probe {
@@ -194,6 +199,11 @@ impl View {
         if waiting != self.waiting {
             self.waiting = waiting;
             self.events.tell(Event::Waiting(waiting));
+        }
+        if waiting.is_empty() {
+            for resolver in self.completing.drain(..) {
+                resolver.resolve(Ok(()));
+            }
         }
         self.changed = false;
         self.stats.frames += 1;
@@ -343,12 +353,10 @@ impl View {
     /// before.
     fn tell_failures(&mut self) {
         for (i, shown) in self.marks.iter_mut().enumerate() {
-            if let Some((error, told)) = &mut shown.failure
-                && !*told
-            {
-                *told = true;
+            for error in &shown.failures[shown.told..] {
                 self.events.tell(Event::Error(error.clone().at(i).at("marks")));
             }
+            shown.told = shown.failures.len();
         }
     }
 
@@ -702,6 +710,16 @@ impl View {
                     });
                 shown.constants[text.constant as usize] = code;
             }
+            for &(constant, column) in &program.histories {
+                let column = &program.columns[column as usize];
+                let Some((_, table)) = source.as_ref().and_then(|s| s.table_of(column, &self.snapshots)) else {
+                    continue;
+                };
+                if let Some([least, most]) = history(table, &column.name, constant, &mut shown.histories) {
+                    shown.constants[constant as usize + 1] = least.to_bits();
+                    shown.constants[constant as usize + 2] = most.to_bits();
+                }
+            }
         }
         if shown.kind() == MarkKind::Lines {
             self.fitting.plot_due = true;
@@ -725,4 +743,27 @@ impl View {
         }
         u64::from(domains)
     }
+}
+
+/// The least and greatest value that sampled field `field` of `table` holds, in any row and frame,
+/// for the domain at `constant`, when its field changed since `seen` recorded it. Read from the
+/// coarsest levels of detail, so it costs a few reads per row.
+fn history(
+    table: &crate::data::Table,
+    field: &str,
+    constant: u32,
+    seen: &mut Vec<(u32, crate::data::Version)>,
+) -> Option<[f32; 2]> {
+    let Some(crate::data::Field::Sampled(samples, version)) = table.field_named(field) else { return None };
+    let version = *version;
+    if seen.contains(&(constant, version)) {
+        return None;
+    }
+    seen.retain(|(c, _)| *c != constant);
+    seen.push((constant, version));
+    let envelope = table.envelope(field, samples.span()?, 1, None).ok()?;
+    let finite = |values: &[f32]| values.iter().copied().filter(|v| v.is_finite()).collect::<Vec<_>>();
+    let least = finite(&envelope.least).into_iter().reduce(f32::min)?;
+    let most = finite(&envelope.greatest).into_iter().reduce(f32::max)?;
+    Some([least, most])
 }
