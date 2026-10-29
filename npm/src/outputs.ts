@@ -1,6 +1,7 @@
 /** The types latkit writes, written by `node npm/build.mjs schema` from `npm/schema.json`. Do not edit. */
 
 import type { Camera, Id, Row, Rows } from './inputs.js';
+import type { Patch } from './patch.js';
 
 /**
  * A summary of a dataset: its tables with their rows and fields, the axis sampled fields are
@@ -224,6 +225,11 @@ export type ViewEvent =
          * pointer. Snapped to a diagram's grid dots when the grid snaps.
          */
         position: [number, number, number];
+        /**
+         * The patch that moves the row there, by writing its mark's position fields or point geometry.
+         * `null` when its position is not a pair of fields.
+         */
+        patch: Patch | null;
         /** The pointer. */
         trigger: Trigger;
       };
@@ -275,6 +281,10 @@ export type ViewEvent =
      * The camera moved: `view.camera`. A gesture, fit, flight, coast, or orbit moved it, or it moved
      * back within its zoom and pan limits after the view's size, insets, or space changed.
      */ { type: 'camera'; detail: Camera }
+  | /**
+     * The axis coordinate shown changed: `view.at`. A press on a plot with `controls.scrub` on moved
+     * it.
+     */ { type: 'at'; detail: number }
   | /** The work the last frame waited on changed: `view.waiting`. Empty once frames are complete. */ {
       type: 'waiting';
       detail: Waiting;

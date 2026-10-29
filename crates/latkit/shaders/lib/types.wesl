@@ -53,6 +53,8 @@ const OP_POW: u32 = 40u;
 const OP_LOG: u32 = 41u;
 const OP_EXP: u32 = 42u;
 const OP_ZOOM: u32 = 43u;
+// The value below the top, or the top where that value is missing. `a` is 1 for colors.
+const OP_FALLBACK: u32 = 44u;
 
 // Depth of the expression machine's value stack.
 const STACK: u32 = 16u;
@@ -219,10 +221,28 @@ const AREA_WORDS: u32 = 2u;
 const AREA_COLOR: u32 = 0u;
 const AREA_FLAGS: u32 = 1u;
 
-// Label words among a labeled mark's extra words: text code (missing for no label) and color.
+// Label words among a labeled mark's extra words: text code or number (missing for no label) and
+// color.
 const LABEL_WORDS: u32 = 2u;
 const LABEL_CODE: u32 = 0u;
 const LABEL_COLOR: u32 = 1u;
+
+// A number label writes its number as runs of its run table: digits 0–9 at codes 0–9, then these.
+// It writes at most `NUMBER_CHARS` of them.
+const CHAR_POINT: u32 = 10u;
+const CHAR_MINUS: u32 = 11u;
+const CHAR_EXPONENT: u32 = 12u;
+const CHAR_UNIT: u32 = 13u;
+const NUMBER_CODES: u32 = 14u;
+const NUMBER_CHARS: u32 = 16u;
+// A mark's `number` word: its format in bits 0–1, its decimals in bits 2–5, `NUMBER_TRIM` when the
+// decimals are unset, and `NUMBER_UNIT` when a unit follows.
+const FORMAT_AUTO: u32 = 0u;
+const FORMAT_FIXED: u32 = 1u;
+const FORMAT_SCIENTIFIC: u32 = 2u;
+const FORMAT_ENGINEERING: u32 = 3u;
+const NUMBER_TRIM: u32 = 64u;
+const NUMBER_UNIT: u32 = 128u;
 
 // Each text run is set once, at a size of `TEXT_BASE` atlas texels, as a distance field reaching
 // `TEXT_SPREAD` texels past the text's edge.
@@ -307,8 +327,9 @@ const END: u32 = 8u;
 const LIT: u32 = 11u;
 
 // Words per mark in the extents buffer, as order-preserving bits (`ordered`): the complements of
-// the least x, y, and z, then the greatest x, y, and z.
-const EXTENT_WORDS: u32 = 6u;
+// the least x, y, and z, then the greatest x, y, and z, then the widest margin in CSS pixels that
+// markers keep at any zoom.
+const EXTENT_WORDS: u32 = 7u;
 
 // Probe buffer words. KEY: the least hit key (distance, then the mark drawn last). INSTANCE: the
 // hit instance plus one. DEPTH, X, Y: where the hit lies. UNDER: the nearest depth drawn around the
@@ -592,15 +613,17 @@ struct Mark {
     // Where the program lists the mark's ports (`PORT_WORDS` each), and how many each row has.
     port_info: u32,
     ports: u32,
-    // `label`: the extra word holding the label's code, or NONE. The next three are offsets in the
-    // labels buffer. `runs` is the run table: two corner words per code, both 0 until the text is
-    // set. `wanted` is a count followed by the codes to set, each once. `seen` holds a bit per code
-    // the texts pass met: a set text shown in view, or an unset text it asked for. The two sizes
+    // `label`: the extra word holding the label's code or number, or NONE. The next three are
+    // offsets in the labels buffer. `runs` is the run table: two corner words per code, both 0
+    // until the text is set. `wanted` is a count followed by the codes to set, each once. `seen`
+    // holds a bit per code the texts pass met: a set text shown in view, or an unset text it asked
+    // for. `number` says how a number label writes its number, NONE for a text label. The two sizes
     // are in length units.
     label: u32,
     runs: u32,
     wanted: u32,
     seen: u32,
+    number: u32,
     label_size: f32,
     port_label_size: f32,
     // The range of CSS pixels the mark's size is clamped to at any zoom: a vertex's half size, or a

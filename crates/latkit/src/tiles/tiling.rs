@@ -176,6 +176,14 @@ impl<K: Key> Tiling<K> {
         self.fetching.len() + self.decoding.len()
     }
 
+    /// Drops every piece but those `keep` accepts, so they are fetched again when wanted.
+    pub(crate) fn forget(&mut self, keep: impl Fn(&K) -> bool) {
+        self.held.retain(|key, _| keep(key));
+        self.fetching.retain(|key, _| keep(key));
+        self.decoding.retain(|(key, _), _| keep(key));
+        self.decoded.retain(|(key, _), _| keep(key));
+    }
+
     /// Records `error` as the tiling's failure, unless one is recorded already.
     pub(crate) fn fail(&mut self, error: Error) {
         self.failure.get_or_insert(error);

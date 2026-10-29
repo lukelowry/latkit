@@ -78,6 +78,11 @@ impl Rig {
         self.hold();
         self.flight = Some(Flight { from, to, start, seconds });
     }
+
+    /// Where the flight under way ends, if there is one.
+    pub(crate) fn destination(&self) -> Option<Camera> {
+        self.flight.as_ref().map(|flight| flight.to)
+    }
 }
 
 impl View {

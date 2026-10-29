@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer};
 
 use super::form::{preset_schema, presets};
+use crate::Format;
 
 /// The coordinate space of a scene's positions: a name, or
 /// `{ plane | diagram | earth | plot: options }`.
@@ -259,21 +260,6 @@ impl Default for Axis {
     fn default() -> Axis {
         Axis { label: None, grid: true, hidden: false, ticks: None, format: Format::Auto, precision: None }
     }
-}
-
-/// How an axis formats its tick values.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum Format {
-    /// Fixed decimals, scientific past a million or below a ten-thousandth.
-    #[default]
-    Auto,
-    /// Fixed decimals: `1500.0`.
-    Fixed,
-    /// A significand and a power of ten: `1.5e3`.
-    Scientific,
-    /// A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`.
-    Engineering,
 }
 
 #[cfg(test)]

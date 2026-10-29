@@ -61,8 +61,8 @@ pub use data::{
 pub use data::{Order, Patches, Query, QueryResult, Reading};
 pub use error::{Error, Path, Result, Step};
 pub use expr::{
-    Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer, px,
-    selected, units, when, zoom,
+    Color, Colormap, ColormapKind, Expr, Format, Mapped, Size, Stop, Then, When, elapsed, field, hovered, meters,
+    pointer, px, selected, units, when, zoom,
 };
 pub use image::{Image, ImageFormat};
 pub use json::from_json;
@@ -76,15 +76,15 @@ pub use {
     panels::Panels,
     scene::{
         AreaTheme, Areas, Axis, Controls, Diagram, DiagramTheme, Direction, Earth, EarthTheme, EdgeTheme, Edges, Faces,
-        FlowTheme, FocusTheme, Format, Grid, Interpolation, Label, Layered, Layout, Length, LineTheme, Lines, Mark,
-        Marker, Motion, Plane, Plot, PlotTheme, Port, Projection, Route, Scene, ShadowTheme, Shape, Side, Space,
-        Stress, TextTheme, Theme, VertexTheme, Vertices, Zoom,
+        FlowTheme, FocusTheme, Grid, Interpolation, Label, Layered, Layout, Length, LineTheme, Lines, Mark, Marker,
+        Motion, Plane, Plot, PlotTheme, Port, Projection, Route, Scene, ShadowTheme, Shape, Side, Space, Stress,
+        TextTheme, Theme, VertexTheme, Vertices, Zoom,
     },
     shot::{Capture, Shot},
     tiles::Tiles,
     video::{Encoding, Mp4, Pixels, Sink, Video},
     view::{
-        Button, Camera, Cursor, Device, End, Event, Fit, Frame, Hit, Input, Key, Modifiers, Phase, Sample, Stats,
-        Trigger, View, Waiting,
+        Arrange, Button, Camera, Cursor, Device, End, Event, Fit, Frame, Hit, Input, Key, Modifiers, Phase, Sample,
+        Stats, Trigger, View, Waiting,
     },
 };

@@ -192,8 +192,17 @@ impl RowIds {
         self.key(row).map(IdRef::to_id)
     }
 
-    /// The ids with `added` appended. A count stays a count when the new ids continue it. Errors
-    /// if `added` holds another kind of id than the table's, such as texts for a table of numbers.
+    /// Whether `other` holds the same ids in the same order.
+    pub(crate) fn same(&self, other: &RowIds) -> bool {
+        match (self, other) {
+            (RowIds::Listed(a), RowIds::Listed(b)) if a.shares(b) => true,
+            _ => self.len() == other.len() && (0..self.len()).all(|row| self.key(row) == other.key(row)),
+        }
+    }
+
+    /// The ids with `added` appended. A count stays a count when the new ids continue it, and an
+    /// empty table takes the kind of `added`. Errors if `added` holds another kind of id than the
+    /// table's, such as texts for a table of numbers.
     pub(crate) fn extend(&self, added: &[Id]) -> Result<RowIds> {
         if added.is_empty() {
             return Ok(self.clone());
@@ -203,8 +212,11 @@ impl RowIds {
         {
             return Ok(RowIds::Count(n + added.len() as u32));
         }
-        let column = self.listed();
         let IdList::Listed(source) = Ids::from(added.to_vec()).0 else { unreachable!("a list of ids") };
+        if self.len() == 0 {
+            return Ok(RowIds::Listed(Column::new(&source)));
+        }
+        let column = self.listed();
         if source.kind() != column.kind() {
             return Err(Error::invalid("ids must be the same kind as the table's ids (numbers or texts)"));
         }

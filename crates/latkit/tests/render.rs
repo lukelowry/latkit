@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{SIZE, at, camera, close, frame, gpu, green_edges, plain_theme, plane, step};
+use common::{SIZE, answer, at, camera, close, frame, gpu, green_edges, plain_theme, plane, step};
 use latkit::{
     Axis, Button, Camera, Color, Colormap, Data, Device, Earth, Edges, Event, Faces, Ids, Input, Lines, Modifiers,
     Patch, Phase, Plot, Scene, Table, Theme, Vertices, View, field,
@@ -69,6 +69,43 @@ fn contains_ignores_case_and_rechecks_changed_texts() {
     assert_eq!(shown(&frame(&gpu, &mut view)), [false, true, false], "ignoring case, only Beta contains ta");
     data.apply(Table::new("Node", [0_u64]).field("name", vec!["Delta"])).expect("valid");
     assert_eq!(shown(&frame(&gpu, &mut view)), [true, true, false], "a changed text is checked again");
+}
+
+#[test]
+fn an_option_that_does_not_fit_draws_as_if_unset_until_its_data_arrives() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(
+        Table::new("Node", Ids::count(2))
+            .field("x", vec![0.0, 30.0])
+            .field("y", vec![0.0, 0.0])
+            .field("r", vec![f64::NAN, 3.0]),
+    )
+    .expect("valid");
+    let on = field("on").from_table("state", "Node").gt(0.5);
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(
+        Vertices::of("graph", "Node")
+            .position(field("x"), field("y"))
+            .radius(field("r").fallback(8.0))
+            .color(latkit::when(on).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(Color::WHITE)),
+    );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let center = SIZE / 2;
+    let pixels = frame(&gpu, &mut view);
+    let unset = plain_theme().vertex.color.to_rgba8();
+    assert!(close(at(&pixels, center + 6, center), unset), "the theme's color, 8 across where r is missing");
+    assert!(close(at(&pixels, center + 36, center), [0, 0, 0, 255]), "3 across where r has a value");
+    let failures: Vec<String> = view.failures().map(|e| e.to_string()).collect();
+    assert!(failures.len() == 1 && failures[0].starts_with("marks[0].color"), "{failures:?}");
+    // The dataset the color joins arrives later, and the color draws.
+    let state = Data::new("state");
+    state.apply(Table::new("Node", Ids::count(2)).field("on", vec![1.0, 1.0])).expect("valid");
+    view.set_sources([&data, &state]).expect("sources");
+    let pixels = frame(&gpu, &mut view);
+    assert!(close(at(&pixels, center + 6, center), [255, 0, 0, 255]), "{:?}", at(&pixels, center + 6, center));
+    assert_eq!(view.failures().count(), 0);
 }
 
 #[test]
@@ -183,6 +220,44 @@ fn edges_join_their_ends_and_colormaps_fit_the_values() {
     let middle = at(&pixels, center, center);
     // Grays run evenly in lightness: the middle is OKLab's half lightness, about 100.
     assert!(middle[0] > 80 && middle[0] < 130, "the middle value is grey: {middle:?}");
+}
+
+#[test]
+fn an_edge_whose_color_is_missing_blends_its_ends() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("grid");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Bus", Ids::count(4))
+                    .field("x", vec![-40.0, 40.0, -40.0, 40.0])
+                    .field("y", vec![-20.0, -20.0, 20.0, 20.0]),
+            )
+            .set(
+                Table::new("Line", Ids::count(2))
+                    .reference("from", "Bus", vec![0_u64, 2])
+                    .reference("to", "Bus", vec![1_u64, 3])
+                    .field("open", vec![false, true]),
+            ),
+    )
+    .expect("valid");
+    let plain = plain_theme();
+    let theme = Theme { edge: latkit::EdgeTheme { color: None, ..plain.edge }, ..plain };
+    let blue = latkit::when(field("open")).then(Color::rgb(0.0, 0.0, 1.0)).otherwise(latkit::Expr::missing());
+    let scene = Scene::new(plane())
+        .theme(theme)
+        .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0).color(blue))
+        .draw(
+            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(3.0).color(Color::rgb(0.0, 1.0, 0.0)),
+        );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    let center = SIZE / 2;
+    // Y points up on the plane: the open line is above the middle, the other below.
+    assert!(close(at(&pixels, center, center - 20), [0, 0, 255, 255]), "{:?}", at(&pixels, center, center - 20));
+    assert!(close(at(&pixels, center, center + 20), [0, 255, 0, 255]), "{:?}", at(&pixels, center, center + 20));
 }
 
 #[test]
@@ -359,6 +434,64 @@ fn a_mark_with_no_rows_does_not_delay_a_fit() {
 }
 
 #[test]
+fn a_view_is_complete_only_once_a_frame_draws_it() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = View::new(&gpu, Scene::new(plane())).expect("valid scene");
+    view.set_camera(camera());
+    let done = view.done();
+    assert!(!view.complete(), "no frame has drawn it yet");
+    answer(&gpu, &mut view, done);
+    assert!(view.complete(), "waiting on {}", view.waiting());
+}
+
+#[test]
+fn a_view_rebuilt_on_another_gpu_keeps_its_state_and_draws_the_same_frame() {
+    let (Some(first), Some(second)) = (gpu(), gpu()) else { return };
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 30.0]).field("y", vec![0.0, 20.0]))
+        .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).color(Color::WHITE));
+    let mut view = View::new(&first, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    view.set_at(5.0);
+    view.set_selection([latkit::Rows::new("graph", "Node", [1_u64])]);
+    let pixels = frame(&first, &mut view);
+    let mut rebuilt = view.rebuilt(&second).expect("rebuilt");
+    assert_eq!((rebuilt.camera(), rebuilt.at(), rebuilt.selection()), (view.camera(), view.at(), view.selection()));
+    assert!(frame(&second, &mut rebuilt) == pixels, "the same frame");
+}
+
+#[test]
+fn a_fit_answers_once_it_frames_and_a_turn_or_reveal_waits_for_it() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", Ids::count(2)).field("x", vec![1000.0, 1100.0]).field("y", vec![1000.0, 1000.0]))
+        .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_sources([&data]).expect("a source");
+    view.fit(latkit::Fit::All);
+    let framed = view.framed();
+    // Turning keeps the fit, which frames at the new pitch, and a reveal follows it.
+    view.turn(30.0, 0.0);
+    view.fit(latkit::Fit::Reveal(latkit::Row::new("graph", "Node", 1_u64)));
+    let revealed = view.framed();
+    let Some(Camera::Map { center, pitch, .. }) = answer(&gpu, &mut view, framed) else { panic!("the fit applied") };
+    assert!((center[0] - 1050.0).abs() < 1.0 && pitch == 30.0, "{center:?} at pitch {pitch}");
+    assert!(answer(&gpu, &mut view, revealed).is_some(), "the reveal followed the fit");
+    // A camera move replaces a fit not yet applied.
+    view.fit(latkit::Fit::All);
+    let replaced = view.framed();
+    view.set_camera(camera());
+    assert_eq!(answer(&gpu, &mut view, replaced), None);
+}
+
+#[test]
 fn a_fit_with_nothing_to_frame_waits_for_rows_without_asking_for_frames() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
@@ -415,6 +548,21 @@ fn a_fit_frames_data_regardless_of_units_and_marker_sizes() {
     let [a, b] = [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]].map(|p| view.screen(p).expect("in view"));
     let across = (b[0] - a[0]).abs().min((b[1] - a[1]).abs());
     assert!(across > SIZE as f32 * 0.5, "the unit square spans {across} of {SIZE} pixels");
+    // Markers sized in units with a least size in pixels frame the same from any starting zoom.
+    let earth = Scene::new(Earth::default())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(latkit::units(0.01).at_least(4.0)));
+    let fitted = |zoom: f64| {
+        let mut view = View::new(&gpu, earth.clone()).expect("valid scene");
+        view.set_camera(Camera::Map { center: [0.5, 0.5, 0.0], zoom, pitch: 0.0, bearing: 0.0 });
+        view.set_sources([&data]).expect("a source");
+        view.fit(latkit::Fit::All);
+        frame(&gpu, &mut view);
+        let Camera::Map { zoom, .. } = *view.camera() else { panic!("a map camera") };
+        zoom
+    };
+    let (far, near) = (fitted(1.0), fitted(12.0));
+    assert!((far - near).abs() < 1e-6, "fitted at zoom {far} from afar and {near} from close in");
 }
 
 #[test]
@@ -453,6 +601,17 @@ fn sampled_fields_read_at_the_shown_coordinate() {
     view.set_at(5.0);
     let pixel = at(&frame(&gpu, &mut view), center, center);
     assert!(close(pixel, [0, 0, 0, 255]), "a step reads the last frame: {pixel:?}");
+    // A domain over the field's history spans every frame, not only the value shown.
+    let history = field("v").colormap(Colormap::GRAYS).domain_all();
+    view.set_scene(
+        Scene::new(plane())
+            .theme(plain_theme())
+            .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(8.0).color(history)),
+    )
+    .expect("valid scene");
+    view.set_at(10.0);
+    let pixel = at(&frame(&gpu, &mut view), center, center);
+    assert!(pixel[0] > 250, "the greatest value maps to the colormap's end: {pixel:?}");
 }
 
 #[test]

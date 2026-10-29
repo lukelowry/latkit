@@ -49,6 +49,9 @@ pub struct Controls {
     /// under the pointer, nearest first. This lets overlapping rows each be selected. Defaults to
     /// `false`.
     pub cycle: bool,
+    /// Whether clicking or dragging across a plot moves the coordinate shown to the pointer,
+    /// instead of panning. Moves are reported as [`Event::At`](crate::Event). Defaults to `false`.
+    pub scrub: bool,
     /// How many seconds a touch or pen must hold still to request a menu
     /// ([`Event::Menu`](crate::Event)), like the secondary button. 0 turns this off. Defaults to
     /// 0.5.
@@ -105,6 +108,7 @@ impl Default for Controls {
             connect: false,
             delete: false,
             cycle: false,
+            scrub: false,
             press: Duration::from_millis(500),
             motion: Motion::System,
         }

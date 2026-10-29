@@ -206,6 +206,32 @@ fn missing_values_fit_any_kind_until_a_field_holds_a_value() {
 }
 
 #[test]
+fn writing_the_values_a_table_holds_changes_nothing() {
+    let data = Data::new("grid");
+    let bus = |kv: f64| Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, kv]).field("name", vec!["a", "b"]);
+    let versions = |data: &Data| {
+        let snapshot = data.snapshot();
+        ["kv", "name"].map(|f| snapshot.table("Bus").and_then(|t| t.field_named(f)).map(super::Field::version))
+    };
+    data.apply(Patch::new().replace(bus(115.0))).expect("valid");
+    let before = versions(&data);
+    data.apply(Patch::new().replace(bus(115.0)).set(bus(115.0))).expect("the same values");
+    assert_eq!(versions(&data), before, "fields keep their versions, and so their pages");
+    data.apply(Patch::new().replace(bus(69.0))).expect("one value changed");
+    let after = versions(&data);
+    assert!(after[0] != before[0] && after[1] == before[1], "only the changed field is new");
+}
+
+#[test]
+fn an_empty_table_takes_its_first_ids_kind() {
+    let data = Data::new("grid");
+    data.apply(Patch::new().replace(Table::new("Signal", Vec::<u64>::new()))).expect("an empty table");
+    data.apply(Table::new("Signal", vec!["s"])).expect("text ids");
+    let ids: Vec<Id> = data.snapshot().table("Signal").expect("the table").ids().collect();
+    assert_eq!(ids, vec![Id::from("s")]);
+}
+
+#[test]
 fn a_reference_takes_its_tables_id_kind() {
     let data = Data::new("grid");
     let branch = |ids: Ids| Table::new("Branch", Ids::count(1)).reference("to", "Bus", ids);

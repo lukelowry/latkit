@@ -4,12 +4,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
-use crate::Expr;
 use crate::expr::form::Written;
+use crate::{Expr, Format};
 
 /// Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
-/// field, or options. A label shows when its row is visible and its text fits, for example inside
-/// a block.
+/// field, a number, or options. A label shows when its row is visible and its text fits, for
+/// example inside a block.
 ///
 /// Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
 /// its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
@@ -22,14 +22,16 @@ use crate::expr::form::Written;
 /// let named = when(zoom().ge(6.0)).then(field("name")).otherwise(Expr::missing());
 /// let buses = Vertices::of("grid", "Bus").position(field("lon"), field("lat"));
 /// let labeled = buses.label(Label::new(named));
+/// let voltages = Label::new(field("vm")).precision(3).unit(" pu");
 /// ```
 #[derive(Clone, PartialEq, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = text_or_options)]
 pub struct Label {
-    /// The text field to show, or a `when` that returns that field or missing. A row whose text is
-    /// missing or empty has no label. In a diagram, the text may read only data, since the sheet
-    /// sizes blocks around it.
+    /// The text field to show, a number to write, or a `when` that returns either or missing. A
+    /// row whose text is missing or empty has no label. The GPU writes a number each frame, so it
+    /// can follow a sampled field. In a diagram, a text may read only data, since the sheet sizes
+    /// blocks around it, and a number shows where it fits its block.
     pub(crate) text: Expr,
     /// Font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's
     /// `text.size`.
@@ -44,6 +46,17 @@ pub struct Label {
     /// The CSS font family list for the text. Defaults to the theme's `text.font`.
     #[serde(default)]
     pub(crate) font: Option<Arc<str>>,
+    /// How a number is written, as an axis writes its ticks. Defaults to `auto`.
+    #[serde(default)]
+    pub(crate) format: Format,
+    /// Decimal places of a number, or of the significand in scientific and engineering formats. At
+    /// most 7. Defaults to at most 2, without trailing zeros.
+    #[serde(default)]
+    #[schemars(range(max = 7))]
+    pub(crate) precision: Option<u8>,
+    /// Text written after a number, such as `" kV"` or `"%"`.
+    #[serde(default)]
+    pub(crate) unit: Option<Arc<str>>,
 }
 
 /// Reads a label from a text field alone, or from an options object with `text`.
@@ -51,13 +64,17 @@ impl<'de> Deserialize<'de> for Label {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Label, D::Error> {
         let label = |written: Written| match written {
             Written::Object(form) if form.text.is_some() => {
-                form.only("a label", &["text", "size", "color", "maxWidth", "font"])?;
+                let keys = ["text", "size", "color", "maxWidth", "font", "format", "precision", "unit"];
+                form.only("a label", &keys)?;
                 Ok(Label {
                     text: form.text.expect("present"),
                     color: form.color,
                     size: form.size,
                     max_width: form.max_width,
                     font: form.font,
+                    format: form.format.unwrap_or_default(),
+                    precision: form.precision,
+                    unit: form.unit,
                 })
             }
             written => written.expr().map(Label::new),
@@ -77,10 +94,19 @@ fn text_or_options(schema: &mut schemars::Schema) {
 }
 
 impl Label {
-    /// Labels each row with a text field's value, or with a `when` that returns that field or
-    /// missing. A row whose text is missing or empty has no label.
+    /// Labels each row with a text field's value or a number, or with a `when` that returns either
+    /// or missing. A row whose text is missing or empty has no label.
     pub fn new(text: impl Into<Expr>) -> Label {
-        Label { text: text.into(), size: None, color: None, max_width: None, font: None }
+        Label {
+            text: text.into(),
+            size: None,
+            color: None,
+            max_width: None,
+            font: None,
+            format: Format::Auto,
+            precision: None,
+            unit: None,
+        }
     }
 
     /// Sets the font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's
@@ -109,6 +135,27 @@ impl Label {
     #[must_use]
     pub fn font(mut self, font: impl Into<Arc<str>>) -> Label {
         self.font = Some(font.into());
+        self
+    }
+
+    /// Sets how a number is written. Defaults to [`Format::Auto`].
+    #[must_use]
+    pub fn format(mut self, format: Format) -> Label {
+        self.format = format;
+        self
+    }
+
+    /// Sets a number's decimal places, at most 7. Defaults to at most 2, without trailing zeros.
+    #[must_use]
+    pub fn precision(mut self, places: u8) -> Label {
+        self.precision = Some(places);
+        self
+    }
+
+    /// Sets text written after a number, such as `" kV"` or `"%"`.
+    #[must_use]
+    pub fn unit(mut self, unit: impl Into<Arc<str>>) -> Label {
+        self.unit = Some(unit.into());
         self
     }
 }

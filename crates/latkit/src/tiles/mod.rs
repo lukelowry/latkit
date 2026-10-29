@@ -15,11 +15,15 @@ mod vector;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) use cache::Cache;
 pub(crate) use sets::{Asked, Reading, TileSets};
 
+use crate::Pending;
 use crate::data::Name;
+use crate::host::Request;
+use crate::pending::Watchers;
 
 /// A dataset fetched in pieces as views need them. Each view draws this
 /// [`Source`](crate::Source) as a dataset of its own, holding the pieces its camera needs. Views on
@@ -48,16 +52,49 @@ use crate::data::Name;
 /// let base = Tiles::new("base", "https://tiles.openfreemap.org/planet");
 /// let history = Tiles::new("grid", "history/frames.json");
 /// ```
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone)]
 pub struct Tiles {
     pub(crate) name: Name,
     pub(crate) url: Arc<str>,
+    pub(crate) fetch: Option<Fetch>,
+    pub(crate) refreshes: Arc<Refreshes>,
+}
+
+/// Fetches a tile source's files in place of the host.
+pub(crate) type Fetch = Arc<dyn Fn(&Request) -> Pending<Vec<u8>> + Send + Sync>;
+
+/// How many times a tile source was refreshed, and the views drawing it, which each refresh wakes.
+#[derive(Default)]
+pub(crate) struct Refreshes {
+    count: AtomicU64,
+    pub(crate) views: Watchers,
 }
 
 impl Tiles {
     /// The tiles at `url`, drawn as dataset `name`.
     pub fn new(name: impl Into<Name>, url: impl Into<Arc<str>>) -> Tiles {
-        Tiles { name: name.into(), url: url.into() }
+        Tiles { name: name.into(), url: url.into(), fetch: None, refreshes: Arc::default() }
+    }
+
+    /// The same tiles, with their files fetched by `fetch` instead of the host: the index at
+    /// `url`, then the pieces at URLs resolved against it, and byte ranges of an archive.
+    #[must_use]
+    pub fn fetch(mut self, fetch: impl Fn(&Request) -> Pending<Vec<u8>> + Send + Sync + 'static) -> Tiles {
+        self.fetch = Some(Arc::new(fetch));
+        self
+    }
+
+    /// Fetches the index again, as when a running simulation records more frames, and redraws what
+    /// changed in every view drawing the tiles. Time tiles keep the spans that the frames they held
+    /// cover, and fetch the rest again as views need them. Vector tiles start over.
+    pub fn refresh(&self) {
+        self.refreshes.count.fetch_add(1, Ordering::Relaxed);
+        self.refreshes.views.wake_all();
+    }
+
+    /// How many times the tiles were refreshed.
+    pub(crate) fn refreshed(&self) -> u64 {
+        self.refreshes.count.load(Ordering::Relaxed)
     }
 
     /// The dataset the tiles are drawn as.
@@ -68,6 +105,25 @@ impl Tiles {
     /// Where the tiles come from.
     pub fn url(&self) -> &str {
         &self.url
+    }
+}
+
+/// Tiles are equal when they draw the same URL as the same dataset, fetched the same way.
+impl PartialEq for Tiles {
+    fn eq(&self, other: &Tiles) -> bool {
+        let fetch = match (&self.fetch, &other.fetch) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        self.name == other.name && self.url == other.url && fetch
+    }
+}
+
+impl Eq for Tiles {}
+
+impl std::fmt::Debug for Tiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tiles").field("name", &self.name).field("url", &self.url).finish_non_exhaustive()
     }
 }
 

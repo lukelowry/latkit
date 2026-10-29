@@ -8,10 +8,19 @@ import type * as bindings from '../pkg/latkit.js';
 import type { Canvas, Rect } from './canvas.js';
 import { Snapshot, sourceOf, Table, type Source } from './data.js';
 import { device, Gpu } from './gpu.js';
-import type { Camera, Fit, Row, Rows, Scene } from './inputs.js';
-import { Handle, inner, onStop, thrown, waited, type LatkitError, type Wait } from './internal.js';
+import type { Arrange, Camera, Fit, Row, Rows, Scene } from './inputs.js';
+import {
+  Handle,
+  inner,
+  onStop,
+  rebind,
+  thrown,
+  waited,
+  type LatkitError,
+  type Wait,
+} from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
-import { Patch } from './patch.js';
+import { owned, Patch } from './patch.js';
 
 /** The region covering a whole canvas or picture. */
 const WHOLE: Rect = [0, 0, 1, 1];
@@ -64,6 +73,8 @@ export class View extends Handle {
   #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
   /** Stops listening for latkit stopping. */
   #unstop: () => void;
+  /** The function the bindings view sends its events to. */
+  #told: (json: string) => void;
   #gpu: Gpu;
   #canvas: Canvas | undefined;
   #region: Rect;
@@ -81,6 +92,7 @@ export class View extends Handle {
     const { json, tables } = encoded(scene);
     super(device(gpu).view(json, tell), 'View');
     told.view = this;
+    this.#told = tell;
     this.#unstop = onStop((error) => this.#emit('error', error));
     this.#gpu = gpu;
     this.#region = region;
@@ -91,7 +103,8 @@ export class View extends Handle {
   /**
    * Creates a view that draws `scene` on `canvas`, in `options.region`, over any views already
    * there. With a `null` canvas, the view draws only into pictures. The view loads every dataset
-   * its scene uses. Unless given a camera, it frames everything when it first draws.
+   * its scene uses. Unless given a camera, it frames everything when it first draws. Creating the
+   * default GPU waits within `options`.
    */
   static async create(
     canvas: HTMLCanvasElement | OffscreenCanvas | null,
@@ -99,8 +112,11 @@ export class View extends Handle {
     options: {
       /** The part of the canvas, and of pictures, that the view draws in. Defaults to all of it. */
       region?: Rect;
-      /** Where the view looks first. Without one, it frames everything drawn. */
-      camera?: Camera;
+      /**
+       * Where the view looks first. Without a center and zoom (or a plot's `x`), it frames
+       * everything drawn, at the camera's pitch and bearing.
+       */
+      camera?: Partial<Camera>;
       /** Datasets to draw besides those the scene uses. See {@link View.sources}. */
       sources?: readonly Source[];
       /**
@@ -112,14 +128,15 @@ export class View extends Handle {
        * sets it.
        */
       pixelRatio?: number;
-    } = {},
+    } & Wait = {},
   ): Promise<View> {
-    const gpu = options.gpu ?? (await Gpu.shared());
+    const gpu = options.gpu ?? (await Gpu.shared(options));
     const view = new View(gpu, scene, options.region ?? WHOLE);
     try {
       view.sources = options.sources ?? [];
-      if (options.camera) view.camera = options.camera;
-      else view.fit();
+      const { camera } = options;
+      if (!camera || !('center' in camera || 'zoom' in camera || 'x' in camera)) void view.fit();
+      if (camera) view.camera = camera;
       view.#canvas = gpu.adopt(view, canvas, options.pixelRatio);
     } catch (error) {
       view.destroy();
@@ -148,8 +165,9 @@ export class View extends Handle {
 
   /**
    * The scene drawn. A mark that matches one in the previous scene by kind, dataset, table, and
-   * name keeps its state and eases to its new options. An invalid scene leaves the current one in
-   * place.
+   * name keeps its state and eases to its new options. An option that does not fit the data draws
+   * as if unset, and a mark that does not fit draws nothing. Both are listed in `failures` until
+   * the data fits. A scene that is invalid on its own throws and leaves the current one in place.
    */
   get scene(): Scene {
     return this.#scene;
@@ -213,8 +231,9 @@ export class View extends Handle {
 
   /**
    * Where the view looks. Setting it moves the camera at once, replacing a flight or a fit not yet
-   * applied. Use {@link View.fly} to ease. A camera of the wrong kind for the space, such as a plot
-   * camera on a map, is ignored.
+   * applied. Fields left out keep their values, and setting only pitch and bearing keeps that fit,
+   * which then frames at them. Use {@link View.fly} to ease. A camera of the wrong kind for the
+   * space, such as a plot camera on a map, is ignored.
    *
    * Camera moves stay within the camera's zoom and pan limits. On the earth, the space sets the
    * limits inside the insets, as `Earth` describes. A fit narrows them to 3 zoom levels out and 8
@@ -225,7 +244,7 @@ export class View extends Handle {
     return JSON.parse(view(this).camera) as Camera;
   }
 
-  set camera(camera: Camera) {
+  set camera(camera: Partial<Camera>) {
     view(this).setCamera(JSON.stringify(camera));
   }
 
@@ -276,14 +295,23 @@ export class View extends Handle {
     return JSON.parse(view(this).waiting) as Waiting;
   }
 
-  /** Whether the last frame was complete, with nothing in `waiting`. Shots wait for this. */
+  /**
+   * Whether the last frame was complete, with nothing in `waiting`. False until the first frame.
+   * Shots wait for this.
+   */
   get complete(): boolean {
     return view(this).complete;
   }
 
+  /** Resolves once a frame draws the view complete, at once if the last frame did. */
+  async done(wait: Wait = {}): Promise<void> {
+    await waited<void>(view(this).done(), wait, 'drawing');
+  }
+
   /**
-   * An error for each mark that draws nothing because its data no longer fits it, such as a missing
-   * table. Each error's `path` names the mark.
+   * An error for each option that draws as if unset, and each mark that draws nothing, because the
+   * data does not fit it, such as a missing field or table. Each error's `path` names the mark and
+   * option, such as `marks[2].color`.
    */
   get failures(): readonly LatkitError[] {
     return (JSON.parse(view(this).failures) as Failure[]).map(thrown);
@@ -300,24 +328,30 @@ export class View extends Handle {
   }
 
   /**
-   * Frames what `fit` names, keeping pitch and bearing, and replaces any fit not yet applied.
-   * Defaults to every row. It applies once the rows have their places (their data streamed, any
-   * layout placed them, and they eased there), a frame or two later when the GPU must measure the
-   * extent. With nothing drawn to frame, it frames the rows that arrive later. Until a view's first
-   * fit applies, it shows only its background. A fit frames a diagram at most at its natural size
-   * and the earth at most at zoom 16, which is also where it frames a single point.
+   * Frames what `fit` names, keeping pitch and bearing, and replaces any fit not yet applied. A
+   * reveal asked for while another fit is due follows that fit instead. Defaults to every row. It
+   * applies once the rows have their places (their data streamed, any layout placed them, and they
+   * eased there), a frame or two later when the GPU must measure the extent. With nothing drawn to
+   * frame, it frames the rows that arrive later. Until a view's first fit applies, it shows only
+   * its background. A fit frames a diagram at most at its natural size and the earth at most at
+   * zoom 16, which is also where it frames a single point. Resolves to the camera it framed, or to
+   * `null` when a camera move or another fit replaces it.
    */
-  fit(fit: Fit = 'all'): void {
-    view(this).fit(JSON.stringify(fit));
+  fit(fit: Fit = 'all', wait: Wait = {}): Promise<Camera | null> {
+    const framed = waited<string>(view(this).fit(JSON.stringify(fit)), wait, 'fitting');
+    const camera = framed.then((json) => JSON.parse(json) as Camera | null);
+    // Most callers don't wait for a fit, so a timeout rejects only for those who do.
+    camera.catch(() => {});
+    return camera;
   }
 
   /**
    * Eases the camera to `camera` over `seconds`, or over twice the scene's ease time without it,
-   * replacing a fit not yet applied. When motion is reduced, it moves at once. The camera stays
-   * within its limits, as {@link View.camera} describes. A camera of the wrong kind for the space is
-   * ignored.
+   * replacing a fit not yet applied. Fields left out keep their values. When motion is reduced, it
+   * moves at once. The camera stays within its limits, as {@link View.camera} describes. A camera
+   * of the wrong kind for the space is ignored.
    */
-  fly(camera: Camera, seconds?: number): void {
+  fly(camera: Partial<Camera>, seconds?: number): void {
     view(this).fly(JSON.stringify(camera), seconds);
   }
 
@@ -341,11 +375,18 @@ export class View extends Handle {
   }
 
   /**
-   * Resolves to where `row` is on screen once a frame draws the view, or to `null` when no mark
-   * draws it in view. A diagram's vertices resolve at once.
+   * Resolves to where `row`, or its port, is on screen once a frame draws the view, or to `null`
+   * when no mark draws it in view. A diagram's vertices and ports resolve at once.
    */
-  screenOf(row: Row, wait: Wait = {}): Promise<Point | null> {
-    return waited<Point | null>(view(this).screenOf(JSON.stringify(row)), wait, 'locating a row');
+  screenOf(
+    row: Row,
+    options: {
+      /** A port of the row, by the reference field naming its net. Only a diagram has ports. */
+      port?: string;
+    } & Wait = {},
+  ): Promise<Point | null> {
+    const located = view(this).screenOf(JSON.stringify(row), options.port);
+    return waited<Point | null>(located, options, 'locating a row');
   }
 
   /**
@@ -372,16 +413,21 @@ export class View extends Handle {
   }
 
   /**
-   * Lays out again every vertex row that has no position, and resolves to one patch per dataset.
-   * Each patch writes each row's place into its mark's position fields, so applying it makes the
-   * places part of the data. Marks that don't read their position from fields are left out.
+   * Lays out again the vertex rows that `rows` names, those without a position or all of them, and
+   * resolves to one patch per dataset. Each patch writes each row's place into its mark's position
+   * fields, so applying it makes the places part of the data. Marks that don't read their position
+   * from fields are left out.
    *
    * ```ts
-   * for (const patch of await view.arrange()) if (patch.data === grid.name) grid.apply(patch);
+   * for (const patch of await view.arrange('all')) if (patch.data === grid.name) grid.apply(patch);
    * ```
    */
-  async arrange(wait: Wait = {}): Promise<Patch[]> {
-    const frames = await waited<Uint8Array[]>(view(this).arrange(), wait, 'arranging');
+  async arrange(rows: Arrange = 'unplaced', wait: Wait = {}): Promise<Patch[]> {
+    const frames = await waited<Uint8Array[]>(
+      view(this).arrange(JSON.stringify(rows)),
+      wait,
+      'arranging',
+    );
     return Promise.all(frames.map((frame) => Patch.read(frame)));
   }
 
@@ -409,11 +455,17 @@ export class View extends Handle {
 
   /** Dispatches a JSON batch of the view's events to the listeners of each event's type. */
   #tell(json: string): void {
-    if (this.#listeners.size === 0) return;
     for (const told of JSON.parse(json) as ViewEvent[]) {
-      if (!this.#listeners.get(told.type)?.size) continue;
-      this.#emit(told.type, told.type === 'error' ? thrown(told.detail) : told.detail);
+      // A lost device is replaced. Only a failed replacement is an error.
+      if (told.type === 'error' && told.detail.code === 'device-lost') {
+        this.#gpu.recover().catch(() => this.#emit('error', detail(told)));
+      } else if (this.#listeners.get(told.type)?.size) this.#emit(told.type, detail(told));
     }
+  }
+
+  /** @internal Moves the view to `device`, with its state, once its GPU's device is lost. */
+  moved(device: bindings.Gpu): void {
+    rebind<bindings.View>(this, device.rebuild(view(this), this.#told)).free();
   }
 
   /** Calls the listeners of `type` with `event`. */
@@ -435,6 +487,16 @@ export class View extends Handle {
 
 function view(owner: View): bindings.View {
   return inner<bindings.View>(owner);
+}
+
+/** `event`'s detail as listeners take it: an error as a `LatkitError`, a drag's patch as a `Patch`. */
+function detail(event: ViewEvent): unknown {
+  if (event.type === 'error') return thrown(event.detail);
+  if (event.type === 'drag' && event.detail.patch) {
+    const bytes = Uint8Array.from(event.detail.patch as unknown as number[]);
+    return { ...event.detail, patch: owned(bytes) };
+  }
+  return event.detail;
 }
 
 /** `scene` as JSON, and the datasets of the tables it names. */

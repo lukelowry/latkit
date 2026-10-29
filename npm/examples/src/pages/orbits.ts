@@ -72,7 +72,7 @@ export default page({
       { camera: { center: [0, 0], zoom: 5, pitch: 52, bearing: 0 } },
     );
     // The disk fills the view, seen from the camera's angle.
-    shown.fit({ bounds: { min: [-12.5, -12.5, 0], max: [12.5, 12.5, 0] } });
+    void shown.fit({ bounds: { min: [-12.5, -12.5, 0], max: [12.5, 12.5, 0] } });
     detail(`${settings.bodies.toLocaleString()} bodies, moved by the GPU`);
     return {
       change(s, key) {

@@ -159,6 +159,7 @@ fn areas_require_a_polygon_field() {
     )
     .expect("valid");
     let mut view = view(&gpu, Scene::new(plane()), &data);
-    let refused = view.set_scene(Scene::new(plane()).draw(Areas::of("map", "Zone")));
-    assert!(refused.is_err(), "areas reject a path field");
+    view.set_scene(Scene::new(plane()).draw(Areas::of("map", "Zone"))).expect("a valid scene");
+    let failures: Vec<String> = view.failures().map(|e| e.to_string()).collect();
+    assert!(failures.len() == 1 && failures[0].starts_with("marks[0]"), "areas reject a path field: {failures:?}");
 }

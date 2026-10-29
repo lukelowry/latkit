@@ -134,6 +134,10 @@ export class Expr {
   or(other: ExprInput): Expr {
     return new Expr({ or: [this.node, nodeOf(other)] });
   }
+  /** This value, or `other` where this value is missing. Numbers and colors both work. */
+  fallback(other: ExprInput): Expr {
+    return new Expr({ fallback: [this.node, nodeOf(other)] });
+  }
   /** 1 where this value is at most 0.5, else 0. */
   not(): Expr {
     return new Expr({ not: [this.node] });
@@ -204,11 +208,15 @@ export class Expr {
 /** A value mapped through a colormap or onto a range. Its input domain can be set. */
 export class Mapped extends Expr {
   /**
-   * Sets the input values that map to the ends of the colormap or range. Without it, the domain
-   * fits the values shown.
+   * Sets the input values that map to the ends of the colormap or range. `'all'` spans every value
+   * the input field holds, in every frame of a sampled field, so colors stay put as `at` moves.
+   * Without it, the domain fits the values shown.
    */
-  domain(low: number, high: number): Mapped {
-    return new Mapped({ ...(this.node as ScaleNode | ColormapNode), domain: [low, high] });
+  domain(low: number, high: number): Mapped;
+  domain(all: 'all'): Mapped;
+  domain(low: number | 'all', high?: number): Mapped {
+    const domain = low === 'all' ? low : ([low, high!] as [number, number]);
+    return new Mapped({ ...(this.node as ScaleNode | ColormapNode), domain });
   }
 }
 
@@ -270,6 +278,14 @@ export function units(size: number): { units: number };
 export function units(size: ExprInput, limits?: Omit<Units, 'units'>): Units;
 export function units(size: ExprInput, limits: Omit<Units, 'units'> = {}): Units {
   return { units: nodeOf(size), ...limits };
+}
+
+/**
+ * A length given in meters, in degrees of arc: the earth's unit for positions, elevations, and
+ * sizes in `units`. A degree is 111,194.93 meters on a sphere of the earth's mean radius.
+ */
+export function meters(length: ExprInput): Expr {
+  return new Expr({ div: [nodeOf(length), 111_194.93] });
 }
 
 /** One case of a conditional: a condition, and the value it selects. */

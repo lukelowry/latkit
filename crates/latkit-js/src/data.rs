@@ -2,6 +2,10 @@
 //! `Data` and `Snapshot` share the same read methods: description, values, queries, envelopes, and
 //! bytes.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use latkit::host::Host as _;
 use wasm_bindgen::prelude::*;
 
@@ -146,9 +150,70 @@ pub struct Source(pub(crate) latkit::Source);
 
 #[wasm_bindgen]
 impl Source {
-    /// Tiles at `url`, drawn as dataset `name`.
-    pub fn tiles(name: &str, url: &str) -> Source {
-        Source(latkit::Source::from(latkit::Tiles::new(name, url)))
+    /// Tiles at `url`, drawn as dataset `name`. If given, `fetch(url, range)` fetches their files in
+    /// place of the browser: `range` is `[start, end]` or undefined, and it returns a promise of a
+    /// `Uint8Array`.
+    pub fn tiles(name: &str, url: &str, fetch: Option<js_sys::Function>) -> Source {
+        let tiles = latkit::Tiles::new(name, url);
+        Source(latkit::Source::from(match fetch {
+            Some(fetch) => tiles.fetch(fetcher(fetch)),
+            None => tiles,
+        }))
+    }
+
+    /// The same source, sharing what views fetched for it.
+    #[must_use]
+    pub fn copy(&self) -> Source {
+        Source(self.0.clone())
+    }
+
+    /// Fetches the tiles' index again and redraws what changed.
+    pub fn refresh(&self) {
+        if let latkit::Source::Tiles(tiles) = &self.0 {
+            tiles.refresh();
+        }
+    }
+}
+
+thread_local! {
+    /// The page's tile fetch functions, by id. A tile fetch must be `Send`, so it holds only the id.
+    static FETCHES: RefCell<HashMap<u32, js_sys::Function>> = RefCell::new(HashMap::new());
+}
+
+/// The id of a function in [`FETCHES`], removed when the tiles holding it are dropped.
+struct Registered(u32);
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        FETCHES.with(|all| all.borrow_mut().remove(&self.0));
+    }
+}
+
+/// A tile fetch that calls the page's `fetch`.
+fn fetcher(fetch: js_sys::Function) -> impl Fn(&latkit::host::Request) -> latkit::Pending<Vec<u8>> + Send + Sync {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    FETCHES.with(|all| all.borrow_mut().insert(id, fetch));
+    let registered = Registered(id);
+    move |request| {
+        let range = request.range.as_ref().map_or(JsValue::UNDEFINED, |r| {
+            js_sys::Array::of2(&(r.start as f64).into(), &(r.end as f64).into()).into()
+        });
+        let url = request.url.clone();
+        let called = FETCHES.with(|all| all.borrow()[&registered.0].call2(&JsValue::NULL, &(*url).into(), &range));
+        let failed = move |error: JsValue| {
+            let message = js_sys::Reflect::get(&error, &"message".into()).ok().and_then(|m| m.as_string());
+            latkit::Error::Io(format!("{url} could not be fetched: {}", message.unwrap_or_default()).into())
+        };
+        let (pending, resolver) = latkit::Pending::new();
+        match called {
+            Ok(promise) => wasm_bindgen_futures::spawn_local(async move {
+                let bytes = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise)).await;
+                resolver.resolve(bytes.map(|b| js_sys::Uint8Array::new(&b).to_vec()).map_err(failed));
+            }),
+            Err(error) => resolver.resolve(Err(failed(error))),
+        }
+        pending
     }
 }
 

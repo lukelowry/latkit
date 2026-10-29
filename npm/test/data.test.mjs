@@ -82,7 +82,7 @@ test('patches carry every kind of value through the bytes', async () => {
         { count: 2 },
         {
           from: reference('Bus', [101, 102]),
-          to: reference('Bus', [102, null]),
+          to: reference('Bus', Float64Array.of(102, NaN)),
         },
       )
       .replace('Named', ['a', 'b'], { x: [1, 2] }),
@@ -110,7 +110,7 @@ test('patches carry every kind of value through the bytes', async () => {
   assert.equal(get(102, 'path'), null, 'an empty geometry is missing');
   assert.equal(get(103, 'area').length, 2, 'two polygons');
   assert.equal(grid.get('Branch', 0, 'from'), 101, 'a reference reads as the referenced id');
-  assert.equal(grid.get('Branch', 1, 'to'), null, 'a null id is a missing reference');
+  assert.equal(grid.get('Branch', 1, 'to'), null, 'a NaN id is a missing reference');
   assert.equal(grid.get('Named', 'b', 'x'), 2);
   const kinds = Object.fromEntries(
     grid
@@ -123,7 +123,9 @@ test('patches carry every kind of value through the bytes', async () => {
     ['number', 'bool', 'text', 'point', 'path', 'polygons'],
   );
   // A dataset's bytes are the patch that builds it, so reading them back gives an equal dataset.
-  const again = new Data('grid').apply(await Patch.read(grid.toBytes()));
+  const patch = await Patch.read(grid.toBytes());
+  assert.equal(patch.byteLength, patch.toBytes().length);
+  const again = new Data('grid').apply(patch);
   assert.deepEqual(again.describe(), grid.describe());
   assert.deepEqual(again.get('Bus', 103, 'area'), get(103, 'area'));
   grid.destroy();

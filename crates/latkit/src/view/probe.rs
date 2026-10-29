@@ -168,9 +168,13 @@ impl View {
         if self.probing.reading.busy() || !answers {
             return None;
         }
-        // Where nothing is drawn, there is nothing to probe.
-        let point = self.probing.wanted.take();
-        point.filter(|_| self.marks.iter().any(Shown::drawable))
+        // Where nothing is drawn, nothing is under the point, so a press waiting on it goes ahead.
+        let point = self.probing.wanted.take()?;
+        if !self.marks.iter().any(Shown::drawable) {
+            self.landed(point, Answer::default());
+            return None;
+        }
+        Some(point)
     }
 
     /// The probe radius in CSS pixels: the scene's pick radius, plus 8 for touch.

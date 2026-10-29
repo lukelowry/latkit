@@ -146,16 +146,18 @@ impl Patch {
     /// bucket's first and last frame. `values` holds every bucket's least value per row, followed
     /// by every bucket's greatest. NaN is missing.
     ///
-    /// None of the entries may already be present. Entries outside the field's frame range extend
-    /// it, and frames in any gap stay missing.
+    /// A run that covers a level's last entry replaces the entries it covers, such as the last
+    /// bucket while it fills. Any other entry already present is an error. Entries outside the
+    /// field's frame range extend it, and frames in any gap stay missing.
     ///
     /// ```
     /// # use latkit::{Data, Ids, Patch, Table};
     /// let grid = Data::new("grid");
     /// grid.apply(Patch::new().replace(Table::new("Bus", Ids::count(2))))?;
-    /// // Frames 100 and 101, then the bucket of frames 0..8.
+    /// // Frames 100 and 101, then the bucket of frames 0..8, written twice.
     /// grid.apply(Patch::new().frames("Bus", "vm", 0, 100, [100.0, 101.0], [1.0, 0.9, 1.02, 0.98]))?;
     /// grid.apply(Patch::new().frames("Bus", "vm", 1, 0, [0.0, 7.0], [0.95, 0.9, 1.05, 1.0]))?;
+    /// grid.apply(Patch::new().frames("Bus", "vm", 1, 0, [0.0, 7.0], [0.9, 0.9, 1.1, 1.0]))?;
     /// assert_eq!(grid.snapshot().describe().span, Some([0.0, 101.0]));
     /// # Ok::<(), latkit::Error>(())
     /// ```
@@ -222,6 +224,20 @@ impl Patch {
 impl From<Table> for Patch {
     fn from(table: Table) -> Patch {
         Patch::new().set(table)
+    }
+}
+
+/// Patches are equal when they encode to the same bytes.
+impl PartialEq for Patch {
+    fn eq(&self, other: &Patch) -> bool {
+        self.to_bytes() == other.to_bytes()
+    }
+}
+
+/// Serializes as the patch's bytes, as [`Patch::to_bytes`] writes them.
+impl serde::Serialize for Patch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&self.to_bytes())
     }
 }
 
@@ -299,6 +315,7 @@ impl Op {
                 let name = table.name.clone();
                 table.check().map_err(|e| e.at(&name))?;
                 match data.position(&name) {
+                    Ok(i) if data.tables[i].ids.same(&table.ids) => data.tables[i] = refill(&data.tables[i], table),
                     Ok(i) => data.tables[i] = table,
                     Err(i) => data.tables.insert(i, table),
                 }
@@ -371,6 +388,7 @@ impl Op {
                     Some(Field::Sampled(samples, _)) => samples.clone(),
                     Some(_) => return Err(Error::invalid("not a sampled field").at(&field).at(&table)),
                 };
+                samples.truncate(&run);
                 samples.insert(&run, &at, &values, rows).map_err(|e| e.at(&field).at(&table))?;
                 target.insert(field, Field::Sampled(samples, Version::next()));
                 Ok(())
@@ -392,6 +410,18 @@ fn rows_named(table: &Table, ids: &Ids) -> Result<Vec<usize>> {
 }
 
 /// `existing` with `input`'s fields written for `input`'s rows.
+/// `input`, which replaces `existing` and has the same ids in the same order, written over it as
+/// `set` writes. Fields whose values did not change keep their pages and versions. When a field
+/// cannot be written over, such as one of another kind, `input` replaces `existing` outright.
+fn refill(existing: &Table, input: Table) -> Table {
+    if input.fields.iter().any(|(_, field)| matches!(field, Field::Sampled(..))) {
+        return input;
+    }
+    let mut kept = existing.clone();
+    kept.fields.retain(|(name, field)| !matches!(field, Field::Sampled(..)) && input.field_named(name).is_some());
+    set(&kept, input.clone()).unwrap_or(input)
+}
+
 fn set(existing: &Table, input: Table) -> Result<Table> {
     let index = existing.index()?;
     let mut added = Vec::new();
@@ -415,8 +445,11 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
     }
     for (name, field) in input.fields {
         let next = match (existing.field_named(&name), field) {
-            (Some(Field::Values(column, _)), Field::Values(source, _)) => {
-                Field::Values(column.write(len, &writes, &source).map_err(|e| e.at(&name))?, Version::next())
+            // A field whose values did not change keeps its pages and version.
+            (Some(Field::Values(column, version)), Field::Values(source, _)) => {
+                let written = column.write(len, &writes, &source).map_err(|e| e.at(&name))?;
+                let version = if written.shares(column) { *version } else { Version::next() };
+                Field::Values(written, version)
             }
             (None, Field::Values(source, _)) => {
                 let column = Column::missing(source.like(), existing.len()).write(len, &writes, &source)?;
@@ -424,7 +457,16 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
             }
             (Some(Field::Reference(old)), Field::Reference(source)) if old.to == source.to => {
                 let ids = old.ids.write(len, &writes, &source.ids).map_err(|e| e.at(&name))?;
-                Field::Reference(Reference { ids, version: Version::next(), inverse: Arc::default(), ..old.clone() })
+                if ids.shares(&old.ids) {
+                    Field::Reference(old.clone())
+                } else {
+                    Field::Reference(Reference {
+                        ids,
+                        version: Version::next(),
+                        inverse: Arc::default(),
+                        ..old.clone()
+                    })
+                }
             }
             // Missing values fit any kind: a field that holds no value yet becomes a reference, a
             // reference that names no row yet can name another table, and missing values write

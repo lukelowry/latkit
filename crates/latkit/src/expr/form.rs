@@ -182,7 +182,7 @@ form! {
     step "step": bool,
     otherwise "otherwise": Expr as value,
     value "value": Expr as value,
-    domain "domain": [f64; 2],
+    domain "domain": DomainForm,
     pub(crate) px "px": Expr as value,
     pub(crate) units "units": Expr as value,
     pub(crate) at_least "atLeast": f32,
@@ -192,6 +192,9 @@ form! {
     pub(crate) color "color": Expr as value,
     pub(crate) max_width "maxWidth": f32,
     pub(crate) font "font": Arc<str>,
+    pub(crate) format "format": crate::Format,
+    pub(crate) precision "precision": u8,
+    pub(crate) unit "unit": Arc<str>,
 }
 
 impl Form {
@@ -280,9 +283,10 @@ impl Form {
 }
 
 /// `mapped` with `domain` when given, else fitted to the values shown.
-fn domained(mapped: super::Mapped, domain: Option<[f64; 2]>) -> Expr {
+fn domained(mapped: super::Mapped, domain: Option<DomainForm>) -> Expr {
     match domain {
-        Some([lo, hi]) => mapped.domain(lo..=hi).into(),
+        Some(DomainForm::Range([lo, hi])) => mapped.domain(lo..=hi).into(),
+        Some(DomainForm::All(All::All)) => mapped.domain_all().into(),
         None => mapped.into(),
     }
 }
@@ -297,7 +301,7 @@ enum Operation {
 }
 
 /// Each operation a call can name: the key that names it, what it computes, and its description.
-const OPERATIONS: [(&str, Operation, &str); 27] = [
+const OPERATIONS: [(&str, Operation, &str); 28] = [
     ("neg", Operation::Unary(Unary::Neg), "The value negated."),
     ("not", Operation::Unary(Unary::Not), "1 where the value is at most 0.5, else 0."),
     ("abs", Operation::Unary(Unary::Abs), "The absolute value."),
@@ -331,6 +335,7 @@ const OPERATIONS: [(&str, Operation, &str); 27] = [
     ("ne", Operation::Binary(Binary::Ne), "1 where the two values differ, else 0. Colors compare too."),
     ("and", Operation::Binary(Binary::And), "1 where both values are above 0.5, else 0."),
     ("or", Operation::Binary(Binary::Or), "1 where either value is above 0.5, else 0."),
+    ("fallback", Operation::Binary(Binary::Fallback), "The first value, or the second where the first is missing."),
     ("is", Operation::Is, "Whether a text field equals the plain text exactly."),
     (
         "contains",
@@ -399,10 +404,11 @@ kinds! {
         scale: [f64; 2],
         /// The value mapped.
         value: Expr,
-        /// The values mapped to the range's ends. Defaults to the extent of the values shown.
+        /// The values mapped to the range's ends, or `all` for every value a field holds, in every
+        /// frame of a sampled field. Defaults to the extent of the values shown.
         #[serde(default)]
-        #[schemars(extend("tsType" = "[low: number, high: number]"))]
-        domain: Option<[f64; 2]>,
+        #[schemars(extend("tsType" = "[low: number, high: number] | 'all'"))]
+        domain: Option<DomainForm>,
     }
     /// A value mapped through a colormap.
     ColormapNode {
@@ -410,12 +416,30 @@ kinds! {
         colormap: Colormap,
         /// The value mapped. A categorical map takes each value's integer part as its category.
         value: Expr,
-        /// The values mapped to the colormap's ends. Defaults to the extent of the values shown. A
-        /// categorical map ignores it.
+        /// The values mapped to the colormap's ends, or `all` for every value a field holds, in
+        /// every frame of a sampled field. Defaults to the extent of the values shown. A categorical
+        /// map ignores it.
         #[serde(default)]
-        #[schemars(extend("tsType" = "[low: number, high: number]"))]
-        domain: Option<[f64; 2]>,
+        #[schemars(extend("tsType" = "[low: number, high: number] | 'all'"))]
+        domain: Option<DomainForm>,
     }
+}
+
+/// A domain's JSON form: `[low, high]`, or `"all"` for every value a field holds.
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(inline)]
+pub(crate) enum DomainForm {
+    Range([f64; 2]),
+    All(All),
+}
+
+/// The name `"all"`.
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[schemars(inline)]
+pub(crate) enum All {
+    All,
 }
 
 /// A size in CSS pixels, regardless of the space's unit.

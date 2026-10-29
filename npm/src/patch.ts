@@ -20,7 +20,7 @@ import { load } from './load.js';
 
 /**
  * Row ids: a list of numbers or strings, `{ count }` for ids `0` to `count - 1`, or a `Uint32Array`
- * or `Float64Array` of numbers.
+ * or `Float64Array` of numbers. In a reference, `null` or NaN names no row.
  */
 export type RowIds = Ids | readonly (Id | null)[] | Uint32Array | Float64Array;
 
@@ -51,7 +51,7 @@ export type Values =
 export interface Reference {
   /** The table referenced. */
   reference: string;
-  /** For each row, the id of the row it references, or `null` to reference none. */
+  /** For each row, the id of the row it references, or `null` or NaN to reference none. */
   ids: RowIds;
 }
 
@@ -99,6 +99,9 @@ const utf8 = new TextEncoder();
 /** @internal Returns `patch`'s frame without copying it. Read it before the patch changes again. */
 export let framed: (patch: Patch) => Uint8Array;
 
+/** @internal Wraps one whole frame `bytes` as a patch without copying them. */
+export let owned: (bytes: Uint8Array) => Patch;
+
 /**
  * A list of changes to a dataset. `Data.apply` applies them in order, all or none. The patch is
  * written as latkit's bytes as it is built, without WebAssembly. Each method adds a change and
@@ -113,6 +116,7 @@ export let framed: (patch: Patch) => Uint8Array;
 export class Patch {
   static {
     framed = (patch) => patch.#frame();
+    owned = (bytes) => Patch.#owning(bytes);
   }
 
   #data: string | undefined;
@@ -345,8 +349,8 @@ export class Patch {
   /**
    * Stores a run of entries of sampled field `field` in `table`, at one level of detail. This is
    * what a time tile from `latkit tile` holds. At level 0 each entry is a frame. At level `k` each
-   * entry is a bucket of `8^k` frames. None of the entries may already be stored. Entries past the
-   * field's last frame extend it.
+   * entry is a bucket of `8^k` frames. A run that covers a level's last entry replaces the entries
+   * it covers, such as the last bucket while it fills. Entries past the field's last frame extend it.
    */
   frames(table: string, field: string, run: Run): this {
     const { level = 0, first, at, values } = run;
@@ -388,6 +392,12 @@ export class Patch {
     this.#writer.bytes(next.#writer.view().subarray(next.#ops));
     this.#count += next.#count;
     return this;
+  }
+
+  /** The length of `toBytes()` in bytes, without copying them. */
+  get byteLength(): number {
+    this.#flush();
+    return this.#writer.length;
   }
 
   /** Returns a copy of the patch as latkit's bytes: one frame, naming the dataset if it has one. */
@@ -570,6 +580,10 @@ function writeIds(w: Writer, ids: RowIds, path: string): void {
   writeIdValues(w, ids, path);
 }
 
+/** Whether `id` names a row. `null`, `undefined`, and NaN name none. */
+const names = (id: Id | null | undefined): id is Id =>
+  id !== null && id !== undefined && !Number.isNaN(id);
+
 /**
  * Writes ids as values: as text if any id is a string, else as `u32` when every id fits (latkit
  * widens them to the `u64` it stores), else as `u64`. `null` marks a missing id.
@@ -592,7 +606,7 @@ function writeIdValues(w: Writer, ids: RowIds, path: string): void {
   let [texts, missing, wide] = [false, false, false];
   for (let i = 0; i < n; i++) {
     const id = list[i];
-    if (id === null || id === undefined) missing = true;
+    if (!names(id)) missing = true;
     else if (typeof id === 'string') texts = true;
     else if (!Number.isInteger(id) || id < 0 || id > SAFE)
       throw invalid(path, `id ${id} is not a whole number from 0 to 2^53 - 1`);
@@ -601,13 +615,13 @@ function writeIdValues(w: Writer, ids: RowIds, path: string): void {
   if (texts) {
     writeTexts(
       w,
-      Array.from(list, (id) => (id === null || id === undefined ? null : String(id))),
+      Array.from(list, (id) => (names(id) ? String(id) : null)),
     );
   } else {
     // One little-endian u32 per id, or two when wide: the low word, then the high.
     const words = new Uint32Array(wide ? n * 2 : n);
     for (let i = 0; i < n; i++) {
-      const id = (list[i] as number | null) ?? 0;
+      const id = names(list[i]) ? (list[i] as number) : 0;
       if (!wide) words[i] = id;
       else [words[i * 2], words[i * 2 + 1]] = [id >>> 0, Math.floor(id / 0x100000000)];
     }
@@ -615,7 +629,7 @@ function writeIdValues(w: Writer, ids: RowIds, path: string): void {
     w.u32(n);
     w.bytes(new Uint8Array(words.buffer));
   }
-  writeValidity(w, n, missing ? (i) => list[i] !== null && list[i] !== undefined : null);
+  writeValidity(w, n, missing ? (i) => names(list[i]) : null);
 }
 
 /** Whether a value is present. `null`, `undefined`, and an empty geometry count as missing. */

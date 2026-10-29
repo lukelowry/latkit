@@ -181,7 +181,7 @@ impl Vertices {
             Some(expr) => c.channel("color", expr, color)?,
             None => c.theme("color", fallback, color)?,
         }
-        let visible = Store::Flag { word: wgsl::VERTEX_FLAGS, bit: wgsl::VISIBLE };
+        let visible = Store::Flag { word: wgsl::VERTEX_FLAGS, bit: wgsl::VISIBLE, unset: true };
         c.channel("visible", &self.style.visible, visible)?;
         if let Some(ring) = &self.ring {
             flags |= wgsl::STATUS;
@@ -189,7 +189,7 @@ impl Vertices {
         }
         for (i, input) in inputs.iter().enumerate() {
             let store = Store::Number { word: wgsl::VERTEX_WORDS + i as u32, fallback: None };
-            c.channel(&format!("input{i}"), input, store).map_err(|e| e.at(i).at("marker"))?;
+            c.within("marker", |c| c.within(i, |c| c.channel(&format!("input{i}"), input, store)))?;
         }
         let mut ports = Vec::with_capacity(self.ports.len());
         for (reference, port) in &self.ports {
@@ -274,8 +274,10 @@ impl Vertices {
         match (&self.size, &self.radius) {
             (Some([w, h]), _) => {
                 flags |= wgsl::SIZED;
-                c.channel("width", &(w.expr.clone() * 0.5), half(wgsl::VERTEX_HALF, w))?;
-                c.channel("height", &(h.expr.clone() * 0.5), half(wgsl::VERTEX_HALF + 1, h))?;
+                c.within("size", |c| {
+                    c.channel("width", &(w.expr.clone() * 0.5), half(wgsl::VERTEX_HALF, w))?;
+                    c.channel("height", &(h.expr.clone() * 0.5), half(wgsl::VERTEX_HALF + 1, h))
+                })?;
             }
             (None, Some(radius)) => c.channel("radius", &radius.expr, half(wgsl::VERTEX_HALF, radius))?,
             (None, None) => {

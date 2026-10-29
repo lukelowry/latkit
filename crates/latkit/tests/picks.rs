@@ -137,11 +137,11 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
 fn locate_finds_a_row_on_screen() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, Controls::default());
-    let pending = view.screen_of(&latkit::Row::new("graph", "Node", 3_u64));
+    let pending = view.screen_of(&latkit::Row::new("graph", "Node", 3_u64), None);
     let point = answer(&gpu, &mut view, pending).expect("in view");
     let c = SIZE as f32 / 2.0;
     assert!((point[0] - (c - 40.0)).abs() < 0.5 && (point[1] - (c - 30.0)).abs() < 0.5, "{point:?}");
-    let pending = view.screen_of(&latkit::Row::new("graph", "Node", 99_u64));
+    let pending = view.screen_of(&latkit::Row::new("graph", "Node", 99_u64), None);
     assert_eq!(answer(&gpu, &mut view, pending), None, "no such row");
 }
 
@@ -169,7 +169,7 @@ fn hidden_rows_have_no_screen_position() {
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     let mut screen_of = |table: &str, id: u64| {
-        let pending = view.screen_of(&latkit::Row::new("graph", table, id));
+        let pending = view.screen_of(&latkit::Row::new("graph", table, id), None);
         answer(&gpu, &mut view, pending)
     };
     let c = SIZE as f32 / 2.0;

@@ -76,6 +76,39 @@ fn bytes(color: [f32; 4]) -> [u8; 4] {
     color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
+/// `texels` with each color made lighter or darker, keeping its hue, until its contrast ratio with
+/// `background` is at least `ratio`, as WCAG measures it. A color goes toward white on a background
+/// that contrasts more with white, else toward black, as far as it must or can.
+pub(crate) fn legible(texels: &[[u8; 4]; 256], background: [f32; 4], ratio: f32) -> [[u8; 4]; 256] {
+    let ground = luminance(background);
+    let lighten = contrast(1.0, ground) >= contrast(0.0, ground);
+    let enough = |lab: [f32; 4]| contrast(luminance(srgb(lab)), ground) >= ratio;
+    texels.map(|texel| {
+        let lab = oklab(texel.map(|c| f32::from(c) / 255.0));
+        if enough(lab) {
+            return texel;
+        }
+        // Bisect the lightness between the color's, too little, and the far end's.
+        let [mut near, mut far] = [lab[0], if lighten { 1.0 } else { 0.0 }];
+        for _ in 0..20 {
+            let middle = f32::midpoint(near, far);
+            if enough([middle, lab[1], lab[2], lab[3]]) { far = middle } else { near = middle }
+        }
+        bytes(srgb([far, lab[1], lab[2], lab[3]]))
+    })
+}
+
+/// The relative luminance of a straight-alpha sRGB color, as WCAG defines it.
+fn luminance([r, g, b, _]: [f32; 4]) -> f32 {
+    let [r, g, b] = [r, g, b].map(|c| linear(c.clamp(0.0, 1.0)));
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// The WCAG contrast ratio between two relative luminances.
+fn contrast(a: f32, b: f32) -> f32 {
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
 /// An sRGB channel in linear light.
 fn linear(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
@@ -142,5 +175,15 @@ mod tests {
         assert_eq!(places([None, None].into_iter(), true), [0.0, 0.5]);
         let categories = texels(Spread::Categorical, &[(None, BLACK), (None, WHITE)]);
         assert_eq!(categories[..3], [[0, 0, 0, 255], [255, 255, 255, 255], [0, 0, 0, 255]]);
+    }
+
+    #[test]
+    fn legible_colors_keep_their_contrast_with_the_background() {
+        let ramp = texels(Spread::Continuous, &[(None, BLACK), (None, WHITE)]);
+        let dark = legible(&ramp, BLACK, 4.5);
+        let ratio = |texel: [u8; 4]| contrast(luminance(texel.map(|c| f32::from(c) / 255.0)), 0.0);
+        assert!(dark.iter().all(|&t| ratio(t) >= 4.45), "every color reads on black: {:?}", dark[0]);
+        assert_eq!(dark[255], ramp[255], "colors that already read are unchanged");
+        assert!(legible(&ramp, WHITE, 4.5)[255][0] < 120, "on white, light colors darken");
     }
 }

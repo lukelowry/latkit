@@ -11,7 +11,8 @@ import package::lib::bind::{eye, mark, word};
 import package::lib::state::{row_at, extra_at};
 import package::lib::read::missing_bits;
 import package::lib::label::{
-    Anchor, anchor, length_px, legibility, in_view, claims_room, claim_key, claimed, cells_of, cell, Cells,
+    Anchor, Chars, anchor, label_chars, char_at, run_size, length_px, legibility, in_view, claims_room, claim_key,
+    claimed, cells_of, cell, Cells,
 };
 import package::lib::drawn::drawn_row;
 
@@ -21,30 +22,42 @@ import package::lib::drawn::drawn_row;
 // The claim grid, cleared before `claim` runs.
 @group(2) @binding(14) var<storage, read_write> cells: array<atomic<u32>>;
 
-// A labeled row as the texts passes see it: its text code (NONE without a label to show), its
-// anchor, and its run table entry. The entry's words are both 0 until the text is set, and NONE
-// when it draws nothing.
+// The run table entry of `code`: its atlas corners, both 0 until its text is set, and NONE when it
+// draws nothing.
+fn run(code: u32) -> vec2u {
+    let at = mark.runs + 2u * code;
+    return vec2u(atomicLoad(&labels[at]), atomicLoad(&labels[at + 1u]));
+}
+
+// A labeled row as the texts passes see it: whether it has a label to show, its anchor, its texts,
+// whether all are set, and the size of those that are.
 struct Labeled {
-    code: u32,
+    shows: bool,
     a: Anchor,
-    uv0: u32,
-    uv1: u32,
+    chars: Chars,
+    ready: bool,
+    extent: vec2f,
 }
 
 fn labeled(i: u32) -> Labeled {
-    var l = Labeled(NONE, anchor(i), 0u, 0u);
+    var l: Labeled;
+    l.a = anchor(i);
     let drawn = drawn_row(i);
-    let code_bits = word(extra_at(drawn.row, mark.label + LABEL_CODE));
+    let bits = word(extra_at(drawn.row, mark.label + LABEL_CODE));
     let flags = word(row_at(drawn.row) + mark.stride - 1u);
-    if missing_bits(code_bits) || (flags & VISIBLE) == 0u || drawn.leaving || !l.a.shown {
+    if missing_bits(bits) || (flags & VISIBLE) == 0u || drawn.leaving || !l.a.shown {
         return l;
     }
-    let code = u32(bitcast<f32>(code_bits));
-    l.uv0 = atomicLoad(&labels[mark.runs + 2u * code]);
-    l.uv1 = atomicLoad(&labels[mark.runs + 2u * code + 1u]);
-    // A text that draws nothing, such as an empty one, gives no label.
-    if l.uv0 != NONE {
-        l.code = code;
+    l.chars = label_chars(bits);
+    l.ready = true;
+    let size = length_px(mark.label_size);
+    for (var k = 0u; k < l.chars.count; k++) {
+        let corners = run(char_at(l.chars, k));
+        l.ready = l.ready && any(corners != vec2u(0u));
+        // A text that draws nothing, such as an empty one, gives no label.
+        l.shows = l.shows || corners.x != NONE;
+        let s = run_size(corners, size);
+        l.extent = vec2f(l.extent.x + s.x, max(l.extent.y, s.y));
     }
     return l;
 }
@@ -86,10 +99,10 @@ fn claim(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let l = labeled(i);
-    if l.code == NONE || !claims_room(l.a) {
+    if !l.shows || !claims_room(l.a) {
         return;
     }
-    let c = cells_of(claimed(l.a, l.uv0, l.uv1, length_px(mark.label_size)));
+    let c = cells_of(claimed(l.a, l.ready, l.extent, length_px(mark.label_size)));
     let key = claim_key(i);
     for (var y = c.first.y; y <= c.last.y; y++) {
         for (var x = c.first.x; x <= c.last.x; x++) {
@@ -105,24 +118,30 @@ fn texts(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let l = labeled(i);
-    if l.code == NONE {
+    if !l.shows {
         return;
     }
     let size = length_px(mark.label_size);
-    let t = claimed(l.a, l.uv0, l.uv1, size);
-    if claims_room(l.a) && !keeps(cells_of(t), claim_key(i)) {
-        return;
-    }
-    if l.uv0 == 0u && l.uv1 == 0u {
-        // The atlas lacks this text. Ask for it if the label could show soon: legible and near the
-        // view.
+    let t = claimed(l.a, l.ready, l.extent, size);
+    let kept = !claims_room(l.a) || keeps(cells_of(t), claim_key(i));
+    if !l.ready {
+        // The atlas lacks some of its texts. Ask for them if the label could show soon: legible and
+        // near the view, and keeping its room unless its texts are a number's characters, which
+        // every row shares.
         let near = 0.25 * eye.size;
-        if legibility(size) > 0.0 && in_view(l.a.at - near, l.a.at + near) {
-            want(l.code);
+        if (kept || mark.number != NONE) && legibility(size) > 0.0 && in_view(l.a.at - near, l.a.at + near) {
+            for (var k = 0u; k < l.chars.count; k++) {
+                let code = char_at(l.chars, k);
+                if all(run(code) == vec2u(0u)) {
+                    want(code);
+                }
+            }
         }
         return;
     }
-    if in_view(t.lo, t.hi) {
-        seen(l.code);
+    if kept && in_view(t.lo, t.hi) {
+        for (var k = 0u; k < l.chars.count; k++) {
+            seen(char_at(l.chars, k));
+        }
     }
 }

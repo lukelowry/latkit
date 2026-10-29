@@ -25,6 +25,10 @@ export interface Areas extends MarkOptions {
   geometry?: string | null;
 }
 
+/** Which vertex rows `view.arrange` lays out. */
+export type Arrange =
+  /** The rows without a position. */ 'unplaced' | /** Every row, positions given or not. */ 'all';
+
 /** A plot axis. */
 export interface Axis {
   /** The axis title. */
@@ -183,6 +187,10 @@ export type CallNode =
       or: [ExprInput, ExprInput];
     }
   | {
+      /** The first value, or the second where the first is missing. */
+      fallback: [ExprInput, ExprInput];
+    }
+  | {
       /** Whether a text field equals the plain text exactly. */
       is: [field: ExprInput, text: string];
     }
@@ -289,10 +297,10 @@ export interface ColormapNode {
   /** The value mapped. A categorical map takes each value's integer part as its category. */
   value: ExprInput;
   /**
-   * The values mapped to the colormap's ends. Defaults to the extent of the values shown. A
-   * categorical map ignores it.
+   * The values mapped to the colormap's ends, or `all` for every value a field holds, in every frame
+   * of a sampled field. Defaults to the extent of the values shown. A categorical map ignores it.
    */
-  domain?: [low: number, high: number] | null;
+  domain?: [low: number, high: number] | 'all';
 }
 
 /**
@@ -354,6 +362,11 @@ export type Controls =
        * the pointer, nearest first. This lets overlapping rows each be selected. Defaults to `false`.
        */
       cycle?: boolean;
+      /**
+       * Whether clicking or dragging across a plot moves the coordinate shown to the pointer, instead of
+       * panning. Moves are reported as a `'at'` event. Defaults to `false`.
+       */
+      scrub?: boolean;
       /**
        * How many seconds a touch or pen must hold still to request a menu (a `'menu'` event), like the
        * secondary button. 0 turns this off. Defaults to 0.5.
@@ -467,8 +480,9 @@ export interface EarthTheme {
 /** Defaults for edges, and how parallel edges and arrowheads look. */
 export interface EdgeTheme {
   /**
-   * The edge color. `null` blends the colors of each edge's two vertices. With `null`, a diagram's
-   * wires and edges without `ends` (nets and poles) use the text color.
+   * The edge color. `null` blends the colors of each edge's two vertices, also for rows whose own
+   * color is missing. With `null`, a diagram's wires and edges without `ends` (nets and poles) use
+   * the text color.
    */
   color?: Color | null;
   /** The edge width, in the space's unit. */
@@ -599,7 +613,14 @@ export type Fit =
       rows: Rows[];
     }
   | {
-      /** Brings this row into view, keeping the zoom. */
+      /** Every row of these tables, each `[data, table]`. */
+      tables: TableInput[];
+    }
+  | {
+      /**
+       * Brings this row into view, keeping the zoom. Asked for while another fit is due, it follows that
+       * fit.
+       */
       reveal: Row;
     }
   | {
@@ -649,7 +670,7 @@ export interface FocusTheme {
   grow?: number;
 }
 
-/** How an axis formats its tick values. */
+/** How an axis writes its tick values, or a label its number. */
 export type Format =
   | /** Fixed decimals, scientific past a million or below a ten-thousandth. */ 'auto'
   | /** Fixed decimals: `1500.0`. */ 'fixed'
@@ -704,8 +725,8 @@ export type Interpolation =
 
 /**
  * Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
- * field, or options. A label shows when its row is visible and its text fits, for example inside a
- * block.
+ * field, a number, or options. A label shows when its row is visible and its text fits, for
+ * example inside a block.
  *
  * Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
  * its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
@@ -717,9 +738,10 @@ export type Label =
   | ExprInput
   | {
       /**
-       * The text field to show, or a `when` that returns that field or missing. A row whose text is
-       * missing or empty has no label. In a diagram, the text may read only data, since the sheet sizes
-       * blocks around it.
+       * The text field to show, a number to write, or a `when` that returns either or missing. A row
+       * whose text is missing or empty has no label. The GPU writes a number each frame, so it can
+       * follow a sampled field. In a diagram, a text may read only data, since the sheet sizes blocks
+       * around it, and a number shows where it fits its block.
        */
       text: ExprInput;
       /** Font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's `text.size`. */
@@ -730,6 +752,15 @@ export type Label =
       maxWidth?: number | null;
       /** The CSS font family list for the text. Defaults to the theme's `text.font`. */
       font?: string | null;
+      /** How a number is written, as an axis writes its ticks. Defaults to `auto`. */
+      format?: Format;
+      /**
+       * Decimal places of a number, or of the significand in scientific and engineering formats. At most
+       * 7. Defaults to at most 2, without trailing zeros.
+       */
+      precision?: number | null;
+      /** Text written after a number, such as `" kV"` or `"%"`. */
+      unit?: string | null;
     };
 
 /**
@@ -1065,8 +1096,11 @@ export interface ScaleNode {
   scale: [low: number, high: number];
   /** The value mapped. */
   value: ExprInput;
-  /** The values mapped to the range's ends. Defaults to the extent of the values shown. */
-  domain?: [low: number, high: number] | null;
+  /**
+   * The values mapped to the range's ends, or `all` for every value a field holds, in every frame of
+   * a sampled field. Defaults to the extent of the values shown.
+   */
+  domain?: [low: number, high: number] | 'all';
 }
 
 /**
@@ -1230,6 +1264,12 @@ export type Theme =
       gridSpacing?: number;
       /** The color a colormap gives a missing value, such as a row with no value in the field. */
       missing?: Color;
+      /**
+       * The least contrast ratio with the background, as WCAG measures it, that colormap colors keep. A
+       * color with less is made lighter or darker, keeping its hue. Defaults to 1, which changes no
+       * color. 3 is WCAG's minimum for graphics.
+       */
+      contrast?: number;
       /** The dash period: one dash and one gap of equal length. */
       dash?: number;
       /** How much faces darken as they turn away from the camera, from 0 to 1. */

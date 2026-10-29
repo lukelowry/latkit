@@ -58,7 +58,7 @@ fn located(gpu: &latkit::Gpu, view: &mut View, count: u64) -> Vec<[f64; 2]> {
     };
     (1..=count)
         .map(|id| {
-            let pending = view.screen_of(&Row::new("graph", "Node", id));
+            let pending = view.screen_of(&Row::new("graph", "Node", id), None);
             answer(gpu, view, pending).map_or([f64::NAN; 2], projected)
         })
         .collect()
@@ -200,7 +200,7 @@ fn rows_added_later_move_nothing_else() {
     }
     assert!(after[4][0] > after[2][0], "the new node is placed after node 3: {after:?}");
     // Arranging lays out every row again, and its patch writes the positions into the data.
-    let pending = view.arrange();
+    let pending = view.arrange(latkit::Arrange::Unplaced);
     let patches = answer(&gpu, &mut view, pending);
     frame(&gpu, &mut view);
     let arranged = located(&gpu, &mut view, 5);
@@ -215,6 +215,14 @@ fn rows_added_later_move_nothing_else() {
     for k in 0..5 {
         assert!(apart(arranged[k], pinned[k]) < 0.5, "node {} stays put: {arranged:?} → {pinned:?}", k + 1);
     }
+    // Arranging all lays out rows with positions too.
+    data.apply(Table::new("Node", vec![1_u64]).field("x", vec![5000.0])).expect("valid");
+    let pending = view.arrange(latkit::Arrange::All);
+    for patch in answer(&gpu, &mut view, pending) {
+        data.apply(patch).expect("valid");
+    }
+    let x = data.snapshot().get("Node", 1_u64, "x", None);
+    assert!(matches!(x, Some(latkit::Value::Number(x)) if x < 1000.0), "node 1 laid out again: {x:?}");
     assert_eq!(errors(&mut view), Vec::new());
 }
 
@@ -275,7 +283,7 @@ fn a_fit_on_a_plane_frames_the_places_its_layout_gives() {
     settle(&gpu, &mut view);
     let size = common::SIZE as f32;
     for id in [0_u64, 500, 1000, 1500] {
-        let pending = view.screen_of(&Row::new("graph", "Node", id));
+        let pending = view.screen_of(&Row::new("graph", "Node", id), None);
         let p = answer(&gpu, &mut view, pending).expect("on screen");
         assert!(p.iter().all(|v| (0.0..=size).contains(v)), "node {id} in view: {p:?}");
     }

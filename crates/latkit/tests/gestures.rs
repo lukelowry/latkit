@@ -1,8 +1,9 @@
 //! Interaction events. A secondary click, or a touch held still, requests a menu of the rows under
 //! it. Dragging from a port connects to the vertex it is released over, and dragging an edge
-//! detaches its nearer end. A dragged row keeps its grab point under the pointer. A double click
-//! opens the row it hits, clicking again cycles through the rows under the point, and Delete
-//! reports the selection. Keys can step through rows too.
+//! detaches its nearer end. A dragged row keeps its grab point under the pointer, and the drag's
+//! patch moves it there. Scrubbing a plot moves the coordinate shown. A double click opens the row
+//! it hits, clicking again cycles through the rows under the point, and Delete reports the
+//! selection. Keys can step through rows too.
 //!
 //! Hover is reported whether or not it glows, and follows the frame. A lit row keeps its ports on
 //! top. Setters emit no events. A scene's first frame requests every pipeline its input can use.
@@ -144,10 +145,12 @@ fn dragging_from_a_port_connects() {
     assert_eq!(from, End { row: Row::new("graph", "Node", 1_u64), port: Some("net".into()) });
     assert_eq!(to.map(|t| t.row), Some(Row::new("graph", "Node", 2_u64)));
     assert_eq!(edge, None);
+    let located = pollster::block_on(view.screen_of(&from.row, Some("net"))).expect("an answer");
+    assert!(located.is_some_and(|[x, y]| (x - port[0]).hypot(y - port[1]) < 0.5), "the port at {located:?}");
 }
 
 #[test]
-fn a_dragged_row_keeps_its_grab_point_under_the_pointer() {
+fn a_dragged_row_keeps_its_grab_point_under_the_pointer_and_its_patch_moves_it() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(Table::new("Node", vec![1_u64]).field("x", vec![-40.0]).field("y", vec![0.0])).expect("valid");
@@ -161,11 +164,30 @@ fn a_dragged_row_keeps_its_grab_point_under_the_pointer() {
     // Grabbed 5 units right of its center, then moved 30 right and 20 down (y points down).
     let grab = [C - 35.0, C];
     let inputs = [moved(grab), down(grab, Button::Primary), moved([C - 25.0, C + 10.0]), moved([C - 5.0, C + 20.0])];
-    let dragged =
-        |e: &Event| if let Event::Drag { phase: Phase::Move, position, .. } = e { Some(*position) } else { None };
-    let position = after(&gpu, &mut view, &inputs, dragged);
+    let dragged = |e: &Event| match e {
+        Event::Drag { phase: Phase::Move, position, patch, .. } => Some((*position, patch.clone())),
+        _ => None,
+    };
+    let (position, patch) = after(&gpu, &mut view, &inputs, dragged);
     let off = (position[0] + 10.0).hypot(position[1] - 20.0);
     assert!(off < 0.5, "the grab point stays under the pointer: {position:?}");
+    data.apply(patch.expect("a patch of the position fields")).expect("valid");
+    assert_eq!(data.snapshot().get("Node", 1_u64, "x", None), Some(latkit::Value::Number(position[0])));
+}
+
+#[test]
+fn scrubbing_a_plot_moves_the_coordinate_shown() {
+    let Some(gpu) = gpu() else { return };
+    let controls = Controls { scrub: true, ..Controls::default() };
+    let mut view =
+        View::new(&gpu, Scene::new(latkit::Plot::default()).theme(plain_theme()).controls(controls)).expect("valid");
+    view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
+    frame(&gpu, &mut view);
+    let seek = |e: &Event| if let Event::At(at) = e { Some(*at) } else { None };
+    let clicked = after(&gpu, &mut view, &[moved([C, C]), down([C, C], Button::Primary), up([C, C])], seek);
+    let dragged = [down([C, C], Button::Primary), moved([C + 20.0, C]), moved([C + 40.0, C]), up([C + 40.0, C])];
+    let scrubbed = after(&gpu, &mut view, &dragged, seek);
+    assert!(scrubbed > clicked && view.at() == scrubbed, "clicked at {clicked}, then scrubbed to {scrubbed}");
 }
 
 #[test]

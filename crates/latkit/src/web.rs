@@ -187,6 +187,14 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
         let views = f.views.iter().filter_map(|v| v.upgrade().map(PageView)).collect::<Vec<_>>();
         (f.gpu.clone(), canvases, views)
     };
+    // A lost device draws nothing. Each view reports the loss, so the page can replace the device.
+    if gpu.lost() {
+        for view in &views {
+            view.0.borrow_mut().view.tell_lost();
+            view.dispatch();
+        }
+        return;
+    }
     let reduced = frames.borrow().reduced.as_ref().is_some_and(|(query, _)| query.matches());
     for view in &views {
         view.0.borrow_mut().view.set_reduced_motion(reduced);

@@ -339,10 +339,19 @@ impl Camera {
     }
 
     /// The camera framing the box `min..max` of positions inside `area` with 24 CSS pixels of
-    /// padding, looking at the box's middle and keeping pitch and bearing.
-    pub(crate) fn framing(&self, space: &Space, min: [f64; 3], max: [f64; 3], size: [f64; 2], area: Area) -> Camera {
-        const PADDING: f64 = 24.0;
-        let room = [(area[2] - area[0] - 2.0 * PADDING).max(1.0), (area[3] - area[1] - 2.0 * PADDING).max(1.0)];
+    /// padding beyond a `margin` of CSS pixels, looking at the box's middle and keeping pitch and
+    /// bearing.
+    pub(crate) fn framing(
+        &self,
+        space: &Space,
+        min: [f64; 3],
+        max: [f64; 3],
+        size: [f64; 2],
+        area: Area,
+        margin: f64,
+    ) -> Camera {
+        let padding = 24.0 + margin;
+        let room = [(area[2] - area[0] - 2.0 * padding).max(1.0), (area[3] - area[1] - 2.0 * padding).max(1.0)];
         let (pitch, bearing) = match *self {
             Camera::Map { pitch, bearing, .. } => (pitch.clamp(0.0, MAX_PITCH), bearing),
             Camera::Plot { .. } => (0.0, 0.0),
@@ -368,7 +377,7 @@ impl Camera {
             Space::Plot(_) => {
                 let pad = |lo: f64, hi: f64, px: f64| {
                     let span = (hi - lo).max(1e-9);
-                    let extra = span * PADDING / px.max(1.0);
+                    let extra = span * padding / px.max(1.0);
                     [lo - extra, hi + extra]
                 };
                 let x = if max[0] > min[0] { [min[0], max[0]] } else { [min[0] - 0.5, min[0] + 0.5] };
@@ -784,7 +793,7 @@ mod tests {
     fn framing_fits_a_tilted_box_and_looks_at_its_middle() {
         let camera = Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 58.0, bearing: 30.0 };
         let (min, max) = ([-4.0, -4.0, 0.0], [4.0, 4.0, 2.4]);
-        let framed = camera.framing(&plane(), min, max, SIZE, AREA);
+        let framed = camera.framing(&plane(), min, max, SIZE, AREA, 0.0);
         let Camera::Map { center, .. } = framed else { panic!("a map camera") };
         assert_eq!(center, [0.0, 0.0, 1.2], "turns about the box's middle");
         let view = Projected::new(&plane(), &framed, SIZE, AREA, 0.0);
@@ -960,17 +969,18 @@ mod tests {
         let area = [0.0, 0.0, SIZE[0], SIZE[1]];
         let start = Camera::Map { center: [0.0; 3], zoom: 1.5, pitch: 0.0, bearing: 0.0 };
         let Camera::Map { zoom, .. } =
-            start.framing(&Space::Diagram(Diagram::default()), [0.0; 3], [10.0, 10.0, 0.0], SIZE, area)
+            start.framing(&Space::Diagram(Diagram::default()), [0.0; 3], [10.0, 10.0, 0.0], SIZE, area, 0.0)
         else {
             panic!("a map camera")
         };
         assert_eq!(zoom, 0.0, "a small diagram frames at its natural size");
-        let Camera::Map { zoom, center, .. } = start.framing(&flat(), [10.0, 20.0, 0.0], [10.0, 20.0, 0.0], SIZE, area)
+        let Camera::Map { zoom, center, .. } =
+            start.framing(&flat(), [10.0, 20.0, 0.0], [10.0, 20.0, 0.0], SIZE, area, 0.0)
         else {
             panic!("a map camera")
         };
         assert_eq!((zoom, center), (16.0, [10.0, 20.0, 0.0]), "one point on the earth frames at street scale");
-        let Camera::Map { zoom, .. } = start.framing(&plane(), [1.0; 3], [1.0; 3], SIZE, area) else {
+        let Camera::Map { zoom, .. } = start.framing(&plane(), [1.0; 3], [1.0; 3], SIZE, area, 0.0) else {
             panic!("a map camera")
         };
         assert_eq!(zoom, 1.5, "a plane has no natural scale, so a point keeps the zoom");

@@ -818,7 +818,9 @@ mod tests {
         let bytes = tile.to_bytes();
         assert_eq!(Patch::from_bytes(&bytes).expect("decodes").to_bytes(), bytes);
         data.apply(tile.clone()).expect("tiles");
-        assert!(data.apply(tile).is_err(), "entries already present are refused");
+        let middle = Patch::new().frames("Bus", "vm", 0, 200, [200.0], [1.0, 1.0, 1.0]);
+        assert!(data.apply(middle).is_err(), "entries before a level's last are refused");
+        data.apply(tile).expect("a level's last entries are written again");
         let data = data.snapshot();
         let back = Snapshot::from_bytes(&data.to_bytes()).expect("decodes");
         assert_eq!(back.to_bytes(), data.to_bytes());

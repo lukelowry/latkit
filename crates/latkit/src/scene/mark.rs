@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::{Areas, Edges, Faces, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Error, Expr, Name, Result, Size, Space};
+use crate::{Error, Expr, Format, Name, Result, Size, Space};
 
 /// One table a scene draws. In JSON, the mark's kind is the key that holds its dataset and table,
 /// next to its options: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
@@ -145,7 +145,7 @@ impl Stroke {
     /// Compiles the dash, flow, and width channels. A width is in the space's unit unless it names
     /// its own unit. The theme's width is always in the space's unit.
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords, diagram: bool) -> Result<()> {
-        c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH })?;
+        c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH, unset: false })?;
         c.channel("flow", &self.flow, Store::Number { word: words.flow, fallback: None })?;
         let width = |units| Store::Size { word: words.width, units, fallback: Some(words.theme_width) };
         match &self.width {
@@ -348,6 +348,8 @@ pub(crate) struct Labeling {
     pub(crate) max_width: Option<f32>,
     /// The label's font, or the theme's when the label sets none.
     pub(crate) font: std::sync::Arc<str>,
+    /// For a label that writes numbers, its mark's `number` word and its unit.
+    pub(crate) number: Option<(u32, Option<Arc<str>>)>,
 }
 
 /// The context a mark compiles in: the theme it falls back on, the space, and the layout.
@@ -553,6 +555,23 @@ impl Mark {
         }
     }
 
+    /// The datasets besides its own whose tables its options read.
+    pub(crate) fn joins(&self) -> Vec<Name> {
+        let own = &self.style().data;
+        let mut joins: Vec<Name> = Vec::new();
+        self.for_each_expr(&mut |expr| {
+            expr.for_each_field(&mut |field| {
+                if let Some((data, _)) = &field.from
+                    && data != own
+                    && !joins.contains(data)
+                {
+                    joins.push(data.clone());
+                }
+            });
+        });
+        joins
+    }
+
     /// The key that identifies this mark across scenes. An unnamed line mark is keyed by the field
     /// it draws.
     pub(crate) fn key(&self) -> Key {
@@ -590,15 +609,16 @@ impl Mark {
                 Mark::Vertices(_) if context.diagram() => Some(crate::sheet::shown_label(style.name.as_ref())),
                 _ => None,
             };
-            compile_label(label, shown, compiler, context, &mut drawing).map_err(|e| e.at("label"))?;
+            compiler.within("label", |c| compile_label(label, shown, c, context, &mut drawing))?;
         }
         Ok(drawing)
     }
 }
 
-/// Compiles `label`'s text and color into extra words after the mark's own. In a diagram the text
-/// reads only data, since the sheet sizes blocks around it, and a vertex mark shows the text the
-/// sheet cut to fit, from derived field `shown`.
+/// Compiles `label`'s text or number and color into extra words after the mark's own. In a diagram
+/// a text reads only data, since the sheet sizes blocks around it, and a vertex mark shows the text
+/// the sheet cut to fit, from derived field `shown`. A number is written on the GPU. A text or
+/// number that does not fit the data shows no label.
 fn compile_label(
     label: &Label,
     shown: Option<Name>,
@@ -606,19 +626,38 @@ fn compile_label(
     context: Context<'_>,
     drawing: &mut Drawing,
 ) -> Result<()> {
-    if context.diagram() {
-        c.check_structure("text", [&label.text])?;
-    }
     let theme = context.theme;
     let extra = drawing.extras;
     let word = |k: u32| drawing.kind.stride() + extra + k;
-    let column = match shown {
-        Some(shown) => {
-            c.text_of("text", &label.text)?;
-            c.derived_text("text", shown, word(wgsl::LABEL_CODE))?
+    let code = word(wgsl::LABEL_CODE);
+    let number = c.writes_number(&label.text).then(|| {
+        let format = match label.format {
+            Format::Auto => wgsl::FORMAT_AUTO,
+            Format::Fixed => wgsl::FORMAT_FIXED,
+            Format::Scientific => wgsl::FORMAT_SCIENTIFIC,
+            Format::Engineering => wgsl::FORMAT_ENGINEERING,
+        };
+        let places = label.precision.map_or(wgsl::NUMBER_TRIM, |p| u32::from(p.min(7)) << 2);
+        let unit = if label.unit.is_some() { wgsl::NUMBER_UNIT } else { 0 };
+        (format | places | unit, label.unit.clone())
+    });
+    let text = |c: &mut Compiler<'_>| {
+        if number.is_some() {
+            c.number("text", &label.text, code)?;
+            return Ok(wgsl::NONE);
         }
-        None => c.text("text", &label.text, word(wgsl::LABEL_CODE))?,
+        if context.diagram() {
+            c.check_structure("text", [&label.text])?;
+        }
+        match shown {
+            Some(shown) => {
+                c.text_of("text", &label.text)?;
+                c.derived_text("text", shown, code)
+            }
+            None => c.text("text", &label.text, code),
+        }
     };
+    let Some(column) = c.option(text) else { return Ok(()) };
     let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
     match &label.color {
         Some(expr) => c.channel("color", expr, color)?,
@@ -632,6 +671,7 @@ fn compile_label(
         size: label.size.unwrap_or(theme.text.size),
         max_width: label.max_width,
         font: label.font.clone().unwrap_or_else(|| theme.text.font.clone()),
+        number,
     });
     Ok(())
 }

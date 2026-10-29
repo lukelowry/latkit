@@ -92,10 +92,11 @@ pub(crate) enum Unary {
 }
 
 /// An operation on two values: arithmetic, `min` and `max`, comparisons (1 for true, 0 for
-/// false), and logic. `rem` is a floored remainder, which takes the sign of the divisor. `and` and
-/// `or` treat values above 0.5 as true.
+/// false), logic, and a fallback for missing values. `rem` is a floored remainder, which takes the
+/// sign of the divisor. `and` and `or` treat values above 0.5 as true.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Binary {
+    Fallback,
     Add,
     Sub,
     Mul,
@@ -119,6 +120,8 @@ pub(crate) enum Domain {
     /// Fitted to the extent of the values shown, computed by a reduction on the GPU.
     Fit,
     Fixed([f64; 2]),
+    /// The extent of every value the input field holds, in every frame of a sampled field.
+    All,
 }
 
 pub(crate) fn node(node: Node) -> Expr {
@@ -185,6 +188,27 @@ pub fn px(size: impl Into<Expr>) -> Size {
     Size { expr: size.into(), unit: Some(Unit::Px), px: Size::ANY }
 }
 
+/// A length given in meters, in degrees of arc: the earth's unit for positions, elevations, and
+/// sizes in [`units`]. A degree is 111,194.93 meters on a sphere of the earth's mean radius.
+pub fn meters(length: impl Into<Expr>) -> Expr {
+    length.into() / 111_194.93
+}
+
+/// How an axis writes its tick values, or a label its number.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Format {
+    /// Fixed decimals, scientific past a million or below a ten-thousandth.
+    #[default]
+    Auto,
+    /// Fixed decimals: `1500.0`.
+    Fixed,
+    /// A significand and a power of ten: `1.5e3`.
+    Scientific,
+    /// A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`.
+    Engineering,
+}
+
 macro_rules! unary {
     ($($(#[$doc:meta])* $name:ident => $op:ident),* $(,)?) => {$(
         $(#[$doc])*
@@ -247,6 +271,8 @@ impl Expr {
         eq => Eq,
         /// Whether the value differs from `other`.
         ne => Ne,
+        /// The value, or `other` where the value is missing. Numbers and colors both work.
+        fallback => Fallback,
     );
 
     /// The value clamped to `low..=high`.
@@ -404,14 +430,22 @@ impl Mapped {
     /// Sets the input values that map to the ends of the range or colormap.
     #[must_use]
     pub fn domain(self, domain: RangeInclusive<f64>) -> Mapped {
-        let fixed = Domain::Fixed([*domain.start(), *domain.end()]);
+        self.with_domain(Domain::Fixed([*domain.start(), *domain.end()]))
+    }
+
+    /// Sets the domain to the extent of every value the input field holds, in every frame of a
+    /// sampled field, so colors stay put as the shown coordinate moves. The input must be a field.
+    #[must_use]
+    pub fn domain_all(self) -> Mapped {
+        self.with_domain(Domain::All)
+    }
+
+    fn with_domain(self, domain: Domain) -> Mapped {
         Mapped(match &*self.0.0 {
             Node::Colormap { input, colormap, .. } => {
-                node(Node::Colormap { input: input.clone(), colormap: colormap.clone(), domain: fixed })
+                node(Node::Colormap { input: input.clone(), colormap: colormap.clone(), domain })
             }
-            Node::Scale { input, range, .. } => {
-                node(Node::Scale { input: input.clone(), domain: fixed, range: *range })
-            }
+            Node::Scale { input, range, .. } => node(Node::Scale { input: input.clone(), domain, range: *range }),
             _ => unreachable!("a mapped value is a colormap or a scale"),
         })
     }

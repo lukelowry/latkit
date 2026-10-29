@@ -2,15 +2,15 @@
 //!
 //! An intent asks the application to act: a click, open, menu, drag, connection, or deletion. Each
 //! is reported once, in the order the user acted. A change reports that view state changed and is
-//! named after that state: `hovered`, `selection`, `camera`, `waiting`. Only the latest change of
-//! each is reported, and the state can always be read, so a late listener can catch up. A view
-//! reports only what the application did not do itself. Its setters change state silently.
+//! named after that state: `hovered`, `selection`, `camera`, `at`, `waiting`. Only the latest
+//! change of each is reported, and the state can always be read, so a late listener can catch up.
+//! A view reports only what the application did not do itself. Its setters change state silently.
 
 use std::collections::VecDeque;
 
 use super::Camera;
 use super::input::{Device, Modifiers};
-use crate::{Error, Name, Pending, Row, Rows};
+use crate::{Error, Name, Patch, Pending, Row, Rows};
 
 /// Something that happened in a view, as [`View::events`](crate::View::events) reports it.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
@@ -52,6 +52,10 @@ pub enum Event {
         /// pointer since the press, at the depth where the drag started, so a vertex keeps its
         /// offset from the pointer. Snapped to a diagram's grid dots when the grid snaps.
         position: [f64; 3],
+        /// The patch that moves the row there, by writing its mark's position fields or point
+        /// geometry. `None` when its position is not a pair of fields.
+        #[schemars(with = "Option<Vec<u8>>", extend("tsType" = "Patch"))]
+        patch: Option<Patch>,
         /// The pointer.
         trigger: Trigger,
     },
@@ -93,6 +97,9 @@ pub enum Event {
     /// orbit moved it, or it moved back within its zoom and pan limits after the view's size,
     /// insets, or space changed.
     Camera(Camera),
+    /// The axis coordinate shown changed: [`View::at`](crate::View::at). A press on a plot with
+    /// [`Controls::scrub`](crate::Controls) on moved it.
+    At(f64),
     /// The work the last frame waited on changed: [`View::waiting`](crate::View::waiting). Empty
     /// once frames are complete.
     Waiting(Waiting),
@@ -133,9 +140,10 @@ impl Event {
         match (self, older) {
             (Event::Drag { phase: Phase::Move, .. }, Event::Drag { phase: Phase::Move, .. }) => true,
             (Event::Error(error), Event::Error(old)) => error == old,
-            (Event::Hovered { .. } | Event::Selection { .. } | Event::Camera(_) | Event::Waiting(_), _) => {
-                std::mem::discriminant(self) == std::mem::discriminant(older)
-            }
+            (
+                Event::Hovered { .. } | Event::Selection { .. } | Event::Camera(_) | Event::At(_) | Event::Waiting(_),
+                _,
+            ) => std::mem::discriminant(self) == std::mem::discriminant(older),
             _ => false,
         }
     }
@@ -302,7 +310,10 @@ pub enum Fit {
     All,
     /// These rows.
     Rows(Vec<Rows>),
-    /// Brings this row into view, keeping the zoom.
+    /// Every row of these tables, each `[data, table]`.
+    Tables(#[schemars(extend("tsType" = "TableInput[]"))] Vec<(Name, Name)>),
+    /// Brings this row into view, keeping the zoom. Asked for while another fit is due, it follows
+    /// that fit.
     Reveal(Row),
     /// The box from `min` to `max`: x, y, and elevation.
     Bounds {
@@ -311,6 +322,17 @@ pub enum Fit {
         /// The maximum corner.
         max: [f64; 3],
     },
+}
+
+/// Which vertex rows [`View::arrange`](crate::View::arrange) lays out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Arrange {
+    /// The rows without a position.
+    #[default]
+    Unplaced,
+    /// Every row, positions given or not.
+    All,
 }
 
 /// The cursor a view wants shown over it.

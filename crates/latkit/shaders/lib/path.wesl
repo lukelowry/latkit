@@ -8,7 +8,7 @@
 import package::lib::types::{
     NONE, VISIBLE, PLACED, DASH, ENDS_COLOR, GEODESIC, STEP_BEFORE, STEP_AFTER, MARK_EDGES, PATH_ENDS, PATH_TRACE,
     PATH_GEOMETRY, PATH_POLES, EDGE_WIDTH, LINE_WIDTH, GEODESIC_STEP, OWN_HEIGHT, TRIANGLES, MAX_PIECES, BOW_PIECES,
-    MISSING, FAMILY_LANES,
+    MISSING, MISSING_COLOR, FAMILY_LANES,
 };
 import package::lib::bind::{frame, eye, mark, focused};
 import package::lib::state::{row_at, edge_at, line_at, end_vertex, same_vertex, Vertex};
@@ -65,7 +65,8 @@ struct PathPoint {
     ahead: bool,
 }
 
-// How a row's path is stroked, including its comets' flow and how far they have traveled.
+// How a row's path is stroked, including its comets' flow and how far they have traveled, and
+// whether its color blends the colors of its ends.
 struct Style {
     width: f32,
     color: vec4f,
@@ -73,6 +74,7 @@ struct Style {
     travel: f32,
     dash: bool,
     shown: bool,
+    blends: bool,
 }
 
 // A segment on screen: its end points, its ends in CSS pixels and in clip space, whether it shows,
@@ -549,8 +551,10 @@ fn stroke_style(row: u32) -> Style {
     if mark.kind == MARK_EDGES {
         let e = edge_at(row_at(row));
         s.width = clamp(px(e.width, EDGE_WIDTH), mark.size_min, mark.size_max) * growth(e.flags);
-        // An edge colored by its ends gets their colors in the draw. Here it only fades.
-        s.color = select(unpack4x8unorm(e.color), vec4f(1.0), ends_colored());
+        // An edge of a mark colored by its ends, whose color is missing, gets their colors in the
+        // draw. Here it only fades.
+        s.blends = ends_colored() && e.color == MISSING_COLOR;
+        s.color = select(unpack4x8unorm(e.color), vec4f(1.0), s.blends);
         s.color.a *= faded(row, e.flags);
         s.flow = e.flow;
         s.travel = e.travel;

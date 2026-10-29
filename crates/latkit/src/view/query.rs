@@ -131,19 +131,52 @@ impl View {
         answer
     }
 
-    /// Where `row` lies on screen, in CSS pixels from the top left, as the next frames draw it.
-    /// `None` when no mark draws it in view. A diagram's vertices resolve at once from its sheet.
-    pub fn screen_of(&mut self, row: &Row) -> Pending<Option<[f32; 2]>> {
+    /// Where `row` lies on screen, or its port whose reference field is `port`, in CSS pixels from
+    /// the top left, as the next frames draw it. `None` when no mark draws it in view, or it has no
+    /// such port. A diagram's vertices and ports resolve at once from its sheet. Only a diagram has
+    /// ports.
+    pub fn screen_of(&mut self, row: &Row, port: Option<&str>) -> Pending<Option<[f32; 2]>> {
         let diagram = matches!(self.scene.space, crate::Space::Diagram(_));
         if let Some(b) = self.derived.sheet.bounds(row).filter(|_| diagram) {
             let view = self.projected();
-            let center = [b[0].midpoint(b[2]), b[1].midpoint(b[3]), 0.0];
-            return Pending::ready(Ok(view.screen(view.world(center)).map(|s| [s[0] as f32, s[1] as f32])));
+            let center = [b[0].midpoint(b[2]), b[1].midpoint(b[3])];
+            let at = match port {
+                None => Some(center),
+                Some(port) => self
+                    .port_offset(row, port, [(b[2] - b[0]) / 2.0, (b[3] - b[1]) / 2.0])
+                    .map(|o| [center[0] + o[0], center[1] + o[1]]),
+            };
+            let screen = at.and_then(|[x, y]| view.screen(view.world([x, y, 0.0])));
+            return Pending::ready(Ok(screen.map(|s| [s[0] as f32, s[1] as f32])));
+        }
+        if port.is_some() {
+            return Pending::ready(Ok(None));
         }
         let (answer, reply) = Pending::new();
         self.queries.waiting.push_back(Ask::Locate { row: row.clone(), reply });
         self.wake();
         answer
+    }
+
+    /// Where port `port` of diagram vertex `row`, whose box is `half` units each way from its middle,
+    /// sits from that middle, in units with y down. `None` if no vertex mark of its table has the
+    /// port.
+    fn port_offset(&self, row: &Row, port: &str, half: [f64; 2]) -> Option<[f64; 2]> {
+        let (i, k) = self.marks.iter().enumerate().find_map(|(i, shown)| match &shown.mark {
+            crate::Mark::Vertices(v) if v.style.data == row.data && v.style.table == row.table => {
+                Some((i, v.ports.iter().position(|(reference, _)| reference.as_str() == port)?))
+            }
+            _ => None,
+        })?;
+        // A port code holds its side, then its index among the ports on that side and their count.
+        let code = *self.port_codes(i).get(k)?;
+        let along = f64::from(((code >> 2) & 255) + 1) / f64::from(((code >> 10) & 255) + 1) * 2.0 - 1.0;
+        Some(match code & 3 {
+            wgsl::SIDE_LEFT => [-half[0], along * half[1]],
+            wgsl::SIDE_RIGHT => [half[0], along * half[1]],
+            wgsl::SIDE_TOP => [along * half[0], -half[1]],
+            _ => [along * half[0], half[1]],
+        })
     }
 
     /// Selects every row in the box between two screen points, with `trigger` as the cause.

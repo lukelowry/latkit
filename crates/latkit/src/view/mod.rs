@@ -38,7 +38,7 @@ use std::time::Duration;
 
 pub use camera::Camera;
 pub(crate) use camera::Projected;
-pub use event::{Cursor, End, Event, Fit, Hit, Phase, Sample, Stats, Trigger, Waiting};
+pub use event::{Arrange, Cursor, End, Event, Fit, Hit, Phase, Sample, Stats, Trigger, Waiting};
 pub use input::{Button, Device, Input, Key, Modifiers};
 pub(crate) use resources::DEPTH;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
@@ -172,6 +172,8 @@ pub struct View {
     texting: Option<u64>,
     /// Callers waiting for the arrangement in progress.
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
+    /// Callers waiting for a complete frame.
+    completing: Vec<crate::Resolver<()>>,
     /// Whether the platform requests reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
     /// The stamp of the inputs the face normals were last summed from.
@@ -245,6 +247,7 @@ impl View {
             answering: None,
             texting: None,
             arranging: Vec::new(),
+            completing: Vec::new(),
             reduced_motion: false,
             normals: Derived::default(),
             timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
@@ -266,8 +269,27 @@ impl View {
         // compile once this view's draw pipelines are ready.
         #[cfg(all(feature = "web", target_arch = "wasm32"))]
         gpu.warm();
-        // Until its first frame, the view reports all the work that frame would wait on.
-        view.waiting = view.under_way();
+        // Until its first frame, the view reports all the work that frame would wait on, including
+        // its pipelines, which only a frame checks.
+        view.waiting = Waiting { compiling: true, ..view.under_way() };
+        Ok(view)
+    }
+
+    /// A view drawing the same scene and sources with `gpu`, with the same camera (or fit not yet
+    /// applied), coordinate, insets, orbit, and selection, as when this view's device was lost. Its
+    /// pending answers stay with this view.
+    pub fn rebuilt(&self, gpu: &Gpu) -> Result<View> {
+        let mut view = View::new(gpu, self.scene.clone())?;
+        view.set_sources(self.sources.iter().cloned())?;
+        match self.fitting.asked() {
+            Some(fit) if !self.placed => view.fit(fit.clone()),
+            _ => view.set_camera(self.camera),
+        }
+        view.set_at(self.at);
+        view.set_insets(self.insets);
+        view.set_orbit(self.orbit());
+        view.set_selection(self.selection());
+        view.reduced_motion = self.reduced_motion;
         Ok(view)
     }
 
@@ -278,8 +300,10 @@ impl View {
 
     /// Replaces the scene, compiling its marks against the latest version of each
     /// [`Data`](crate::Data) source. A mark that matches a current mark by kind, data, table, and
-    /// name keeps its state and eases to its new options. Errors if the scene is invalid or a mark
-    /// fails to compile, and the current scene stays.
+    /// name keeps its state and eases to its new options. An option that does not fit the data
+    /// draws as if unset, and a mark that does not fit draws nothing. Both are listed in
+    /// [`failures`](View::failures) until the data fits. Errors if the scene itself is invalid, and
+    /// the current scene stays.
     pub fn set_scene(&mut self, scene: Scene) -> Result<()> {
         scene.check()?;
         let gpu = self.gpu.clone();
@@ -294,14 +318,14 @@ impl View {
         let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
         // Compile every new or changed mark before changing anything.
         let mut fresh = Vec::with_capacity(scene.marks.len());
-        for (i, mark) in scene.marks.iter().enumerate() {
+        for mark in &scene.marks {
             let kept = !context_changed && self.marks.iter().any(|s| s.mark.draws_like(mark));
             if kept {
                 fresh.push(None);
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.snapshots, context, &mut inner).map_err(|e| e.at(i).at("marks"))?;
+            shown.compile(&self.snapshots, context, &mut inner);
             fresh.push(Some(shown));
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
@@ -346,8 +370,8 @@ impl View {
         for (_, staged) in std::mem::take(&mut self.staged) {
             staged.release(&mut inner);
         }
-        for shown in self.marks.iter_mut().filter(|s| s.failure.is_none()) {
-            shown.failure = absent(shown, &self.snapshots, &self.derived.tiles).map(|error| (error, false));
+        for shown in self.marks.iter_mut().filter(|s| s.failures.is_empty()) {
+            shown.failures.extend(absent(shown, &self.snapshots, &self.derived.tiles));
         }
         // State kept by mark index follows the new marks at once: the label slots, so texts read
         // back for the old marks are dropped, and the focus words, whose pages moved with them.
@@ -485,8 +509,8 @@ impl View {
     }
 
     /// Takes a new version of a dataset, with the GPU's state locked. Marks whose schema it changed
-    /// recompile. A mark that fails keeps its error until the data fits it again, and the next
-    /// frame reports the error. A caller outside a frame requests a frame to draw the data.
+    /// recompile, as do failed marks that read it. Failures stay until the data fits again, and the
+    /// next frame reports them. A caller outside a frame requests a frame to draw the data.
     fn take_data(&mut self, data: Snapshot, inner: &mut crate::gpu::Inner) {
         let at = match self.snapshots.binary_search_by(|d| d.name().cmp(data.name())) {
             Ok(i) => {
@@ -504,9 +528,10 @@ impl View {
                 if let Some(staged) = self.staged.get_mut(&shown.mark.style().data) {
                     staged.forget(i, inner);
                 }
-                let failed = shown.compile(&self.snapshots, context, inner).err();
-                let failed = failed.or_else(|| absent(shown, &self.snapshots, &self.derived.tiles));
-                shown.failure = failed.map(|error| (error, false));
+                shown.compile(&self.snapshots, context, inner);
+                if shown.failures.is_empty() {
+                    shown.failures.extend(absent(shown, &self.snapshots, &self.derived.tiles));
+                }
             }
         }
         // Rows may have moved under the focus and the keyboard-stepped hover.
@@ -523,7 +548,7 @@ impl View {
         self.drawings.retain(|key, _| key.0 != name);
         for (i, shown) in self.marks.iter_mut().enumerate() {
             if shown.mark.style().data == *name {
-                shown.failure = None;
+                shown.failures.clear();
             }
             if shown.compiled.as_ref().is_some_and(|c| c.schemas.iter().any(|(n, _)| n == name)) {
                 if let Some(staged) = self.staged.get_mut(&shown.mark.style().data) {
@@ -576,6 +601,15 @@ impl View {
         }
     }
 
+    /// Turns the camera to `pitch` and `bearing` at once, keeping its center and zoom, and any fit
+    /// not yet applied, which then frames at them. Ignored on a plot.
+    pub fn turn(&mut self, pitch: f64, bearing: f64) {
+        let Camera::Map { center, zoom, .. } = self.camera else { return };
+        self.placed |= self.fitting.asked().is_none();
+        self.rig.hold();
+        self.place_camera(Camera::Map { center, zoom, pitch, bearing });
+    }
+
     /// Sets whether the platform requests reduced motion, like a browser's
     /// `prefers-reduced-motion`. `Motion::System` follows it. A canvas sets it automatically.
     pub fn set_reduced_motion(&mut self, reduced: bool) {
@@ -611,13 +645,18 @@ impl View {
     pub fn fly(&mut self, camera: Camera, seconds: Option<Duration>) {
         if camera.fits(&self.scene.space) {
             self.cancel_fit();
-            let least = Duration::from_millis(1);
-            let seconds = seconds.unwrap_or_else(|| self.ease().max(least) * 2).max(least).as_secs_f64();
-            let to = camera.within(&self.reach());
-            self.rig.fly(self.camera, to, self.clock.now(), seconds);
-            self.placed = true;
-            self.wake();
+            self.fly_to(camera, seconds);
         }
+    }
+
+    /// Eases to `camera` as [`fly`](View::fly) does, keeping any fit not yet applied.
+    fn fly_to(&mut self, camera: Camera, seconds: Option<Duration>) {
+        let least = Duration::from_millis(1);
+        let seconds = seconds.unwrap_or_else(|| self.ease().max(least) * 2).max(least).as_secs_f64();
+        let to = camera.within(&self.reach());
+        self.rig.fly(self.camera, to, self.clock.now(), seconds);
+        self.placed = true;
+        self.wake();
     }
 
     /// The screen point of `position` (x, y, and elevation), in CSS pixels from the top left.
@@ -635,18 +674,18 @@ impl View {
         view.ground(point.map(f64::from)).map(|w| view.position(w))
     }
 
-    /// Runs the scene's layout again on every vertex row without a position: a diagram's blocks, or
-    /// the points on a plane or the earth. Without this call, laid-out positions persist and rows
-    /// added later are placed around them.
+    /// Runs the scene's layout again on the vertex `rows` names: a diagram's blocks, or the points
+    /// on a plane or the earth, without a position or all of them. Without this call, laid-out
+    /// positions persist and rows added later are placed around them.
     ///
     /// Once the layout finishes, resolves to one patch per dataset. Each patch writes the laid-out
     /// positions into the mark's position fields (or its point `geometry`). Applying the patches
     /// makes the positions part of the data. Marks whose position is not a pair of fields are
     /// skipped.
-    pub fn arrange(&mut self) -> Pending<Vec<Patch>> {
+    pub fn arrange(&mut self, rows: Arrange) -> Pending<Vec<Patch>> {
         let (pending, resolver) = Pending::new();
         self.arranging.push(resolver);
-        self.derived.arrange(matches!(self.scene.space, Space::Diagram(_)));
+        self.derived.arrange(matches!(self.scene.space, Space::Diagram(_)), rows);
         self.wake();
         pending
     }
@@ -658,23 +697,6 @@ impl View {
         for resolver in self.arranging.drain(..) {
             resolver.resolve(Ok(patches.clone()));
         }
-    }
-
-    /// Frames what `fit` names, keeping pitch and bearing, and replacing any fit not yet applied.
-    /// It applies once positions settle: data has streamed, shapes are triangulated, any layout has
-    /// placed the rows, and vertices have eased to their places. With nothing drawn to frame, it
-    /// frames the rows that arrive later. A fit frames a diagram at most at its natural size (zoom
-    /// 0) and the earth at most at zoom 16, which is also where it frames a single point. Until the
-    /// first fit applies, frames show only the background.
-    pub fn fit(&mut self, fit: Fit) {
-        self.focus.fitting = match &fit {
-            Fit::Rows(rows) => Rows::flatten(rows.iter().cloned()),
-            Fit::Reveal(row) => vec![row.clone()],
-            _ => Vec::new(),
-        };
-        self.focus.dirty = true;
-        self.fitting.want(fit);
-        self.wake();
     }
 
     /// CSS pixels kept clear at the top, right, bottom, and left, for panels that cover part of the
@@ -726,9 +748,13 @@ impl View {
         self.focus.hovered.as_ref()
     }
 
-    /// An error for every mark that draws nothing because its data no longer fits it.
+    /// An error for every option that draws as if unset, and every mark that draws nothing,
+    /// because the data does not fit it. Each error's path names the mark and option.
     pub fn failures(&self) -> impl Iterator<Item = crate::Error> + '_ {
-        self.marks.iter().enumerate().filter_map(|(i, shown)| Some(shown.failure.as_ref()?.0.clone().at(i).at("marks")))
+        self.marks
+            .iter()
+            .enumerate()
+            .flat_map(|(i, shown)| shown.failures.iter().map(move |error| error.clone().at(i).at("marks")))
     }
 
     /// The cursor the view requests for what is under the pointer.
@@ -767,6 +793,18 @@ impl View {
     /// [complete](View::complete). [`Waiting`](Event::Waiting) events report changes to it.
     pub fn waiting(&self) -> Waiting {
         self.waiting
+    }
+
+    /// Resolves once a frame draws the view [complete](View::complete), at once if the last frame
+    /// did and nothing has changed since.
+    pub fn done(&mut self) -> Pending<()> {
+        let (pending, resolver) = Pending::new();
+        if self.complete() && !self.needs_render() {
+            resolver.resolve(Ok(()));
+        } else {
+            self.completing.push(resolver);
+        }
+        pending
     }
 
     /// The events since the last call, in order. See [`Event`]. An intent that needs a pick result
@@ -930,10 +968,7 @@ impl View {
         let marks = || self.marks.iter().filter(|m| m.compiled.is_some());
         let given = |m: &Shown| {
             let data = &m.mark.style().data;
-            m.compiled.is_some()
-                || m.failure.is_some()
-                || self.snapshot(data).is_some()
-                || self.derived.tiles.owns(data)
+            m.compiled.is_some() || m.failed() || self.snapshot(data).is_some() || self.derived.tiles.owns(data)
         };
         Waiting {
             compiling: self.asked.is_empty()

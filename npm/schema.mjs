@@ -1,5 +1,6 @@
 /**
- * Generates npm's types from `schema.json`. The types latkit reads (`$defs`) become `inputs.ts`,
+ * Generates npm's types from `schema.json`, and its colormap catalog, `catalog.ts`, from
+ * `colormaps.json`. The types latkit reads (`$defs`) become `inputs.ts`,
  * and the types it writes (`outputs`) become `outputs.ts`. Each definition reachable from the roots
  * becomes a type, documented with its schema description. A definition that extends shared options
  * becomes an interface that extends them. An output that an input already declares uses the
@@ -11,7 +12,16 @@ import path from 'node:path';
 import prettier from 'prettier';
 
 /** Root types npm takes as plain data. The types they are built from are generated too. */
-const INPUTS = ['Scene', 'Query', 'EnvelopeRequest', 'Camera', 'Fit', 'Budget', 'ColormapKind'];
+const INPUTS = [
+  'Scene',
+  'Query',
+  'EnvelopeRequest',
+  'Camera',
+  'Fit',
+  'Arrange',
+  'Budget',
+  'ColormapKind',
+];
 
 /** Root types npm reads back from latkit. */
 const OUTPUTS = [
@@ -28,13 +38,15 @@ const OUTPUTS = [
 
 /** Hand-written types that a `tsType` names, keyed by the module that declares them. */
 const IMPORTS = { './data.js': ['TableInput'], './scene.js': ['Color', 'ExprInput'] };
+const OUTPUT_IMPORTS = { './patch.js': ['Patch'] };
 
 /**
- * Returns the sources of `inputs.ts` and `outputs.ts` for the schema at `file`, formatted with the
- * repository's Prettier config.
+ * Returns the sources of `inputs.ts` and `outputs.ts` for the schema at `file`, and of `catalog.ts`
+ * for the colormap catalog beside it, formatted with the repository's Prettier config.
  */
 export async function typescript(file) {
   const schema = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const catalog = fs.readFileSync(path.join(path.dirname(file), 'colormaps.json'), 'utf8');
   const inputs = declare(schema.$defs, '#/$defs/', INPUTS, new Set());
   const outputs = declare(schema.outputs, '#/outputs/', OUTPUTS, new Set(inputs.names));
   const config = await prettier.resolveConfig(path.join(path.dirname(file), 'src/inputs.ts'));
@@ -53,9 +65,20 @@ export async function typescript(file) {
       [
         header('The types latkit writes'),
         '',
-        ...imports({ './inputs.js': outputs.borrowed }),
+        ...imports({ './inputs.js': outputs.borrowed, ...OUTPUT_IMPORTS }),
         '',
         outputs.source,
+        '',
+      ].join('\n'),
+    ),
+    catalog: await format(
+      [
+        `/** The colormap catalog, written by \`node npm/build.mjs schema\` from \`npm/colormaps.json\`. Do not edit. */`,
+        '',
+        `import type { ColormapKind, ColormapName, CustomColormap } from './inputs.js';`,
+        '',
+        '/** Each catalog colormap: its name, label, kind, and colors as a custom colormap takes them. */',
+        `export const CATALOG: readonly { name: ColormapName; label: string; kind: ColormapKind; colors: CustomColormap['colors'] }[] = ${catalog.trim()};`,
         '',
       ].join('\n'),
     ),

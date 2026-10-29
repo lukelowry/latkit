@@ -99,9 +99,10 @@ impl TileSet {
     /// a failure to report, if any.
     fn update(&mut self, input: &Input<'_>, asked: &Asked<'_>, cache: &mut Cache, jobs: &Jobs<'_>) -> Option<Error> {
         self.standing_in = false;
-        let fetched = cache.open(&self.tiles.url, self.id, jobs);
-        let waker = fetched.waker().clone();
-        let jobs = jobs.waking(&waker);
+        self.tiles.refreshes.views.watch(self.id, jobs.waker());
+        let fetched = cache.open(&self.tiles, self.id, jobs);
+        let (waker, fetch) = (fetched.waker().clone(), fetched.fetch().cloned());
+        let jobs = jobs.waking(&waker).fetching(fetch.as_ref());
         let holds = match &mut fetched.state {
             State::Opening(_) => {
                 self.standing_in = true;
@@ -142,9 +143,12 @@ pub(crate) struct TileSets {
 }
 
 impl TileSets {
-    /// Draws `tiles`, replacing any tiles of the same name and what they drew.
+    /// Draws `tiles`, replacing any tiles of the same name and what they drew. Equal tiles keep what
+    /// they drew, and follow the refreshes of `tiles`.
     pub(crate) fn set(&mut self, tiles: Tiles, cache: &mut Cache) {
-        if self.sets.iter().any(|s| s.tiles == tiles) {
+        if let Some(set) = self.sets.iter_mut().find(|s| s.tiles == tiles) {
+            set.tiles.refreshes.views.unwatch(set.id);
+            set.tiles = tiles;
             return;
         }
         self.remove(&tiles.name, cache);
@@ -158,6 +162,7 @@ impl TileSets {
         self.sets.retain(|set| {
             let kept = *set.tiles.name != *name;
             if !kept {
+                set.tiles.refreshes.views.unwatch(set.id);
                 cache.release(&set.tiles.url, set.id);
             }
             kept
@@ -168,6 +173,7 @@ impl TileSets {
     pub(crate) fn release(&mut self, cache: &mut Cache) {
         self.changed.clear();
         for set in self.sets.drain(..) {
+            set.tiles.refreshes.views.unwatch(set.id);
             cache.release(&set.tiles.url, set.id);
         }
     }

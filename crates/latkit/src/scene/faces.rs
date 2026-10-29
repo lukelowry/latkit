@@ -46,7 +46,11 @@ impl Faces {
             }
             None => flags |= wgsl::ENDS_COLOR,
         }
-        c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::FACE_FLAGS, bit: wgsl::VISIBLE })?;
+        c.channel(
+            "visible",
+            &self.style.visible,
+            Store::Flag { word: wgsl::FACE_FLAGS, bit: wgsl::VISIBLE, unset: true },
+        )?;
         let mut drawing = Drawing::new(MarkKind::Faces);
         drawing.flags = flags;
         Ok(drawing)
