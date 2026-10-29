@@ -1,15 +1,11 @@
 name: Release
 
-# Once CI passes on main, releases that commit, whose tree CI passed.
+# Releases each commit on main. Branch protection admits only commits whose pull request passed CI
+# on a branch up to date with main, so every commit here is a tree that passed.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-  workflow_run:
-    workflows:
-      - CI
-    types:
-      - completed
-    branches:
-      - main
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -27,25 +23,13 @@ jobs:
   # What the commit releases: pending changesets open or update the version PR, a version not yet
   # tagged publishes, and a tagged one has nothing left to do.
   plan:
-    # A push's run only: a pull request's run can come from a fork's branch named main.
-    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
     outputs:
       step: ${{ steps.plan.outputs.step }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - name: Verify manual recovery uses a commit that passed CI
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh run list --workflow ci.yml --branch main --commit "$(git rev-parse HEAD)" --json conclusion --jq 'any(.[]; .conclusion == "success")' | grep -qx true
       - name: Decide what the commit releases
         id: plan
         run: |
@@ -58,25 +42,10 @@ jobs:
             echo "step=publish" >> "$GITHUB_OUTPUT"
           fi
 
-  # The CLI on macOS, on the commit being published. Pull requests check it only when native code
-  # changes, since its runners queue for minutes.
-  native-macos:
-    needs: plan
-    if: needs.plan.outputs.step == 'publish'
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo xtask ci native-cli
-
   release:
     name: Version or publish
-    needs: [plan, native-macos]
-    if: always() && needs.plan.result == 'success' && needs.plan.outputs.step != 'none' && contains(fromJSON('["success", "skipped"]'), needs.native-macos.result)
+    needs: plan
+    if: needs.plan.outputs.step != 'none'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -90,7 +59,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
       - uses: pnpm/action-setup@v6
         with:

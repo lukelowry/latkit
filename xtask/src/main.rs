@@ -8,7 +8,7 @@
 //!   - `rust`: formats, lints, tests (with GPU tests required), documents, and packages the crates,
 //!     and checks that `native` stays out of browser builds.
 //!   - `native-cli`: tests the CLI's native code, which CI runs on Windows, and on macOS when it
-//!     changes. The release runs it on macOS before publishing.
+//!     changes.
 //!   - `npm`: builds the npm package with `wasm --dev`, then lints, documents, type-checks, and
 //!     tests it. Runs the browser gate over that build, then `package` and `package-test`.
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`. Checks

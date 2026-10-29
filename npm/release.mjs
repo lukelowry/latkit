@@ -37,26 +37,20 @@ async function digest(url, select) {
 }
 
 /**
- * Publishes each artifact its registry does not have yet, waiting up to 2 minutes for it to appear,
- * then checks that the registry's digest matches the verified build. A retry resumes after the last
- * completed publish.
+ * Publishes each artifact its registry does not have yet. One it has must match the verified build,
+ * so a retry resumes after the last completed publish. A publish uploads the verified build itself,
+ * so it needs no lookup after, which a registry can answer with a cached absence for minutes.
  */
 export async function ensureArtifacts(artifacts) {
   for (const artifact of artifacts) {
-    let seen = await artifact.lookup();
-    if (seen === undefined) {
-      await artifact.publish();
-      for (let attempt = 0; attempt < 60; attempt++) {
-        seen = await artifact.lookup();
-        if (seen !== undefined) break;
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      }
-    }
-    assert.equal(
-      seen,
-      artifact.digest,
-      `${artifact.name}: published content must match the verified build`,
-    );
+    const seen = await artifact.lookup();
+    if (seen === undefined) await artifact.publish();
+    else
+      assert.equal(
+        seen,
+        artifact.digest,
+        `${artifact.name}: published content must match the verified build`,
+      );
     console.log(`${artifact.name}: verified`);
   }
 }
@@ -91,9 +85,10 @@ async function release() {
   const npm = {
     name: `${name}@${version}`,
     digest: `sha512-${hash(report.tarball, 'sha512', 'base64')}`,
+    // `write=true` asks the registry for current metadata rather than its cached copy.
     lookup: () =>
       digest(
-        `https://registry.npmjs.org/${name}/${version}`,
+        `https://registry.npmjs.org/${name}/${version}?write=true`,
         (metadata) => metadata.dist?.integrity,
       ),
     publish: () =>
@@ -111,7 +106,8 @@ async function release() {
         `https://crates.io/api/v1/crates/${name}/${version}`,
         (metadata) => metadata.version?.checksum,
       ),
-    publish: () => run('cargo', ['publish', '--locked', '-p', name]),
+    // `cargo package` verified both crates above, so publishing builds neither again.
+    publish: () => run('cargo', ['publish', '--locked', '--no-verify', '-p', name]),
   }));
   await ensureArtifacts([npm, ...crates]);
   const require = createRequire(import.meta.url);
