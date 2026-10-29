@@ -271,10 +271,14 @@ fn link(root: &Path, module: &str, features: &[&str], keep_main: bool) -> String
         options.features.set(*feature, features.contains(feature));
     }
     let path = format!("package::{module}").parse().unwrap();
-    wesl::Compiler::new(options)
+    let mut linked = wesl::Compiler::new(options)
         .compile_module(root, &path)
         .unwrap_or_else(|e| panic!("WESL {module} {features:?}: {e}"))
-        .to_string()
+        .syntax;
+    // The linker orders the declarations it imports differently on each run. WGSL takes them in any
+    // order, so sorting them makes every build of the shaders, and of the packages, the same.
+    linked.global_declarations.sort_by_cached_key(ToString::to_string);
+    linked.to_string()
 }
 
 fn validate(name: &str, source: &str) -> (naga::Module, ModuleInfo) {
