@@ -1,6 +1,6 @@
 name: Release
 
-# Once CI passes on main, releases the commit it tested.
+# Once CI passes on main, releases that commit, whose tree CI passed.
 on:
   workflow_dispatch:
   workflow_run:
@@ -58,10 +58,25 @@ jobs:
             echo "step=publish" >> "$GITHUB_OUTPUT"
           fi
 
+  # The CLI on macOS, on the commit being published. Pull requests check it only when native code
+  # changes, since its runners queue for minutes.
+  native-macos:
+    needs: plan
+    if: needs.plan.outputs.step == 'publish'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask ci native-cli
+
   release:
     name: Version or publish
-    needs: plan
-    if: needs.plan.outputs.step != 'none'
+    needs: [plan, native-macos]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.step != 'none' && contains(fromJSON('["success", "skipped"]'), needs.native-macos.result)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
