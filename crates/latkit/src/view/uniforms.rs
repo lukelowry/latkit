@@ -124,6 +124,7 @@ pub(crate) fn eye(projected: &Projected, size: [f64; 2], pixel_ratio: f32) -> wg
     eye.size = [size[0] as f32, size[1] as f32];
     eye.px_per_unit = projected.px_per_unit.map(|v| v as f32);
     eye.pixel_ratio = pixel_ratio;
+    eye.parallax = projected.parallax as f32;
     eye
 }
 

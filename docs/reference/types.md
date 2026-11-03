@@ -1990,7 +1990,9 @@ its tilt, and its rotation. A diagram is always seen from straight above, uprigh
 
 {#camera-pitch .member}
 **`pitch`**`: number` [¶](#camera-pitch){.headerlink}
-: Tilt in degrees from looking straight down, up to 75. Ignored in a diagram.
+: Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking straight
+  down, elevation only decides which rows show on top, and each row draws over its ground
+  position. Rows rise into view over the first 10° of tilt.
 
 {#camera-bearing .member}
 **`bearing`**`: number` [¶](#camera-bearing){.headerlink}

@@ -1369,6 +1369,35 @@ fn a_raised_vertex_hides_an_edge_passing_under_it() {
 }
 
 #[test]
+fn looking_straight_down_a_raised_row_draws_over_its_ground_position() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    // Two buses at one place 40 units off center: one raised 60 units, one on the ground and drawn
+    // after it. In perspective, the raised one would appear 18 pixels further out.
+    data.apply(
+        Table::new("Bus", Ids::count(2))
+            .field("x", vec![40.0, 40.0])
+            .field("y", vec![0.0, 0.0])
+            .field("z", vec![60.0, 0.0]),
+    )
+    .expect("valid");
+    let raised = Color::rgb(0.0, 0.0, 1.0);
+    let ground = Color::rgb(1.0, 0.0, 0.0);
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(
+        Vertices::of("d", "Bus")
+            .position(field("x"), field("y"))
+            .elevation(field("z"))
+            .radius(4.0)
+            .color(latkit::when(field("z").gt(0.5)).then(raised).otherwise(ground)),
+    );
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixel = at(&frame(&gpu, &mut view), SIZE / 2 + 40, SIZE / 2);
+    assert!(close(pixel, [0, 0, 255, 255]), "the raised bus shows over its ground position: {pixel:?}");
+}
+
+#[test]
 fn poles_stand_from_each_vertex_down_to_the_ground() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("d");

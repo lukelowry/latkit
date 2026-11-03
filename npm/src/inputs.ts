@@ -219,7 +219,11 @@ export type Camera =
       center: [number, number] | [number, number, number];
       /** The web mercator zoom level on the earth. Elsewhere, log₂ of CSS pixels per unit. */
       zoom: number;
-      /** Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. */
+      /**
+       * Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking straight
+       * down, elevation only decides which rows show on top, and each row draws over its ground
+       * position. Rows rise into view over the first 10° of tilt.
+       */
       pitch: number;
       /** Degrees clockwise from north, or from up on a plane. Ignored in a diagram. */
       bearing: number;

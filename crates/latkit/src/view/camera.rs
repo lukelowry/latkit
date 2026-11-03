@@ -21,7 +21,9 @@ pub enum Camera {
         center: [f64; 3],
         /// The web mercator zoom level on the earth. Elsewhere, log₂ of CSS pixels per unit.
         zoom: f64,
-        /// Tilt in degrees from looking straight down, up to 75. Ignored in a diagram.
+        /// Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking
+        /// straight down, elevation only decides which rows show on top, and each row draws over
+        /// its ground position. Rows rise into view over the first 10° of tilt.
         pitch: f64,
         /// Degrees clockwise from north, or from up on a plane. Ignored in a diagram.
         bearing: f64,
@@ -64,6 +66,16 @@ mod center {
 /// Vertical field of view in radians, chosen so the camera stands 1.5 view heights from its center.
 const FOV: f64 = 0.643_501_108_793_284_4;
 pub(crate) const MAX_PITCH: f64 = 75.0;
+/// Degrees of pitch over which rows rise into view. Looking straight down, elevation sets only
+/// depth.
+const PARALLAX_PITCH: f64 = 10.0;
+
+/// How much of its elevation a row appears raised by at `pitch`: 0 looking straight down, easing to
+/// 1 at [`PARALLAX_PITCH`].
+fn parallax(pitch: f64) -> f64 {
+    let t = (pitch / PARALLAX_PITCH).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 const MAX_ZOOM: f64 = 24.0;
 
 /// The closest zoom a fit frames in `space`: a diagram at its natural size, where a unit is a CSS
@@ -223,9 +235,9 @@ impl Camera {
     }
 
     /// The camera moved so `anchor` moves `delta` CSS pixels on screen. A map slides along the
-    /// horizontal plane through the anchor. Where that plane runs off toward the horizon, it uses
-    /// the point at the anchor's screen depth instead, still moving level. On a globe, the center
-    /// moves so the anchor appears at the new point.
+    /// horizontal plane through where the anchor appears. Where that plane runs off toward the
+    /// horizon, it uses the point at the anchor's screen depth instead, still moving level. On a
+    /// globe, the center moves so the anchor appears at the new point.
     pub(crate) fn panned(&self, view: &Projected, anchor: [f64; 3], delta: [f64; 2]) -> Camera {
         match *self {
             Camera::Plot { x, y } => {
@@ -234,7 +246,7 @@ impl Camera {
                 Camera::Plot { x: [x[0] - dx, x[1] - dx], y: y.map(|y| [y[0] + dy, y[1] + dy]) }
             }
             Camera::Map { center, zoom, pitch, bearing } => {
-                let a = view.world(anchor);
+                let a = view.apparent(anchor);
                 let Some(s) = view.screen(a) else { return *self };
                 let to = [s[0] + delta[0], s[1] + delta[1]];
                 if view.globe >= 0.5 {
@@ -266,17 +278,24 @@ impl Camera {
         let to_bearing = (bearing + degrees[0]).rem_euclid(360.0);
         if view.globe >= 0.5 {
             let turned = Camera::Map { center, zoom, pitch: to_pitch, bearing: to_bearing };
-            return match view.screen(view.world(anchor)) {
+            return match view.screen(view.apparent(anchor)) {
                 Some(s) => view.keeping(turned, anchor, [s[0], s[1]]),
                 None => turned,
             };
         }
-        // Rotate the camera rigidly about the anchor. Its center moves with it.
+        // Rotate the camera rigidly about where the anchor will appear. Tilting changes how raised
+        // it appears, so the camera first slides to put that point where the anchor appears now.
         let rig = |p: f64, b: f64| DMat3::from_rotation_z(-b.to_radians()) * DMat3::from_rotation_x(p.to_radians());
         let r = rig(to_pitch, to_bearing) * rig(pitch, bearing).transpose();
-        let a = view.world(anchor);
+        let a = view.apparent(anchor);
+        let pivot = view.surface([anchor[0], anchor[1], anchor[2] * parallax(to_pitch)]);
+        let slide = if pivot == a {
+            DVec3::ZERO
+        } else {
+            view.screen(a).and_then(|s| view.on_plane([s[0], s[1]], pivot.z)).map_or(DVec3::ZERO, |q| pivot - q)
+        };
         let c = DVec3::new(0.0, 0.0, view.height(center[2]));
-        let moved = a + r * (c - a);
+        let moved = pivot + r * (c + slide - pivot);
         let d = moved - c;
         Camera::Map { center: view.shifted(center, d, d.z), zoom, pitch: to_pitch, bearing: to_bearing }
     }
@@ -302,12 +321,12 @@ impl Camera {
                 }
                 if view.globe >= 0.5 {
                     let zoomed = Camera::Map { center, zoom: to, pitch, bearing };
-                    return match view.screen(view.world(anchor)) {
+                    return match view.screen(view.apparent(anchor)) {
                         Some(s) => view.keeping(zoomed, anchor, [s[0], s[1]]),
                         None => zoomed,
                     };
                 }
-                let a = view.world(anchor);
+                let a = view.apparent(anchor);
                 let c = DVec3::new(0.0, 0.0, view.height(center[2]));
                 let d = (a + (c - a) * (zoom - to).exp2()) - c;
                 Camera::Map { center: view.shifted(center, d, d.z), zoom: to, pitch, bearing }
@@ -463,6 +482,8 @@ pub(crate) struct Projected {
     pub(crate) zoom: f64,
     pub(crate) mercator_y: f64,
     pub(crate) globe: f64,
+    /// How much of its elevation a row appears raised by. See [`parallax`].
+    pub(crate) parallax: f64,
     pub(crate) space: u32,
     size: [f64; 2],
     area: Area,
@@ -505,12 +526,13 @@ impl Projected {
             _ => unreachable!("the camera matches the space"),
         };
         let distance = 0.5 * h / (0.5 * FOV).tan();
+        let pitch = pitch.clamp(0.0, MAX_PITCH);
         // Reversed depth: the near plane maps to 1 and the far plane to 0.
         let projection = perspective(FOV, w / h, distance * 100.0, distance * 0.01);
         // A diagram's y runs down the screen.
         let up = if space_code == wgsl::SPACE_DIAGRAM { -px_per_unit[1] } else { px_per_unit[1] };
         let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -distance))
-            * DMat4::from_rotation_x(-pitch.clamp(0.0, MAX_PITCH).to_radians())
+            * DMat4::from_rotation_x(-pitch.to_radians())
             * DMat4::from_rotation_z(bearing.to_radians())
             * DMat4::from_scale(DVec3::new(px_per_unit[0], up, px_per_unit[0]))
             * DMat4::from_translation(DVec3::new(0.0, 0.0, -height(space_code, center[2])));
@@ -532,6 +554,7 @@ impl Projected {
                 - if space_code == wgsl::SPACE_EARTH { (256.0 / TAU).log2() } else { 0.0 },
             mercator_y: mercator,
             globe: if space_code == wgsl::SPACE_EARTH { globe } else { 0.0 },
+            parallax: parallax(pitch),
             space: space_code,
             size: [w, h],
             area,
@@ -547,7 +570,7 @@ impl Projected {
         let at = |center: [f64; 3]| {
             let camera = Camera::Map { center, zoom, pitch, bearing };
             let view = Projected::new(&earth, &camera, self.size, self.area, self.globe);
-            let w = view.world(anchor);
+            let w = view.apparent(anchor);
             let radius = 1.0 / center[1].to_radians().cos();
             let front = (w - DVec3::new(0.0, 0.0, -radius)).dot(view.eye - w) > 0.0;
             view.screen(w).filter(|_| front).map(|s| [s[0], s[1]])
@@ -584,8 +607,49 @@ impl Projected {
         height(self.space, z)
     }
 
-    /// The world coordinates of `position`: x, y, and elevation.
+    /// The world point a row at `position` draws at, as `world` in lib/project.wesl does. A row
+    /// appears raised by `parallax` of its elevation and lies as deep as raised by all of it: on the
+    /// eye's ray through where it appears. Looking straight down, elevation so sets only depth.
     pub(crate) fn world(&self, position: [f64; 3]) -> DVec3 {
+        let raised = self.surface(position);
+        if self.parallax >= 1.0 || position[2] == 0.0 {
+            return raised;
+        }
+        let apparent = self.apparent(position);
+        let depth = self.view_depth(apparent);
+        if depth.is_nan() || depth <= 0.0 {
+            return raised;
+        }
+        // Past the globe's edge, a row hides where it appears.
+        if !self.shows(apparent) {
+            return apparent;
+        }
+        self.eye + (apparent - self.eye) * (self.view_depth(raised) / depth)
+    }
+
+    /// Where a row at `position` appears: raised by `parallax` of its elevation. The point holds
+    /// still as the camera moves at one pitch, so gestures pivot on it.
+    pub(crate) fn apparent(&self, position: [f64; 3]) -> DVec3 {
+        self.surface([position[0], position[1], position[2] * self.parallax])
+    }
+
+    /// The distance from the eye along its view to world point `w`.
+    fn view_depth(&self, w: DVec3) -> f64 {
+        (self.clip_from_world * w.extend(1.0)).w
+    }
+
+    /// Whether world point `w` lies on the globe's visible side, as `shows` in lib/project.wesl
+    /// tests it. On the map, or while the globe morphs, everything shows.
+    fn shows(&self, w: DVec3) -> bool {
+        if self.space != wgsl::SPACE_EARTH || self.globe < 1.0 {
+            return true;
+        }
+        let center = DVec3::new(0.0, 0.0, -1.0 / self.center[1].to_radians().cos());
+        (w - center).dot(self.eye - w) > 0.0
+    }
+
+    /// The world coordinates of `position` raised by its elevation.
+    fn surface(&self, position: [f64; 3]) -> DVec3 {
         let [x, y, z] = position;
         let z = self.height(z);
         if self.space != wgsl::SPACE_EARTH {
@@ -603,8 +667,31 @@ impl Projected {
         flat.lerp(round, self.globe)
     }
 
-    /// The position at world coordinates `w`.
+    /// The position of a row drawn at world point `w`: the inverse of [`Projected::world`]. Below
+    /// full parallax, a row draws off its raised point by at most its elevation's share of its
+    /// distance from the eye, so each correction shrinks the miss by about that share.
     pub(crate) fn position(&self, w: DVec3) -> [f64; 3] {
+        let want = self.on_surface(w);
+        if self.parallax >= 1.0 {
+            return want;
+        }
+        let mut p = want;
+        for _ in 0..32 {
+            let got = self.on_surface(self.world(p));
+            let mut miss = [want[0] - got[0], want[1] - got[1], want[2] - got[2]];
+            if self.space == wgsl::SPACE_EARTH {
+                miss[0] = wrap(miss[0]);
+            }
+            p = std::array::from_fn(|k| p[k] + miss[k]);
+            if (0..3).all(|k| miss[k].abs() <= 1e-12 * (1.0 + p[k].abs())) {
+                break;
+            }
+        }
+        p
+    }
+
+    /// The position whose raised point is world point `w`.
+    fn on_surface(&self, w: DVec3) -> [f64; 3] {
         if self.space != wgsl::SPACE_EARTH {
             return [w.x + self.center[0], w.y + self.center[1], w.z];
         }
@@ -787,6 +874,55 @@ mod tests {
         let back = view.position(view.unproject([high[0], high[1]], high[2]));
         assert!((back[2] - 30.0).abs() < 1e-6 && back[0].abs() < 1e-6, "{back:?}");
         assert!(view.ground([low[0], low[1]]).expect("the ground").length() < 1e-6);
+    }
+
+    #[test]
+    fn looking_straight_down_elevation_sets_only_depth() {
+        let raised = [30.0, -20.0, 40.0];
+        let ground = [30.0, -20.0, 0.0];
+        for pitch in [0.0, 4.0, 10.0, 30.0] {
+            let camera = Camera::Map { center: [5.0, 5.0, 0.0], zoom: 2.0, pitch, bearing: 25.0 };
+            let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
+            let drawn = view.screen(view.world(raised)).expect("in front");
+            let lifted = view.screen(view.surface(raised)).expect("in front");
+            let on_ground = to_screen(&view, ground);
+            assert!((drawn[2] - lifted[2]).abs() < 1e-12, "pitch {pitch}: as deep as raised");
+            let shift = |s: [f64; 3]| (s[0] - on_ground[0]).hypot(s[1] - on_ground[1]);
+            if pitch == 0.0 {
+                assert!(shift(drawn) < 1e-6, "straight down, over its ground position: {drawn:?}");
+            } else if pitch < PARALLAX_PITCH {
+                assert!(shift(drawn) > 1e-3 && shift(drawn) < shift(lifted), "pitch {pitch}: rising into view");
+            } else {
+                let off = (drawn[0] - lifted[0]).hypot(drawn[1] - lifted[1]);
+                assert!(off < 1e-6, "pitch {pitch}: tilted, where it stands");
+            }
+            let back = view.position(view.unproject([drawn[0], drawn[1]], drawn[2]));
+            assert!((0..3).all(|k| (back[k] - raised[k]).abs() < 1e-6), "pitch {pitch}: {back:?}");
+        }
+    }
+
+    #[test]
+    fn raised_anchors_keep_their_place_while_the_camera_tilts_into_view() {
+        let anchor = [3.0, -2.0, 6.0];
+        let camera = Camera::Map { center: [0.0; 3], zoom: 3.0, pitch: 2.0, bearing: 10.0 };
+        let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
+        let at = to_screen(&view, anchor);
+        let reach = Reach::new(&plane(), Some(SIZE), None);
+        let check = |moved: Camera, want: [f64; 2]| {
+            let after = Projected::new(&plane(), &moved, SIZE, AREA, 0.0);
+            let s = to_screen(&after, anchor);
+            assert!((s[0] - want[0]).abs() < 1e-6 && (s[1] - want[1]).abs() < 1e-6, "{s:?} for {want:?}");
+        };
+        check(camera.panned(&view, anchor, [60.0, -30.0]), [at[0] + 60.0, at[1] - 30.0]);
+        check(camera.turned(&view, anchor, [15.0, 5.0]), at);
+        check(camera.turned(&view, anchor, [0.0, 20.0]), at);
+        check(camera.zoomed(&view, anchor, 1.0, &reach), at);
+        let globe = globe();
+        let camera = Camera::Map { center: [-97.0, 31.0, 0.0], zoom: 4.0, pitch: 0.0, bearing: 0.0 };
+        let view = Projected::new(&globe, &camera, SIZE, AREA, 1.0);
+        let raised = [-95.5, 29.75, 0.4];
+        let back = view.position(view.world(raised));
+        assert!((0..3).all(|k| (back[k] - raised[k]).abs() < 1e-6), "on the globe: {back:?}");
     }
 
     #[test]

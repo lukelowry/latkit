@@ -534,6 +534,9 @@ struct Eye {
     px_per_unit: vec2f,
     // Target pixels per CSS pixel.
     pixel_ratio: f32,
+    // How much of its elevation a row appears raised by: 0 looking straight down, where elevation
+    // sets only depth, easing to 1 as the camera tilts. See `world`.
+    parallax: f32,
 }
 
 // One mark's parameters, at a 256-byte aligned dynamic offset.

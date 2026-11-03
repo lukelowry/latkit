@@ -3812,7 +3812,7 @@
             "pitch": {
               "type": "number",
               "format": "double",
-              "description": "Tilt in degrees from looking straight down, up to 75. Ignored in a diagram."
+              "description": "Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking\nstraight down, elevation only decides which rows show on top, and each row draws over\nits ground position. Rows rise into view over the first 10° of tilt."
             },
             "bearing": {
               "type": "number",
@@ -4863,7 +4863,7 @@
             "pitch": {
               "type": "number",
               "format": "double",
-              "description": "Tilt in degrees from looking straight down, up to 75. Ignored in a diagram."
+              "description": "Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking\nstraight down, elevation only decides which rows show on top, and each row draws over\nits ground position. Rows rise into view over the first 10° of tilt."
             },
             "bearing": {
               "type": "number",
