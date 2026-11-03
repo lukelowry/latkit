@@ -61,14 +61,14 @@ const examples = path.dirname(here);
 const args = process.argv.slice(2);
 const software = args.includes('--software') || process.platform === 'linux';
 
-/** A shader variant listed in shaders.json. `append` is source added after the file's own. A draw
- * variant without `colors` writes only depth. */
-interface Variant {
+/** A shader module listed in shaders.json: a shader variant specialized as latkit's pipelines use
+ * it. `append` is source added after the file's own. A draw module without `colors` writes only
+ * depth. */
+interface Module {
   file: string;
   draws: boolean;
   colors: boolean;
   compute: string[];
-  constants: Record<string, number>[];
   append: string;
 }
 
@@ -79,7 +79,6 @@ interface Pipeline {
   draws: boolean;
   colors: boolean;
   entry: string;
-  constants: Record<string, number>;
 }
 
 interface Timing {
@@ -94,25 +93,21 @@ function cold(): Promise<Chrome> {
   return launch(['--disable-gpu-shader-disk-cache'], software);
 }
 
-/** Lists the pipelines of the variants in `dir`: one per compute entry point, or one draw, for each
- * set of constants. */
+/** Lists the pipelines of the modules in `dir`: one per compute entry point, or one draw. Like
+ * latkit's, they pass no pipeline constants. */
 function pipelines(dir: string): Pipeline[] {
-  const variants = JSON.parse(fs.readFileSync(path.join(dir, 'shaders.json'), 'utf8')) as Variant[];
-  return variants.flatMap((variant) => {
-    const code = `${fs.readFileSync(path.join(dir, variant.file), 'utf8')}\n${variant.append}`;
-    const name = variant.file.replace(/\.wgsl$/, '');
-    const entries = variant.draws ? ['vertex'] : variant.compute;
-    return variant.constants.flatMap((constants) => {
-      const set = Object.entries(constants).map(([k, v]) => `${k}=${v}`);
-      return entries.map((entry) => ({
-        label: [name, variant.draws ? '' : entry, ...set].filter(Boolean).join(' '),
-        code,
-        draws: variant.draws,
-        colors: variant.colors,
-        entry,
-        constants,
-      }));
-    });
+  const modules = JSON.parse(fs.readFileSync(path.join(dir, 'shaders.json'), 'utf8')) as Module[];
+  return modules.flatMap((module) => {
+    const code = `${fs.readFileSync(path.join(dir, module.file), 'utf8')}\n${module.append}`;
+    const name = module.file.replace(/\.wgsl$/, '');
+    const entries = module.draws ? ['vertex'] : module.compute;
+    return entries.map((entry) => ({
+      label: module.draws ? name : `${name} ${entry}`,
+      code,
+      draws: module.draws,
+      colors: module.colors,
+      entry,
+    }));
   });
 }
 
@@ -153,16 +148,14 @@ async function time({
     let module = modules.get(pipeline.code);
     if (!module)
       modules.set(pipeline.code, (module = device.createShaderModule({ code: pipeline.code })));
-    const constants = pipeline.constants;
     // Like latkit's draw pipelines, these test against depth, which the backdrop writes.
     const made = pipeline.draws
       ? device.createRenderPipelineAsync({
           layout: 'auto',
-          vertex: { module, entryPoint: 'vertex', constants },
+          vertex: { module, entryPoint: 'vertex' },
           fragment: {
             module,
             entryPoint: 'fragment',
-            constants,
             targets: [{ format: 'rgba8unorm', writeMask: pipeline.colors ? 0xf : 0 }],
           },
           primitive: { topology: 'triangle-list' },
@@ -174,7 +167,7 @@ async function time({
         })
       : device.createComputePipelineAsync({
           layout: 'auto',
-          compute: { module, entryPoint: pipeline.entry, constants },
+          compute: { module, entryPoint: pipeline.entry },
         });
     const started = performance.now();
     try {

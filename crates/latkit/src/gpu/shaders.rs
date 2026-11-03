@@ -3,6 +3,8 @@
 
 #![allow(clippy::unreadable_literal)]
 
+use super::specialize::{Constant, specialize};
+
 /// A binding's resource type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Kind {
@@ -27,18 +29,20 @@ const FRAGMENT: u32 = 2;
 const COMPUTE: u32 = 4;
 
 impl ShaderSource {
-    /// The shader's WGSL: its declarations joined in order. Each declaration is stored once and
-    /// shared by every shader.
-    pub(crate) fn wgsl(&self) -> String {
-        let mut out = String::new();
-        for (i, &piece) in self.pieces.iter().enumerate() {
-            if i > 0 {
-                out.push_str("\n\n");
-            }
+    /// The shader's WGSL for one pipeline: its declarations joined in order, with each of its
+    /// [`constants`](ShaderSource::constants) declared as a `const` of `value(name)`. Each
+    /// declaration is stored once and shared by every shader.
+    pub(crate) fn wgsl(&self, value: impl Fn(&str) -> u32) -> String {
+        let pieces = self.pieces.iter().map(|&piece| {
             let (start, end) = PIECES[piece as usize];
-            out.push_str(&WGSL[start as usize..end as usize]);
-        }
-        out
+            &WGSL[start as usize..end as usize]
+        });
+        specialize(pieces, self.constants, value)
+    }
+
+    /// Whether pipelines specialize the shader with the constant `name`.
+    pub(crate) fn reads(&self, name: &str) -> bool {
+        self.constants.iter().any(|constant| constant.name == name)
     }
 
     /// The size of its WGSL in bytes, a rough measure of compile time. A browser compiles the WGSL
@@ -64,8 +68,8 @@ pub(crate) struct ShaderSource {
     /// Its declarations, as indices into [`PIECES`], in order.
     pieces: &'static [u16],
     pub(crate) pass: &'static [Binding],
-    /// The pipeline constants it declares.
-    pub(crate) overrides: &'static [&'static str],
+    /// The constants pipelines specialize it with.
+    constants: &'static [Constant<'static>],
     /// Whether it reads the view and mark groups. A shader that does not gets empty groups in their
     /// place.
     pub(crate) shared: bool,

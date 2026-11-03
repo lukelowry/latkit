@@ -27,7 +27,7 @@ pub enum Error {
     /// The operation did not complete before its deadline.
     #[error("operation timed out")]
     Timeout,
-    /// The GPU device was lost. Create a new `Gpu`.
+    /// The GPU device was lost. Create a new `Gpu` and [move](crate::View::move_to) the views to it.
     #[error("GPU device lost")]
     DeviceLost,
     /// The owner of pending work was dropped before the work finished.

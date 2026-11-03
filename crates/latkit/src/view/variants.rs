@@ -235,6 +235,16 @@ impl View {
         channels
     }
 
+    /// Why the browser refused to build a pipeline the view asked for, if it refused one.
+    pub(super) fn refusal(&self, inner: &Inner) -> Option<crate::Error> {
+        let pipelines = &inner.pipelines;
+        self.asked
+            .iter()
+            .flat_map(|a| [&a.drawing, &a.texts, &a.answering, &a.depths])
+            .find_map(|needs| pipelines.refused(needs))
+            .or_else(|| pipelines.refused(&self.channels()))
+    }
+
     /// Whether frames into `format` at `samples` per pixel, with or without `input`, can draw now:
     /// whether their draw pipelines are compiled.
     pub(super) fn pipelines_ready(
@@ -361,7 +371,7 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Edges, Lines, Plane, Vertices};
+    use crate::{Edges, Event, Lines, Plane, Vertices};
 
     #[test]
     fn only_marks_that_frame_a_fit_ask_for_a_bounds_pass() {
@@ -374,5 +384,29 @@ mod tests {
         assert!(asks("points", PATH_ENDS), "vertices frame a fit");
         assert!(asks("strokes", PATH_GEOMETRY), "so do lines along their paths");
         assert!(!asks("strokes", PATH_ENDS), "edges lie between the vertices that frame them");
+    }
+
+    #[test]
+    fn a_view_needing_a_refused_pipeline_says_why_once_and_draws_nothing() {
+        let gpu = match pollster::block_on(crate::Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("g", "V")));
+        assert!(view.ready_for(format, 1.0, false));
+        view.events().for_each(drop);
+        let need = view.asked[0].drawing[0].clone();
+        gpu.0.lock().pipelines.refuse(&need, "the stage reads no such constant");
+        let done = view.done();
+        assert!(!view.ready_for(format, 1.0, false), "a view that can't draw what its scene says draws nothing");
+        assert!(!view.ready_for(format, 1.0, false));
+        let errors: Vec<_> =
+            view.events().filter_map(|e| if let Event::Error(e) = e { Some(e) } else { None }).collect();
+        assert_eq!(errors.len(), 1, "it says why once: {errors:?}");
+        assert!(matches!(&errors[0], crate::Error::Unsupported(m) if m.contains(&need.label())), "{errors:?}");
+        assert_eq!(done.take(), Some(Err(errors[0].clone())), "and what waited for it to be done fails");
+        assert_eq!(view.done().take(), Some(Err(errors[0].clone())));
     }
 }

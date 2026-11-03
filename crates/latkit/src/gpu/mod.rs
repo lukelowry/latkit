@@ -13,6 +13,7 @@ pub(crate) mod pipelines;
 pub(crate) mod readback;
 pub(crate) mod retired;
 pub(crate) mod shaders;
+mod specialize;
 pub(crate) mod work;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -354,23 +355,16 @@ impl Gpu {
     }
 
     /// Gives up the device once the page pool moved into a buffer the device then refused for lack
-    /// of memory, so the pool holds nothing. The budget is lowered to the pool's size before, an
-    /// error says why, and the device counts as lost, so views move to a new device within the
-    /// lowered budget. A device latkit created is destroyed, which frees its memory at once.
+    /// of memory, so the pool holds nothing. The budget is lowered to the pool's size before, and
+    /// the device counts as lost, so views move to a new device within the lowered budget. That is
+    /// not an error, since the views go on drawing: only a move that fails is. A device latkit
+    /// created is destroyed, which frees its memory at once.
     pub(crate) fn give_up_if_refused(&self) {
-        let granted = {
+        {
             let mut inner = self.0.lock();
             let Some(granted) = inner.arena.broken() else { return };
             inner.budget.bytes = inner.budget.bytes.min(granted);
-            granted
-        };
-        self.raise(Error::Limit(
-            format!(
-                "the GPU has no memory for data past {} MiB, so latkit lowers the budget to that and needs a new device",
-                granted >> 20
-            )
-            .into(),
-        ));
+        }
         self.device_events().lost();
         if self.0.instance.is_some() {
             self.0.device.destroy();
@@ -516,7 +510,8 @@ impl Gpu {
         inner.atlas.rehost();
     }
 
-    /// Whether the device was lost. Drawing then does nothing, and a new `Gpu` is needed. latkit
+    /// Whether the device was lost. Drawing then does nothing until the views
+    /// [move](crate::View::move_to) to a new `Gpu`. latkit
     /// also gives up a device whose page pool lost its pages for lack of memory, after lowering the
     /// [`budget`](Gpu::budget) to what the device gave, so a new `Gpu` with that budget stays
     /// within it.
@@ -561,6 +556,25 @@ impl std::fmt::Debug for Gpu {
 #[cfg(test)]
 mod tests {
     use super::{Ask, Error, Ledger, Raised};
+
+    #[test]
+    fn a_device_out_of_memory_is_given_up_without_an_error() {
+        let gpu = match pollster::block_on(crate::Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let granted = 48 << 20;
+        gpu.0.lock().arena.refuse(granted);
+        gpu.give_up_if_refused();
+        assert!(gpu.lost(), "the device is given up, so its views move to a new one");
+        assert_eq!(gpu.budget().bytes, granted, "within the memory it gave");
+        let raised = gpu.0.raised.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(raised.since(0).count(), 0, "and that is no error");
+        drop(raised);
+        gpu.give_up_if_refused();
+        assert_eq!(gpu.budget().bytes, granted, "once");
+    }
 
     #[test]
     fn raised_errors_are_numbered_for_each_view_and_repeats_held_once() {

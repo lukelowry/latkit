@@ -165,6 +165,9 @@ pub struct View {
     /// Whether the device loss has been reported, and the number of the next error the device
     /// raises that this view has not reported.
     told_lost: bool,
+    /// Why the browser refused to build a pipeline the view needs, once it did. The view then draws
+    /// nothing, and [`done`](View::done) fails with it.
+    refused: Option<crate::Error>,
     raised_seen: u64,
     /// Failures of the host jobs and fetches this view started, reported with its next frame.
     job_errors: Arc<std::sync::Mutex<Vec<crate::Error>>>,
@@ -214,15 +217,29 @@ pub struct View {
 /// The number of views created, used to give each view its id.
 static VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// What makes a view the same view on any device: its id, the signal that wakes it (which also
+/// holds a lend to a picture or video in progress), and where its jobs report their failures.
+struct Identity {
+    id: u64,
+    signal: Arc<wake::Signal>,
+    job_errors: Arc<std::sync::Mutex<Vec<crate::Error>>>,
+}
+
 impl View {
     /// Creates a view that draws `scene` with `gpu`. Its marks draw nothing until
     /// [`set_sources`](View::set_sources) provides their datasets.
     pub fn new(gpu: &Gpu, scene: Scene) -> View {
+        let id = VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        View::made(gpu, scene, Identity { id, signal: Arc::default(), job_errors: Arc::default() })
+    }
+
+    /// A view of `scene` on `gpu` with `identity`, so the jobs it starts while it is made already
+    /// wake the view they belong to.
+    fn made(gpu: &Gpu, scene: Scene, Identity { id, signal, job_errors }: Identity) -> View {
         let camera = Camera::default_for(&scene.space);
-        let signal = Arc::new(wake::Signal::default());
         let mut view = View {
             gpu: gpu.clone(),
-            id: VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            id,
             scene: Scene::new(scene.space.clone()),
             scene_version: 0,
             scene_failures: Vec::new(),
@@ -255,9 +272,10 @@ impl View {
             regions: Regions::default(),
             changed: true,
             told_lost: false,
+            refused: None,
             // Errors raised before the view existed are not its to report.
             raised_seen: gpu.0.raised.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next(),
-            job_errors: Arc::default(),
+            job_errors,
             waiting: Waiting::default(),
             asked: Vec::new(),
             compiling: None,
@@ -292,24 +310,54 @@ impl View {
         view
     }
 
-    /// A view drawing the same scene and sources with `gpu`, with the same camera (or fit not yet
-    /// applied), coordinate, insets, orbit, selection, and hovered row, as when this view's device
-    /// was lost. Its pending answers stay with this view.
-    pub fn rebuilt(&self, gpu: &Gpu) -> Result<View> {
-        let mut view = View::new(gpu, self.scene.clone());
-        view.scene_failures.clone_from(&self.scene_failures);
-        view.set_sources(self.sources.iter().cloned())?;
-        match self.fitting.asked() {
-            Some(fit) if !self.placed => view.fit(fit.clone()),
-            _ => view.set_camera(self.camera),
+    /// Moves the view to `gpu`, as when its device is lost. It stays the same view. Its scene,
+    /// sources, camera or the fit not yet applied, coordinate, insets, orbit, selection, hover, and
+    /// laid-out places carry over, and so does everything waiting on it: fits,
+    /// [`done`](View::done), arrangements, picks and other queries, events still to be read, and a
+    /// picture or video it is lent to. Only its GPU state is made again on `gpu`, where its data
+    /// uploads again.
+    pub fn move_to(&mut self, gpu: &Gpu) {
+        let identity = Identity { id: self.id, signal: self.signal.clone(), job_errors: self.job_errors.clone() };
+        let mut moved = View::made(gpu, self.scene.clone(), identity);
+        moved.use_sources(self.sources.clone());
+        // The same scene and data, so what was derived from them alone still holds, layouts too.
+        moved.scene_version = self.scene_version;
+        moved.derived.carry(&mut self.derived);
+        moved.scene_failures = std::mem::take(&mut self.scene_failures);
+        // Failures already told are told again only when they change.
+        moved.told_failures = std::mem::take(&mut self.told_failures);
+        // The camera where it was placed, and the fit not yet applied, which keeps its pitch and
+        // bearing.
+        if self.placed {
+            moved.set_camera(self.camera);
         }
-        view.set_at(self.at);
-        view.set_insets(self.insets);
-        view.set_orbit(self.orbit());
-        view.set_selection(self.selection());
-        view.set_hovered(self.hovered().cloned());
-        view.reduced_motion = self.reduced_motion;
-        Ok(view)
+        if let Some(fit) = self.fitting.asked() {
+            moved.fit(fit.clone());
+        }
+        // Its size, so it answers where things are on screen before it draws again, and its clock
+        // and counters, so effects and the frames counted go on.
+        (moved.size, moved.pixel_ratio) = (self.size, self.pixel_ratio);
+        moved.clock = std::mem::take(&mut self.clock);
+        moved.effect_time = self.effect_time;
+        moved.stats = std::mem::take(&mut self.stats);
+        moved.set_at(self.at);
+        moved.set_insets(self.insets);
+        moved.set_orbit(self.orbit());
+        moved.set_selection(self.selection());
+        moved.set_hovered(self.focus.hovered.take());
+        moved.reduced_motion = self.reduced_motion;
+        moved.plot_y = self.plot_y;
+        moved.pointer = self.pointer.take();
+        // Whatever waited on the old device waits on the new one. Queries in flight there run again.
+        moved.fitting.adopt(&mut self.fitting);
+        moved.queries.adopt(&mut self.queries);
+        moved.events.adopt(&mut self.events);
+        moved.completing = std::mem::take(&mut self.completing);
+        moved.arranging = std::mem::take(&mut self.arranging);
+        // The moved view watches the sources under the same id, so the old one leaves them alone as
+        // it drops, with its GPU state, on the old device.
+        self.sources.clear();
+        *self = moved;
     }
 
     /// The scene the view draws.
@@ -455,6 +503,12 @@ impl View {
                 return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
             }
         }
+        self.use_sources(sources);
+        Ok(())
+    }
+
+    /// Replaces the view's sources with `sources`, whose names differ.
+    fn use_sources(&mut self, sources: Vec<Source>) {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         // Forget datasets no source provides any more, and those whose source switched to or from
@@ -493,7 +547,6 @@ impl View {
         } else {
             self.wake();
         }
-        Ok(())
     }
 
     /// The sources the view draws.
@@ -847,10 +900,13 @@ impl View {
     }
 
     /// Resolves once a frame draws the view [complete](View::complete), at once if the last frame
-    /// did and nothing has changed since.
+    /// did and nothing has changed since. Fails if the browser refuses to build a pipeline the
+    /// view needs.
     pub fn done(&mut self) -> Pending<()> {
         let (pending, resolver) = Pending::new();
-        if self.complete() && !self.needs_render() {
+        if let Some(error) = &self.refused {
+            resolver.resolve(Err(error.clone()));
+        } else if self.complete() && !self.needs_render() {
             resolver.resolve(Ok(()));
         } else {
             self.completing.push(resolver);
@@ -894,6 +950,12 @@ impl View {
         self.events.error().cloned()
     }
 
+    /// Why the browser refused to build a pipeline the view needs, if it did. The view draws
+    /// nothing meanwhile.
+    pub(crate) fn refused(&self) -> Option<&crate::Error> {
+        self.refused.as_ref()
+    }
+
     /// Whether the view can draw frames into `format` at `pixel_ratio` now, because the scene's
     /// draw pipelines for that target are compiled.
     ///
@@ -918,7 +980,22 @@ impl View {
         let answers = self.answers_ready(&inner);
         let texts = self.texts_ready(&inner);
         let landed = inner.pipelines.landed();
+        let refused = if inner.pipelines.refusing() { self.refusal(&inner) } else { None };
         drop(inner);
+        if let Some(error) = refused {
+            // The view can't draw what its scene describes, so it draws nothing, which also keeps
+            // the frame it shares with other views valid. It waits for another compile to land.
+            if self.refused.as_ref() != Some(&error) {
+                self.events.tell(Event::Error(error.clone()));
+                for done in self.completing.drain(..) {
+                    done.resolve(Err(error.clone()));
+                }
+            }
+            self.refused = Some(error);
+            self.compiling = Some(landed);
+            return false;
+        }
+        self.refused = None;
         self.compiling = (!draws).then_some(landed);
         self.answering = (!answers).then_some(landed);
         self.texting = (!texts).then_some(landed);

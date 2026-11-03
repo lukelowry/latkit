@@ -444,7 +444,7 @@ fn a_view_is_complete_only_once_a_frame_draws_it() {
 }
 
 #[test]
-fn a_view_rebuilt_on_another_gpu_keeps_its_state_and_draws_the_same_frame() {
+fn a_view_moved_to_another_gpu_keeps_its_state_and_draws_the_same_frame() {
     let (Some(first), Some(second)) = (gpu(), gpu()) else { return };
     let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 30.0]).field("y", vec![0.0, 20.0]))
@@ -458,9 +458,10 @@ fn a_view_rebuilt_on_another_gpu_keeps_its_state_and_draws_the_same_frame() {
     view.set_at(5.0);
     view.set_selection([latkit::Rows::new("graph", "Node", [1_u64])]);
     let pixels = frame(&first, &mut view);
-    let mut rebuilt = view.rebuilt(&second).expect("rebuilt");
-    assert_eq!((rebuilt.camera(), rebuilt.at(), rebuilt.selection()), (view.camera(), view.at(), view.selection()));
-    assert!(frame(&second, &mut rebuilt) == pixels, "the same frame");
+    let before = (*view.camera(), view.at(), view.selection());
+    view.move_to(&second);
+    assert_eq!((*view.camera(), view.at(), view.selection()), before);
+    assert!(frame(&second, &mut view) == pixels, "the same frame, drawn with the new GPU");
 }
 
 #[test]
@@ -1214,6 +1215,107 @@ fn where_depth_varies_the_nearest_mark_shows_whatever_order_it_draws_in() {
     };
     assert!(close(center(true), [0, 0, 255, 255]), "the nearer row shows: {:?}", center(true));
     assert!(close(center(false), [255, 0, 0, 255]), "on flat ground, the row drawn last shows: {:?}", center(false));
+}
+
+/// The middle pixel of `lines` drawn between two pairs of buses, seen from straight above: line 0
+/// raised 30 units nearer the camera, and line 1 on the ground under it, crossing it at the middle
+/// and drawn after it. Each line's `near` field is 1 for the raised one. `selected` lines are
+/// selected.
+fn crossing(gpu: &latkit::Gpu, lines: Edges, selected: &[u64]) -> [u8; 4] {
+    let data = Data::new("d");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Bus", Ids::count(4))
+                    .field("x", vec![-60.0, 60.0, 0.0, 0.0])
+                    .field("y", vec![0.0, 0.0, -60.0, 60.0])
+                    .field("z", vec![30.0, 30.0, 0.0, 0.0]),
+            )
+            .set(
+                Table::new("Line", Ids::count(2))
+                    .reference("from", "Bus", vec![0_u64, 2])
+                    .reference("to", "Bus", vec![1_u64, 3])
+                    .field("near", vec![1.0, 0.0]),
+            ),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("d", "Bus").position(field("x"), field("y")).elevation(field("z")))
+        .draw(lines.ends("from", "to"));
+    let mut view = View::new(gpu, scene);
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    view.set_sources([&data]).expect("a source");
+    if !selected.is_empty() {
+        view.set_selection([latkit::Rows::new("d", "Line", selected.to_vec())]);
+    }
+    at(&frame(gpu, &mut view), SIZE / 2, SIZE / 2)
+}
+
+#[test]
+fn where_depth_varies_the_nearer_of_two_crossing_hairlines_shows() {
+    let Some(gpu) = gpu() else { return };
+    let (blue, red) = (Color::rgb(0.0, 0.0, 1.0), Color::rgb(1.0, 0.0, 0.0));
+    // Lines thinner than a pixel cover none fully, yet still hide what lies behind them.
+    let lines = Edges::of("d", "Line").width(0.75).color(latkit::when(field("near").gt(0.5)).then(blue).otherwise(red));
+    let pixel = crossing(&gpu, lines, &[]);
+    assert!(pixel[2] > pixel[0], "the nearer line shows where they cross: {pixel:?}");
+}
+
+#[test]
+fn where_depth_varies_a_translucent_line_hides_nothing_behind_it() {
+    let Some(gpu) = gpu() else { return };
+    let (blue, red) = (Color::rgb(0.0, 0.0, 1.0).alpha(0.5), Color::rgb(1.0, 0.0, 0.0));
+    let lines = Edges::of("d", "Line").width(4.0).color(latkit::when(field("near").gt(0.5)).then(blue).otherwise(red));
+    let pixel = crossing(&gpu, lines, &[]);
+    assert!(pixel[0] > pixel[2], "the line behind, drawn after, shows through: {pixel:?}");
+}
+
+#[test]
+fn where_depth_varies_rows_a_selection_dims_never_hide_the_selected_ones() {
+    let Some(gpu) = gpu() else { return };
+    let (red, blue) = (Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0));
+    // The ground line is selected, so the raised one over it dims.
+    let lines = Edges::of("d", "Line").width(4.0).color(latkit::when(field("near").gt(0.5)).then(red).otherwise(blue));
+    let pixel = crossing(&gpu, lines, &[1]);
+    assert!(pixel[2] > pixel[0], "the selected line shows under the dimmed one: {pixel:?}");
+}
+
+#[test]
+fn where_depth_varies_a_marker_smaller_than_a_pixel_hides_a_line_under_it() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    // A bus raised 30 units over the middle of a line drawn after it, between two others on the ground.
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Bus", Ids::count(3))
+                    .field("x", vec![0.0, -60.0, 60.0])
+                    .field("y", vec![0.0, 0.0, 0.0])
+                    .field("z", vec![30.0, 0.0, 0.0]),
+            )
+            .set(Table::new("Line", Ids::count(1)).reference("from", "Bus", vec![1_u64]).reference(
+                "to",
+                "Bus",
+                vec![2_u64],
+            )),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(
+            Vertices::of("d", "Bus")
+                .position(field("x"), field("y"))
+                .elevation(field("z"))
+                .radius(0.4)
+                .color(Color::rgb(0.0, 0.0, 1.0)),
+        )
+        .draw(Edges::of("d", "Line").ends("from", "to").width(4.0).color(Color::rgb(1.0, 0.0, 0.0)));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    view.set_sources([&data]).expect("a source");
+    let pixel = at(&frame(&gpu, &mut view), SIZE / 2, SIZE / 2);
+    assert!(pixel[2] > pixel[0], "the raised bus hides the line under it however small: {pixel:?}");
 }
 
 #[test]

@@ -50,6 +50,15 @@ enum Stall {
 }
 
 impl Fitting {
+    /// Takes over the callers waiting on `old`'s fit, as when the view moves to a new device. The
+    /// fit asked for there is asked for here, so this view's fit answers them.
+    pub(crate) fn adopt(&mut self, old: &mut Fitting) {
+        self.answers.append(&mut old.answers);
+        if let Some(next) = old.next.take() {
+            self.next = Some(next);
+        }
+    }
+
     /// Whether extents are being read back.
     pub(crate) fn reading(&self) -> bool {
         self.reading.busy()

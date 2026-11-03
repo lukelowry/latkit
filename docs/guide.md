@@ -269,7 +269,8 @@ replaces one with the same name. Use a `Snapshot` to show a past version, or
 tiles. Give `Tiles` a `fetch` to fetch their files your own way, and call `refresh()` when they
 change.
 
-When the GPU device is lost, latkit requests a new one and moves the views to it as they were.
+When the GPU device is lost, latkit requests a new one once the page is in the foreground, and moves
+the views to it as they were. Promises, listeners, and pictures in progress carry over.
 
 ### Camera
 
@@ -574,5 +575,6 @@ device.on_uncaptured_error(std::sync::Arc::new(move |error| events.error(&error)
 
 `from_wgpu` checks the device's limits but leaves its callbacks to you. Forward device loss and
 uncaptured errors from your own callbacks, as above. Clone one `Gpu` for views that should share
-caches and a budget. The [Rust API reference](https://docs.rs/latkit) documents each type, feature,
+caches and a budget. Once a device is lost, its views draw nothing until `view.move_to(&gpu)` moves
+each to a new `Gpu`, keeping its state and what it was asked. The [Rust API reference](https://docs.rs/latkit) documents each type, feature,
 and example.

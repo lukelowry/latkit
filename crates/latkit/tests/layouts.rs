@@ -73,6 +73,19 @@ fn placed(layout: impl Into<Layout>, pin: Option<[f64; 2]>) -> Vec<[f64; 2]> {
     p
 }
 
+#[test]
+fn a_moved_view_keeps_its_places_without_laying_out_again() {
+    let (Some(old), Some(new)) = (gpu(), gpu()) else { return };
+    let data = graph(None);
+    let mut view = view(&old, scene(Stress::default()), &data);
+    let before = located(&old, &mut view, 4);
+    view.move_to(&new);
+    let after = located(&new, &mut view, 4);
+    assert_eq!(after, before, "the same places");
+    assert_eq!(new.work().jobs, 0, "and no layout ran again");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
 fn apart(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }

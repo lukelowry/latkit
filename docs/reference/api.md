@@ -1294,7 +1294,8 @@ const view = await View.create(canvas, {
 
 {#view-done .member}
 **`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#view-done){.headerlink}
-: Resolves once a frame draws the view complete, at once if the last frame did.
+: Resolves once a frame draws the view complete, at once if the last frame did. Rejects with an
+  `unsupported` error if the browser can't build a pipeline the view needs.
 
 {#view-fit .member}
 **`fit`**`(fit?:` [`Fit`](#fit)`, wait?:` [`Wait`](#wait)`): Promise<`[`Camera`](#camera) `| null>` [¶](#view-fit){.headerlink}
@@ -1440,9 +1441,10 @@ and latitude; on a plot, the axis coordinate and the value.
 A WebGPU device that views draw with. Views on one `Gpu` share its memory and draw together in
 each animation frame, so linked views always show the same moment. Views use the first `Gpu`
 created unless given another, and [`View.create`](#view-create) creates one if none exists. When the device is
-lost, latkit requests a new one and moves the views, their canvases, and the frame listeners to
-it. Destroying a `Gpu` destroys its views and frame listeners. Other GPUs and datasets stay
-usable.
+lost, latkit requests a new one once the page is in the foreground, and moves the views, their
+canvases, and the frame listeners to it. The views stay the same views: what they were asked,
+their listeners, and pictures and videos drawing them carry over. Destroying a `Gpu` destroys
+its views and frame listeners. Other GPUs and datasets stay usable.
 
 ```{rubric} Properties
 ```
@@ -1461,9 +1463,9 @@ usable.
 
 {#gpu-work .member}
 `readonly` **`work`**`:` [`Work`](#work) [¶](#gpu-work){.headerlink}
-: Exact counts of the work this GPU has done since it was created. See [`Work`](#work). The same
-  budget, device limits, and frames give the same counts, so tests and benchmarks can assert
-  them.
+: Exact counts of the work this GPU has done since it was created, on every device it moved to.
+  See [`Work`](#work). The same budget, device limits, and frames give the same counts, so tests and
+  benchmarks can assert them.
 
 {#gpu-resident .member}
 `readonly` **`resident`**`: number` [¶](#gpu-resident){.headerlink}

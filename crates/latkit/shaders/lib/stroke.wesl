@@ -54,13 +54,14 @@ fn stroke_distance(p: vec2f, s: Stroke) -> vec3f {
     return vec3f(d, mix(s.phase.x, s.phase.y, along), along);
 }
 
+// Whether the pixel at `d` (from `stroke_distance`) falls in a gap between stroke `s`'s dashes.
+fn gap(d: vec3f, s: Stroke) -> bool {
+    return s.dash && fract(d.y / max(frame.dash, 1.0)) < 0.5;
+}
+
 // Coverage of the pixel at `d` (from `stroke_distance`) by stroke `s`'s line, with its dashes.
 fn covered(d: vec3f, s: Stroke) -> f32 {
-    var alpha = coverage(d.x);
-    if s.dash {
-        alpha *= step(0.5, fract(d.y / max(frame.dash, 1.0)));
-    }
-    return alpha;
+    return select(coverage(d.x), 0.0, gap(d, s));
 }
 
 // Coverage of the pixel at `d` by comets. Comets are `frame.flow_spacing` apart, offset by stroke

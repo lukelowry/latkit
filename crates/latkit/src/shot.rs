@@ -201,13 +201,19 @@ impl Shot {
     /// Takes the picture of the views `views` lends.
     pub(crate) async fn image_of(&self, views: &mut impl Views) -> Result<Image> {
         let mut drawing = Drawing::later(self.clone(), Pixels::Rgba, true);
-        views.lend(|views| drawing.begin(views))?;
+        let movable = views.movable();
+        views.lend(|views| drawing.begin(views, movable))?;
         let still = self.capture == Capture::Still;
         let mut time = 0.0;
         loop {
             match views.lend(|views| drawing.step(views, time, still))? {
                 Step::Done(readback) => {
-                    let bytes = drawing.read(&readback).await?;
+                    let bytes = match drawing.read(&readback).await {
+                        // The device went before the bytes came back. The views move to a new
+                        // device and draw the picture again there.
+                        Err(Error::DeviceLost) if movable => continue,
+                        read => read?,
+                    };
                     views.lend(|views| {
                         for view in views {
                             if let Some(error) = view.shot_error() {
@@ -230,14 +236,22 @@ impl Shot {
 pub(crate) trait Views {
     /// Calls `f` with the views, one per panel.
     fn lend<R>(&mut self, f: impl FnOnce(&mut [&mut View]) -> R) -> R;
+
+    /// Whether the views can move to a new device between steps, as a page's views do when their
+    /// device is lost. A drawing of such views waits for the move instead of failing.
+    fn movable(&self) -> bool;
 }
 
-/// Views borrowed for the whole drawing.
+/// Views borrowed for the whole drawing, which nothing can move meanwhile.
 pub(crate) struct Borrowed<'a, 'b>(pub(crate) &'a mut [&'b mut View]);
 
 impl Views for Borrowed<'_, '_> {
     fn lend<R>(&mut self, f: impl FnOnce(&mut [&mut View]) -> R) -> R {
         f(self.0)
+    }
+
+    fn movable(&self) -> bool {
+        false
     }
 }
 
@@ -266,11 +280,13 @@ pub(crate) struct Drawing {
     picture: Option<Picture>,
     notify: Arc<Notify>,
     waker: Waker,
-    /// The views' previous wakers, given back when the drawing is dropped.
-    lent: Vec<(Arc<Signal>, Option<Waker>)>,
+    /// The signals of the views lent to the drawing, given back when it is dropped.
+    lent: Vec<Arc<Signal>>,
     /// Whether views draw their data as of when the drawing began, as pictures do. A video's views
     /// follow their data from frame to frame.
     holding: bool,
+    /// Whether the views can move to a new device between steps. See [`Views::movable`].
+    movable: bool,
     /// When the current picture began, for its deadline.
     started: Option<Instant>,
 }
@@ -313,15 +329,16 @@ impl Drawing {
     pub(crate) fn later(shot: Shot, pixels: Pixels, holding: bool) -> Drawing {
         let notify = Arc::new(Notify::default());
         let waker = Waker::from(notify.clone());
-        Drawing { shot, pixels, picture: None, notify, waker, lent: Vec::new(), holding, started: None }
+        Drawing { shot, pixels, picture: None, notify, waker, lent: Vec::new(), holding, movable: false, started: None }
     }
 
-    /// Begins a picture of `views`, one per panel. The first call takes the views: until the
-    /// drawing is dropped, their wakers wake the drawing and nothing else draws them. Fails if
-    /// the view count differs from the panel count, a view is already lent, or the views use
-    /// different GPUs.
-    pub(crate) fn begin(&mut self, views: &[&mut View]) -> Result<()> {
+    /// Begins a picture of `views`, one per panel, which can move to a new device between steps if
+    /// `movable`. The first call takes the views: until the drawing is dropped, their wakers wake
+    /// the drawing and nothing else draws them. Fails if the view count differs from the panel
+    /// count, a view is already lent, or the views use different GPUs.
+    pub(crate) fn begin(&mut self, views: &[&mut View], movable: bool) -> Result<()> {
         self.started = Some(Instant::now());
+        self.movable = movable;
         let expected = self.shot.panels.len();
         if views.len() != expected {
             return Err(Error::invalid(format!("a shot of {expected} panels was given {} views", views.len())));
@@ -340,13 +357,9 @@ impl Drawing {
                 .iter()
                 .map(|view| {
                     let signal = view.signal().clone();
-                    let before = signal.lend(
-                        self.waker.clone(),
-                        self.shot.elapsed.map(|elapsed| elapsed.as_secs_f64()),
-                        self.shot.transparent,
-                        self.holding,
-                    );
-                    (signal, before)
+                    let elapsed = self.shot.elapsed.map(|elapsed| elapsed.as_secs_f64());
+                    signal.lend(self.waker.clone(), elapsed, self.shot.transparent, self.holding);
+                    signal
                 })
                 .collect();
         }
@@ -455,11 +468,24 @@ impl Drawing {
     /// Draws every view into its panel once, at `time`. When every view is complete, and none is
     /// easing if `still`, composes the panels and starts the readback. Until the views' pipelines
     /// have compiled, draws nothing and returns [`Step::Waiting`], even while views are easing.
+    ///
+    /// Views that can move wait while their device is lost, and the picture follows them to their
+    /// new device. Only a move that never comes, by the deadline, fails the picture.
     pub(crate) fn step(&mut self, views: &mut [&mut View], time: f64, still: bool) -> Result<Step> {
-        let picture = self.picture.as_ref().ok_or_else(|| Error::invalid("a picture must begin before it draws"))?;
-        if picture.gpu.lost() {
-            return Err(Error::DeviceLost);
+        let drawn = self.picture.as_ref().ok_or_else(|| Error::invalid("a picture must begin before it draws"))?;
+        let gpu = views.first().map_or_else(|| drawn.gpu.clone(), |view| view.gpu().clone());
+        if gpu.lost() {
+            if !self.movable {
+                return Err(Error::DeviceLost);
+            }
+            self.check_deadline().map_err(|_| Error::DeviceLost)?;
+            return Ok(Step::Waiting);
         }
+        if !Arc::ptr_eq(&drawn.gpu.0, &gpu.0) {
+            // The views moved to a new device. A video keeps its encoder, its time, and its frames.
+            self.picture = Some(Picture::new(&self.shot, views, self.pixels)?);
+        }
+        let picture = self.picture.as_ref().ok_or_else(|| Error::invalid("a picture must begin before it draws"))?;
         self.check_deadline()?;
         let scale = self.shot.scale;
         let mut ready = true;
@@ -467,6 +493,11 @@ impl Drawing {
             ready &= view.ready_for(FORMAT, scale, false);
         }
         if !ready {
+            // A view that can never draw, because the browser refused a pipeline it needs, fails
+            // the picture now instead of at its deadline.
+            if let Some(error) = views.iter().find_map(|view| view.refused().cloned()) {
+                return Err(error);
+            }
             return Ok(Step::Waiting);
         }
         let device = picture.gpu.device();
@@ -514,6 +545,11 @@ impl Drawing {
             }
             self.notify.wait(FRAME).await;
         }
+    }
+
+    /// Whether the views can move to a new device between steps. See [`Views::movable`].
+    pub(crate) fn movable(&self) -> bool {
+        self.movable
     }
 
     /// Waits until work a view depends on arrives, or one frame's time passes.
@@ -596,10 +632,11 @@ impl Picture {
 }
 
 impl Drop for Drawing {
-    /// Gives each view back its previous waker, so its previous owner draws it again.
+    /// Gives each view back to its home, which draws it again: the same home it had, or the one it
+    /// moved to meanwhile.
     fn drop(&mut self) {
-        for (signal, before) in self.lent.drain(..) {
-            signal.give_back(before);
+        for signal in self.lent.drain(..) {
+            signal.give_back();
         }
     }
 }

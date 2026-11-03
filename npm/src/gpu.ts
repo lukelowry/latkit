@@ -12,9 +12,10 @@ import type { View } from './view.js';
  * A WebGPU device that views draw with. Views on one `Gpu` share its memory and draw together in
  * each animation frame, so linked views always show the same moment. Views use the first `Gpu`
  * created unless given another, and `View.create` creates one if none exists. When the device is
- * lost, latkit requests a new one and moves the views, their canvases, and the frame listeners to
- * it. Destroying a `Gpu` destroys its views and frame listeners. Other GPUs and datasets stay
- * usable.
+ * lost, latkit requests a new one once the page is in the foreground, and moves the views, their
+ * canvases, and the frame listeners to it. The views stay the same views: what they were asked,
+ * their listeners, and pictures and videos drawing them carry over. Destroying a `Gpu` destroys
+ * its views and frame listeners. Other GPUs and datasets stay usable.
  */
 export class Gpu extends Handle {
   /** The default GPU for views, and the pending request while it is being created. */
@@ -27,6 +28,8 @@ export class Gpu extends Handle {
   #listeners = new Map<(now: number) => void, bindings.Listener>();
   /** The move to a new device, while one is under way. */
   #recovering: Promise<void> | undefined;
+  /** The work done on the devices this GPU moved from. */
+  #before: Work | undefined;
 
   private constructor(device: bindings.Gpu) {
     super(device, 'Gpu');
@@ -79,16 +82,23 @@ export class Gpu extends Handle {
 
   /**
    * @internal Moves the views, canvases, and frame listeners to a new device, once the device is
-   * lost. Calls made while a move is under way share it. Rejects when there is no new device.
+   * lost. The views stay the same views. Calls made while a move is under way share it. Rejects
+   * when there is no new device.
    */
   recover(): Promise<void> {
     this.#recovering ??= this.#recover().finally(() => (this.#recovering = undefined));
     return this.#recovering;
   }
 
+  /** @internal Destroys the device, as a browser does when it loses one. For tests of the move. */
+  lose(): void {
+    device(this).lose();
+  }
+
   async #recover(): Promise<void> {
-    const bound = await requested(wasm().Gpu.create(), {});
+    const bound = await replacement();
     bound.setBudget(device(this).budget);
+    this.#before = this.work;
     for (const view of this.#views) view.moved(bound);
     for (const canvas of this.#canvases.values()) canvas.moved(bound);
     for (const [called, handle] of this.#listeners) {
@@ -111,12 +121,15 @@ export class Gpu extends Handle {
   }
 
   /**
-   * Exact counts of the work this GPU has done since it was created. See {@link Work}. The same
-   * budget, device limits, and frames give the same counts, so tests and benchmarks can assert
-   * them.
+   * Exact counts of the work this GPU has done since it was created, on every device it moved to.
+   * See {@link Work}. The same budget, device limits, and frames give the same counts, so tests and
+   * benchmarks can assert them.
    */
   get work(): Work {
-    return JSON.parse(device(this).work) as Work;
+    const work = JSON.parse(device(this).work) as Work;
+    const before = this.#before;
+    if (before) for (const key of Object.keys(work) as (keyof Work)[]) work[key] += before[key];
+    return work;
   }
 
   /** Bytes of GPU memory the views draw from: data pages and each view's per-row data. */
@@ -190,6 +203,40 @@ export class Gpu extends Handle {
 /** @internal Returns `owner`'s bindings device. */
 export function device(owner: Gpu): bindings.Gpu {
   return inner<bindings.Gpu>(owner);
+}
+
+/**
+ * A device to replace a lost one. It is asked for once the page shows, since a page in the
+ * background, as a phone's often is when its device is lost, may be refused one. If the page went
+ * to the background before it came, it is asked for once more when the page shows again.
+ */
+async function replacement(): Promise<bindings.Gpu> {
+  await shown();
+  try {
+    return await requested(wasm().Gpu.create(), {});
+  } catch (error) {
+    if (!hidden()) throw error;
+    await shown();
+    return requested(wasm().Gpu.create(), {});
+  }
+}
+
+/** Whether the page is in the background. A worker never is. */
+function hidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+/** Resolves once the page is in the foreground, at once if it is or in a worker. */
+function shown(): Promise<void> {
+  if (!hidden()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const showing = (): void => {
+      if (hidden()) return;
+      document.removeEventListener('visibilitychange', showing);
+      resolve();
+    };
+    document.addEventListener('visibilitychange', showing);
+  });
 }
 
 /** The device `request` resolves to, within `wait`. A device that arrives after the wait is freed. */
