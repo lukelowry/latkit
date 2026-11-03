@@ -37,3 +37,13 @@ fn coverage(d: f32) -> f32 {
 fn fringe() -> f32 {
     return 1.0 / eye.pixel_ratio;
 }
+
+// Whether a shape at signed distance `d` from its edge, `thickness` across at its narrowest (both in
+// CSS pixels), hides what lies behind the pixel. It hides the pixels it covers fully. A shape
+// thinner than three target pixels also hides more of the pixels it covers in part the thinner it
+// is, so however thin it draws it hides at least one pixel, and never one it leaves empty.
+// Antialiasing never decides what hides what.
+fn occupies(d: f32, thickness: f32) -> bool {
+    let f = fringe();
+    return d < clamp(f - 0.5 * thickness, -0.5 * f, 0.5 * f);
+}

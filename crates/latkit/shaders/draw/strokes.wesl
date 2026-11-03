@@ -13,8 +13,8 @@ import package::lib::path::{
 };
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::focus::focus_of;
-import package::lib::mark::{fringe, px_per_length};
-import package::lib::stroke::{Stroke, stroke, stroke_distance};
+import package::lib::mark::{fringe, occupies, px_per_length};
+import package::lib::stroke::{Stroke, gap, stroke, stroke_distance};
 import package::lib::daylight::daylight;
 import package::lib::color::{output, OPAQUE};
 
@@ -126,12 +126,15 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     return output(vec4f(c.rgb * c.a, c.a));
 }
 
-// The depth variant writes only the depth of a stroke's opaque pixels, so its antialiased edge,
-// dash gaps, and comets leave what lies behind them showing.
+// The depth variant writes the depth of an opaque row's line wherever it covers the pixel, at least
+// a target pixel wide however thin it draws. Translucent rows (dimmed by a selection, fading, or of
+// a translucent color), dash gaps, and comets leave what lies behind them showing.
 @if(depth)
 @fragment
 fn fragment(v: Varyings) {
-    if stroke(pixel(v), segment_of(v)).a < OPAQUE {
+    let s = segment_of(v);
+    let d = stroke_distance(pixel(v), s);
+    if s.color.a < OPAQUE || !occupies(d.x, s.width) || gap(d, s) {
         discard;
     }
 }

@@ -761,7 +761,8 @@ impl View {
             pass.set_scissor_rect(x, y, w, h);
         }
         // Where depth varies, points and strokes first write their depth, so wherever marks overlap
-        // the nearest shows, whatever their order.
+        // the nearest shows, whatever their order. An opaque row writes it over its shape, however
+        // thin. A translucent row writes none, so rows a selection dims never hide the lit rows.
         if self.deep() && self.depths_ready(inner, frame.format, samples) {
             for (i, shown) in self.marks.iter().enumerate() {
                 if shown.drawable() && shown.instances() > 0 {
@@ -776,8 +777,9 @@ impl View {
             marks.draw(&mut pass, drawn, inner, i, shown, Draw::Rows);
             marks.ports(&mut pass, drawn, inner, i, shown);
         }
-        // Lit rows draw again, glowing, over every mark but labels. Only their own ports cover
-        // them. They draw once their pipelines have compiled.
+        // Lit rows draw again, glowing, over every mark but labels, and where depth varies, over all
+        // but the opaque rows nearer than them. Only their own ports cover them. They draw once their
+        // pipelines have compiled.
         for (i, shown) in self.marks.iter().enumerate() {
             if self.answers() && shown.drawable() && shown.lit.rows > 0 {
                 marks.draw(&mut pass, drawn, inner, i, shown, Draw::Lit);
