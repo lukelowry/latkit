@@ -1,5 +1,30 @@
 # latkit
 
+## 0.5.1
+
+### Patch Changes
+
+- fed582c: Where depth varies, thin lines and small markers hide what lies behind them, and rows a selection dims never hide the selected ones.
+
+  - Fixed: where depth varies (a tilted camera, the globe, or raised vertices), a line thinner than a device pixel or a marker smaller than one now hides what lies behind it, so the nearest row shows whatever the order of the marks. Before, they hid nothing, and the row drawn last showed.
+  - Changed: an opaque row hides what lies behind it wherever its shape covers a pixel, never by how its edge is smoothed. A shape thinner than three device pixels also hides the pixels it partly covers, so it hides at least one. Translucent rows, including rows a selection dims and rows fading in or out, hide nothing, so the selected rows show over the dimmed ones. Dash gaps, comets, glows, shadows, status rings, an icon's clear pixels, and a custom marker's holes hide nothing either.
+
+- fed582c: A lost device moves each view to a new one as the same view, so nothing that waited on it is cancelled.
+
+  - Changed: when the device is lost, each view moves to the new device as the same view. Promises waiting on it (`fit`, `done`, `arrange`, `pick`, and other queries), its listeners, and pictures and videos drawing it carry over and answer there, where before they rejected as `cancelled`.
+  - Changed: a moved view keeps its laid-out places, camera, clock, and `stats`, so it lays out nothing again and its effects go on.
+  - Changed: latkit requests the new device once the page is in the foreground, as phones often lose the device in the background. If the page goes to the background before the device comes, latkit asks once more when it shows again.
+  - Changed: `gpu.work` counts the work of every device the GPU moved to.
+  - Changed: in Rust, `View::move_to(&gpu)` moves a view in place and can't fail.
+  - Removed: `View::rebuilt` in Rust, replaced by `View::move_to`.
+  - Fixed: a device given up for lack of memory no longer reports a `limit` error, since its views go on drawing on the new device.
+  - Fixed: a moved view reports its failures again only when they change.
+
+- fed582c: Every pipeline builds in Safari and other WebKit browsers, and a pipeline a browser refuses to build is an error instead of a blank view.
+
+  - Changed: pipelines pass no pipeline constants. Each pipeline's shader declares the values it is built for as constants in its own code. WebKit, which every iPad and iPhone browser uses, refused pipelines given constants their stages don't read, so views there drew only their background.
+  - Changed: when a browser refuses to build a pipeline a view needs, the view reports an `unsupported` error that names the pipeline and gives the browser's reason. It draws nothing, so the other views keep drawing, and `done()` and pictures of it fail with that error.
+
 ## 0.5.0
 
 ### Minor Changes
