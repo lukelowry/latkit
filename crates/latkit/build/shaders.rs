@@ -3,16 +3,16 @@
 //! - Every constant and struct of `lib/types.wesl`, as Rust constants and `#[repr(C)]` mirrors
 //!   whose sizes are checked against WGSL.
 //! - The shared bind group layouts of `lib/bind.wesl` (group 0 per view, group 1 per mark).
-//! - Per shader variant: its declarations, pipeline constant names, pass group layout (group 2),
-//!   and whether it uses the shared groups.
+//! - Per shader variant: its declarations, the constants pipelines specialize it with, its pass
+//!   group layout (group 2), and whether it uses the shared groups.
 //!
 //! Variants share most of their linked code, so each distinct top-level declaration is stored once
 //! in `OUT_DIR/shaders.wgsl`. A variant is a list of declaration indices that join back into
 //! exactly the module it linked.
 //!
-//! It also writes each variant's full module, and `OUT_DIR/shaders.json` listing every variant's
-//! file, entry points, and pipeline constant values. The browser gate reads it to time each
-//! pipeline in Chrome.
+//! It also writes the module of every specialization pipelines use, exactly as the runtime writes
+//! it (see `src/gpu/specialize.rs`) and validated, and `OUT_DIR/shaders.json` listing each one's
+//! file and entry points. The browser gate reads it to time each pipeline in Chrome.
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use naga::{AddressSpace, ArraySize, ImageClass, ImageDimension, ScalarKind, StorageAccess, TypeInner, VectorSize};
+
+use crate::specialize::{Constant, SEPARATOR, specialize};
 
 /// A shader module and its variants. Each variant enables its listed WESL features.
 struct Entry {
@@ -107,20 +109,34 @@ pub(crate) fn generate() {
             let checked = if custom { format!("{source}\n{CUSTOM_MARKER}") } else { source.clone() };
             let (module, info) = validate(&format!("{}.{variant}", entry.module), &checked);
             check_shared(&module, &bind_module, entry.module);
-            let file = format!("{}.{variant}.wgsl", entry.module.replace("::", "."));
-            fs::write(out.join(&file), &source).unwrap();
-            manifest.push(manifest_entry(entry.module, &file, &module, &types_module, custom));
+            let names = constant_names(&module);
+            let constants = constants(&module, &names, &source);
+            let file = format!("{}.{variant}", entry.module.replace("::", "."));
+            manifest.extend(manifest_entries(
+                entry.module,
+                &file,
+                &source,
+                &constants,
+                &module,
+                &types_module,
+                custom,
+                &out,
+            ));
             let name = shader_name(entry.module, variant);
             writeln!(shaders, "    {name},").unwrap();
             let pass = bindings(&module, Some(&info), 2);
-            let overrides: Vec<String> = module.overrides.iter().filter_map(|(_, o)| o.name.clone()).collect();
+            let constants: Vec<String> = constants
+                .iter()
+                .map(|c| format!("Constant {{ name: {:?}, at: {}, bool: {} }}", c.name, c.at, c.bool))
+                .collect();
             let shared = module.global_variables.iter().any(|(_, g)| g.binding.as_ref().is_some_and(|b| b.group < 2));
             writeln!(
                 sources,
-                "        Shader::{name} => &ShaderSource {{ label: {label:?}, pieces: &{refs:?}, pass: &[{pass}], overrides: &{overrides:?}, shared: {shared} }},",
+                "        Shader::{name} => &ShaderSource {{ label: {label:?}, pieces: &{refs:?}, pass: &[{pass}], constants: &[{constants}], shared: {shared} }},",
                 label = format!("latkit {}.{variant}", entry.module),
                 refs = pieces.add(&source),
                 pass = pass.join(", "),
+                constants = constants.join(", "),
             )
             .unwrap();
         }
@@ -170,19 +186,82 @@ impl Pieces {
     }
 }
 
-/// The separator between top-level declarations in a linked module, used to split and rejoin them.
-const SEPARATOR: &str = "\n\n";
+/// The names of the constants `module` declares as `override`s.
+fn constant_names(module: &naga::Module) -> Vec<String> {
+    module.overrides.iter().map(|(_, o)| o.name.clone().expect("a named override")).collect()
+}
 
-/// A variant as JSON: its file, whether it draws, its compute entry points, every combination of
-/// its pipeline constants that pipelines use, and the WGSL to append to complete it (the
-/// placeholder custom marker).
-fn manifest_entry(shader: &str, file: &str, module: &naga::Module, types: &naga::Module, custom: bool) -> String {
+/// The constants pipelines specialize `module` with, linked as `source`: each one's type, and the
+/// declaration that declares it, which each pipeline's module replaces with a `const`.
+fn constants<'a>(module: &naga::Module, names: &'a [String], source: &str) -> Vec<Constant<'a>> {
+    module
+        .overrides
+        .iter()
+        .zip(names)
+        .map(|((_, o), name)| {
+            let bool = match module.types[o.ty].inner {
+                TypeInner::Scalar(naga::Scalar::BOOL) => true,
+                TypeInner::Scalar(naga::Scalar::U32) => false,
+                ref other => panic!("the constant {name} is a {other:?}, not a bool or u32"),
+            };
+            let declares = format!("override {name}:");
+            let at = source
+                .split(SEPARATOR)
+                .position(|piece| piece.starts_with(&declares))
+                .unwrap_or_else(|| panic!("no declaration of its own for the constant {name}"));
+            Constant { name, at: u16::try_from(at).expect("fewer than 65536 declarations"), bool }
+        })
+        .collect()
+}
+
+/// Writes the module of each specialization of a variant that pipelines use, as the runtime writes
+/// it, and validates it, with the placeholder marker appended if `custom`. Returns each as JSON: its
+/// file, whether it draws, its compute entry points, and the WGSL to append to complete it.
+#[expect(clippy::too_many_arguments, reason = "one variant's linked and validated forms")]
+fn manifest_entries(
+    shader: &str,
+    file: &str,
+    source: &str,
+    constants: &[Constant<'_>],
+    module: &naga::Module,
+    types: &naga::Module,
+    custom: bool,
+    out: &Path,
+) -> Vec<String> {
     let compute: Vec<String> = module
         .entry_points
         .iter()
         .filter(|e| e.stage == naga::ShaderStage::Compute)
         .map(|e| format!("{:?}", e.name))
         .collect();
+    // A depth variant's fragment stage writes no color.
+    let colors =
+        !module.entry_points.iter().any(|e| e.stage == naga::ShaderStage::Fragment && e.function.result.is_none());
+    let append = if custom { CUSTOM_MARKER } else { "" };
+    combinations(shader, module, types)
+        .iter()
+        .map(|values| {
+            let value = |name: &str| values.iter().find(|(n, _)| *n == name).map(|&(_, v)| v).expect("a value");
+            let specialized = specialize(source.split(SEPARATOR), constants, value);
+            let mut file = file.to_owned();
+            for (name, value) in values {
+                write!(file, ".{name}={value}").unwrap();
+            }
+            file.push_str(".wgsl");
+            let (checked, _) = validate(&file, &format!("{specialized}\n{append}"));
+            assert!(checked.overrides.is_empty(), "{file}: a pipeline's module sets every constant itself");
+            fs::write(out.join(&file), &specialized).unwrap();
+            format!(
+                "  {{ \"file\": {file:?}, \"draws\": {draws}, \"colors\": {colors}, \"compute\": [{}], \"append\": {append:?} }}",
+                compute.join(", "),
+                draws = compute.is_empty(),
+            )
+        })
+        .collect()
+}
+
+/// Every combination of `module`'s constants that pipelines use.
+fn combinations<'a>(shader: &str, module: &'a naga::Module, types: &naga::Module) -> Vec<Vec<(&'a str, u32)>> {
     let mut combinations: Vec<Vec<(&str, u32)>> = vec![Vec::new()];
     for (_, o) in module.overrides.iter() {
         let name = o.name.as_deref().expect("a named override");
@@ -204,20 +283,7 @@ fn manifest_entry(shader: &str, file: &str, module: &naga::Module, types: &naga:
             .filter(|c| made(shader, c, types))
             .collect();
     }
-    let constants: Vec<String> = combinations
-        .iter()
-        .map(|c| format!("{{{}}}", c.iter().map(|(n, v)| format!("{n:?}: {v}")).collect::<Vec<_>>().join(", ")))
-        .collect();
-    // A depth variant's fragment stage writes no color.
-    let colors =
-        !module.entry_points.iter().any(|e| e.stage == naga::ShaderStage::Fragment && e.function.result.is_none());
-    format!(
-        "  {{ \"file\": {file:?}, \"draws\": {draws}, \"colors\": {colors}, \"compute\": [{}], \"constants\": [{}], \"append\": {:?} }}",
-        compute.join(", "),
-        constants.join(", "),
-        if custom { CUSTOM_MARKER } else { "" },
-        draws = compute.is_empty(),
-    )
+    combinations
 }
 
 /// Whether any pipeline of `module` uses `constants`. Only channel evaluation (`compute::evaluate`)

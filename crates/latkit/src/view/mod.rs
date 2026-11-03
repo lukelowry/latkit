@@ -165,6 +165,9 @@ pub struct View {
     /// Whether the device loss has been reported, and the number of the next error the device
     /// raises that this view has not reported.
     told_lost: bool,
+    /// Why the browser refused to build a pipeline the view needs, once it did. The view then draws
+    /// nothing, and [`done`](View::done) fails with it.
+    refused: Option<crate::Error>,
     raised_seen: u64,
     /// Failures of the host jobs and fetches this view started, reported with its next frame.
     job_errors: Arc<std::sync::Mutex<Vec<crate::Error>>>,
@@ -269,6 +272,7 @@ impl View {
             regions: Regions::default(),
             changed: true,
             told_lost: false,
+            refused: None,
             // Errors raised before the view existed are not its to report.
             raised_seen: gpu.0.raised.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next(),
             job_errors,
@@ -896,10 +900,13 @@ impl View {
     }
 
     /// Resolves once a frame draws the view [complete](View::complete), at once if the last frame
-    /// did and nothing has changed since.
+    /// did and nothing has changed since. Fails if the browser refuses to build a pipeline the
+    /// view needs.
     pub fn done(&mut self) -> Pending<()> {
         let (pending, resolver) = Pending::new();
-        if self.complete() && !self.needs_render() {
+        if let Some(error) = &self.refused {
+            resolver.resolve(Err(error.clone()));
+        } else if self.complete() && !self.needs_render() {
             resolver.resolve(Ok(()));
         } else {
             self.completing.push(resolver);
@@ -943,6 +950,12 @@ impl View {
         self.events.error().cloned()
     }
 
+    /// Why the browser refused to build a pipeline the view needs, if it did. The view draws
+    /// nothing meanwhile.
+    pub(crate) fn refused(&self) -> Option<&crate::Error> {
+        self.refused.as_ref()
+    }
+
     /// Whether the view can draw frames into `format` at `pixel_ratio` now, because the scene's
     /// draw pipelines for that target are compiled.
     ///
@@ -967,7 +980,22 @@ impl View {
         let answers = self.answers_ready(&inner);
         let texts = self.texts_ready(&inner);
         let landed = inner.pipelines.landed();
+        let refused = if inner.pipelines.refusing() { self.refusal(&inner) } else { None };
         drop(inner);
+        if let Some(error) = refused {
+            // The view can't draw what its scene describes, so it draws nothing, which also keeps
+            // the frame it shares with other views valid. It waits for another compile to land.
+            if self.refused.as_ref() != Some(&error) {
+                self.events.tell(Event::Error(error.clone()));
+                for done in self.completing.drain(..) {
+                    done.resolve(Err(error.clone()));
+                }
+            }
+            self.refused = Some(error);
+            self.compiling = Some(landed);
+            return false;
+        }
+        self.refused = None;
         self.compiling = (!draws).then_some(landed);
         self.answering = (!answers).then_some(landed);
         self.texting = (!texts).then_some(landed);

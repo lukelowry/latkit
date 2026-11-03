@@ -493,6 +493,11 @@ impl Drawing {
             ready &= view.ready_for(FORMAT, scale, false);
         }
         if !ready {
+            // A view that can never draw, because the browser refused a pipeline it needs, fails
+            // the picture now instead of at its deadline.
+            if let Some(error) = views.iter().find_map(|view| view.refused().cloned()) {
+                return Err(error);
+            }
             return Ok(Step::Waiting);
         }
         let device = picture.gpu.device();

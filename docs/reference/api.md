@@ -1294,7 +1294,8 @@ const view = await View.create(canvas, {
 
 {#view-done .member}
 **`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#view-done){.headerlink}
-: Resolves once a frame draws the view complete, at once if the last frame did.
+: Resolves once a frame draws the view complete, at once if the last frame did. Rejects with an
+  `unsupported` error if the browser can't build a pipeline the view needs.
 
 {#view-fit .member}
 **`fit`**`(fit?:` [`Fit`](#fit)`, wait?:` [`Wait`](#wait)`): Promise<`[`Camera`](#camera) `| null>` [¶](#view-fit){.headerlink}

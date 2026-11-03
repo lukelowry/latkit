@@ -320,7 +320,10 @@ export class View extends Handle {
     return view(this).complete;
   }
 
-  /** Resolves once a frame draws the view complete, at once if the last frame did. */
+  /**
+   * Resolves once a frame draws the view complete, at once if the last frame did. Rejects with an
+   * `unsupported` error if the browser can't build a pipeline the view needs.
+   */
   async done(wait: Wait = {}): Promise<void> {
     await waited<void>(view(this).done(), wait, 'drawing');
   }

@@ -13,6 +13,7 @@ pub(crate) mod pipelines;
 pub(crate) mod readback;
 pub(crate) mod retired;
 pub(crate) mod shaders;
+mod specialize;
 pub(crate) mod work;
 
 use std::sync::atomic::{AtomicBool, Ordering};
