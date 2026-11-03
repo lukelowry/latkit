@@ -84,13 +84,14 @@ pub(crate) enum Gesture {
         to: [f32; 2],
     },
     /// A row dragged by `pointer`. `grab` is the hit point minus the press point, in CSS pixels, so
-    /// the row keeps its offset from the pointer. `from` is where the row stood when the drag
-    /// began, as its fields held it, which a cancel puts back exactly.
+    /// the row keeps its offset from the pointer. `from` is what the row's position fields held
+    /// when the drag began, a missing value as `None` (as for a row a layout places), which a
+    /// cancel writes back exactly.
     Drag {
         pointer: u32,
         probed: Probed,
         grab: [f32; 2],
-        from: Option<[f64; 2]>,
+        from: Option<[Option<f64>; 2]>,
     },
     Pan {
         pointer: u32,
@@ -600,8 +601,8 @@ impl View {
         match answer.hit {
             Some(probed) if drags(&probed) => {
                 let grab = [probed.hit.point[0] - from[0], probed.hit.point[1] - from[1]];
-                let stood = self.placed(&probed.hit);
-                self.gestures.now = Gesture::Drag { pointer, probed, grab, from: stood };
+                let held = self.held(&probed.hit);
+                self.gestures.now = Gesture::Drag { pointer, probed, grab, from: held };
                 self.drag(Phase::Start, trigger);
             }
             _ if action == Action::Scrub && self.plots() => {
@@ -697,12 +698,16 @@ impl View {
 
     /// Reports where the dragged row goes. With the pointer at `trigger`, the hit point moves with
     /// it from the press, at the depth where the drag started, snapped to a diagram's grid dots
-    /// when the grid snaps. A cancel puts the row back where it stood, as its fields held it,
-    /// however the camera has moved since.
+    /// when the grid snaps. A cancel writes back what the row's position fields held, missing
+    /// values included, however the camera has moved since. It reports the row where those
+    /// fields placed it, or where it was drawn when they held nothing.
     fn drag(&mut self, phase: Phase, trigger: Trigger) {
         let Gesture::Drag { probed, grab, from, .. } = &self.gestures.now else { return };
         let (position, place) = match (phase, *from) {
-            (Phase::Cancel, Some([x, y])) => ([x, y, probed.hit.position[2]], Some([x, y])),
+            (Phase::Cancel, Some(held)) => match held {
+                [Some(x), Some(y)] => ([x, y, probed.hit.position[2]], Some(held)),
+                _ => (probed.hit.position, Some(held)),
+            },
             (Phase::Cancel, None) => (probed.hit.position, None),
             _ => {
                 let view = self.projected();
@@ -716,7 +721,7 @@ impl View {
                         *v = (*v / pitch).round() * pitch;
                     }
                 }
-                (position, Some([position[0], position[1]]))
+                (position, Some([Some(position[0]), Some(position[1])]))
             }
         };
         let row = probed.hit.row.clone();
@@ -724,22 +729,25 @@ impl View {
         self.events.tell(Event::Drag { phase, hit: probed.hit.clone(), position, patch, trigger });
     }
 
-    /// Where `hit`'s row stands, as the table its frame drew holds it: the values of its mark's
-    /// position fields, or its point. `None` when its position is an expression or the row is gone.
-    fn placed(&self, hit: &Hit) -> Option<[f64; 2]> {
+    /// What `hit`'s row's position fields hold in the table its frame drew: its mark's x and y
+    /// fields, or its point, each missing value as `None`. `None` when its mark places it by an
+    /// expression, or the table no longer holds the row.
+    fn held(&self, hit: &Hit) -> Option<[Option<f64>; 2]> {
         let crate::Mark::Vertices(mark) = self.scene.marks.get(hit.index)? else { return None };
         let table = &self.marks.get(hit.index)?.holding.as_ref()?.table;
+        table.row(hit.row.id.as_ref())?;
         let value = |field: &str| table.get(hit.row.id.clone(), field);
-        match &mark.position {
-            None => match value(mark.point_field())? {
-                Value::Point(point) => Some(point),
-                _ => None,
+        let number = |field: &str| match value(field) {
+            Some(Value::Number(v)) => Some(v),
+            _ => None,
+        };
+        Some(match &mark.position {
+            None => match value(mark.point_field()) {
+                Some(Value::Point([x, y])) => [Some(x), Some(y)],
+                _ => [None, None],
             },
-            Some([x, y]) => match (value(x.field_name()?)?, value(y.field_name()?)?) {
-                (Value::Number(x), Value::Number(y)) => Some([x, y]),
-                _ => None,
-            },
-        }
+            Some([x, y]) => [number(x.field_name()?), number(y.field_name()?)],
+        })
     }
 
     /// Shows the axis coordinate under `point` on a plot, reporting it when it changes.

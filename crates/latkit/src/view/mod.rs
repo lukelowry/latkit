@@ -776,6 +776,7 @@ impl View {
     /// Resolves the pending `arrange` calls once their layout has finished.
     fn answer_arranging(&mut self) {
         let Some(placed) = self.derived.take_arranged() else { return };
+        let placed = placed.into_iter().map(|(row, [x, y])| (row, [Some(x), Some(y)])).collect();
         let patches = arranged(&self.scene, placed);
         for resolver in self.arranging.drain(..) {
             resolver.resolve(Ok(patches.clone()));
@@ -1239,11 +1240,12 @@ impl std::fmt::Debug for View {
     }
 }
 
-/// One patch per dataset that writes each laid-out row's position into the position fields of the
-/// vertex mark drawing its table, or into its point geometry.
-fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<Patch> {
-    /// A table's laid-out rows: its dataset and table names, the row ids, and their positions.
-    type Laid = ((Name, Name), Vec<crate::Id>, Vec<[f64; 2]>);
+/// One patch per dataset that writes each row's position into the position fields of the vertex
+/// mark drawing its table, or into its point geometry. A position's missing x or y is written as
+/// missing, and a point missing either is written as no point.
+fn arranged(scene: &Scene, placed: Vec<(Row, [Option<f64>; 2])>) -> Vec<Patch> {
+    /// A table's rows: its dataset and table names, the row ids, and their positions.
+    type Laid = ((Name, Name), Vec<crate::Id>, Vec<[Option<f64>; 2]>);
     let mut tables: Vec<Laid> = Vec::new();
     for (row, place) in placed {
         let key = (row.data, row.table);
@@ -1264,7 +1266,11 @@ fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<Patch> {
         let Some(mark) = mark else { continue };
         let written = crate::Table::new(table, ids);
         let written = match &mark.position {
-            None => written.field(mark.point_field(), places),
+            None => {
+                let points: Vec<Option<[f64; 2]>> =
+                    places.iter().map(|[x, y]| x.zip(*y).map(|(x, y)| [x, y])).collect();
+                written.field(mark.point_field(), points)
+            }
             Some([x, y]) => match (x.field_name(), y.field_name()) {
                 (Some(x), Some(y)) => written
                     .field(x, places.iter().map(|p| p[0]).collect::<Vec<_>>())

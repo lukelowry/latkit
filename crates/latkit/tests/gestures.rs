@@ -645,6 +645,43 @@ fn a_cancelled_drag_restores_the_row_exactly_wherever_the_camera_went() {
 }
 
 #[test]
+fn a_cancelled_drag_of_a_row_the_layout_placed_leaves_its_fields_empty() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", vec![1_u64]).field("x", vec![None::<f64>]).field("y", vec![None::<f64>]))
+        .expect("valid");
+    let scene = Scene::new(diagram())
+        .theme(plain_theme())
+        .layout(latkit::Stress::default())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).drag(true));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(&gpu, &mut view);
+    let pending = view.screen_of(&Row::new("graph", "Node", 1_u64), None);
+    let at = common::answer(&gpu, &mut view, pending).expect("the layout placed the node");
+    // Dragged, as an editor would, applying the start's patch, which writes x and y.
+    let inputs = [moved(at), down(at, Button::Primary), moved([at[0] + 30.0, at[1] + 30.0])];
+    let started = |e: &Event| match e {
+        Event::Drag { phase: Phase::Start, patch, .. } => Some(patch.clone()),
+        _ => None,
+    };
+    data.apply(after(&gpu, &mut view, &inputs, started).expect("a patch")).expect("valid");
+    assert!(view.input(&Input::Cancel { pointer: 1 }, common::now()), "the cancel stops the drag");
+    let patch = view
+        .events()
+        .find_map(|e| match e {
+            Event::Drag { phase: Phase::Cancel, patch, .. } => Some(patch),
+            _ => None,
+        })
+        .expect("a cancel");
+    data.apply(patch.expect("a patch that empties the fields again")).expect("valid");
+    let snapshot = data.snapshot();
+    let got = |field: &str| snapshot.get("Node", 1_u64, field, None);
+    assert_eq!((got("x"), got("y")), (None, None), "x and y are empty again, so the layout places the row");
+}
+
+#[test]
 fn every_button_does_what_its_input_says() {
     let Some(gpu) = gpu() else { return };
     let controls = with(&[("middle", Action::Scrub)]);

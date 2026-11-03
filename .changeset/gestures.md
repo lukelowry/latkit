@@ -6,7 +6,7 @@ What every input does is set in one place, `controls.gestures`, with new gesture
 
 - Added: `controls.gestures` sets what each input does: a drag with the `primary`, `secondary`, or `middle` button, the `wheel`, and two fingers that `pinch`, `twist`, or `slide`, each with any modifier keys held, as in `{ 'shift+primary': 'box', wheel: 'pan' }`. The actions are `pan`, `turn`, `tilt`, `zoom`, `box`, `zoomBox`, `scrub`, `connect`, and `none`. In Rust, `Gestures::with(key, action)` builds them.
 - Added: new gestures. The wheel can pan, turn, or tilt, so a trackpad can scroll the map. A drag can tilt alone, or zoom to frame a box. Two fingers can twist to turn and slide to tilt.
-- Added: the drag phase `cancel`. Its `position` and `patch` put the row back exactly as its fields held it when the drag started, however the camera moved and whatever grid drags snap to.
+- Added: the drag phase `cancel`. Its `patch` writes the row's position fields back exactly as they were when the drag started, however the camera moved and whatever grid drags snap to. Fields that were empty, as for a row a layout placed, are emptied again.
 - Added: `Input::Blur`. Losing focus stops every gesture and the keys, and forgets the pointer until it moves again, so nothing asked for before lands and nothing stays hovered. A page's canvas sends it when it loses focus, and cancels a pointer it loses capture of.
 - Changed: every button presses alike and does what its input says. A middle press never clicks, and a middle drag on a row of a draggable mark drags the row, as a primary drag does.
 - Changed: a cancelled pan or turn no longer coasts, a cancelled drag reports `cancel` instead of `end`, and a cancelled press never clicks, selects, connects, or opens a menu.
