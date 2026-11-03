@@ -24,7 +24,13 @@ struct Keeping(Pictures);
 impl Host for Keeping {
     fn rasterize(&self, run: &TextRun) -> latkit::Result<Raster> {
         let size = [(run.text.chars().count() as u32 * run.size_px / 2).max(1), run.size_px];
-        Ok(Raster { size, coverage: vec![255; (size[0] * size[1]) as usize], baseline: run.size_px as f32 * 0.8 })
+        let line_box = [0.0, 0.0, size[0] as f32, size[1] as f32];
+        Ok(Raster {
+            size,
+            coverage: vec![255; (size[0] * size[1]) as usize],
+            baseline: run.size_px as f32 * 0.8,
+            line_box,
+        })
     }
 
     fn encoder(&self, encoding: &Encoding) -> latkit::Result<Box<dyn Encoder>> {
@@ -59,7 +65,7 @@ fn view(gpu: &latkit::Gpu) -> View {
     let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::ZERO).draw(
         Vertices::of("graph", "Node").position(field("x"), field("y")).radius(20.0).color(Color::rgb(1.0, 0.0, 0.0)),
     );
-    let mut view = View::new(gpu, scene).expect("valid scene");
+    let mut view = View::new(gpu, scene);
     view.set_camera(camera());
     view.set_sources([dot(0.0)]).expect("a source");
     view
@@ -118,7 +124,7 @@ fn labeled_marks_easing_between_frames_complete_every_frame() {
     let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::from_millis(300)).draw(
         Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).label(Label::new(field("name"))),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     let named = |x: f64| {
         let data = dot(x);

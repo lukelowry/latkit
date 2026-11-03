@@ -102,11 +102,15 @@ fn a_string_with_a_dollar_reads_a_field_in_every_option_and_any_other_is_a_color
             .label(Label::new(field("name")).color(css("white"))),
     );
     assert_eq!(scene(json), built);
-    let error = serde_json::from_str::<Scene>(
+    let read = serde_json::from_str::<Scene>(
         r#"{ "space": "plane", "marks": [{ "vertices": ["grid", "Bus"], "radius": "kv" }] }"#,
     )
-    .expect_err("a field's name without its $");
-    assert!(error.to_string().contains(r#""kv" is not a CSS color; "$kv" reads field kv"#), "{error}");
+    .expect("a scene without the option it can't read");
+    let error = read.unread[0].to_string();
+    assert!(
+        error.contains(r#""kv" is not a CSS color; "$kv" reads field kv"#),
+        "a field's name without its $: {error}"
+    );
 }
 
 #[test]
@@ -172,10 +176,11 @@ fn comets_and_named_categories_match_builders() {
     let continuous =
         r#"{ "colormap": { "kind": "sequential", "colors": ["red"], "categories": ["a"] }, "value": "$k" }"#;
     assert!(serde_json::from_str::<Expr>(continuous).is_err(), "only a categorical map has categories");
-    let mixed = Scene::new(Plane::default())
+    let mut mixed = Scene::new(Plane::default())
         .theme(Theme { flow: FlowTheme { spacing: Length::Units(40.0), ..Theme::default().flow }, ..Theme::default() });
-    let error = mixed.check().expect_err("spacing and length in two units");
-    assert!(error.to_string().starts_with("theme.flow.length: "), "{error}");
+    let failures = mixed.sanitize();
+    assert!(failures[0].to_string().starts_with("theme.flow.length: "), "{failures:?}");
+    assert_eq!(mixed.theme.flow, Theme::default().flow, "both lengths reset to the theme's");
 }
 
 #[test]
@@ -227,11 +232,12 @@ fn presets_equal_their_values() {
 }
 
 #[test]
-fn unknown_options_are_refused() {
-    let error =
+fn unknown_options_are_left_out_and_a_mark_has_one_kind() {
+    let scene =
         serde_json::from_str::<Scene>(r#"{"space": "plane", "marks": [{"vertices": ["a", "b"], "colour": "x"}]}"#)
-            .expect_err("a typo");
-    assert!(error.to_string().contains("colour"), "{error}");
+            .expect("a scene without the typo");
+    assert!(scene.unread[0].to_string().starts_with("marks[0].colour:"), "{:?}", scene.unread);
+    assert_eq!(scene.marks[0], crate::Mark::from(Vertices::of("a", "b")));
     let two = r#"{"space": "plane", "marks": [{"vertices": ["a", "b"], "edges": ["a", "c"]}]}"#;
     assert!(serde_json::from_str::<Scene>(two).is_err(), "a mark of two kinds");
 }

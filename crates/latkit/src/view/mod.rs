@@ -11,10 +11,10 @@ mod focus;
 mod frame;
 mod gestures;
 mod graph;
+mod guides;
 mod input;
 mod kept;
 mod labels;
-mod legends;
 mod lists;
 mod marks;
 mod passes;
@@ -93,7 +93,7 @@ pub struct Frame<'a> {
 /// let graph = Data::new("graph");
 /// graph.apply(Table::new("Node", Ids::count(3)).field("x", vec![0.0, 1.0, 2.0]).field("y", vec![0.0, 1.0, 0.0]))?;
 /// let nodes = Vertices::of("graph", "Node").position(field("x"), field("y"));
-/// let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(nodes))?;
+/// let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(nodes));
 /// view.set_sources([&graph])?;
 /// view.fit(latkit::Fit::All);
 /// // The next frame draws this change: a view draws the latest version of each Data it is given.
@@ -107,6 +107,10 @@ pub struct View {
     scene: Scene,
     /// Incremented whenever the scene changes.
     scene_version: u64,
+    /// Why options of the scene draw as if unset: those its JSON left out, and those it can't use.
+    scene_failures: Vec<Error>,
+    /// The failures the last `Failures` event reported.
+    told_failures: Vec<Error>,
     /// The sources the application gave, each a named dataset.
     sources: Vec<Source>,
     /// The version of each dataset the view draws, sorted by name: a given snapshot, the latest
@@ -136,9 +140,10 @@ pub struct View {
     rig: Rig,
     /// CSS pixels kept clear at the top, right, bottom, and left.
     insets: [f32; 4],
-    /// The space a plot's axes take around the plot area, and the stamp of the scene and pixel
-    /// ratio it was measured for.
-    gutters: (u64, axes::Gutters),
+    /// The title, legends, and a plot's axes, laid out around the marks.
+    guides: guides::Guides,
+    /// How many times fonts had loaded at the last frame. Text sets again after another loads.
+    fonts: u64,
     fitting: Fitting,
     /// The value range fitted to the traces, shown when the plot camera sets none.
     plot_y: Option<[f64; 2]>,
@@ -205,9 +210,8 @@ static VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0
 
 impl View {
     /// Creates a view that draws `scene` with `gpu`. Its marks draw nothing until
-    /// [`set_sources`](View::set_sources) provides their datasets. Errors if the scene is invalid.
-    pub fn new(gpu: &Gpu, scene: Scene) -> Result<View> {
-        scene.check()?;
+    /// [`set_sources`](View::set_sources) provides their datasets.
+    pub fn new(gpu: &Gpu, scene: Scene) -> View {
         let camera = Camera::default_for(&scene.space);
         let signal = Arc::new(wake::Signal::default());
         let mut view = View {
@@ -215,6 +219,8 @@ impl View {
             id: VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             scene: Scene::new(scene.space.clone()),
             scene_version: 0,
+            scene_failures: Vec::new(),
+            told_failures: Vec::new(),
             sources: Vec::new(),
             snapshots: Vec::new(),
             choices: crate::derive::tiled::Choices::default(),
@@ -228,7 +234,8 @@ impl View {
             placed: false,
             rig: Rig::default(),
             insets: [0.0; 4],
-            gutters: (0, axes::Gutters::default()),
+            guides: guides::Guides::default(),
+            fonts: 0,
             fitting: Fitting::default(),
             plot_y: None,
             at: f64::INFINITY,
@@ -264,7 +271,7 @@ impl View {
             trace_columns: u32::MAX,
             stats: Stats::default(),
         };
-        view.set_scene(scene)?;
+        view.set_scene(scene);
         // Queue the pipelines nearly every scene uses, so later views find them compiled. They
         // compile once this view's draw pipelines are ready.
         #[cfg(all(feature = "web", target_arch = "wasm32"))]
@@ -272,14 +279,15 @@ impl View {
         // Until its first frame, the view reports all the work that frame would wait on, including
         // its pipelines, which only a frame checks.
         view.waiting = Waiting { compiling: true, ..view.under_way() };
-        Ok(view)
+        view
     }
 
     /// A view drawing the same scene and sources with `gpu`, with the same camera (or fit not yet
-    /// applied), coordinate, insets, orbit, and selection, as when this view's device was lost. Its
-    /// pending answers stay with this view.
+    /// applied), coordinate, insets, orbit, selection, and hovered row, as when this view's device
+    /// was lost. Its pending answers stay with this view.
     pub fn rebuilt(&self, gpu: &Gpu) -> Result<View> {
-        let mut view = View::new(gpu, self.scene.clone())?;
+        let mut view = View::new(gpu, self.scene.clone());
+        view.scene_failures.clone_from(&self.scene_failures);
         view.set_sources(self.sources.iter().cloned())?;
         match self.fitting.asked() {
             Some(fit) if !self.placed => view.fit(fit.clone()),
@@ -289,6 +297,7 @@ impl View {
         view.set_insets(self.insets);
         view.set_orbit(self.orbit());
         view.set_selection(self.selection());
+        view.set_hovered(self.hovered().cloned());
         view.reduced_motion = self.reduced_motion;
         Ok(view)
     }
@@ -300,12 +309,14 @@ impl View {
 
     /// Replaces the scene, compiling its marks against the latest version of each
     /// [`Data`](crate::Data) source. A mark that matches a current mark by kind, data, table, and
-    /// name keeps its state and eases to its new options. An option that does not fit the data
-    /// draws as if unset, and a mark that does not fit draws nothing. Both are listed in
-    /// [`failures`](View::failures) until the data fits. Errors if the scene itself is invalid, and
-    /// the current scene stays.
-    pub fn set_scene(&mut self, scene: Scene) -> Result<()> {
-        scene.check()?;
+    /// name keeps its state and eases to its new options. An option that can't be read, that the
+    /// scene can't use, or that doesn't fit the data draws as if unset, and a mark that doesn't fit
+    /// draws nothing. Each is listed in [`failures`](View::failures), those of the data until it
+    /// fits.
+    pub fn set_scene(&mut self, mut scene: Scene) {
+        let mut failures = std::mem::take(&mut scene.unread);
+        failures.extend(scene.sanitize());
+        self.scene_failures = failures;
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
@@ -316,10 +327,15 @@ impl View {
             || kind_changed
             || matches!(scene.layout, crate::Layout::None) != matches!(self.scene.layout, crate::Layout::None);
         let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
-        // Compile every new or changed mark before changing anything.
+        // Compile every new or changed mark before changing anything. A twin of an earlier mark
+        // draws nothing and takes over no state.
         let mut fresh = Vec::with_capacity(scene.marks.len());
-        for mark in &scene.marks {
-            let kept = !context_changed && self.marks.iter().any(|s| s.mark.draws_like(mark));
+        for (i, mark) in scene.marks.iter().enumerate() {
+            if scene.twin(i) {
+                fresh.push(Some(Shown::twin(mark.clone())));
+                continue;
+            }
+            let kept = !context_changed && self.marks.iter().any(|s| !s.twin && s.mark.draws_like(mark));
             if kept {
                 fresh.push(None);
                 continue;
@@ -341,16 +357,19 @@ impl View {
                 let Some(mut shown) = fresh else {
                     let at = old
                         .iter()
-                        .position(|s| s.as_ref().is_some_and(|s| s.mark.draws_like(mark)))
+                        .position(|s| s.as_ref().is_some_and(|s| !s.twin && s.mark.draws_like(mark)))
                         .expect("the unchanged mark's previous state");
                     let mut kept = old[at].take().expect("taken once");
                     came_from.insert(at, i);
                     kept.mark = mark.clone();
                     return kept;
                 };
+                if shown.twin {
+                    return shown;
+                }
                 // A changed mark takes over the rows of the old mark with its key, and eases from
                 // them.
-                let before = old.iter().position(|s| s.as_ref().is_some_and(|s| s.key == shown.key));
+                let before = old.iter().position(|s| s.as_ref().is_some_and(|s| !s.twin && s.key == shown.key));
                 if let Some(at) = before {
                     let mut before = old[at].take().expect("taken once");
                     before.tables.release(&mut inner);
@@ -408,7 +427,6 @@ impl View {
         self.focus.dirty = true;
         self.gestures.keys.stale();
         self.invalidate();
-        Ok(())
     }
 
     /// Replaces the view's sources, each a named dataset. A [`Data`](crate::Data) draws its latest
@@ -731,9 +749,11 @@ impl View {
         Rows::group(self.focus.selection.iter().cloned())
     }
 
-    /// Selects exactly `rows`, without emitting an event. Rows that the data drops, or that no
-    /// pickable mark shows, later leave the selection with a [`Selection`](Event::Selection) event
-    /// that has no trigger.
+    /// Selects exactly `rows`, without emitting an event. A row stays selected while the data
+    /// holds it, whether or not a mark here draws it, so views can share a selection. Selected
+    /// rows glow, and rows one reference from them stay bright while the rest dim. A row the data
+    /// drops later leaves the selection with a [`Selection`](Event::Selection) event that has no
+    /// trigger.
     pub fn set_selection(&mut self, rows: impl IntoIterator<Item = Rows>) {
         let rows = Rows::flatten(rows);
         if rows != self.focus.selection {
@@ -743,18 +763,36 @@ impl View {
         }
     }
 
-    /// The hovered row: the row under the pointer, or the row the keyboard stepped to.
-    pub fn hovered(&self) -> Option<&Hit> {
+    /// The hovered row: the row under the pointer, the row the keyboard stepped to, or the row
+    /// [`set_hovered`](View::set_hovered) gave. The [`Hovered`](Event::Hovered) event tells where
+    /// the pointer hit it.
+    pub fn hovered(&self) -> Option<&Row> {
         self.focus.hovered.as_ref()
     }
 
+    /// Hovers `row`, whether or not a mark here draws it, without emitting an event, until the
+    /// pointer or keyboard hovers another. `None` clears it. The row glows when hover glows, and
+    /// rows one reference from it draw on top, where [`related`](crate::related) reads them, so
+    /// views can share a hover.
+    pub fn set_hovered(&mut self, row: Option<Row>) {
+        if row != self.focus.hovered {
+            self.focus.hovered = row;
+            self.focus.spot = None;
+            self.focus.hovering = true;
+            self.wake();
+        }
+    }
+
     /// An error for every option that draws as if unset, and every mark that draws nothing,
-    /// because the data does not fit it. Each error's path names the mark and option.
+    /// because the scene's JSON can't be read there, the scene can't use it, or the data doesn't
+    /// fit it. Each error's path names the option, such as `marks[2].color`.
     pub fn failures(&self) -> impl Iterator<Item = crate::Error> + '_ {
-        self.marks
+        let marks = self
+            .marks
             .iter()
             .enumerate()
-            .flat_map(|(i, shown)| shown.failures.iter().map(move |error| error.clone().at(i).at("marks")))
+            .flat_map(|(i, shown)| shown.failures.iter().map(move |error| error.clone().at(i).at("marks")));
+        self.scene_failures.iter().cloned().chain(marks)
     }
 
     /// The cursor the view requests for what is under the pointer.
@@ -909,6 +947,7 @@ impl View {
         // comets, and `elapsed()` hold still.
         let moves = self.moves();
         self.changed
+            || self.fonts != crate::host::fonts()
             || self.signal.landed()
             || self.derived.tiles.pending()
             || self.rig.easing()
@@ -1002,24 +1041,31 @@ impl View {
         self.wake();
     }
 
-    /// The part of the view the camera frames, in CSS pixels: inside the insets, and on a plot
-    /// inside its axes. At least one pixel each way.
+    /// The part of the view the camera frames, in CSS pixels: inside the insets and the room the
+    /// guides on its sides take, a plot's axes among them. At least one pixel each way.
     fn area(&self) -> Area {
         let [w, h] = self.size;
-        let [top, right, bottom, left] = self.insets.map(f64::from);
-        let mut area = [left, top, w - right, h - bottom];
-        if matches!(self.scene.space, Space::Plot(_)) {
-            // A plot's axes start below its title, which the other spaces draw over.
-            let [top, right, bottom, left] = self.gutters.1.room;
-            area = [area[0] + left, area[1] + self.title_band() + top, area[2] - right, area[3] - bottom];
+        let [top, right, bottom, left]: [f64; 4] =
+            std::array::from_fn(|i| f64::from(self.insets[i]) + self.guides.room[i]);
+        [left, top, (w - right).max(left + 1.0), (h - bottom).max(top + 1.0)]
+    }
+
+    /// Where marks draw, in CSS pixels: the area on sides where guides take room, and the view's
+    /// edge on the others, so marks still pass under panels that insets keep clear. `None` when
+    /// that is the whole view.
+    pub(super) fn drawn_area(&self) -> Option<Area> {
+        let room = self.guides.room;
+        if room.iter().all(|&r| r <= 0.0) {
+            return None;
         }
-        if area[2] - area[0] < 1.0 {
-            area[2] = area[0] + 1.0;
-        }
-        if area[3] - area[1] < 1.0 {
-            area[3] = area[1] + 1.0;
-        }
-        area
+        let area = self.area();
+        let [w, h] = self.size;
+        Some([
+            if room[3] > 0.0 { area[0] } else { 0.0 },
+            if room[0] > 0.0 { area[1] } else { 0.0 },
+            if room[1] > 0.0 { area[2] } else { w },
+            if room[2] > 0.0 { area[3] } else { h },
+        ])
     }
 
     /// The camera the frame draws through: a plot without a value range shows the fitted one.

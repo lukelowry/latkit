@@ -17,12 +17,17 @@ const WINDOW = 12;
 const WORLD = { gravity: 9.81, firmness: 0.45, inflate: 1, wind: false };
 /** Each coloring: the field it reads, through which colormap, over which values. */
 const PAINTS = {
-  speed: { field: 'speed', colormap: 'plasma', domain: [-1, 9], legend: 'Speed (m/s)' },
+  speed: {
+    field: 'speed',
+    colormap: 'plasma',
+    domain: [-1, 9],
+    legend: { title: 'Speed', unit: ' m/s' },
+  },
   stress: {
     field: 'strain',
     colormap: 'turbo',
     domain: [-0.05, 0.35],
-    legend: 'Stress (m from rest)',
+    legend: { title: 'Stress, from rest', unit: ' m' },
   },
 } as const;
 const SERIES = [
@@ -143,7 +148,7 @@ export default page({
     void space.fit({ bounds: { min: [-ROOM, -ROOM, 0], max: [ROOM, ROOM, 2.4] } });
     const plot = await view(
       () => ({
-        space: { plot: { x: { label: 'Time (s)' } } },
+        space: { plot: { x: { unit: ' s' } } },
         theme: { base: 'dark', background: '#101214' },
         controls: 'inspect',
         ease: 0,

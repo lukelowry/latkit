@@ -293,7 +293,7 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     // The overlay draws a plot's axes, the title, the legends, and the selection box and connection
     // line that gestures draw.
     let legends = any(&|m| m.style().legend.is_some() && m.style().color.is_some());
-    let written = matches!(scene.space, Space::Plot(_)) || scene.title.is_some() || scene.subtitle.is_some() || legends;
+    let written = matches!(scene.space, Space::Plot(_)) || scene.title.is_some() || legends;
     if written || controls.select_box || controls.connect {
         stages.text.push(draw(Shader::Overlay));
     }

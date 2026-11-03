@@ -19,7 +19,7 @@ fn one(marker: Marker) -> (View, latkit::Gpu) {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(20.0).color(Color::WHITE).marker(marker));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     (view, gpu)
@@ -105,7 +105,7 @@ fn status_rings_surround_their_markers() {
             .color(Color::WHITE)
             .ring(Color::rgb(1.0, 0.0, 0.0)),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -131,7 +131,7 @@ fn a_missing_status_draws_no_ring_in_either_branch() {
         let scene = Scene::new(plane()).theme(plain_theme()).draw(
             Vertices::of("d", "V").position(field("x"), field("y")).radius(10.0).color(Color::WHITE).ring(status),
         );
-        let mut view = View::new(&gpu, scene).expect("valid scene");
+        let mut view = View::new(&gpu, scene);
         view.set_camera(camera());
         view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);

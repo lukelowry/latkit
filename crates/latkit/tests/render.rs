@@ -29,7 +29,7 @@ fn vertices_draw_at_their_positions_in_their_colors() {
             .radius(6.0)
             .color(latkit::when(field("kind").is("a")).then(red).otherwise(blue)),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -61,7 +61,7 @@ fn contains_ignores_case_and_rechecks_changed_texts() {
             .color(Color::rgb(1.0, 0.0, 0.0))
             .visible(field("name").contains("TA")),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let center = SIZE / 2;
@@ -89,7 +89,7 @@ fn an_option_that_does_not_fit_draws_as_if_unset_until_its_data_arrives() {
             .radius(field("r").fallback(8.0))
             .color(latkit::when(on).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(Color::WHITE)),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let center = SIZE / 2;
@@ -127,7 +127,7 @@ fn a_stroke_in_pixels_keeps_its_width_as_a_diagram_zooms() {
             .theme(green_edges())
             .draw(Edges::of("graph", "Link").ends("from", "to").width(width))
             .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).size(8.0, 8.0));
-        let mut view = View::new(&gpu, scene).expect("valid scene");
+        let mut view = View::new(&gpu, scene);
         view.set_camera(Camera::Map { center: [0.0; 3], zoom: 1.0, pitch: 0.0, bearing: 0.0 });
         view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);
@@ -149,7 +149,7 @@ fn channels_follow_the_selection_and_the_zoom() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).color(color));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let center = SIZE / 2;
@@ -197,7 +197,7 @@ fn edges_join_their_ends_and_colormaps_fit_the_values() {
                 .radius(5.0)
                 .color(field("v").colormap(Colormap::GRAYS)),
         );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -250,7 +250,7 @@ fn an_edge_whose_color_is_missing_blends_its_ends() {
         .draw(
             Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(3.0).color(Color::rgb(0.0, 1.0, 0.0)),
         );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -279,8 +279,7 @@ fn a_colormap_draws_a_missing_value_in_the_themes_missing_color() {
             .theme(theme.clone())
             .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(6.0).color(color))
     };
-    let mut view =
-        View::new(&gpu, scene(field("v").colormap(Colormap::GRAYS).domain(0.0..=1.0).into())).expect("valid");
+    let mut view = View::new(&gpu, scene(field("v").colormap(Colormap::GRAYS).domain(0.0..=1.0).into()));
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -290,7 +289,7 @@ fn a_colormap_draws_a_missing_value_in_the_themes_missing_color() {
     let gap = at(&pixels, center, center);
     assert!(close(gap, [255, 0, 0, 255]), "a missing value takes the theme's missing color: {gap:?}");
     // An option given `missing()` takes the mark's theme color instead.
-    view.set_scene(scene(latkit::Expr::missing())).expect("valid");
+    view.set_scene(scene(latkit::Expr::missing()));
     let pixel = at(&frame(&gpu, &mut view), center, center);
     assert!(close(pixel, [0, 0, 255, 255]), "missing() takes the vertex color: {pixel:?}");
 }
@@ -317,7 +316,7 @@ fn edges_ending_far_ahead_and_behind_the_eye_draw_whole() {
         .theme(green_edges())
         .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0))
         .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(1.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 60.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -346,7 +345,7 @@ fn great_circles_longer_than_their_list_coarsen_instead_of_stopping_short() {
         .theme(Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..theme.earth }, ..theme })
         .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0))
         .draw(Vertices::of("grid", "Bus").position(field("lon"), field("lat")).radius(1.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: -1.5, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
     let green = |view: &View, pixels: &[[u8; 4]], lon: f64| {
@@ -374,7 +373,7 @@ fn new_data_versions_show_and_fit_frames_them() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     let pixels = frame(&gpu, &mut view);
@@ -393,7 +392,7 @@ fn a_camera_set_after_a_fit_replaces_it() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     // The fit has not framed the vertex yet when the camera is set, so the camera stays.
     view.fit(latkit::Fit::All);
@@ -424,7 +423,7 @@ fn a_mark_with_no_rows_does_not_delay_a_fit() {
         .theme(plain_theme())
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     let pixels = frame(&gpu, &mut view);
@@ -436,7 +435,7 @@ fn a_mark_with_no_rows_does_not_delay_a_fit() {
 #[test]
 fn a_view_is_complete_only_once_a_frame_draws_it() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, Scene::new(plane())).expect("valid scene");
+    let mut view = View::new(&gpu, Scene::new(plane()));
     view.set_camera(camera());
     let done = view.done();
     assert!(!view.complete(), "no frame has drawn it yet");
@@ -453,7 +452,7 @@ fn a_view_rebuilt_on_another_gpu_keeps_its_state_and_draws_the_same_frame() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).color(Color::WHITE));
-    let mut view = View::new(&first, scene).expect("valid scene");
+    let mut view = View::new(&first, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     view.set_at(5.0);
@@ -473,7 +472,7 @@ fn a_fit_answers_once_it_frames_and_a_turn_or_reveal_waits_for_it() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     let framed = view.framed();
@@ -500,7 +499,7 @@ fn a_fit_with_nothing_to_frame_waits_for_rows_without_asking_for_frames() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     frame(&gpu, &mut view);
@@ -520,7 +519,7 @@ fn a_fit_of_rows_bounds_how_far_the_camera_goes() {
         .expect("valid");
     let scene =
         Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::Rows(vec![latkit::Rows::new("graph", "Node", [0_u64, 1])]));
     frame(&gpu, &mut view);
@@ -538,7 +537,7 @@ fn a_fit_frames_data_regardless_of_units_and_marker_sizes() {
     data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 1.0])).expect("valid");
     let scene =
         Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     for _ in 0..4 {
@@ -553,7 +552,7 @@ fn a_fit_frames_data_regardless_of_units_and_marker_sizes() {
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(latkit::units(0.01).at_least(4.0)));
     let fitted = |zoom: f64| {
-        let mut view = View::new(&gpu, earth.clone()).expect("valid scene");
+        let mut view = View::new(&gpu, earth.clone());
         view.set_camera(Camera::Map { center: [0.5, 0.5, 0.0], zoom, pitch: 0.0, bearing: 0.0 });
         view.set_sources([&data]).expect("a source");
         view.fit(latkit::Fit::All);
@@ -576,7 +575,7 @@ fn sampled_fields_read_at_the_shown_coordinate() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(8.0).color(gray(field("v"))));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let center = SIZE / 2;
@@ -596,8 +595,7 @@ fn sampled_fields_read_at_the_shown_coordinate() {
         Scene::new(plane()).theme(plain_theme()).draw(
             Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(8.0).color(gray(field("v").step())),
         ),
-    )
-    .expect("valid scene");
+    );
     view.set_at(5.0);
     let pixel = at(&frame(&gpu, &mut view), center, center);
     assert!(close(pixel, [0, 0, 0, 255]), "a step reads the last frame: {pixel:?}");
@@ -607,8 +605,7 @@ fn sampled_fields_read_at_the_shown_coordinate() {
         Scene::new(plane())
             .theme(plain_theme())
             .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(8.0).color(history)),
-    )
-    .expect("valid scene");
+    );
     view.set_at(10.0);
     let pixel = at(&frame(&gpu, &mut view), center, center);
     assert!(pixel[0] > 250, "the greatest value maps to the colormap's end: {pixel:?}");
@@ -644,7 +641,7 @@ fn faces_blend_their_corners_and_hide_vertices_behind_them() {
             .radius(4.0)
             .color(latkit::when(field("hue").gt(0.5)).then(blue).otherwise(red)),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -663,7 +660,7 @@ fn presses_click_and_drag_the_rows_they_hit() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).drag(true));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
@@ -707,7 +704,7 @@ fn lines_trace_their_samples_across_a_plot() {
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -729,7 +726,7 @@ fn lines_traced_in_priority_order_draw_their_whole_span() {
     let scene = Scene::new(Plot { x: axis.clone(), y: axis }).theme(plain_theme()).draw(
         Lines::of("signals", "Signal").trace("v").priority(field("rank")).color(Color::rgb(1.0, 0.0, 0.0)).width(4.0),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
     view.set_at(0.0);
     view.set_sources([&data]).expect("a source");
@@ -751,7 +748,7 @@ fn a_plot_fit_frames_the_whole_trace_at_any_shown_coordinate() {
         data.apply(Patch::new().append("Signal", [f64::from(t) * 6.0], [("v", vec![f64::from(t)])])).expect("frame");
     }
     let scene = Scene::new(Plot::default()).draw(Lines::of("signals", "Signal").trace("v"));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.set_at(0.0);
     view.fit(latkit::Fit::All);
@@ -768,7 +765,7 @@ fn lines_wait_for_the_first_frame_of_the_field_they_trace() {
     let scene = Scene::new(Plot::default())
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     assert_eq!(common::errors(&mut view), Vec::new(), "a field not recorded yet is no error");
@@ -800,29 +797,29 @@ fn new_data_and_the_scene_reading_it_change_together() {
                 .color(field(field_name).colormap(Colormap::GRAYS).domain(0.0..=1.0)),
         )
     };
-    let mut view = View::new(&gpu, reading("a")).expect("valid scene");
+    let mut view = View::new(&gpu, reading("a"));
     view.set_camera(camera());
     view.set_sources([dataset("a")]).expect("a source");
     frame(&gpu, &mut view);
-    // Data the mark no longer fits, then a scene that fits it, both before the frame: no error.
+    // Data the mark no longer fits, then a scene that fits it, both before the frame: no failure.
     view.set_sources([dataset("b")]).expect("a source");
-    view.set_scene(reading("b")).expect("valid scene");
+    view.set_scene(reading("b"));
     let pixels = frame(&gpu, &mut view);
-    assert_eq!(common::errors(&mut view), Vec::new());
+    assert_eq!(common::failures(&mut view), None);
     let center = SIZE / 2;
     assert!(at(&pixels, center, center)[0] > 200, "the new mark draws: {:?}", at(&pixels, center, center));
     // Data that no mark fits by the frame is reported then, once, and listed until data fits again.
     view.set_sources([dataset("a")]).expect("a source");
     frame(&gpu, &mut view);
-    let errors = common::errors(&mut view);
-    assert!(errors.len() == 1 && errors[0].to_string().contains("no field b"), "{errors:?}");
-    assert_eq!(view.failures().collect::<Vec<_>>(), errors, "failures() lists the reported error");
+    let failures = common::failures(&mut view).expect("a change");
+    assert!(failures.len() == 1 && failures[0].to_string().contains("no field b"), "{failures:?}");
+    assert_eq!(view.failures().collect::<Vec<_>>(), failures, "failures() lists what was reported");
     view.set_camera(Camera::Map { center: [5.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
     frame(&gpu, &mut view);
-    assert_eq!(common::errors(&mut view), Vec::new(), "reported once");
+    assert_eq!(common::failures(&mut view), None, "reported once");
     view.set_sources([dataset("b")]).expect("a source");
     frame(&gpu, &mut view);
-    assert_eq!(view.failures().count(), 0, "data that fits clears the failure");
+    assert_eq!(common::failures(&mut view), Some(Vec::new()), "data that fits clears the failure");
 }
 
 #[test]
@@ -830,15 +827,15 @@ fn a_missing_dataset_is_waited_for_and_a_missing_table_fails() {
     let Some(gpu) = gpu() else { return };
     let scene =
         Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("d", "Bus").position(field("x"), field("y")));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     frame(&gpu, &mut view);
     assert!(view.waiting().data, "waits for the dataset it names");
     let data = Data::new("d");
     data.apply(Table::new("Buses", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
-    let errors = common::errors(&mut view);
-    assert!(errors.len() == 1 && errors[0].to_string().contains("no table 'Bus'"), "{errors:?}");
+    let failures = common::failures(&mut view).expect("a change");
+    assert!(failures.len() == 1 && failures[0].to_string().contains("no table 'Bus'"), "{failures:?}");
     assert!(view.complete(), "a failed mark leaves nothing to wait on");
 }
 
@@ -872,7 +869,7 @@ fn hover_skips_vertices_hidden_behind_faces() {
                 .radius(3.0)
                 .drag(true),
         );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
@@ -922,7 +919,7 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
                 .select(false)
                 .drag(true),
         );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 58.0, bearing: 30.0 });
     view.fit(latkit::Fit::Bounds { min: [-2.0, -2.0, 0.0], max: [2.0, 2.0, 2.0] });
     view.set_sources([&data]).expect("a source");
@@ -933,7 +930,7 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
     frame(&gpu, &mut view);
     let hovered = view.events().find_map(|e| if let Event::Hovered { hit, .. } = e { hit } else { None });
     assert_eq!(hovered.map(|hit| hit.row.id), Some(5_u64.into()), "the top vertex is hovered");
-    assert_eq!(view.hovered().map(|hit| hit.row.id.clone()), Some(5_u64.into()), "and reads as hovered");
+    assert_eq!(view.hovered().map(|row| row.id.clone()), Some(5_u64.into()), "and reads as hovered");
     assert_eq!(view.cursor(), latkit::Cursor::Grab);
     view.input(&Input::Down { pointer: 1, point: top, button: Button::Primary, modifiers, device }, common::now());
     view.input(&Input::Move { pointer: 1, point: [top[0], top[1] - 30.0], modifiers, device }, common::now());
@@ -961,7 +958,7 @@ fn long_histories_draw_from_their_levels_of_detail() {
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(2.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Plot { x: [0.0, 20_000.0], y: Some([0.0, 1.0]) });
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -984,7 +981,7 @@ fn frames_report_gpu_time_where_timestamps_are_supported() {
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     let scene =
         Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     for _ in 0..common::SETTLE {
@@ -1010,7 +1007,7 @@ fn dashes_run_on_across_a_paths_segments() {
     data.apply(Table::new("Path", Ids::count(1)).field("geometry", vec![points])).expect("valid");
     let scene =
         Scene::new(plane()).theme(plain_theme()).draw(Lines::of("d", "Path").width(3.0).dash(true).color(Color::WHITE));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -1025,7 +1022,7 @@ fn comets(gpu: &latkit::Gpu, units: bool, speed: Option<f64>) -> View {
     let data = Data::new("d");
     data.apply(Table::new("Path", Ids::count(1)).field("geometry", vec![vec![[-50.0, 0.0], [50.0, 0.0]]]))
         .expect("valid");
-    let mut view = View::new(gpu, comets_scene(units, speed)).expect("valid scene");
+    let mut view = View::new(gpu, comets_scene(units, speed));
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     view
@@ -1074,7 +1071,7 @@ fn comets_run_wider_than_their_line() {
     let beside = red(&pixels, c + 2);
     assert!(beside > 0 && beside < 60, "comets reach past the line, spaced apart: {beside} of 90 pixels");
     assert_eq!(red(&pixels, c + 6), 0, "and no further than their width");
-    view.set_scene(comets_scene(false, None)).expect("valid scene");
+    view.set_scene(comets_scene(false, None));
     assert_eq!(red(&frame(&gpu, &mut view), c + 2), 0, "a line without flow has no comets");
 }
 
@@ -1092,7 +1089,7 @@ fn comets_carry_on_from_where_they_are_when_their_flow_changes() {
     let before = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
     let moved = |a: &[u32], b: &[u32]| a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(99);
     assert!(!before.is_empty() && moved(&paused, &before) <= 2, "{paused:?} then {before:?}");
-    view.set_scene(comets_scene(false, Some(41.0))).expect("valid scene");
+    view.set_scene(comets_scene(false, Some(41.0)));
     let after = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
     assert_eq!(before.len(), after.len(), "{before:?} then {after:?}");
     assert!(moved(&before, &after) <= 2, "a new speed moves comets one frame's travel: {before:?} then {after:?}");
@@ -1114,7 +1111,7 @@ fn comets_follow_their_rows_when_rows_move_without_easing() {
     };
     let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25)).flow(field("speed"));
     let scene = Scene::new(plane()).theme(Theme { flow, ..plain_theme() }).ease(std::time::Duration::ZERO).draw(line);
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     for _ in 0..40 {
@@ -1159,7 +1156,7 @@ fn sizes_in_units_clamp_to_their_pixel_limits() {
     let across = |radius: latkit::Size| {
         let marker =
             Vertices::of("d", "Node").position(field("x"), field("y")).radius(radius).color(Color::rgb(1.0, 0.0, 0.0));
-        let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(marker)).expect("valid scene");
+        let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(marker));
         view.set_camera(camera());
         view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);
@@ -1181,7 +1178,7 @@ fn sizes_in_units_are_degrees_on_the_earth() {
         Vertices::of("d", "Node").position(field("lon"), field("lat")).radius(latkit::units(0.25)).color(Color::WHITE);
     let ground = Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..plain_theme().earth }, ..plain_theme() };
     let scene = Scene::new(Earth { graticule: false, ..Earth::default() }).theme(ground).draw(marker);
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     // At zoom 6 the world is 256 · 2⁶ pixels around, so a degree spans 45.5 pixels.
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 6.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
@@ -1210,7 +1207,7 @@ fn where_depth_varies_the_nearest_mark_shows_whatever_order_it_draws_in() {
         .color(latkit::when(field("near").gt(0.5)).then(blue).otherwise(red));
     let center = |elevated: bool| {
         let vertices = if elevated { vertices.clone().elevation(field("z")) } else { vertices.clone() };
-        let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(vertices)).expect("valid scene");
+        let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(vertices));
         view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
         view.set_sources([&data]).expect("a source");
         at(&frame(&gpu, &mut view), SIZE / 2, SIZE / 2)
@@ -1250,7 +1247,7 @@ fn a_raised_vertex_hides_an_edge_passing_under_it() {
                 .color(Color::rgb(0.0, 0.0, 1.0)),
         )
         .draw(Edges::of("d", "Line").ends("from", "to").width(4.0).color(Color::rgb(1.0, 0.0, 0.0)));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
     let pixel = at(&frame(&gpu, &mut view), SIZE / 2, SIZE / 2);
@@ -1274,7 +1271,7 @@ fn poles_stand_from_each_vertex_down_to_the_ground() {
         if poles { scene.draw(pole) } else { scene }
     };
     let red = |poles: bool| {
-        let mut view = View::new(&gpu, scene(poles)).expect("valid scene");
+        let mut view = View::new(&gpu, scene(poles));
         // Tilted, so a pole stands up the screen.
         view.set_camera(Camera::Map { center: [0.0, 0.0, 20.0], zoom: 0.0, pitch: 60.0, bearing: 0.0 });
         view.set_sources([&data]).expect("a source");
@@ -1301,8 +1298,7 @@ fn nets_outside_a_diagram_join_their_members_as_stars() {
     .expect("valid");
     let buses = Vertices::of("d", "Bus").position(field("x"), field("y")).radius(2.0).color(Color::rgb(0.0, 0.0, 1.0));
     let net = Edges::of("d", "Net").joins("Bus", "net").width(2.0).color(Color::rgb(1.0, 0.0, 0.0));
-    let mut view =
-        View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(net).draw(buses)).expect("valid scene");
+    let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(net).draw(buses));
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);

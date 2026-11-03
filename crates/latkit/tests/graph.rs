@@ -18,7 +18,7 @@ fn lit(pixel: [u8; 4]) -> bool {
 }
 
 fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
-    let mut view = View::new(gpu, scene.theme(plain_theme())).expect("valid scene");
+    let mut view = View::new(gpu, scene.theme(plain_theme()));
     view.set_camera(camera());
     view.set_sources([data]).expect("a source");
     view
@@ -172,7 +172,7 @@ fn a_block_drops_its_shadow_onto_the_sheet_below_it() {
             .marker(latkit::Marker::Block { corner: None })
             .color(latkit::Color::WHITE)
             .shadow(shadow);
-        let mut view = View::new(&gpu, Scene::new(diagram()).draw(block).theme(theme.clone())).expect("valid scene");
+        let mut view = View::new(&gpu, Scene::new(diagram()).draw(block).theme(theme.clone()));
         view.set_camera(camera());
         view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);
@@ -212,7 +212,7 @@ fn edges_along_great_circles_settle_while_their_vertices_pulse() {
     })
     .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))
     .draw(Vertices::of("graph", "Node").position(field("lon"), field("lat")).color(pulse));
-    let mut view = View::new(&gpu, scene.theme(plain_theme())).expect("valid scene");
+    let mut view = View::new(&gpu, scene.theme(plain_theme()));
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     for _ in 0..60 {

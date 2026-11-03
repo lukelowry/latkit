@@ -2,9 +2,10 @@
 //!
 //! An intent asks the application to act: a click, open, menu, drag, connection, or deletion. Each
 //! is reported once, in the order the user acted. A change reports that view state changed and is
-//! named after that state: `hovered`, `selection`, `camera`, `at`, `waiting`. Only the latest
-//! change of each is reported, and the state can always be read, so a late listener can catch up.
-//! A view reports only what the application did not do itself. Its setters change state silently.
+//! named after that state: `hovered`, `selection`, `camera`, `at`, `waiting`, `failures`. Only the
+//! latest change of each is reported, and the state can always be read, so a late listener can
+//! catch up. A view reports only what the application did not do itself. Its setters change state
+//! silently. An error reports that the view can't draw.
 
 use std::collections::VecDeque;
 
@@ -103,8 +104,11 @@ pub enum Event {
     /// The work the last frame waited on changed: [`View::waiting`](crate::View::waiting). Empty
     /// once frames are complete.
     Waiting(Waiting),
-    /// Something failed. Reported once. A mark that no longer fits its data is also listed in
-    /// [`View::failures`](crate::View::failures).
+    /// The failures changed: [`View::failures`](crate::View::failures). Each option that draws as
+    /// if unset, and each mark that draws nothing, with why. Empty once everything draws.
+    Failures(Vec<Error>),
+    /// The view can't draw: the device was lost, a limit was reached, latkit stopped, a fetch or
+    /// text failed. Reported once. Shots and videos fail with it.
     Error(Error),
 }
 
@@ -141,7 +145,12 @@ impl Event {
             (Event::Drag { phase: Phase::Move, .. }, Event::Drag { phase: Phase::Move, .. }) => true,
             (Event::Error(error), Event::Error(old)) => error == old,
             (
-                Event::Hovered { .. } | Event::Selection { .. } | Event::Camera(_) | Event::At(_) | Event::Waiting(_),
+                Event::Hovered { .. }
+                | Event::Selection { .. }
+                | Event::Camera(_)
+                | Event::At(_)
+                | Event::Waiting(_)
+                | Event::Failures(_),
                 _,
             ) => std::mem::discriminant(self) == std::mem::discriminant(older),
             _ => false,

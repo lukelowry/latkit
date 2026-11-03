@@ -381,7 +381,7 @@ impl<'a> Compiler<'a> {
     /// The first input of `expr` that structure cannot depend on: view state or a sampled field.
     fn unstructural(&self, expr: &Expr) -> Option<&'static str> {
         match &*expr.0 {
-            Node::State(State::Selected | State::Hovered) => Some("selection or hover"),
+            Node::State(State::Selected | State::Hovered | State::Related) => Some("selection or hover"),
             Node::State(State::Pointer) => Some("the pointer"),
             Node::State(State::Elapsed) => Some("time"),
             Node::State(State::Zoom) => Some("the zoom"),
@@ -604,6 +604,7 @@ impl<'a> Compiler<'a> {
             Node::Field(f) => self.field(f),
             Node::State(State::Selected) => self.state(wgsl::OP_SELECTED, Deps::FOCUS, Ty::Bool),
             Node::State(State::Hovered) => self.state(wgsl::OP_HOVERED, Deps::FOCUS, Ty::Bool),
+            Node::State(State::Related) => self.state(wgsl::OP_RELATED, Deps::FOCUS, Ty::Bool),
             Node::State(State::Pointer) => self.state(wgsl::OP_POINTER, Deps::POINTER, Ty::Number),
             Node::State(State::Elapsed) => self.state(wgsl::OP_ELAPSED, Deps::TIME, Ty::Number),
             Node::State(State::Zoom) => self.state(wgsl::OP_ZOOM, Deps::CAMERA, Ty::Number),

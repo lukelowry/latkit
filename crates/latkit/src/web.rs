@@ -169,6 +169,15 @@ fn schedule(frames: &Rc<RefCell<Frames>>) {
     landing.into_iter().for_each(std::task::Waker::wake);
 }
 
+/// Requests a frame of every `Gpu`, as when fonts finish loading and every view sets its text
+/// again.
+pub(crate) fn wake_all() {
+    let all = FRAMES.with(|all| all.borrow().clone());
+    for frames in &all {
+        schedule(frames);
+    }
+}
+
 fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     if stopped() {
         return;

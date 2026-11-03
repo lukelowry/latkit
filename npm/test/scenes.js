@@ -24,6 +24,22 @@ export default [
   },
   { "space": { "plot": { "x": { "label": "Time (s)" }, "y": { "grid": false } } } },
   {
+    "space": { "plot": { "x": { "unit": " s" }, "y": { "unit": " Hz", "grid": false } } },
+    "title": { "text": "Frequency", "subtitle": "After the fault", "place": "top" }
+  },
+  {
+    "space": "plane",
+    "title": "Voltage",
+    "marks": [
+      {
+        "vertices": ["grid", "Bus"],
+        "color": { "colormap": "viridis", "value": "$vm", "domain": [0.95, 1.05] },
+        "legend": { "title": "Voltage", "unit": " pu", "place": "right" }
+      },
+      { "vertices": ["grid", "Plant"], "color": { "colormap": "tab10", "value": "$kind" }, "legend": "Kind" }
+    ]
+  },
+  {
     "space": { "earth": { "projection": "globe" } },
     "marks": [
       {

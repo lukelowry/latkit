@@ -47,8 +47,9 @@ pub(crate) struct Sheet {
     places: FxHashMap<Row, [f64; 2]>,
     /// Each orthogonal wire's route, by edge row, and the rows due to route again.
     routes: wires::Routes,
-    /// The size of each text run, as the host measured it.
+    /// The size of each text run, as the host measured it, and how many times fonts had loaded then.
     measured: FxHashMap<TextRun, [f64; 2]>,
+    fonts: u64,
     /// The box of every placed vertex row as of the last update, to find the boxes a change moved.
     boxes: FxHashMap<Row, [f64; 4]>,
     /// Each vertex's routing-obstacle box, y up (`EMPTY` for a group), refit as vertices move.
@@ -244,8 +245,13 @@ impl Sheet {
     /// changed values sizing or placing rows (each by its own row's value), it redraws only what
     /// the written rows affect.
     fn build(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) {
+        let fonts = crate::host::fonts();
+        if fonts != self.fonts {
+            self.measured.clear();
+            self.fonts = fonts;
+        }
         let marks = marks(input);
-        let from = stamp_of((input.scene_version, input.host.is_some(), self.landed, self.generation));
+        let from = stamp_of((input.scene_version, input.host.is_some(), self.landed, self.generation, fonts));
         let drawn = self.drawn.take().filter(|drawn| drawn.from == from);
         let mut drawn = match drawn.as_ref().and_then(|drawn| edited(drawn, input, &marks.0)) {
             Some(touched) => self.redraw(drawn.expect("drawn"), touched, &marks, input, jobs),
@@ -662,11 +668,13 @@ impl Sheet {
     }
 }
 
-/// A stamp of the sheet's inputs: the scene version, whether a host measures text, the answers
-/// received, the places generation, whether rows are being dragged, and the marks' structure.
+/// A stamp of the sheet's inputs: the scene version, whether a host measures text and how many times
+/// fonts loaded, the answers received, the places generation, whether rows are being dragged, and
+/// the marks' structure.
 fn stamp(input: &Input<'_>, landed: u64, generation: u64) -> u64 {
     let mut hasher = FxHasher::default();
-    (input.scene_version, input.host.is_some(), landed, generation, input.dragging).hash(&mut hasher);
+    (input.scene_version, input.host.is_some(), crate::host::fonts(), landed, generation, input.dragging)
+        .hash(&mut hasher);
     input.structure(&mut hasher);
     hasher.finish().max(1)
 }

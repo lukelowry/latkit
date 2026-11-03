@@ -229,6 +229,9 @@ pub struct Axis {
     /// At most 15. When unset, as many as the tick step needs.
     #[schemars(range(max = 15))]
     pub precision: Option<u8>,
+    /// Text written after the last tick's value, such as `" s"` or `"%"`, so the axis needs no
+    /// title.
+    pub unit: Option<String>,
 }
 
 /// A tick in JSON: a value, or `[value, label]`.
@@ -258,7 +261,7 @@ fn ticks<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Ticks, D::Error> 
 
 impl Default for Axis {
     fn default() -> Axis {
-        Axis { label: None, grid: true, hidden: false, ticks: None, format: Format::Auto, precision: None }
+        Axis { label: None, grid: true, hidden: false, ticks: None, format: Format::Auto, precision: None, unit: None }
     }
 }
 

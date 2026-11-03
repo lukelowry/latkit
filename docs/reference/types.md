@@ -18,7 +18,8 @@ A view's content and behavior: a space, marks drawn in order, a layout, a theme,
 ease duration, and an optional title.
 
 A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
-its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
+its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`. An option that can't be
+read, or that the scene can't use, draws as if unset, and views list why in their `failures`.
 
 {#scene-space .member}
 **`space`**`:` [`Space`](#space) [¶](#scene-space){.headerlink}
@@ -46,12 +47,72 @@ its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
 : How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to 0.3.
 
 {#scene-title .member}
-**`title`**`?: string | null` [¶](#scene-title){.headerlink}
-: A title drawn at the view's top left, larger than the theme's text.
+**`title`**`?:` [`Title`](#title) `| null` [¶](#scene-title){.headerlink}
+: The title: its text, or title options.
 
-{#scene-subtitle .member}
-**`subtitle`**`?: string | null` [¶](#scene-subtitle){.headerlink}
-: A subtitle drawn under the title.
+(title)=
+
+### `Title`
+
+{.signature}
+`type Title = string | { … }`
+
+A scene's title: its text, or options with its text, a subtitle, and a place.
+
+{#title-text .member}
+**`text`**`: string` [¶](#title-text){.headerlink}
+: The title, in the theme's text color and font, 1.75 times its size.
+
+{#title-subtitle .member}
+**`subtitle`**`?: string | null` [¶](#title-subtitle){.headerlink}
+: A line under the title, fainter and 1.1 times the theme's text size.
+
+{#title-place .member}
+**`place`**`?:` [`Place`](#place) `| null` [¶](#title-place){.headerlink}
+: Where the title sits. Defaults to `top` on a plot and `top-left` elsewhere.
+
+(place)=
+
+### `Place`
+
+{.signature}
+`type Place = 'top' | 'right' | 'bottom' | 'left' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'`
+
+Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the
+marks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's
+background. A title and legends in one place stack in scene order, the title first.
+
+{#place-top .member}
+**`'top'`** [¶](#place-top){.headerlink}
+: Above the marks.
+
+{#place-right .member}
+**`'right'`** [¶](#place-right){.headerlink}
+: Right of the marks.
+
+{#place-bottom .member}
+**`'bottom'`** [¶](#place-bottom){.headerlink}
+: Below the marks.
+
+{#place-left .member}
+**`'left'`** [¶](#place-left){.headerlink}
+: Left of the marks.
+
+{#place-top-left .member}
+**`'top-left'`** [¶](#place-top-left){.headerlink}
+: Over the marks, at the top left.
+
+{#place-top-right .member}
+**`'top-right'`** [¶](#place-top-right){.headerlink}
+: Over the marks, at the top right.
+
+{#place-bottom-left .member}
+**`'bottom-left'`** [¶](#place-bottom-left){.headerlink}
+: Over the marks, at the bottom left.
+
+{#place-bottom-right .member}
+**`'bottom-right'`** [¶](#place-bottom-right){.headerlink}
+: Over the marks, at the bottom right.
 
 (space)=
 
@@ -217,6 +278,10 @@ A plot axis.
 **`precision`**`?: number | null` [¶](#axis-precision){.headerlink}
 : Decimal places of fixed values, or of the significand in scientific and engineering formats. At
   most 15. When unset, as many as the tick step needs.
+
+{#axis-unit .member}
+**`unit`**`?: string | null` [¶](#axis-unit){.headerlink}
+: Text written after the last tick's value, such as `" s"` or `"%"`, so the axis needs no title.
 
 (tick)=
 
@@ -963,11 +1028,8 @@ The options every mark has.
 : Each row's label: a text field, or label options.
 
 {#markoptions-legend .member}
-**`legend`**`?: string | null` [¶](#markoptions-legend){.headerlink}
-: A legend of the mark's colors at the view's bottom right, with this title. It shows a ticked
-  colormap across its domain, a cell for each category, or a swatch for each name in the
-  colormap's `categories`. `color` must map through a colormap with a fixed domain or named
-  categories. In a conditional, `otherwise` is searched before the cases.
+**`legend`**`?:` [`Legend`](#legend) `| null` [¶](#markoptions-legend){.headerlink}
+: A legend of the mark's colors: its title, or legend options.
 
 (strokeoptions)=
 
@@ -1441,6 +1503,32 @@ wherever it fits its vertex.
 **`unit`**`?: string | null` [¶](#label-unit){.headerlink}
 : Text written after a number, such as `" kV"` or `"%"`.
 
+(legend)=
+
+### `Legend`
+
+{.signature}
+`type Legend = string | { … }`
+
+A legend of a mark's colors: its title, or options with a title, a unit, and a place. It shows a
+ticked bar of the colormap across its domain, a cell for each category, or a swatch beside each
+name in the colormap's `categories`. The mark's `color` must map through a colormap with a fixed
+domain or named categories. In a conditional, `otherwise` is searched before the cases.
+
+On the left or right, a bar stands upright beside the marks. Elsewhere it lies flat.
+
+{#legend-title .member}
+**`title`**`?: string | null` [¶](#legend-title){.headerlink}
+: The title over the legend.
+
+{#legend-unit .member}
+**`unit`**`?: string | null` [¶](#legend-unit){.headerlink}
+: Text written after the last tick's value of a bar, such as `" pu"` or `"%"`.
+
+{#legend-place .member}
+**`place`**`?:` [`Place`](#place) `| null` [¶](#legend-place){.headerlink}
+: Where the legend sits. Defaults to `right` on a plot and `bottom-right` elsewhere.
+
 (size)=
 
 ### `Size`
@@ -1731,10 +1819,11 @@ A value mapped through a colormap.
 ### `State`
 
 {.signature}
-`type State = 'selected' | 'hovered' | 'pointer' | 'elapsed' | 'zoom'`
+`type State = 'selected' | 'hovered' | 'related' | 'pointer' | 'elapsed' | 'zoom'`
 
-View state of each row: `selected`, `hovered`, `pointer` (CSS pixels from a vertex to the
-pointer), `elapsed` (seconds since the view was created), or `zoom` (the camera's zoom).
+View state of each row: `selected`, `hovered`, `related` (one reference from a selected or
+hovered row), `pointer` (CSS pixels from a vertex to the pointer), `elapsed` (seconds since the
+view was created), or `zoom` (the camera's zoom).
 
 (colormap)=
 
@@ -2056,7 +2145,7 @@ View events and hits, dataset descriptions and values, and frame statistics.
 ### `ViewEvent`
 
 {.signature}
-`type ViewEvent = { type: 'click'; detail: { … } } | { type: 'open'; detail: { … } } | { type: 'menu'; detail: { … } } | { type: 'drag'; detail: { … } } | { type: 'connect'; detail: { … } } | { type: 'delete'; detail: { … } } | { type: 'hovered'; detail: { … } } | { type: 'selection'; detail: { … } } | { type: 'camera'; detail:` [`Camera`](#camera) `} | { type: 'at'; detail: number } | { type: 'waiting'; detail:` [`Waiting`](#waiting) `} | { type: 'error'; detail:` [`Failure`](#failure) `}`
+`type ViewEvent = { type: 'click'; detail: { … } } | { type: 'open'; detail: { … } } | { type: 'menu'; detail: { … } } | { type: 'drag'; detail: { … } } | { type: 'connect'; detail: { … } } | { type: 'delete'; detail: { … } } | { type: 'hovered'; detail: { … } } | { type: 'selection'; detail: { … } } | { type: 'camera'; detail:` [`Camera`](#camera) `} | { type: 'at'; detail: number } | { type: 'waiting'; detail:` [`Waiting`](#waiting) `} | { type: 'failures'; detail:` [`Failure`](#failure)`[] } | { type: 'error'; detail:` [`Failure`](#failure) `}`
 
 Something that happened in a view, as [`view.on`](#view-on) reports it.
 
@@ -2197,10 +2286,15 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 **`'waiting'`**`:` [`Waiting`](#waiting) [¶](#viewevent-waiting){.headerlink}
 : The work the last frame waited on changed: [`view.waiting`](#view-waiting). Empty once frames are complete.
 
+{#viewevent-failures .member}
+**`'failures'`**`:` [`Failure`](#failure)`[]` [¶](#viewevent-failures){.headerlink}
+: The failures changed: [`view.failures`](#view-failures). Each option that draws as if unset, and each mark that
+  draws nothing, with why. Empty once everything draws.
+
 {#viewevent-error .member}
 **`'error'`**`:` [`Failure`](#failure) [¶](#viewevent-error){.headerlink}
-: Something failed. Reported once. A mark that no longer fits its data is also listed in
-  [`view.failures`](#view-failures).
+: The view can't draw: the device was lost, a limit was reached, latkit stopped, a fetch or text
+  failed. Reported once. Shots and videos fail with it.
 
 (hit)=
 

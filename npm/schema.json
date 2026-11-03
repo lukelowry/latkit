@@ -34,24 +34,21 @@
           "description": "How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to\n0.3."
         },
         "title": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Title"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "description": "A title drawn at the view's top left, larger than the theme's text."
-        },
-        "subtitle": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "A subtitle drawn under the title."
+          "description": "The title: its text, or title options."
         }
       },
       "required": [
         "space"
       ],
-      "description": "A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an\nease duration, and an optional title.\n\nA scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds\nits dataset and table: `{ \"vertices\": [\"grid\", \"Bus\"], \"radius\": 4 }`.\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage · pu\"))\n    .title(\"Voltage\");\n```"
+      "description": "A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an\nease duration, and an optional title.\n\nA scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds\nits dataset and table: `{ \"vertices\": [\"grid\", \"Bus\"], \"radius\": 4 }`. An option that can't be\nread, or that the scene can't use, draws as if unset, and views list why in their\n[`failures`](crate::View::failures).\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage\"))\n    .title(\"Voltage\");\n```"
     },
     "Space": {
       "anyOf": [
@@ -295,6 +292,13 @@
           "minimum": 0,
           "maximum": 15,
           "description": "Decimal places of fixed values, or of the significand in scientific and engineering formats.\nAt most 15. When unset, as many as the tick step needs."
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Text written after the last tick's value, such as `\" s\"` or `\"%\"`, so the axis needs no\ntitle."
         }
       },
       "description": "A plot axis."
@@ -611,11 +615,12 @@
       "enum": [
         "selected",
         "hovered",
+        "related",
         "pointer",
         "elapsed",
         "zoom"
       ],
-      "description": "View state of each row: `selected`, `hovered`, `pointer` (CSS pixels from a vertex to the\npointer), `elapsed` (seconds since the view was created), or `zoom` (the camera's zoom)."
+      "description": "View state of each row: `selected`, `hovered`, `related` (one reference from a selected or\nhovered row), `pointer` (CSS pixels from a vertex to the pointer), `elapsed` (seconds since the\nview was created), or `zoom` (the camera's zoom)."
     },
     "WhenNode": {
       "type": "object",
@@ -1973,6 +1978,90 @@
       ],
       "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible and its text fits, for\nexample inside a block.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows. In a diagram, a label scales with the zoom, fades out when too small to read, and\nshows wherever it fits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
     },
+    "Legend": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "title": {
+              "description": "The title over the legend.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unit": {
+              "description": "Text written after the last tick's value of a bar, such as `\" pu\"` or `\"%\"`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "place": {
+              "description": "Where the legend sits. Defaults to `right` on a plot and `bottom-right` elsewhere.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Place"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "description": "A legend of a mark's colors: its title, or options with a title, a unit, and a place. It shows\na ticked bar of the colormap across its domain, a cell for each category, or a swatch beside\neach name in the colormap's `categories`. The mark's `color` must map through a colormap with a\nfixed domain or named categories. In a conditional, `otherwise` is searched before the cases.\n\nOn the left or right, a bar stands upright beside the marks. Elsewhere it lies flat.\n\n```\n# use latkit::{Colormap, Legend, Place, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").color(voltage).legend(Legend::new(\"Voltage\").unit(\" pu\").place(Place::Right));\n```"
+    },
+    "Place": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "top",
+          "description": "Above the marks."
+        },
+        {
+          "type": "string",
+          "const": "right",
+          "description": "Right of the marks."
+        },
+        {
+          "type": "string",
+          "const": "bottom",
+          "description": "Below the marks."
+        },
+        {
+          "type": "string",
+          "const": "left",
+          "description": "Left of the marks."
+        },
+        {
+          "type": "string",
+          "const": "top-left",
+          "description": "Over the marks, at the top left."
+        },
+        {
+          "type": "string",
+          "const": "top-right",
+          "description": "Over the marks, at the top right."
+        },
+        {
+          "type": "string",
+          "const": "bottom-left",
+          "description": "Over the marks, at the bottom left."
+        },
+        {
+          "type": "string",
+          "const": "bottom-right",
+          "description": "Over the marks, at the bottom right."
+        }
+      ],
+      "description": "Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the\nmarks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's\nbackground. A title and legends in one place stack in scene order, the title first."
+    },
     "MarkOptions": {
       "type": "object",
       "description": "The options every mark has.",
@@ -2037,11 +2126,15 @@
           "description": "Each row's label: a text field, or label options."
         },
         "legend": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Legend"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "description": "A legend of the mark's colors at the view's bottom right, with this title. It shows\na ticked colormap across its domain, a cell for each category, or a swatch for each\nname in the colormap's `categories`. `color` must map through a colormap with a\nfixed domain or named categories. In a conditional, `otherwise` is searched before\nthe cases."
+          "description": "A legend of the mark's colors: its title, or legend options."
         }
       }
     },
@@ -2957,6 +3050,45 @@
         }
       ],
       "description": "How much a view animates on its own."
+    },
+    "Title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "description": "The title, in the theme's text color and font, 1.75 times its size.",
+              "type": "string"
+            },
+            "subtitle": {
+              "description": "A line under the title, fainter and 1.1 times the theme's text size.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "place": {
+              "description": "Where the title sits. Defaults to `top` on a plot and `top-left` elsewhere.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Place"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "text"
+          ]
+        }
+      ],
+      "description": "A scene's title: its text, or options with its text, a subtitle, and a place.\n\n```\n# use latkit::{Place, Plot, Scene, Title};\nlet scene = Scene::new(Plot::default()).title(Title::new(\"Frequency\").subtitle(\"Bus 101\").place(Place::Top));\n```"
     },
     "Data": {
       "type": "object",
@@ -4385,6 +4517,26 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "failures"
+            },
+            "detail": {
+              "type": "array",
+              "items": {
+                "$ref": "#/outputs/Failure"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "detail"
+          ],
+          "description": "The failures changed: [`View::failures`](crate::View::failures). Each option that draws as\nif unset, and each mark that draws nothing, with why. Empty once everything draws."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "error"
             },
             "detail": {
@@ -4395,7 +4547,7 @@
             "type",
             "detail"
           ],
-          "description": "Something failed. Reported once. A mark that no longer fits its data is also listed in\n[`View::failures`](crate::View::failures)."
+          "description": "The view can't draw: the device was lost, a limit was reached, latkit stopped, a fetch or\ntext failed. Reported once. Shots and videos fail with it."
         }
       ],
       "description": "Something that happened in a view, as [`View::events`](crate::View::events) reports it."

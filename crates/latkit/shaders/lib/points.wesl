@@ -28,7 +28,7 @@ struct Point {
     status: vec4f,
     depth: f32,
     row: u32,
-    // Its focus bits: selected, hovered, an end of a lit edge.
+    // Its focus bits: selected, hovered, or one reference from a lit row.
     focus: u32,
     shown: bool,
 }

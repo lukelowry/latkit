@@ -165,10 +165,10 @@ pub(crate) struct Shown {
     /// The rows its focus draw lights.
     pub(crate) lit: super::focus::Lit,
     /// Why its options, or the whole mark when it is not compiled, do not fit the data, kept until
-    /// the data fits again. `told` counts those a frame has reported. The next frame reports the
-    /// rest unless a new scene replaces the mark first.
+    /// the data fits again.
     pub(crate) failures: Vec<Error>,
-    pub(crate) told: usize,
+    /// Whether it has an earlier mark's key, so it draws nothing.
+    pub(crate) twin: bool,
 }
 
 impl Shown {
@@ -218,8 +218,16 @@ impl Shown {
             place_version: 0,
             lit: super::focus::Lit::default(),
             failures: Vec::new(),
-            told: 0,
+            twin: false,
         }
+    }
+
+    /// A mark with an earlier mark's key, which draws nothing.
+    pub(crate) fn twin(mark: Mark) -> Shown {
+        let mut shown = Shown::new(mark);
+        shown.twin = true;
+        shown.failures.push(crate::scene::twin());
+        shown
     }
 
     /// Whether it draws nothing because it does not fit the data.
@@ -345,7 +353,7 @@ impl Shown {
         let Some(program) = self.compiled.as_ref().map(|c| &c.program) else {
             return crate::gpu::pipelines::Reads::NONE;
         };
-        let viewing = [wgsl::OP_SELECTED, wgsl::OP_HOVERED, wgsl::OP_POINTER, wgsl::OP_ZOOM];
+        let viewing = [wgsl::OP_SELECTED, wgsl::OP_HOVERED, wgsl::OP_RELATED, wgsl::OP_POINTER, wgsl::OP_ZOOM];
         crate::gpu::pipelines::Reads {
             joined: program.columns.iter().any(|c| c.from.is_some()),
             timed: program.columns.iter().any(|c| c.sampled),
@@ -531,10 +539,12 @@ impl Shown {
     /// Compiles the mark against the datasets `all` in `context`, and keeps its failures. It stays
     /// uncompiled while its dataset or table is missing, or with its error when it does not fit.
     pub(crate) fn compile(&mut self, all: &[Snapshot], context: Context<'_>, gpu: &mut Inner) {
+        if self.twin {
+            return;
+        }
         self.tables.release(gpu);
         self.compiled = None;
         self.packed = false;
-        self.told = 0;
         self.failures = match compile::compile(&self.mark, all, context) {
             Ok(Some(mut compiled)) => {
                 self.code.clone_from(&compiled.program.code);

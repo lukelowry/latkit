@@ -49,6 +49,8 @@ export interface Axis {
    * most 15. When unset, as many as the tick step needs.
    */
   precision?: number | null;
+  /** Text written after the last tick's value, such as `" s"` or `"%"`, so the axis needs no title. */
+  unit?: string | null;
 }
 
 /** An image of RGBA texels: straight alpha, sRGB, rows top to bottom. */
@@ -799,6 +801,25 @@ export type Layout =
     };
 
 /**
+ * A legend of a mark's colors: its title, or options with a title, a unit, and a place. It shows a
+ * ticked bar of the colormap across its domain, a cell for each category, or a swatch beside each
+ * name in the colormap's `categories`. The mark's `color` must map through a colormap with a fixed
+ * domain or named categories. In a conditional, `otherwise` is searched before the cases.
+ *
+ * On the left or right, a bar stands upright beside the marks. Elsewhere it lies flat.
+ */
+export type Legend =
+  | string
+  | {
+      /** The title over the legend. */
+      title?: string | null;
+      /** Text written after the last tick's value of a bar, such as `" pu"` or `"%"`. */
+      unit?: string | null;
+      /** Where the legend sits. Defaults to `right` on a plot and `bottom-right` elsewhere. */
+      place?: Place | null;
+    };
+
+/**
  * A length: a number in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels.
  * `{ units }` is position units (degrees on the earth), which grow as the view zooms in.
  */
@@ -881,13 +902,8 @@ export interface MarkOptions {
   drag?: boolean;
   /** Each row's label: a text field, or label options. */
   label?: Label | null;
-  /**
-   * A legend of the mark's colors at the view's bottom right, with this title. It shows a ticked
-   * colormap across its domain, a cell for each category, or a swatch for each name in the
-   * colormap's `categories`. `color` must map through a colormap with a fixed domain or named
-   * categories. In a conditional, `otherwise` is searched before the cases.
-   */
-  legend?: string | null;
+  /** A legend of the mark's colors: its title, or legend options. */
+  legend?: Legend | null;
 }
 
 /**
@@ -967,6 +983,21 @@ export type Motion =
 
 /** Sort direction. Rows where the key has no value sort last in either direction. */
 export type Order = /** Smallest first. */ 'ascending' | /** Largest first. */ 'descending';
+
+/**
+ * Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the
+ * marks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's
+ * background. A title and legends in one place stack in scene order, the title first.
+ */
+export type Place =
+  | /** Above the marks. */ 'top'
+  | /** Right of the marks. */ 'right'
+  | /** Below the marks. */ 'bottom'
+  | /** Left of the marks. */ 'left'
+  | /** Over the marks, at the top left. */ 'top-left'
+  | /** Over the marks, at the top right. */ 'top-right'
+  | /** Over the marks, at the bottom left. */ 'bottom-left'
+  | /** Over the marks, at the bottom right. */ 'bottom-right';
 
 /** A plane: positions are in plane units. */
 export interface Plane {
@@ -1108,7 +1139,8 @@ export interface ScaleNode {
  * ease duration, and an optional title.
  *
  * A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
- * its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
+ * its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`. An option that can't be
+ * read, or that the scene can't use, draws as if unset, and views list why in their `failures`.
  */
 export interface Scene {
   /** The coordinate space positions are in. */
@@ -1126,10 +1158,8 @@ export interface Scene {
   controls?: Controls;
   /** How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to 0.3. */
   ease?: number;
-  /** A title drawn at the view's top left, larger than the theme's text. */
-  title?: string | null;
-  /** A subtitle drawn under the title. */
-  subtitle?: string | null;
+  /** The title: its text, or title options. */
+  title?: Title | null;
 }
 
 /** How a diagram's blocks and groups cast shadows on the sheet, for vertex marks with `shadow` on. */
@@ -1191,10 +1221,11 @@ export type Space =
     };
 
 /**
- * View state of each row: `selected`, `hovered`, `pointer` (CSS pixels from a vertex to the
- * pointer), `elapsed` (seconds since the view was created), or `zoom` (the camera's zoom).
+ * View state of each row: `selected`, `hovered`, `related` (one reference from a selected or
+ * hovered row), `pointer` (CSS pixels from a vertex to the pointer), `elapsed` (seconds since the
+ * view was created), or `zoom` (the camera's zoom).
  */
-export type State = 'selected' | 'hovered' | 'pointer' | 'elapsed' | 'zoom';
+export type State = 'selected' | 'hovered' | 'related' | 'pointer' | 'elapsed' | 'zoom';
 
 /** View state of each row, such as whether it is selected. */
 export interface StateNode {
@@ -1300,6 +1331,18 @@ export type Theme =
 
 /** A tick in JSON: a value, or `[value, label]`. */
 export type Tick = number | [number, string | null];
+
+/** A scene's title: its text, or options with its text, a subtitle, and a place. */
+export type Title =
+  | string
+  | {
+      /** The title, in the theme's text color and font, 1.75 times its size. */
+      text: string;
+      /** A line under the title, fainter and 1.1 times the theme's text size. */
+      subtitle?: string | null;
+      /** Where the title sits. Defaults to `top` on a plot and `top-left` elsewhere. */
+      place?: Place | null;
+    };
 
 /**
  * A size in position units (degrees on the earth), regardless of the space's unit. It scales with

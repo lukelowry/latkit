@@ -222,6 +222,8 @@ class OpenPage implements Context<Record<string, unknown>> {
     view.on('error', (error) =>
       error.code === 'io' ? this.detail(error.message) : this.fail(error),
     );
+    // A page's scene fits its data, so an option drawn as if unset is a page's bug.
+    view.on('failures', ([failure]) => failure && this.fail(failure));
     this.#views.push({ view, scene, region });
     return view;
   };

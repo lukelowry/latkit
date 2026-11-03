@@ -1,5 +1,5 @@
-//! The scenes in `npm/test/scenes.js` decode, so the JSON form TypeScript checks is the form latkit
-//! reads.
+//! The scenes in `npm/test/scenes.js` decode with every option read, so the JSON form TypeScript
+//! checks is the form latkit reads.
 
 #![cfg(feature = "gpu")]
 
@@ -18,8 +18,13 @@ fn the_npm_fixture_decodes() {
     let scenes: Vec<serde_json::Value> = serde_json::from_str(&source[start..=end]).expect("the array is JSON");
     assert!(scenes.len() >= 9, "the fixture covers every form");
     for (i, scene) in scenes.into_iter().enumerate() {
-        if let Err(error) = serde_json::from_value::<Scene>(scene) {
-            panic!("scene {i} does not decode: {error}");
-        }
+        let scene = match serde_json::from_value::<Scene>(scene) {
+            Ok(scene) => scene,
+            Err(error) => panic!("scene {i} does not decode: {error}"),
+        };
+        // Without sources, each mark misses its dataset. Anything else is an option left out.
+        let failures = scene.failures(&[]).expect("no sources to clash");
+        let left: Vec<_> = failures.iter().filter(|f| !f.to_string().contains("no source provides")).collect();
+        assert!(left.is_empty(), "scene {i} leaves out options: {left:?}");
     }
 }

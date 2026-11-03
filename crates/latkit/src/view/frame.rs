@@ -91,7 +91,13 @@ impl View {
         // Runs the callbacks of finished readbacks. A no-op in browsers, which run them themselves.
         let _ = device.poll(wgpu::PollType::Poll);
         self.tell_gpu_errors();
-        self.measure_gutters();
+        // The guides take their room before fits frame what they leave.
+        let mut inner = gpu.0.lock();
+        inner.atlas.tick();
+        self.fonts = crate::host::fonts();
+        self.fit_legends();
+        self.lay_out_guides(&mut inner);
+        drop(inner);
         self.settle();
         self.advance(dt);
         let mut inner = gpu.0.lock();
@@ -100,7 +106,6 @@ impl View {
             self.start_over(&mut inner);
         }
         inner.begin_frame(self.id, device, queue);
-        inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.derive(&mut inner);
         self.tell_failures();
@@ -127,7 +132,7 @@ impl View {
             uniform.background[3] = 0.0;
         }
         uniform.pointer = self.pointer.map_or([-1e9, -1e9], |p| p.point);
-        uniform.selecting = u32::from(!self.focus.selection.is_empty());
+        uniform.selecting = u32::from(self.focus.lighting);
         uniform.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
         if let Some(point) = probe {
             uniform.probe = point;
@@ -137,7 +142,6 @@ impl View {
             uniform.query = words;
         }
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
-        self.fit_legends();
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
         self.write_uniforms(&uniform, &eye, &sprites);
@@ -348,15 +352,13 @@ impl View {
         self.settle_gestures();
     }
 
-    /// Reports, once each, why marks failed against the data drawn. Runs after the frame takes the
-    /// latest data versions, so a dataset filled between frames reports nothing about the version
-    /// before.
+    /// Reports the failures when they changed. Runs after the frame takes the latest data versions,
+    /// so a dataset filled between frames reports nothing about the version before.
     fn tell_failures(&mut self) {
-        for (i, shown) in self.marks.iter_mut().enumerate() {
-            for error in &shown.failures[shown.told..] {
-                self.events.tell(Event::Error(error.clone().at(i).at("marks")));
-            }
-            shown.told = shown.failures.len();
+        let failures: Vec<Error> = self.failures().collect();
+        if failures != self.told_failures {
+            self.events.tell(Event::Failures(failures.clone()));
+            self.told_failures = failures;
         }
     }
 

@@ -42,7 +42,7 @@ fn scene(layout: impl Into<Layout>) -> Scene {
 }
 
 fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
-    let mut view = View::new(gpu, scene).expect("valid scene");
+    let mut view = View::new(gpu, scene);
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: -2.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([data]).expect("a source");
     frame(gpu, &mut view);
@@ -243,7 +243,7 @@ fn a_plane_places_points_without_positions_by_its_layout() {
     assert!(p.iter().all(|v| v[0].is_finite()), "every node placed: {p:?}");
     assert!((apart(p[0], p[1]) - 40.0).abs() < 15.0, "node 2 a gap from node 1: {p:?}");
     // Without a layout, rows without positions are not drawn.
-    view.set_scene(scene(Layout::None)).expect("valid scene");
+    view.set_scene(scene(Layout::None));
     frame(&gpu, &mut view);
     assert!(located(&gpu, &mut view, 2)[1][0].is_nan(), "node 2 is not drawn");
     assert_eq!(errors(&mut view), Vec::new());
@@ -277,7 +277,7 @@ fn a_fit_on_a_plane_frames_the_places_its_layout_gives() {
         .layout(Stress { gap: 40.0 })
         .draw(Edges::of("graph", "Link").ends("from", "to"))
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(1.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     settle(&gpu, &mut view);

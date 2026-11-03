@@ -190,8 +190,9 @@ impl Shot {
     /// Takes the picture of `views`, one per panel, once every view is complete as the [`Capture`]
     /// says. Each view draws its data as of when the picture began.
     ///
-    /// Fails on a render error, including errors still queued in [`View::events`], or at the
-    /// deadline. Events stay available to the caller, and the views are given back even if the
+    /// Each view draws as it does on screen, its [failures](View::failures) included. Fails on an
+    /// [`Error`](crate::Event::Error) event, including one still queued in [`View::events`], or at
+    /// the deadline. Events stay available to the caller, and the views are given back even if the
     /// future is dropped.
     pub async fn image(&self, views: &mut [&mut View]) -> Result<Image> {
         self.image_of(&mut Borrowed(views)).await

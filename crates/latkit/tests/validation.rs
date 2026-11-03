@@ -1,9 +1,9 @@
-//! Batch validation uses the rendering compiler without requesting an adapter.
+//! A scene's failures, found with the rendering compiler without requesting an adapter.
 #![cfg(feature = "gpu")]
 
 use latkit::{
-    Color, Colormap, Data, Diagram, Error, Expr, Ids, Label, Plane, Scene, Source, Table, Tiles, Vertices, field, when,
-    zoom,
+    Color, Colormap, Data, Diagram, Expr, Ids, Label, Plane, Plot, Scene, Source, Table, Tiles, Vertices, field,
+    from_json, when, zoom,
 };
 
 fn data() -> Source {
@@ -18,76 +18,103 @@ fn data() -> Source {
     data.into()
 }
 
-#[test]
-fn validation_requires_unique_datasets_and_drawn_tables() {
-    let scene = Scene::new(Plane::default()).draw(Vertices::of("grid", "Bus").position(field("x"), field("y")));
-    assert!(scene.validate(&[data()]).is_ok());
-    assert!(matches!(scene.validate(&[]), Err(Error::Invalid { .. })));
-    assert!(scene.validate(&[data(), data()]).unwrap_err().to_string().contains("two sources named"));
-    assert!(scene.validate(&[Data::new("grid").into()]).unwrap_err().to_string().contains("Bus"));
-    let tiles = [Tiles::new("grid", "history/frames.json").into()];
-    assert!(scene.validate(&tiles).is_ok(), "tiles' marks are checked once the tiles arrive");
+/// Each failure of `scene` drawn from `sources`, as text.
+fn failures(scene: &Scene, sources: &[Source]) -> Vec<String> {
+    scene.failures(sources).unwrap().iter().map(ToString::to_string).collect()
+}
+
+/// The first failure of `scene` drawn from `sources`, as text. Empty when everything draws.
+fn failure(scene: &Scene, sources: &[Source]) -> String {
+    failures(scene, sources).into_iter().next().unwrap_or_default()
 }
 
 #[test]
-fn validation_checks_expression_types_and_gives_the_mark_path() {
+fn failures_name_missing_datasets_and_tables() {
+    let scene = Scene::new(Plane::default()).draw(Vertices::of("grid", "Bus").position(field("x"), field("y")));
+    assert_eq!(failures(&scene, &[data()]), Vec::<String>::new());
+    assert!(failure(&scene, &[]).contains("no source provides dataset 'grid'"));
+    assert!(scene.failures(&[data(), data()]).unwrap_err().to_string().contains("two sources named"));
+    assert!(failure(&scene, &[Data::new("grid").into()]).contains("Bus"));
+    let tiles = [Tiles::new("grid", "history/frames.json").into()];
+    assert_eq!(failures(&scene, &tiles), Vec::<String>::new(), "tiles' marks are checked once the tiles arrive");
+}
+
+#[test]
+fn failures_check_expression_types_and_give_the_option_path() {
     let scene = Scene::new(Plane::default()).draw(Vertices::of("grid", "Bus").position(field("name"), field("y")));
-    let Error::Invalid { path, .. } = scene.validate(&[data()]).unwrap_err() else { panic!("invalid expression") };
-    assert!(path.to_string().starts_with("marks[0]."));
+    assert!(failure(&scene, &[data()]).starts_with("marks[0]."));
     let scene = Scene::new(Plane::default()).draw(Vertices::of("grid", "Bus").label(Label::new(field("missing"))));
-    assert!(scene.validate(&[data()]).is_err());
+    assert!(failure(&scene, &[data()]).starts_with("marks[0].label"));
 }
 
 #[test]
 fn a_label_text_chooses_between_one_text_field_and_missing() {
     let on_a_plane = |text: Expr| {
         let buses = Vertices::of("grid", "Bus").position(field("x"), field("y")).label(Label::new(text));
-        Scene::new(Plane::default()).draw(buses).validate(&[data()])
+        failure(&Scene::new(Plane::default()).draw(buses), &[data()])
     };
     let some = when(field("x").gt(0.5)).then(field("name")).otherwise(Expr::missing());
-    assert!(on_a_plane(some).is_ok(), "the field where the condition holds, else no label");
+    assert_eq!(on_a_plane(some), "", "the field where the condition holds, else no label");
     let two = when(field("x").gt(0.5)).then(field("name")).otherwise(field("other"));
-    let Error::Invalid { path, .. } = on_a_plane(two).unwrap_err() else { panic!("two fields") };
-    assert_eq!(path.to_string(), "marks[0].label.text");
+    assert!(on_a_plane(two).starts_with("marks[0].label.text:"));
     let number = when(field("x").gt(0.5)).then(field("name")).otherwise(1.0);
-    assert!(on_a_plane(number).is_err(), "a value other than the field or missing");
+    assert!(!on_a_plane(number).is_empty(), "a value other than the field or missing");
     let zoomed = when(zoom().ge(3.0)).then(field("name")).otherwise(Expr::missing());
-    assert!(on_a_plane(zoomed.clone()).is_ok(), "the zoom chooses on a plane");
+    assert_eq!(on_a_plane(zoomed.clone()), "", "the zoom chooses on a plane");
     let blocks = Vertices::of("grid", "Bus").position(field("x"), field("y")).label(Label::new(zoomed));
-    let in_a_diagram = Scene::new(Diagram::default()).draw(blocks).validate(&[data()]);
-    assert!(in_a_diagram.unwrap_err().to_string().contains("not the zoom"), "a diagram's text reads only data");
+    let in_a_diagram = failure(&Scene::new(Diagram::default()).draw(blocks), &[data()]);
+    assert!(in_a_diagram.contains("not the zoom"), "a diagram's text reads only data");
 }
 
 #[test]
 fn a_color_option_computes_a_color() {
     let colored = |color: Expr| {
         let buses = Vertices::of("grid", "Bus").position(field("x"), field("y")).color(color);
-        Scene::new(Plane::default()).draw(buses).validate(&[data()])
+        failure(&Scene::new(Plane::default()).draw(buses), &[data()])
     };
-    assert!(colored(Color::rgb(1.0, 0.0, 0.0).into()).is_ok());
-    assert!(colored(field("x").colormap(Colormap::VIRIDIS).into()).is_ok());
-    assert!(colored(when(field("x").gt(0.5)).then(Color::WHITE).otherwise(Expr::missing())).is_ok());
-    let error = colored(field("x")).unwrap_err().to_string();
+    assert_eq!(colored(Color::rgb(1.0, 0.0, 0.0).into()), "");
+    assert_eq!(colored(field("x").colormap(Colormap::VIRIDIS).into()), "");
+    assert_eq!(colored(when(field("x").gt(0.5)).then(Color::WHITE).otherwise(Expr::missing())), "");
+    let error = colored(field("x"));
     assert!(error.starts_with("marks[0].color"), "the error names the option: {error}");
     assert!(error.contains("found a number; map a number to colors with colormap"), "{error}");
-    assert!(colored(field("name")).is_err(), "a text is no color");
+    assert!(!colored(field("name")).is_empty(), "a text is no color");
 }
 
 #[test]
 fn diagrams_allow_positions_to_be_derived_by_layout() {
     let scene = Scene::new(Diagram::default()).draw(Vertices::of("grid", "Bus")).layout(latkit::Layered::default());
-    assert!(scene.validate(&[data()]).is_ok());
+    assert_eq!(failures(&scene, &[data()]), Vec::<String>::new());
 }
 
 #[test]
-fn shadows_are_valid_only_on_a_diagram() {
+fn options_a_scene_cannot_use_draw_as_if_unset() {
     let block = Vertices::of("grid", "Bus").position(field("x"), field("y")).shadow(true);
-    let on_a_plane = Scene::new(Plane::default()).draw(block.clone()).validate(&[data()]);
-    assert!(on_a_plane.unwrap_err().to_string().contains("only a diagram has"), "refused on a plane");
-    assert!(Scene::new(Diagram::default()).draw(block).validate(&[data()]).is_ok());
+    assert!(
+        failure(&Scene::new(Plane::default()).draw(block.clone()), &[data()])
+            .starts_with("marks[0].shadow: only a diagram has")
+    );
+    assert_eq!(failures(&Scene::new(Diagram::default()).draw(block), &[data()]), Vec::<String>::new());
+    let bus = Vertices::of("grid", "Bus").position(field("x"), field("y"));
+    let twins = Scene::new(Plane::default()).draw(bus.clone()).draw(bus.clone().radius(9.0));
+    assert!(failure(&twins, &[data()]).starts_with("marks[1]: draws the same table as an earlier mark"));
+    let uncolored = Scene::new(Plane::default()).draw(bus.legend("Buses"));
+    assert!(failure(&uncolored, &[data()]).starts_with("marks[0].legend: a legend needs a color mapped"));
+    let laid = Scene::new(Plot::default()).layout(latkit::Layered::default());
+    assert!(failure(&laid, &[data()]).starts_with("layout: a plot cannot have a layout"));
 }
 
 #[test]
-fn huge_durations_are_input_errors_instead_of_panics() {
-    assert!(serde_json::from_str::<Scene>(r#"{"space":"plane","ease":1e100}"#).is_err());
+fn options_json_cannot_read_are_left_out_with_their_paths() {
+    let scene: Scene = from_json(
+        r#"{"space": "plane", "ease": 1e100, "title": 7, "subtitle": "gone",
+            "marks": [{"vertices": ["grid", "Bus"], "colour": "red", "radius": "big", "position": ["$x", "$y"]}]}"#,
+    )
+    .unwrap();
+    let paths: Vec<String> =
+        failures(&scene, &[data()]).iter().map(|f| f.split(':').next().unwrap_or_default().to_owned()).collect();
+    assert_eq!(paths, ["ease", "title", "subtitle", "marks[0].colour", "marks[0].radius"]);
+    assert!(from_json::<Scene>(r#"{"space": "plnae"}"#).unwrap_err().to_string().starts_with("space"));
+    let unreadable = from_json::<Scene>(r#"{"space": "plane", "marks": [{"vertices": 3}]}"#).unwrap_err();
+    assert!(unreadable.to_string().starts_with("marks[0].vertices"), "{unreadable}");
 }

@@ -417,14 +417,21 @@ impl View {
         }
     }
 
-    /// Hovers `hit`, reporting a change when the row differs.
+    /// Hovers `hit`, reporting a change when the row, its port, or the traced sample differs. A
+    /// row the application hovered stays until the pointer or keys hover a row, or leave one.
     fn hover(&mut self, hit: Option<Hit>, trigger: Trigger) {
-        if hit.as_ref().map(|h| &h.row) != self.focus.hovered.as_ref().map(|h| &h.row) {
-            self.focus.dirty = true;
-            self.events.tell(Event::Hovered { hit: hit.clone(), trigger });
+        let spot = hit.as_ref().map(|h| (h.row.clone(), h.port.clone(), h.sample.map(|s| s.frame)));
+        if spot == self.focus.spot {
+            return;
+        }
+        self.focus.spot = spot;
+        let row = hit.as_ref().map(|h| h.row.clone());
+        if row != self.focus.hovered {
+            self.focus.hovered = row;
+            self.focus.hovering = true;
             self.wake();
         }
-        self.focus.hovered = hit;
+        self.events.tell(Event::Hovered { hit, trigger });
     }
 
     /// Decides what a press does. A Shift drag with box selection on starts a box, regardless of

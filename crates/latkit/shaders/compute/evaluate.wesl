@@ -15,7 +15,8 @@ import package::lib::types::{
     NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, PAGE_ROWS, FRESH, item,
     BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION, STEP_REDUCE, STEP_ENDS,
     VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED,
-    MARK_VERTICES, OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
+    MARK_VERTICES, OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_RELATED, OP_POINTER, OP_ELAPSED, OP_THEME,
+    OP_ZOOM,
     OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP,
     OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MIN, OP_MAX, OP_MOD, OP_POW,
     OP_LT, OP_LE, OP_GT, OP_GE, OP_EQ, OP_NE, OP_AND, OP_OR,
@@ -25,7 +26,7 @@ import package::lib::types::{
 import package::lib::bind::{frame, program, mark, pages, theme_word};
 import package::lib::state::{travel_words, pack_range, record_at};
 import package::lib::read::{column_value, missing, missing_bits};
-import package::lib::focus::{is_selected, is_hovered};
+import package::lib::focus::{is_selected, is_hovered, is_related};
 import package::lib::color::{scale, colormap};
 import package::lib::project::{project, to_screen};
 import package::lib::reduce::{ordered, unordered};
@@ -148,8 +149,8 @@ fn pointer_distance(row: u32) -> f32 {
     return distance(to_screen(project(hi, lo, z)), frame.pointer);
 }
 
-// The view state op `code` reads for `row`: whether it is selected or hovered, its distance to the
-// pointer, or the zoom.
+// The view state op `code` reads for `row`: whether it is selected, hovered, or one reference from
+// a selected or hovered row, its distance to the pointer, or the zoom.
 fn viewed(code: u32, row: u32) -> u32 {
     if !VIEWED {
         return MISSING;
@@ -157,6 +158,7 @@ fn viewed(code: u32, row: u32) -> u32 {
     switch code {
         case OP_SELECTED: { return truth(is_selected(row)); }
         case OP_HOVERED: { return truth(is_hovered(row)); }
+        case OP_RELATED: { return truth(is_related(row)); }
         case OP_POINTER: { return bits(pointer_distance(row)); }
         default: { return bits(frame.zoom); }
     }
@@ -289,7 +291,7 @@ fn run(row: u32, start: u32, end: u32) {
             case OP_CONST: { stack[sp] = constant(a); sp++; }
             case OP_MISSING: { stack[sp] = MISSING; sp++; }
             case OP_FIELD: { stack[sp] = column_value(a, row).x; sp++; }
-            case OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ZOOM: { stack[sp] = viewed(code, row); sp++; }
+            case OP_SELECTED, OP_HOVERED, OP_RELATED, OP_POINTER, OP_ZOOM: { stack[sp] = viewed(code, row); sp++; }
             case OP_ELAPSED: { stack[sp] = bits(frame.elapsed); sp++; }
             case OP_THEME: { stack[sp] = theme_word(a); sp++; }
             case OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP: {

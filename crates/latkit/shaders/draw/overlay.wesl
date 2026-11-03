@@ -1,6 +1,7 @@
 // The overlay: lines, boxes, filled rectangles, and runs of text in CSS pixels, drawn over every
-// mark. It draws a plot's axes, a scene's title and legends, a selection box, and a connection
-// being drawn. Text samples the atlas's distance field, and its quad covers the field's spread.
+// mark. It draws a plot's axes, a scene's title and legends and their backdrops, a selection box,
+// and a connection being drawn. Text samples the atlas's distance field, and its quad covers the
+// field's spread.
 
 import package::lib::types::{Sprite, SPRITE_TEXT, SPRITE_BOX, SPRITE_FILL, TEXT_SPREAD};
 import package::lib::bind::{eye, ramp};
@@ -54,6 +55,11 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
         let edge = min(min(v.p.x - lo.x, hi.x - v.p.x), min(v.p.y - lo.y, hi.y - v.p.y));
         let line = coverage(abs(edge) - 0.5 * s.width);
         c = max(line, f32(inside) * 0.15);
+    } else if s.kind == SPRITE_FILL && s.width > 0.0 {
+        // A rectangle with corners rounded by its width.
+        let half = 0.5 * abs(s.b - s.a);
+        let q = abs(v.p - 0.5 * (s.a + s.b)) - half + s.width;
+        c = coverage(length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - s.width);
     } else if s.kind == SPRITE_FILL {
         c = 1.0;
     } else {

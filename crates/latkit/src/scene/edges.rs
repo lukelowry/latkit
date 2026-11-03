@@ -114,6 +114,8 @@ impl Edges {
             c.end(to).map_err(|e| e.at("ends"))?;
         } else if self.bends.is_some() {
             return Err(Error::invalid("bends need ends").at("bends"));
+        } else if !context.diagram() {
+            return Err(Error::invalid("outside a diagram, edges need ends, poles, or joins").at("ends"));
         }
         if let Some(bends) = &self.bends
             && !matches!(c.kind(bends), Some(Kind::Path))
