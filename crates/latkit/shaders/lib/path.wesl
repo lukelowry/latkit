@@ -19,7 +19,7 @@ import package::lib::focus::{faded, growth};
 import package::lib::mark::{px, px_per_length};
 import package::lib::points::vertex_half;
 import package::lib::lists::{lists, list_entry, list_start, list_total};
-import package::lib::drawn::drawn_row;
+import package::lib::drawn::{drawn_row, drawn_instance};
 
 // The path kind a pipeline's strokes read, one of the `PATH_` codes, fixed when the pipeline is
 // created.
@@ -90,10 +90,9 @@ struct OnScreen {
     kept: vec2f,
 }
 
-// The segment drawn as instance `instance`. Rows have a fixed number of segments, or the mark's
+// Segment `instance` as the mark numbers them. Rows have a fixed number of segments, or the mark's
 // list numbers them, with each entry holding a segment's drawn row and distance along.
-@if(!focused)
-fn segment(instance: u32) -> Segment {
+fn numbered_segment(instance: u32) -> Segment {
     if mark.per_row != NONE {
         let per = max(mark.per_row, 1u);
         return path_segment(instance / per, instance % per, 0.0);
@@ -101,6 +100,12 @@ fn segment(instance: u32) -> Segment {
     let entry = list_entry(mark.list, 2u * instance);
     let item = lists[entry];
     return path_segment(item, instance - list_start(mark.list, item), bitcast<f32>(lists[entry + 1u]));
+}
+
+// The segment drawn at position `instance`, which `drawn_instance` gives.
+@if(!focused)
+fn segment(instance: u32) -> Segment {
+    return numbered_segment(drawn_instance(instance));
 }
 
 // In the focus draw: segment `instance % mark.pieces` of lit row `instance / mark.pieces`, with its

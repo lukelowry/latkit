@@ -1183,18 +1183,18 @@ impl View {
         self.projected_with(&self.drawn_camera())
     }
 
-    /// The projection through `camera`. A plot camera without a value range uses the fitted one,
-    /// as the frame does.
     /// Whether depth varies across the view, so marks hide one another by depth instead of by the
     /// order they draw in: on a plane or the earth, the camera is tilted, the globe shows, or a
     /// vertex mark raises its rows.
     pub(super) fn deep(&self) -> bool {
         let space = &self.scene.space;
         let tilted = matches!(self.camera, Camera::Map { pitch, .. } if pitch > 0.0);
-        let raised = || self.scene.marks.iter().any(|m| matches!(m, crate::Mark::Vertices(v) if v.raised()));
+        let raised = || self.scene.marks.iter().any(lists::raised);
         matches!(space, Space::Plane(_) | Space::Earth(_)) && (tilted || Projected::globe_of(space) > 0.0 || raised())
     }
 
+    /// The projection through `camera`. A plot camera without a value range uses the fitted one,
+    /// as the frame does.
     fn projected_with(&self, camera: &Camera) -> Projected {
         let camera = match *camera {
             Camera::Plot { x, y: None } => Camera::Plot { x, y: Some(self.plot_y.unwrap_or([0.0, 1.0])) },

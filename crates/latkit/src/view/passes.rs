@@ -3,7 +3,8 @@
 //! The compute pass freezes the rows' current state for transitions starting this frame, expands
 //! paged marks' drawn rows from their runs, evaluates dirty channels over the changed row blocks
 //! (reducing fitted domains first), resolves endpoints, eases marks in transition, moves comets,
-//! numbers segments, sums face normals when their corners moved, and measures extents when asked.
+//! numbers segments, sorts rows by height, sums face normals when their corners moved, and measures
+//! extents when asked.
 //!
 //! The render pass draws the backdrop and a plot's grid lines, then every mark's primitive and ports
 //! in scene order with depth, then the labels and the rest of the overlay. A pending probe then
@@ -194,6 +195,8 @@ struct Work {
     travelled: Vec<usize>,
     /// Marks whose drawn rows' words are rebuilt from their runs.
     expanded: Vec<usize>,
+    /// Marks whose height orders sort.
+    ordered: Vec<usize>,
 }
 
 /// Dispatches one workgroup per `WORKGROUP` items, if there are any. Past one dimension's limit, it
@@ -392,9 +395,22 @@ impl View {
     ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let Work { frozen, evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded } =
-            self.work(measure, travel);
-        let all = [&frozen, &work, &resolved, &eased, &segments, &faces, &measured, &carried, &travelled, &expanded];
+        let Work {
+            frozen,
+            evaluated: work,
+            resolved,
+            eased,
+            segments,
+            faces,
+            measured,
+            carried,
+            travelled,
+            expanded,
+            ordered,
+        } = self.work(measure, travel);
+        let all = [
+            &frozen, &work, &resolved, &eased, &segments, &faces, &measured, &carried, &travelled, &expanded, &ordered,
+        ];
         if all.iter().all(|marks| marks.is_empty()) {
             return None;
         }
@@ -419,15 +435,16 @@ impl View {
         let evaluate_group = resources.pass(device, inner, Shader::Evaluate);
         let normals_group = (!faces.is_empty()).then(|| resources.pass(device, inner, Shader::Normals));
         let bounds_group = (!measured.is_empty()).then(|| resources.pass(device, inner, Shader::Bounds));
-        let lists_group =
-            (!segments.is_empty() || !expanded.is_empty()).then(|| resources.pass(device, inner, Shader::Lists));
-        for &i in &segments {
+        let listing = !segments.is_empty() || !expanded.is_empty() || !ordered.is_empty();
+        let lists_group = listing.then(|| resources.pass(device, inner, Shader::Lists));
+        let headers = segments.iter().map(|&i| {
             let list = self.marks[i].segments.list.expect("listed");
-            gpu.0.queue.write_buffer(
-                resources.lists(),
-                u64::from(list.header) * 4,
-                bytemuck::cast_slice(&list.header_words(self.marks[i].kind().primitive().corners())),
-            );
+            (list, self.marks[i].kind().primitive().corners())
+        });
+        let orders = ordered.iter().map(|&i| (self.marks[i].height_order.list.expect("ordered"), 0));
+        for (list, corners) in headers.chain(orders) {
+            let words = list.header_words(corners);
+            gpu.0.queue.write_buffer(resources.lists(), u64::from(list.header) * 4, bytemuck::cast_slice(&words));
         }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -444,7 +461,7 @@ impl View {
             }
             // Each drawn row's word first, exits included: every later pass reads it.
             if let Some(group) = &lists_group {
-                pass.set_bind_group(2, group, &[]);
+                pass.set_bind_group(2, group, &[super::resources::step(wgsl::STEP_SEGMENTS)]);
                 self.over_marks(&mut pass, inner, &groups.mark, EXPAND_RUNS, &expanded, |s| s.rows + s.exits);
             }
             pass.set_bind_group(2, &evaluate_group, &[super::resources::step(wgsl::STEP_CHANNELS)]);
@@ -457,8 +474,10 @@ impl View {
             // After evaluating, so comets travel at this frame's flow.
             self.over_marks(&mut pass, inner, &groups.mark, TRAVEL, &travelled, held);
             if let Some(group) = &lists_group {
-                pass.set_bind_group(2, group, &[]);
+                pass.set_bind_group(2, group, &[super::resources::step(wgsl::STEP_SEGMENTS)]);
                 self.count_segments(&mut pass, inner, &groups.mark, &segments);
+                // After every pass that writes where rows stand and their segments.
+                self.sort_height_orders(&mut pass, inner, &groups.mark, group, &ordered);
             }
             if let Some(group) = &normals_group {
                 pass.set_bind_group(2, group, &[]);
@@ -505,7 +524,7 @@ impl View {
 
     /// Chooses the marks each compute step covers this frame: freezing, evaluation, endpoint
     /// resolution, easing, segment counting, face normals, measuring, comet carry, run expansion,
-    /// and with `travel`, comet travel.
+    /// height order sorting, and with `travel`, comet travel.
     fn work(&mut self, measure: bool, travel: bool) -> Work {
         let frozen = (0..self.marks.len()).filter(|&i| self.marks[i].remap != wgsl::NONE).collect();
         for shown in &mut self.marks {
@@ -552,7 +571,21 @@ impl View {
         let carried = (0..self.marks.len()).filter(|i| self.marks[*i].carry && flowing(i)).collect();
         let travelled = (0..self.marks.len()).filter(|i| travel && flowing(i)).collect();
         let expanded = self.drawn_rows_due();
-        Work { frozen, evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded }
+        // After the versions above move and the segment lists are stamped.
+        let ordered = self.height_orders_due();
+        Work {
+            frozen,
+            evaluated: work,
+            resolved,
+            eased,
+            segments,
+            faces,
+            measured,
+            carried,
+            travelled,
+            expanded,
+            ordered,
+        }
     }
 
     /// Writes the blocks buffer, which each mark's uniform points into. For each mark, it lists the
@@ -763,10 +796,12 @@ impl View {
         // Where depth varies, opaque pixels draw first and keep their depth: those of points and
         // strokes, and faces and areas whole. Every other pixel then blends over them in mark order,
         // only in front of what is drawn: antialiased edges, marks too thin to cover a pixel, and
-        // translucent rows, such as those a selection dims. So the nearest opaque pixel shows
-        // whatever the order of the marks, and a partly covered pixel blends over what lies behind
-        // it, never over the background.
-        let layered = self.deep() && self.opaque_ready(inner, frame.format, samples);
+        // translucent rows, such as those a selection dims. Within a mark whose rows stand at
+        // different heights, they blend lowest first, which is farthest first where they overlap.
+        // So the nearest opaque pixel shows whatever the order of the marks, a partly covered pixel
+        // blends over what lies behind it, never over the background, and a nearer thin row blends
+        // over the rows behind it.
+        let layered = self.layered(inner, frame.format, samples);
         if layered {
             for (i, shown) in self.marks.iter().enumerate() {
                 if shown.drawable() && shown.instances() > 0 {

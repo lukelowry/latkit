@@ -135,7 +135,8 @@ impl View {
         // have compiled.
         let answers = input && self.answers();
         let probe = self.probe_point(answers);
-        let query = self.lay_out_lists(answers);
+        let layered = self.layered(&inner, frame.format, gpu.samples_for(frame.pixel_ratio));
+        let query = self.lay_out_lists(answers, layered);
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
         let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, elapsed, self.at);
@@ -475,11 +476,11 @@ impl View {
         }
     }
 
-    /// Lays out the lists buffer and the marks' segment lists. If the frame `answers` queries,
-    /// takes this frame's query, returning its words and whether it reads depth. A replaced buffer
-    /// starts empty, so every segment is counted again.
-    fn lay_out_lists(&mut self, answers: bool) -> Option<([f32; 4], bool)> {
-        self.lay_out_segments();
+    /// Lays out the lists buffer: the marks' segment lists, and in `layered` frames their draw
+    /// orders. If the frame `answers` queries, takes this frame's query, returning its words and
+    /// whether it reads depth. A replaced buffer starts empty, so every list is made again.
+    fn lay_out_lists(&mut self, answers: bool, layered: bool) -> Option<([f32; 4], bool)> {
+        self.lay_out_lists_buffer(layered);
         let device = &self.gpu.0.device;
         self.resources.as_mut().expect("created").fit_lists(device, u64::from(self.list_words));
         if answers { self.next_query() } else { None }

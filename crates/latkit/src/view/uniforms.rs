@@ -207,6 +207,7 @@ pub(crate) fn mark(
     mark.trace = wgsl::NONE;
     mark.per_row = 1;
     mark.list = shown.segments.list.map_or(wgsl::NONE, |list| list.header);
+    mark.height_order = shown.height_order.list.map_or(wgsl::NONE, |list| list.header);
     mark.query = shown.query;
     mark.geometry = wgsl::NONE;
     mark.frozen_geometry = wgsl::NONE;
