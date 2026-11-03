@@ -5,8 +5,8 @@
 //
 // The hover takes three steps over every mark it reaches. `nearest` keeps the least key over all
 // instances within the probe's radius: the distance in 1/64 pixel, then the mark drawn last.
-// `topmost` keeps the last instance of that mark at that key, and `describe` writes where that hit
-// lies. Rows hidden behind other drawn marks are not hit. `under` writes the nearest depth drawn
+// `topmost` keeps the instance of that mark drawn last at that key, and `describe` writes where
+// that hit lies. Instances are read by draw position, so the one drawn last is the one on top. Rows hidden behind other drawn marks are not hit. `under` writes the nearest depth drawn
 // around the probe, which gestures rotate and zoom about.
 //
 // Queries write after the probe's words, each mark from the word its `query` names. `hits` appends
@@ -28,7 +28,7 @@ import package::lib::path::{segment, segment_screen, stroke_style, stroke_instan
 import package::lib::triangles::{triangle_corner, triangle_item, triangle_instances};
 import package::lib::marker::outline_distance;
 import package::lib::mark::PRIMITIVE;
-import package::lib::drawn::drawn_row;
+import package::lib::drawn::{drawn_row, drawn_instance};
 import package::lib::center::{row_center, Center};
 
 // Which step a dispatch takes.
@@ -101,11 +101,11 @@ fn answers(item: u32, row: u32, leaving: bool) -> bool {
     return item < mark.rows && !leaving && (word(row_at(row) + mark.stride - 1u) & FADE_OUT) == 0u;
 }
 
-// A point's marker, or for an instance past the rows, one of their ports.
+// The marker drawn at position `instance`, or for an instance past the rows, one of their ports.
 fn seen_point(instance: u32) -> Seen {
     var s: Seen;
     let port = select(0u, instance - mark.rows, instance >= mark.rows);
-    s.item = select(instance, port / max(mark.ports, 1u), instance >= mark.rows);
+    s.item = select(drawn_instance(instance), port / max(mark.ports, 1u), instance >= mark.rows);
     let d = drawn_row(s.item);
     s.row = d.row;
     let pt = point(s.row);

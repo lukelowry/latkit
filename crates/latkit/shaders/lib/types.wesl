@@ -452,6 +452,13 @@ const LIST_HEADER: u32 = 12u;
 // Counts per workgroup of the scan.
 const SCAN_WORKGROUP: u32 = 256u;
 
+// Steps of `compute/lists.wesl`, chosen by its step uniform: work on the mark's segment list, or
+// sort digit `k` of its height order's keys at step `STEP_DIGITS + k`.
+const STEP_SEGMENTS: u32 = 0u;
+const STEP_DIGITS: u32 = 1u;
+// A height order sorts 32-bit keys in `DIGITS` passes of 8-bit digits.
+const DIGITS: u32 = 4u;
+
 
 // Per-frame values every draw and dispatch reads.
 struct Frame {
@@ -605,6 +612,10 @@ struct Mark {
     // query's results for the mark start in the probe buffer.
     list: u32,
     query: u32,
+    // Where the lists buffer holds the order the mark draws its instances in, lowest first: the
+    // header of its digit counts, then the instance at each position. NONE when they draw in the
+    // order they are numbered.
+    height_order: u32,
     // Where the mark's remap words start, while `gather` freezes its transition.
     remap: u32,
     // The rows the focus draw lights: where they start in the focused buffer, how many, and the

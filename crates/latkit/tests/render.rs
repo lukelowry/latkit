@@ -1217,11 +1217,10 @@ fn where_depth_varies_the_nearest_mark_shows_whatever_order_it_draws_in() {
     assert!(close(center(false), [255, 0, 0, 255]), "on flat ground, the row drawn last shows: {:?}", center(false));
 }
 
-/// A frame of `lines` drawn between two pairs of buses, seen from straight above: line 0 raised 30
-/// units nearer the camera along the middle row, and line 1 on the ground under it along the middle
-/// column, drawn after it. Each line's `near` field is 1 for the raised one. `selected` lines are
-/// selected.
-fn crossing(gpu: &latkit::Gpu, lines: Edges, selected: &[u64]) -> Vec<[u8; 4]> {
+/// A view of `lines` drawn between two pairs of buses through `camera`: line 0 raised `raised`
+/// units along the x axis, and line 1 on the ground along the y axis, drawn after it. Each line's
+/// `near` field is 1 for the raised one.
+fn crossing(gpu: &latkit::Gpu, lines: Edges, raised: f64, camera: Camera) -> View {
     let data = Data::new("d");
     data.apply(
         Patch::new()
@@ -1229,7 +1228,7 @@ fn crossing(gpu: &latkit::Gpu, lines: Edges, selected: &[u64]) -> Vec<[u8; 4]> {
                 Table::new("Bus", Ids::count(4))
                     .field("x", vec![-60.0, 60.0, 0.0, 0.0])
                     .field("y", vec![0.0, 0.0, -60.0, 60.0])
-                    .field("z", vec![30.0, 30.0, 0.0, 0.0]),
+                    .field("z", vec![raised, raised, 0.0, 0.0]),
             )
             .set(
                 Table::new("Line", Ids::count(2))
@@ -1244,12 +1243,21 @@ fn crossing(gpu: &latkit::Gpu, lines: Edges, selected: &[u64]) -> Vec<[u8; 4]> {
         .draw(Vertices::of("d", "Bus").position(field("x"), field("y")).elevation(field("z")))
         .draw(lines.ends("from", "to"));
     let mut view = View::new(gpu, scene);
-    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    view.set_camera(camera);
     view.set_sources([&data]).expect("a source");
-    if !selected.is_empty() {
-        view.set_selection([latkit::Rows::new("d", "Line", selected.to_vec())]);
-    }
-    frame(gpu, &mut view)
+    view
+}
+
+/// A camera tilted by `pitch` degrees, looking at the crossing of [`crossing`]'s lines where the
+/// raised one passes over the other, which it so shows in the middle of the view.
+fn over_crossing(raised: f64, pitch: f64) -> Camera {
+    Camera::Map { center: [0.0, 0.0, raised], zoom: 0.0, pitch, bearing: 0.0 }
+}
+
+/// The four pixels around the middle of the view.
+fn middle(pixels: &[[u8; 4]]) -> [[u8; 4]; 4] {
+    let m = SIZE / 2;
+    [(m - 1, m - 1), (m, m - 1), (m - 1, m), (m, m)].map(|(x, y)| at(pixels, x, y))
 }
 
 #[test]
@@ -1260,7 +1268,7 @@ fn where_depth_varies_a_thin_line_blends_over_the_line_behind_it() {
     // line under it is 4 pixels wide.
     let near = || latkit::when(field("near").gt(0.5));
     let lines = Edges::of("d", "Line").width(near().then(0.75).otherwise(4.0)).color(near().then(blue).otherwise(red));
-    let pixels = crossing(&gpu, lines, &[]);
+    let pixels = frame(&gpu, &mut crossing(&gpu, lines, 30.0, camera()));
     let middle = SIZE / 2;
     let column: Vec<[u8; 4]> = (middle - 3..=middle + 3).map(|y| at(&pixels, middle, y)).collect();
     assert!(
@@ -1275,7 +1283,7 @@ fn where_depth_varies_a_translucent_line_hides_nothing_behind_it() {
     let Some(gpu) = gpu() else { return };
     let (blue, red) = (Color::rgb(0.0, 0.0, 1.0).alpha(0.5), Color::rgb(1.0, 0.0, 0.0));
     let lines = Edges::of("d", "Line").width(4.0).color(latkit::when(field("near").gt(0.5)).then(blue).otherwise(red));
-    let pixel = at(&crossing(&gpu, lines, &[]), SIZE / 2, SIZE / 2);
+    let pixel = at(&frame(&gpu, &mut crossing(&gpu, lines, 30.0, camera())), SIZE / 2, SIZE / 2);
     assert!(pixel[0] > 64 && pixel[2] > 64, "the line behind shows through the translucent one over it: {pixel:?}");
 }
 
@@ -1285,8 +1293,111 @@ fn where_depth_varies_rows_a_selection_dims_never_hide_the_selected_ones() {
     let (red, blue) = (Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0));
     // The ground line is selected, so the raised one over it dims.
     let lines = Edges::of("d", "Line").width(4.0).color(latkit::when(field("near").gt(0.5)).then(red).otherwise(blue));
-    let pixel = at(&crossing(&gpu, lines, &[1]), SIZE / 2, SIZE / 2);
+    let mut view = crossing(&gpu, lines, 30.0, camera());
+    view.set_selection([latkit::Rows::new("d", "Line", vec![1_u64])]);
+    let pixel = at(&frame(&gpu, &mut view), SIZE / 2, SIZE / 2);
     assert!(pixel[2] > pixel[0], "the selected line shows under the dimmed one: {pixel:?}");
+}
+
+/// Two crossing lines thinner than a pixel, line 0 blue and line 1 red.
+fn thin_lines() -> Edges {
+    let near = latkit::when(field("near").gt(0.5));
+    Edges::of("d", "Line").width(0.75).color(near.then(Color::rgb(0.0, 0.0, 1.0)).otherwise(Color::rgb(1.0, 0.0, 0.0)))
+}
+
+#[test]
+fn where_rows_stand_at_different_heights_a_thin_one_blends_over_the_rows_below_it() {
+    let Some(gpu) = gpu() else { return };
+    // The raised line is first in its table, so in table order the line below would draw over it.
+    for pitch in [0.0, 50.0] {
+        let crossed = middle(&frame(&gpu, &mut crossing(&gpu, thin_lines(), 30.0, over_crossing(30.0, pitch))));
+        assert!(crossed.iter().all(|p| p[2] > p[0]), "at {pitch}°, the raised line shows on top: {crossed:?}");
+    }
+}
+
+#[test]
+fn great_circles_at_different_heights_draw_lowest_first() {
+    let Some(gpu) = gpu() else { return };
+    // The crossing of `crossing`, a degree each way from the origin, along great circles.
+    let data = Data::new("d");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Bus", Ids::count(4))
+                    .field("lon", vec![-1.0, 1.0, 0.0, 0.0])
+                    .field("lat", vec![0.0, 0.0, -1.0, 1.0])
+                    .field("z", vec![0.1, 0.1, 0.0, 0.0]),
+            )
+            .set(
+                Table::new("Line", Ids::count(2))
+                    .reference("from", "Bus", vec![0_u64, 2])
+                    .reference("to", "Bus", vec![1_u64, 3])
+                    .field("near", vec![1.0, 0.0]),
+            ),
+    )
+    .expect("valid");
+    let ground = Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..plain_theme().earth }, ..plain_theme() };
+    let scene = Scene::new(Earth { graticule: false, ..Earth::default() })
+        .theme(ground)
+        .draw(Vertices::of("d", "Bus").position(field("lon"), field("lat")).elevation(field("z")).radius(1.0))
+        .draw(thin_lines().ends("from", "to"));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 6.0, pitch: 0.0, bearing: 0.0 });
+    view.set_sources([&data]).expect("a source");
+    let crossed = middle(&frame(&gpu, &mut view));
+    assert!(crossed.iter().all(|p| p[2] > p[0]), "the raised great circle shows on top: {crossed:?}");
+}
+
+#[test]
+fn rows_at_one_height_keep_their_order_as_the_camera_tilts() {
+    let Some(gpu) = gpu() else { return };
+    // Both lines lie on the ground, so the one later in the table draws on top, as seen from above.
+    for pitch in [0.0, 50.0] {
+        let crossed = middle(&frame(&gpu, &mut crossing(&gpu, thin_lines(), 0.0, over_crossing(0.0, pitch))));
+        assert!(crossed.iter().all(|p| p[0] > p[2]), "at {pitch}°, the later line shows on top: {crossed:?}");
+    }
+}
+
+#[test]
+fn hover_picks_the_row_drawn_on_top_where_rows_stand_at_different_heights() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = crossing(&gpu, thin_lines(), 30.0, camera());
+    frame(&gpu, &mut view);
+    // Over the crossing, the pointer is as near both lines. The raised one draws on top.
+    let point = [SIZE as f32 / 2.0; 2];
+    view.input(
+        &Input::Move { pointer: 1, point, modifiers: Modifiers::default(), device: Device::Mouse },
+        common::now(),
+    );
+    frame(&gpu, &mut view);
+    assert_eq!(view.hovered(), Some(&latkit::Row::new("d", "Line", 0_u64)), "the raised line is hovered");
+}
+
+#[test]
+fn rows_at_many_heights_draw_lowest_first() {
+    let Some(gpu) = gpu() else { return };
+    // A thousand markers smaller than a pixel at one place, at heights on both sides of the ground
+    // in a shuffled order. Only the highest, in the middle of the table, is blue.
+    let count: u32 = 1000;
+    let heights: Vec<f64> = (0..count).map(|i| f64::from((i * 389) % count) * 0.25 - 125.0).collect();
+    let top = heights.iter().copied().fold(f64::MIN, f64::max);
+    let data = Data::new("d");
+    // On the edge between two pixels, so each marker covers half of either and none hides the rest.
+    data.apply(
+        Table::new("Node", Ids::count(count))
+            .field("x", vec![0.5; count as usize])
+            .field("y", vec![0.0; count as usize])
+            .field("z", heights),
+    )
+    .expect("valid");
+    let markers = Vertices::of("d", "Node").position(field("x"), field("y")).elevation(field("z")).radius(0.4).color(
+        latkit::when(field("z").gt(top - 0.1)).then(Color::rgb(0.0, 0.0, 1.0)).otherwise(Color::rgb(1.0, 0.0, 0.0)),
+    );
+    let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(markers));
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixel = at(&frame(&gpu, &mut view), SIZE / 2, SIZE / 2);
+    assert!(pixel[2] > 96, "the highest marker draws last, over the red ones: {pixel:?}");
 }
 
 #[test]

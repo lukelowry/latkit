@@ -154,6 +154,9 @@ pub(crate) struct Shown {
     pub(crate) segments: super::lists::Segments,
     /// For a paged table, where each drawn row's held-row word lies in the lists buffer.
     pub(crate) drawn_rows: super::lists::DrawnRows,
+    /// Where its rows stand at different heights, the order it draws its instances in, lowest
+    /// first.
+    pub(crate) height_order: super::lists::HeightOrder,
     /// Whether an edge mark follows great circles.
     pub(crate) geodesic: bool,
     /// Incremented whenever the mark's state is written, so anything derived from it updates.
@@ -214,6 +217,7 @@ impl Shown {
             query: wgsl::NONE,
             segments: super::lists::Segments::default(),
             drawn_rows: super::lists::DrawnRows::default(),
+            height_order: super::lists::HeightOrder::default(),
             geodesic: false,
             version: 0,
             place_version: 0,

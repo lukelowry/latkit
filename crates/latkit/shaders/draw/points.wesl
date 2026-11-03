@@ -16,6 +16,7 @@ import package::lib::marker::{
     shape_distance, filled, over, status_ring, glow, premultiplied, theme_text, theme_corner, theme_lift,
 };
 import package::lib::daylight::daylight;
+import package::lib::drawn::drawn_instance;
 import package::lib::mark::fringe;
 import package::lib::color::{output, OPAQUE};
 
@@ -48,7 +49,7 @@ struct Drawn {
 
 @if(!ports && !focused)
 fn drawn(instance: u32) -> Drawn {
-    let p = shown_point(instance);
+    let p = shown_point(drawn_instance(instance));
     return Drawn(p, to_screen(p.clip), p.half, reach(p, false), mark.shape, p.depth);
 }
 

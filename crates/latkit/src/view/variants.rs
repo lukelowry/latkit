@@ -25,19 +25,25 @@ use super::marks::Shown;
 use crate::gpu::Inner;
 use crate::gpu::atlas::FIELDS;
 use crate::gpu::pipelines::{self, Asked, Urgency, Variant};
-use crate::gpu::shaders::{PATH_ENDS, PATH_GEOMETRY, Shader};
+use crate::gpu::shaders::{PATH_ENDS, PATH_GEOMETRY, PATH_POLES, Shader};
 use crate::scene::mark::MarkKind;
 use crate::{Action, Mark, Marker, Scene, Space};
 
 /// Writes the word of each drawn row of a paged mark from its runs.
 pub(super) const EXPAND_RUNS: Variant = Variant::compute(Shader::Lists, "expand_runs");
 
-/// The scan of a segment list's counts into each row's first instance.
+/// The scan of a list's counts: a segment list's into each row's first instance, or a height
+/// order's into where each digit's instances go.
 pub(super) const SCAN: [Variant; 3] = [
     Variant::compute(Shader::Lists, "scan_blocks"),
     Variant::compute(Shader::Lists, "scan_sums"),
     Variant::compute(Shader::Lists, "add_sums"),
 ];
+
+/// The passes sorting a height order by one digit of its keys, around a [`SCAN`]: counting each
+/// block's instances by digit, then moving them in order.
+pub(super) const DIGIT_PASSES: [Variant; 2] =
+    [Variant::compute(Shader::Lists, "count_digits"), Variant::compute(Shader::Lists, "scatter_digits")];
 
 /// Eases a mark in transition from its frozen words toward its settled ones.
 pub(super) const EASE: Variant = Variant::compute(Shader::Evaluate, "ease");
@@ -133,6 +139,11 @@ impl<'a> MarkVariants<'a> {
         ["count_segments", "write_segments"].map(|entry| Variant::compute(Shader::Lists, entry).path(self.path))
     }
 
+    /// The pass keying each instance by its height before [`DIGIT_PASSES`] sort its height order.
+    pub(super) fn height_keys(self) -> Variant {
+        Variant::compute(Shader::Lists, "height_keys").path(self.path)
+    }
+
     /// Its program for the probe `shader`, which answers hover, queries, and the depth under the
     /// pointer for its geometry.
     pub(super) fn probe(self, shader: Shader) -> Variant {
@@ -153,15 +164,16 @@ impl<'a> MarkVariants<'a> {
 }
 
 /// The pipelines a view requested for frames into one target, with or without input, by tier: draw,
-/// text, and answer (transitions, lit rows, probes, and queries). `opaque` are the opaque draws,
-/// requested with the answers (or with the draws for pictures), which frames use once they are ready.
+/// text, and answer (transitions, lit rows, probes, and queries). `layering` are those frames use
+/// where depth varies (the opaque draws and the passes sorting rows by height), requested with the
+/// answers (or with the draws for pictures), which frames use once they are ready.
 pub(super) struct Asking {
     target: (wgpu::TextureFormat, u32),
     input: bool,
     drawing: Vec<Asked>,
     texts: Vec<Asked>,
     answering: Vec<Asked>,
-    opaque: Vec<Asked>,
+    layering: Vec<Asked>,
 }
 
 /// The pipelines nearly every scene draws with, which the GPU compiles ahead for later views:
@@ -200,22 +212,22 @@ impl View {
         let at = if let Some(at) = self.asked.iter().position(|a| a.target == target && a.input == input) {
             at
         } else {
-            let Stages { draw, text, changes, lit, opaque, input: inputs } = stages(&self.scene, target.0, target.1);
+            let Stages { draw, text, changes, lit, layering, input: inputs } = stages(&self.scene, target.0, target.1);
             let (mut drawing, mut texts, mut answering) = if input {
-                (draw, text, [changes, lit, opaque.clone(), inputs].concat())
+                (draw, text, [changes, lit, layering.clone(), inputs].concat())
             } else {
-                ([draw, text, changes, lit, opaque.clone()].concat(), Vec::new(), Vec::new())
+                ([draw, text, changes, lit, layering.clone()].concat(), Vec::new(), Vec::new())
             };
-            let mut opaque = opaque;
+            let mut layering = layering;
             // Several marks can need the same pipeline. Request each once.
-            for asked in [&mut drawing, &mut texts, &mut answering, &mut opaque] {
+            for asked in [&mut drawing, &mut texts, &mut answering, &mut layering] {
                 let mut seen = rustc_hash::FxHashSet::default();
                 asked.retain(|need| seen.insert(need.clone()));
             }
             inner.pipelines.ask(device, &drawing, Urgency::Draw, &self.waker);
             inner.pipelines.ask(device, &texts, Urgency::Text, &self.waker);
             inner.pipelines.ask(device, &answering, Urgency::Answer, &self.waker);
-            self.asked.push(Asking { target, input, drawing, texts, answering, opaque });
+            self.asked.push(Asking { target, input, drawing, texts, answering, layering });
             self.asked.len() - 1
         };
         inner.pipelines.ask(device, &self.channels(), Urgency::Draw, &self.waker);
@@ -240,7 +252,7 @@ impl View {
         let pipelines = &inner.pipelines;
         self.asked
             .iter()
-            .flat_map(|a| [&a.drawing, &a.texts, &a.answering, &a.opaque])
+            .flat_map(|a| [&a.drawing, &a.texts, &a.answering, &a.layering])
             .find_map(|needs| pipelines.refused(needs))
             .or_else(|| pipelines.refused(&self.channels()))
     }
@@ -264,10 +276,18 @@ impl View {
         self.asked.iter().all(|a| inner.pipelines.ready(&a.texts))
     }
 
-    /// Whether the opaque draws for frames into `format` at `samples` per pixel are compiled. Until
-    /// then, frames draw every mark in order, as where depth does not vary.
-    pub(super) fn opaque_ready(&self, inner: &Inner, format: wgpu::TextureFormat, samples: u32) -> bool {
-        self.asked.iter().filter(|a| a.target == (format, samples)).all(|a| inner.pipelines.ready(&a.opaque))
+    /// Whether the pipelines frames into `format` at `samples` per pixel use where depth varies are
+    /// compiled: the opaque draws and the passes sorting rows by height. Until then, frames draw
+    /// every mark in order, as where depth does not vary.
+    pub(super) fn layering_ready(&self, inner: &Inner, format: wgpu::TextureFormat, samples: u32) -> bool {
+        self.asked.iter().filter(|a| a.target == (format, samples)).all(|a| inner.pipelines.ready(&a.layering))
+    }
+
+    /// Whether frames into `format` at `samples` per pixel draw in layers: depth varies, and the
+    /// pipelines for it are ready. Opaque pixels then draw first, and rows that stand at different
+    /// heights draw lowest first.
+    pub(super) fn layered(&self, inner: &Inner, format: wgpu::TextureFormat, samples: u32) -> bool {
+        self.deep() && self.layering_ready(inner, format, samples)
     }
 
     /// Whether, for every target that frames taking input draw into, the pipelines for easing, lit
@@ -277,15 +297,15 @@ impl View {
     }
 }
 
-/// The pipelines a scene's frames use, by stage: drawing, text, transitions, lit rows, opaque
-/// pixels, and input.
+/// The pipelines a scene's frames use, by stage: drawing, text, transitions, lit rows, layering
+/// where depth varies, and input.
 #[derive(Default)]
 struct Stages {
     draw: Vec<Asked>,
     text: Vec<Asked>,
     changes: Vec<Asked>,
     lit: Vec<Asked>,
-    opaque: Vec<Asked>,
+    layering: Vec<Asked>,
     input: Vec<Asked>,
 }
 
@@ -335,14 +355,21 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
 
 /// Adds `mark`'s pipelines to `stages`: its draw and compute passes (for the path a stroke follows
 /// or an area's triangle geometry), its lit-row draw (for the rows that hover, selection, and edge
-/// endpoints light), its probe, and its labels.
+/// endpoints light), its layering where depth varies, its probe, and its labels.
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, &scene.space);
     stages.draw.extend(variants.draw(Draw::Rows, format, samples));
     stages.lit.extend(variants.draw(Draw::Lit, format, samples));
     // Depth varies only where the camera can tilt or the globe shows: on a plane or the earth.
     if matches!(scene.space, Space::Plane(_) | Space::Earth(_)) {
-        stages.opaque.extend(variants.draw(Draw::Opaque, format, samples));
+        stages.layering.extend(variants.draw(Draw::Opaque, format, samples));
+        // Rows that can stand at different heights draw lowest first: a raised vertex mark's, and
+        // those of edges and poles, which may end at one.
+        let edges = matches!(mark, Mark::Edges(_)) && matches!(variants.path, PATH_ENDS | PATH_POLES);
+        if super::lists::raised(mark) || (edges && scene.marks.iter().any(super::lists::raised)) {
+            stages.layering.push(Asked::Shader(variants.height_keys()));
+            stages.layering.extend([&DIGIT_PASSES[..], &SCAN[..]].concat().into_iter().map(Asked::Shader));
+        }
     }
     stages.draw.extend(variants.bounds().map(Asked::Shader));
     if variants.listed() {
@@ -385,6 +412,25 @@ mod tests {
         assert!(asks("points", PATH_ENDS), "vertices frame a fit");
         assert!(asks("strokes", PATH_GEOMETRY), "so do lines along their paths");
         assert!(!asks("strokes", PATH_ENDS), "edges lie between the vertices that frame them");
+    }
+
+    #[test]
+    fn only_rows_that_can_stand_at_heights_ask_to_sort_by_height() {
+        let sorting = |scene: Scene| {
+            let Stages { layering, .. } = stages(&scene, wgpu::TextureFormat::Rgba8Unorm, 1);
+            let keys =
+                |path| layering.contains(&Asked::Shader(Variant::compute(Shader::Lists, "height_keys").path(path)));
+            [keys(PATH_ENDS), keys(PATH_POLES), keys(PATH_GEOMETRY)]
+        };
+        let flat = Scene::new(Plane::default()).draw(Vertices::of("g", "V")).draw(Edges::of("g", "E").ends("a", "b"));
+        assert_eq!(sorting(flat), [false; 3], "rows on the ground keep their order");
+        let raised = Scene::new(Plane::default())
+            .draw(Vertices::of("g", "V").elevation(crate::field("z")))
+            .draw(Edges::of("g", "V").poles())
+            .draw(Lines::of("g", "L"));
+        assert_eq!(sorting(raised), [true, true, false], "vertices and poles stand at heights, lines lie flat");
+        let diagram = Scene::new(crate::Diagram::default()).draw(Vertices::of("g", "V").elevation(crate::field("z")));
+        assert_eq!(sorting(diagram), [false; 3], "a diagram is flat");
     }
 
     #[test]

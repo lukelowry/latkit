@@ -4,23 +4,49 @@
 // get the number of entries the list keeps. Each count is capped at its share of a u32, so the
 // total never wraps. Reduce-then-scan needs no forward-progress guarantee between workgroups, so it
 // is safe on every device.
+//
+// A height order sorts a mark's instances by the height each stands at, lowest first, so where
+// rows stand at different heights a nearer row blends over the rows behind it. Along any line of
+// sight down onto the ground or the globe, a nearer point stands higher. So where two markers
+// overlap, from any camera, the nearer one draws last, and a segment sorts by its middle. Rows at
+// one height keep their order. `height_keys` keys and numbers the instances. Then each of `DIGITS`
+// passes sorts by one digit of the keys, lowest first: `count_digits` counts each block's
+// instances per digit, the scan turns the counts into where they go, and `scatter_digits` moves
+// them there in order. The passes trade the instances between the order's two sides, ending in the
+// first, which the draws read.
 
 import package::lib::bind::{mark, program};
 import package::lib::types::{
-    LIST_ITEMS, LIST_COUNTS, LIST_SUMS, LIST_ENTRIES, LIST_DRAW, LIST_DISPATCH, LIST_KEPT, PATH_TRACE, TRIANGLES,
-    DISPATCH_ROWS, RUN_WORDS, FADE_IN, FADE_OUT, DRAWN_ENTERING, DRAWN_LEAVING, item,
+    NONE, LIST_ITEMS, LIST_COUNTS, LIST_SUMS, LIST_ENTRIES, LIST_DRAW, LIST_DISPATCH, LIST_KEPT, PATH_TRACE, TRIANGLES,
+    POINTS, DISPATCH_ROWS, RUN_WORDS, FADE_IN, FADE_OUT, DRAWN_ENTERING, DRAWN_LEAVING, STEP_SEGMENTS, STEP_DIGITS,
+    item,
 };
-import package::lib::lists::{lists, list_start};
+import package::lib::lists::{lists, list_start, list_total};
 import package::lib::read::last_at_most;
-import package::lib::path::{row_segments, path_point, path_length, PATH};
+import package::lib::path::{row_segments, path_point, path_length, numbered_segment, segment_ends, PATH};
 import package::lib::drawn::held_row;
+import package::lib::state::{row_at, vertex_at};
+import package::lib::reduce::ordered;
+
+// Which step a dispatch takes: one of the `STEP_SEGMENTS` and `STEP_DIGITS` steps.
+@group(2) @binding(17) var<uniform> step: u32;
 
 var<workgroup> tile: array<u32, 256>;
 var<workgroup> shared_items: u32;
+// The instances of a block with each digit, as their counts, or as a bit per instance in eight
+// words per digit.
+var<workgroup> digit_counts: array<atomic<u32>, 256>;
+var<workgroup> digit_bits: array<atomic<u32>, 2048>;
 
-// The list this dispatch scans: the current mark's.
+// The list this dispatch scans: the mark's segment list, or its height order's digit counts.
 fn header() -> u32 {
-    return mark.list;
+    return select(mark.height_order, mark.list, step == STEP_SEGMENTS);
+}
+
+// The block of 256 items workgroup `g` takes. Beyond one dimension's workgroups, each step along
+// the second covers `DISPATCH_ROWS` items.
+fn block_of(g: vec3u) -> u32 {
+    return g.y * (DISPATCH_ROWS / 256u) + g.x;
 }
 
 // Inclusive scan of `tile` across the workgroup.
@@ -38,8 +64,7 @@ fn scan_blocks(@builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) g:
     let h = header();
     let n = lists[h + LIST_ITEMS];
     let counts = lists[h + LIST_COUNTS];
-    // Beyond one dimension's workgroups, each step along the second covers `DISPATCH_ROWS` items.
-    let block = g.y * (DISPATCH_ROWS / 256u) + g.x;
+    let block = block_of(g);
     let i = block * 256u + l.x;
     // Capping each count at its share keeps the starts increasing for any counts, so every item's
     // write loop ends.
@@ -146,4 +171,118 @@ fn write_segments(@builtin(global_invocation_id) id: vec3u) {
             last = next;
         }
     }
+}
+
+// Instances the mark draws: its rows and exits, or every segment of their paths.
+fn drawn_instances() -> u32 {
+    if mark.primitive == POINTS {
+        return mark.rows + mark.exits;
+    }
+    if mark.per_row != NONE {
+        return (mark.rows + mark.exits) * mark.per_row;
+    }
+    return list_total(mark.list);
+}
+
+// The key that sorts instance `i` into the height order: the height it stands at, a point's
+// elevation or the middle of a segment. Exits sort after the drawn rows, and entries past the
+// instances after everything, so the instances at each position keep the ranges probes read.
+fn instance_key(i: u32) -> u32 {
+    if i >= drawn_instances() {
+        return NONE;
+    }
+    if mark.primitive == POINTS {
+        return height_key(vertex_at(row_at(held_row(i))).elevation, i >= mark.rows);
+    }
+    let s = numbered_segment(i);
+    let ends = segment_ends(s);
+    return height_key(0.5 * (ends[0].z + ends[1].z), s.item >= mark.rows);
+}
+
+// The key of an instance at `height` as ordered bits, after every drawn row's when its row `left`.
+// Both zeros key alike.
+fn height_key(height: f32, left: bool) -> u32 {
+    return select(0u, 0x80000000u, left) | (ordered(select(height, 0.0, height == 0.0)) >> 1u);
+}
+
+// Where side `side` of the height order at `h` holds its instances (x) and their keys (y). The
+// first side holds the order the draws read.
+fn order_side(h: u32, side: u32) -> vec2u {
+    let n = lists[h + LIST_KEPT];
+    let at = lists[h + LIST_ENTRIES] + 2u * n * side;
+    return vec2u(at, at + n);
+}
+
+// Digit `k` of `key`, from the lowest.
+fn digit(key: u32, k: u32) -> u32 {
+    return (key >> (8u * k)) & 255u;
+}
+
+// Numbers each instance of the mark's height order in its first side, with its key.
+@compute @workgroup_size(256)
+fn height_keys(@builtin(global_invocation_id) id: vec3u) {
+    let i = item(id);
+    let h = mark.height_order;
+    if i >= lists[h + LIST_KEPT] {
+        return;
+    }
+    let first = order_side(h, 0u);
+    lists[first.x + i] = i;
+    lists[first.y + i] = instance_key(i);
+}
+
+// Counts the instances of each block of the height order by this pass's digit. The counts are laid
+// out digit by digit, so their scan gives where each digit's instances of each block go.
+@compute @workgroup_size(256)
+fn count_digits(@builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) g: vec3u) {
+    let h = mark.height_order;
+    let k = step - STEP_DIGITS;
+    let block = block_of(g);
+    let blocks = lists[h + LIST_ITEMS] / 256u;
+    atomicStore(&digit_counts[l.x], 0u);
+    workgroupBarrier();
+    let i = block * 256u + l.x;
+    if i < lists[h + LIST_KEPT] {
+        atomicAdd(&digit_counts[digit(lists[order_side(h, k % 2u).y + i], k)], 1u);
+    }
+    workgroupBarrier();
+    if block < blocks {
+        lists[lists[h + LIST_COUNTS] + l.x * blocks + block] = atomicLoad(&digit_counts[l.x]);
+    }
+}
+
+// Moves each instance of the height order, with its key, to the other side: where the scan put its
+// digit's instances of its block, after those of its block before it with the same digit. So equal
+// digits keep their order in each pass, and equal keys keep theirs through the sort.
+@compute @workgroup_size(256)
+fn scatter_digits(@builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) g: vec3u) {
+    let h = mark.height_order;
+    let k = step - STEP_DIGITS;
+    let block = block_of(g);
+    for (var w = 0u; w < 8u; w++) {
+        atomicStore(&digit_bits[8u * l.x + w], 0u);
+    }
+    workgroupBarrier();
+    let src = order_side(h, k % 2u);
+    let i = block * 256u + l.x;
+    let inside = i < lists[h + LIST_KEPT];
+    var key = 0u;
+    if inside {
+        key = lists[src.y + i];
+        atomicOr(&digit_bits[8u * digit(key, k) + l.x / 32u], 1u << (l.x % 32u));
+    }
+    workgroupBarrier();
+    if !inside {
+        return;
+    }
+    let d = digit(key, k);
+    var before = countOneBits(atomicLoad(&digit_bits[8u * d + l.x / 32u]) & ((1u << (l.x % 32u)) - 1u));
+    for (var w = 0u; w < l.x / 32u; w++) {
+        before += countOneBits(atomicLoad(&digit_bits[8u * d + w]));
+    }
+    let blocks = lists[h + LIST_ITEMS] / 256u;
+    let at = lists[lists[h + LIST_COUNTS] + d * blocks + block] + before;
+    let dst = order_side(h, (k + 1u) % 2u);
+    lists[dst.x + at] = lists[src.x + i];
+    lists[dst.y + at] = key;
 }

@@ -2,10 +2,22 @@
 // A table drawn whole draws held row `i` as drawn row `i`. For a paged table, the program lists the
 // runs the mark draws, and `expand_runs` (`compute/lists.wesl`) writes each drawn row's word to the
 // lists at `mark.drawn`: its held row, and whether its tile fades in or out.
+//
+// Where a mark's rows stand at different heights, it draws its instances lowest first, in the
+// height order `compute/lists.wesl` sorts at `mark.height_order`. Draws and probes read each
+// position's instance through `drawn_instance`.
 
-import package::lib::types::{NONE, DRAWN_ROW, DRAWN_ENTERING, DRAWN_LEAVING};
+import package::lib::types::{NONE, DRAWN_ROW, DRAWN_ENTERING, DRAWN_LEAVING, LIST_HEADER};
 import package::lib::bind::mark;
 import package::lib::lists::lists;
+
+// The instance the current mark draws at position `position`.
+fn drawn_instance(position: u32) -> u32 {
+    if mark.height_order == NONE {
+        return position;
+    }
+    return lists[mark.height_order + LIST_HEADER + position];
+}
 
 struct DrawnRow {
     row: u32,
