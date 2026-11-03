@@ -1,5 +1,45 @@
 # latkit
 
+## 0.6.0
+
+### Minor Changes
+
+- 3eee5dc: What every input does is set in one place, `controls.gestures`, with new gestures, and a cancelled or abandoned input never acts late.
+
+  - Added: `controls.gestures` sets what each input does: a drag with the `primary`, `secondary`, or `middle` button, the `wheel`, and two fingers that `pinch`, `twist`, or `slide`, each with any modifier keys held, as in `{ 'shift+primary': 'box', wheel: 'pan' }`. The actions are `pan`, `turn`, `tilt`, `zoom`, `box`, `zoomBox`, `scrub`, `connect`, and `none`. In Rust, `Gestures::with(key, action)` builds them.
+  - Added: new gestures. The wheel can pan, turn, or tilt, so a trackpad can scroll the map. A drag can tilt alone, or zoom to frame a box. Two fingers can twist to turn and slide to tilt.
+  - Added: the drag phase `cancel`. Its `patch` writes the row's position fields back exactly as they were when the drag started, however the camera moved and whatever grid drags snap to. Fields that were empty, as for a row a layout placed, are emptied again.
+  - Added: `Input::Blur`. Losing focus stops every gesture and the keys, and forgets the pointer until it moves again, so nothing asked for before lands and nothing stays hovered. A page's canvas sends it when it loses focus, and cancels a pointer it loses capture of.
+  - Changed: every button presses alike and does what its input says. A middle press never clicks, and a middle drag on a row of a draggable mark drags the row, as a primary drag does.
+  - Changed: a cancelled pan or turn no longer coasts, a cancelled drag reports `cancel` instead of `end`, and a cancelled press never clicks, selects, connects, or opens a menu.
+  - Changed: a probe asked for before the pointer left, or before a cancel, no longer sets the hover when its answer arrives.
+  - Changed: a canvas's `touch-action` follows its views: `none` when a finger dragging does something, `pan-x pan-y` when only two fingers do, and otherwise `manipulation`, so views that only inspect let the page scroll.
+  - Changed: pointer points allow for CSS transforms that scale the canvas, and a wheel that scrolls by pages scrolls by the canvas's size.
+  - Changed: where the camera cannot turn, in a diagram or on a plot, a turning drag pans.
+  - Removed: `controls.pan`, `zoom`, `turn`, `selectBox`, `connect`, and `scrub`, and the `Zoom` type. Each is now a `gestures` entry:
+    - `pan: false` is `{ primary: 'none', middle: 'none', slide: 'none' }`.
+    - `zoom: 'modifier'` is `{ wheel: 'none', 'control+wheel': 'zoom', 'meta+wheel': 'zoom' }`, and `zoom: 'off'` is `{ wheel: 'none', pinch: 'none' }`.
+    - `turn: false` is `{ secondary: 'none', 'shift+primary': 'pan' }`.
+    - `selectBox: true` is `{ 'shift+primary': 'box' }`, `connect: true` is `{ 'alt+primary': 'connect' }`, and `scrub: true` is `{ primary: 'scrub' }`.
+
+### Patch Changes
+
+- 3eee5dc: A call that times out cancels the work it gave up on, and destroying an object always frees its memory.
+
+  - Fixed: a call given no signal times out once, after 30 seconds across all its steps, and cancels the fetch or stream read it gave up on. Before, each step waited 30 seconds of its own, and a stalled read stayed running with its stream locked.
+  - Fixed: `destroy()` frees an object's memory even when its own cleanup throws.
+  - Changed: `Data.read` waits for latkit to load within its signal too, and reads a `Response` or `Blob` as a stream, so its signal cancels the read.
+
+- 3eee5dc: Where depth varies, lines and markers no longer draw dark outlines where they cross, or stripes where they overlap.
+
+  - Fixed: a pixel that a line or marker covers only in part blends over what lies behind it, not over the background. Since 0.5.1, lines thinner than three device pixels hid what lay behind the pixels they partly covered, which drew dark outlines where lines crossed and stripes where they overlapped.
+  - Changed: where depth varies, the opaque pixels of every mark draw first and keep their depth, and every other pixel then blends over them in mark order. A line or marker too thin to cover a pixel fully no longer hides what lies behind it, but it still draws over every opaque mark behind it, whatever the order of the marks. Faces and areas also lie under every pixel that blends.
+
+- 3eee5dc: Looking straight down, elevation only decides which rows show on top, and rows rise into view as the camera tilts.
+
+  - Changed: looking straight down, each row draws over its ground position, and elevation only sets its depth, so a higher row hides a lower one across every mark with no perspective shift. Lines between rows at one place, such as poles, shrink to a point under them. Over the first 10° of tilt, rows rise smoothly to where they stand.
+  - Changed: panning, turning, and zooming keep a raised row under the pointer while rows rise into view, and positions under the pointer and drags read where the row draws.
+
 ## 0.5.1
 
 ### Patch Changes
