@@ -31,7 +31,7 @@ pub(crate) struct Timer {
 
 impl Timer {
     /// A timer, or `None` where the device lacks timestamp queries.
-    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Timer> {
+    pub(crate) fn new(device: &wgpu::Device, queue: &crate::gpu::work::Queue) -> Option<Timer> {
         if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             return None;
         }
@@ -54,7 +54,7 @@ impl Timer {
             current: None,
             period: f64::from(queue.get_timestamp_period()),
             measured: Vec::with_capacity(KEPT),
-            pool: Readbacks::uncounted(),
+            pool: Readbacks::uncounted(queue.retired()),
         })
     }
 

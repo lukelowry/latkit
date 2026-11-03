@@ -4041,7 +4041,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\nlargest storage buffer. The page pool grows as data needs it and never shrinks, so set the\nbudget before drawing data."
+          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\nlargest storage buffer, at most 1 GiB. The page pool grows as data needs it and never\nshrinks, so set the budget before drawing data. A device without the memory to grow the pool\nfurther lowers the budget to the pool's size."
         },
         "uploadPerFrame": {
           "type": "integer",
@@ -5103,6 +5103,12 @@
           "format": "uint64",
           "minimum": 0,
           "description": "Pipelines not requested ahead of use, compiled when first used. In a browser they compile\non the GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not\nrequest."
+        },
+        "destroyed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Bytes of GPU memory freed: buffers and textures replaced, or no longer used, once the GPU is\ndone with them. In a browser they are freed then, not when JavaScript collects them."
         }
       },
       "required": [
@@ -5117,7 +5123,8 @@
         "jobs",
         "texts",
         "pipelines",
-        "late"
+        "late",
+        "destroyed"
       ],
       "description": "Counts of the work a [`Gpu`](crate::Gpu) has done since it was created. Subtract two\nsnapshots to get the work between them."
     },
@@ -5293,7 +5300,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\nlargest storage buffer. The page pool grows as data needs it and never shrinks, so set the\nbudget before drawing data."
+          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\nlargest storage buffer, at most 1 GiB. The page pool grows as data needs it and never\nshrinks, so set the budget before drawing data. A device without the memory to grow the pool\nfurther lowers the budget to the pool's size."
         },
         "uploadPerFrame": {
           "type": "integer",

@@ -285,6 +285,26 @@ struct Picture {
     len: u64,
     /// Fills the background where no panel draws. Present when the panels may leave gaps.
     fill: Option<wgpu::BindGroup>,
+    /// The panels' textures and the composing uniforms, retired with the buffer when the picture
+    /// is done.
+    textures: Vec<wgpu::Texture>,
+    uniforms: Vec<wgpu::Buffer>,
+}
+
+impl Drop for Picture {
+    fn drop(&mut self) {
+        let retired = self.gpu.0.queue.retired();
+        retired.retire(self.buffer.clone());
+        for texture in self.textures.drain(..) {
+            retired.retire(texture);
+        }
+        for uniform in self.uniforms.drain(..) {
+            retired.retire(uniform);
+        }
+        // In a page, the next animation frame destroys them, even when no view draws then.
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        crate::web::waker(&self.gpu).wake();
+    }
 }
 
 impl Drawing {
@@ -401,28 +421,33 @@ impl Picture {
                 ],
             })
         };
-        let panels: Vec<Panel> = rects
-            .iter()
-            .map(|&Rect { origin, size }| {
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("latkit panel"),
-                    size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: FORMAT,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
-                let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let group = group(&target, &uniform(origin, size));
-                Panel { target, size, group }
-            })
-            .collect();
+        let (mut panels, mut textures, mut uniforms) = (Vec::new(), Vec::new(), Vec::new());
+        for &Rect { origin, size } in &rects {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("latkit panel"),
+                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let composing = uniform(origin, size);
+            panels.push(Panel { group: group(&target, &composing), target, size });
+            textures.push(texture);
+            uniforms.push(composing);
+        }
         let covered: u64 = rects.iter().map(|r| u64::from(r.size[0]) * u64::from(r.size[1])).sum();
         let overlap = rects.iter().enumerate().any(|(i, a)| rects[i + 1..].iter().any(|b| a.overlaps(*b)));
-        let fill = (covered < area || overlap).then(|| group(&panels[0].target, &uniform([0, 0], shot.size)));
-        Ok(Picture { gpu: gpu.clone(), panels, buffer, len, fill })
+        let fill = (covered < area || overlap).then(|| {
+            let composing = uniform([0, 0], shot.size);
+            let fill = group(&panels[0].target, &composing);
+            uniforms.push(composing);
+            fill
+        });
+        Ok(Picture { gpu: gpu.clone(), panels, buffer, len, fill, textures, uniforms })
     }
 }
 

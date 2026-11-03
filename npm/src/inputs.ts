@@ -68,8 +68,9 @@ export interface Budget {
    * state. A table too large for a view's share draws as a paged table, with only the pages the
    * camera needs, so it always fits. Pages no view draws stay cached in the rest of the budget, and
    * the least recently drawn are evicted first. Defaults to half the device's largest storage
-   * buffer. The page pool grows as data needs it and never shrinks, so set the budget before drawing
-   * data.
+   * buffer, at most 1 GiB. The page pool grows as data needs it and never shrinks, so set the budget
+   * before drawing data. A device without the memory to grow the pool further lowers the budget to
+   * the pool's size.
    */
   bytes: number;
   /**

@@ -352,6 +352,11 @@ of one GPU share the budget. A view that needs less than an even split gets all 
 other views divide the rest. A table too large for its view's share is split into pages, and the
 view draws only the pages on screen. A patch re-evaluates only the pages it wrote.
 
+The budget defaults to half the device's largest storage buffer, at most 1 GiB. GPU memory that
+latkit replaces, or that a closed view or a finished picture leaves behind, is freed by the next
+frame rather than whenever the browser collects it. A device without the memory to grow the data
+further is given up, and the views move to a new one with the budget lowered to what it gave.
+
 `view.stats`, `gpu.work`, `gpu.resident`, and `gpu.uploading` report what the views draw and what
 work the GPU did. To drive frames yourself in a test or benchmark, call `gpu.step(now)` and wait on
 `gpu.landed()` between frames.

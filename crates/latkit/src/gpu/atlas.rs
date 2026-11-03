@@ -110,7 +110,7 @@ pub(crate) struct Atlas {
 }
 
 impl Atlas {
-    pub(crate) fn new(device: &wgpu::Device, counters: Arc<Counters>) -> Atlas {
+    pub(crate) fn new(device: &wgpu::Device, counters: Arc<Counters>, retired: &super::retired::Retired) -> Atlas {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("latkit text"),
             size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
@@ -129,7 +129,12 @@ impl Atlas {
             shelves: Vec::new(),
             runs: HashMap::new(),
             waiting: Vec::new(),
-            work: Grown::new(device, "latkit fields", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC),
+            work: Grown::new(
+                device,
+                retired,
+                "latkit fields",
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            ),
             work_group: None,
             clock: 0,
             full: false,

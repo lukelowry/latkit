@@ -197,10 +197,14 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
         let views = f.views.iter().filter_map(|v| v.upgrade().map(PageView)).collect::<Vec<_>>();
         (f.gpu.clone(), canvases, views)
     };
-    // A lost device draws nothing. Each view reports the loss, so the page can replace the device.
+    // What happened to the device reaches every view, whether or not it draws: the errors it raised,
+    // and its loss. A lost device draws nothing, and each view reports the loss, so the page can
+    // replace the device.
+    for view in &views {
+        view.0.borrow_mut().view.tell_device();
+    }
     if gpu.lost() {
         for view in &views {
-            view.0.borrow_mut().view.tell_lost();
             view.dispatch();
         }
         return;
@@ -216,6 +220,8 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     if !shown.is_empty() {
         gpu.queue().submit([encoder.finish()]);
     }
+    // Everything recorded is submitted, so the memory retired so far can go.
+    gpu.0.queue.retired().destroy();
     for texture in shown {
         gpu.queue().present(texture);
     }
@@ -681,11 +687,20 @@ impl Painted {
             held.view.render(encoder, &Frame { target: &target, format, size, pixel_ratio: ratio, time });
             held.due = false;
         } else {
+            // A panel texture replaced or no longer used is retired, so its memory goes after this
+            // frame instead of whenever JavaScript collects it.
+            let retired = self.surface.gpu.0.queue.retired();
+            for (texture, _) in self.textures.drain(rects.len().min(self.textures.len())..).flatten() {
+                retired.retire(texture);
+            }
             self.textures.resize_with(rects.len(), || None);
             for (i, rect) in rects.iter().enumerate() {
                 let fresh = self.textures[i].as_ref().is_none_or(|(_, made)| *made != rect.size);
                 if fresh {
-                    self.textures[i] = Some((panel_texture(self.surface.gpu.device(), format, rect.size), rect.size));
+                    let made = (panel_texture(self.surface.gpu.device(), format, rect.size), rect.size);
+                    if let Some((old, _)) = self.textures[i].replace(made) {
+                        retired.retire(old);
+                    }
                 }
                 let (panel, _) = self.textures[i].as_ref().expect("the panel texture exists");
                 let mut held = self.views[i].0.borrow_mut();
@@ -947,6 +962,12 @@ impl Drop for Painted {
         if let Some((observer, _)) = &self.resize {
             observer.disconnect();
         }
+        // Nothing records between animation frames, so what was retired can go now.
+        let retired = self.surface.gpu.0.queue.retired();
+        for (texture, _) in self.textures.drain(..).flatten() {
+            retired.retire(texture);
+        }
+        retired.destroy();
         release_idle(&self.frames);
     }
 }

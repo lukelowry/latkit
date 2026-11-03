@@ -162,8 +162,12 @@ pub struct View {
     regions: Regions,
     /// Something visible changed since the last frame.
     changed: bool,
-    /// Whether the device loss has been reported.
+    /// Whether the device loss has been reported, and the number of the next error the device
+    /// raises that this view has not reported.
     told_lost: bool,
+    raised_seen: u64,
+    /// Failures of the host jobs and fetches this view started, reported with its next frame.
+    job_errors: Arc<std::sync::Mutex<Vec<crate::Error>>>,
     /// The pending work the last frame showed placeholders for.
     waiting: Waiting,
     /// The pipelines requested for each target the frames draw into.
@@ -251,6 +255,9 @@ impl View {
             regions: Regions::default(),
             changed: true,
             told_lost: false,
+            // Errors raised before the view existed are not its to report.
+            raised_seen: gpu.0.raised.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next(),
+            job_errors: Arc::default(),
             waiting: Waiting::default(),
             asked: Vec::new(),
             compiling: None,
@@ -883,7 +890,7 @@ impl View {
     /// The error a shot or video fails with: the first error not yet taken from the events. It
     /// stays queued for the view's owner.
     pub(crate) fn shot_error(&mut self) -> Option<crate::Error> {
-        self.tell_gpu_errors();
+        self.tell_device();
         self.events.error().cloned()
     }
 
@@ -1138,6 +1145,10 @@ impl Drop for View {
                 data.watchers().unwatch(self.id);
             }
         }
+        // Its buffers and textures are retired as its resources drop. In a page, the next animation
+        // frame destroys them, even when no view draws then.
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        crate::web::waker(&self.gpu).wake();
     }
 }
 

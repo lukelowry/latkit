@@ -360,4 +360,9 @@ export interface Work {
    * GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not request.
    */
   late: number;
+  /**
+   * Bytes of GPU memory freed: buffers and textures replaced, or no longer used, once the GPU is
+   * done with them. In a browser they are freed then, not when JavaScript collects them.
+   */
+  destroyed: number;
 }

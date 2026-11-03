@@ -76,7 +76,8 @@ impl<K: Hash + Eq> Layers<K> {
             wgpu::Extent3d { width, height, depth_or_array_layers: self.capacity },
         );
         queue.submit([encoder.finish()]);
-        (self.texture, self.view, self.capacity) = (texture, view, capacity);
+        queue.retired().retire(std::mem::replace(&mut self.texture, texture));
+        (self.view, self.capacity) = (view, capacity);
         self.generation += 1;
         Ok(())
     }
