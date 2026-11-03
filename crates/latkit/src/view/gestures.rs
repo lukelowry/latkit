@@ -8,7 +8,7 @@
 //! and elsewhere it does its input's action. A press that does not move clicks. With Shift,
 //! Control, or Meta it toggles its row in the selection. With cycling on, clicking again where
 //! nothing moved selects the next row under the point. A secondary press opens a menu when it does
-//! not move, as does a touch or pen held still. A middle press acts at once, without a click. Keys
+//! not move, as does a touch or pen held still. A middle press only drags, and never clicks. Keys
 //! step. A diagram never turns, and its drags snap to its grid when the grid snaps. Every camera
 //! move is about the point under the pointer and goes through the rig, which lets a released drag
 //! coast and keeps the camera within its zoom and pan limits.
@@ -35,7 +35,7 @@ use super::marks::Shown;
 use super::probe::{Answer, Probed, near};
 use crate::scene::mark::MarkKind;
 use crate::scene::{Action, Control, Gestures as Inputs};
-use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space};
+use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space, Value};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
@@ -84,11 +84,13 @@ pub(crate) enum Gesture {
         to: [f32; 2],
     },
     /// A row dragged by `pointer`. `grab` is the hit point minus the press point, in CSS pixels, so
-    /// the row keeps its offset from the pointer.
+    /// the row keeps its offset from the pointer. `from` is where the row stood when the drag
+    /// began, as its fields held it, which a cancel puts back exactly.
     Drag {
         pointer: u32,
         probed: Probed,
         grab: [f32; 2],
+        from: Option<[f64; 2]>,
     },
     Pan {
         pointer: u32,
@@ -259,7 +261,11 @@ impl View {
             }
             Input::Cancel { pointer } => self.cancel(Some(pointer)),
             Input::Blur => {
+                // Losing focus stops everything: every pointer and the keys are cancelled, then the
+                // pointer leaves, so what was asked for before lands unused and the hover clears
+                // until the pointer moves again.
                 self.cancel(None);
+                self.left();
                 false
             }
             Input::Wheel { point, delta, modifiers } => self.wheel(point, delta, modifiers),
@@ -325,29 +331,15 @@ impl View {
             _ => return true,
         };
         self.rig.hold();
-        self.gestures.now = if button == Button::Middle {
-            // A middle press clicks nothing, so it acts at once.
-            let anchor = || self.anchor(point, self.probing.at(point).as_ref());
-            match inputs.get(Control::Middle, trigger.modifiers) {
-                Action::None => Gesture::Idle,
-                Action::Box | Action::ZoomBox => {
-                    let zooms = inputs.get(Control::Middle, trigger.modifiers) == Action::ZoomBox;
-                    Gesture::Box { pointer, from: point, to: point, zooms }
-                }
-                action @ (Action::Turn | Action::Tilt) if self.turns() => {
-                    Gesture::Turn { pointer, anchor: anchor(), last: point, tilt: action == Action::Tilt }
-                }
-                _ => Gesture::Pan { pointer, anchor: anchor(), last: point },
-            }
-        } else {
-            let answer = self.probing.at(point);
-            if answer.is_none() {
-                self.probing.wanted = Some(point);
-            }
-            let since = self.clock.now();
-            Gesture::Press { pointer, button, from: point, trigger, answer, released: false, earlier, since }
-        };
-        !matches!(self.gestures.now, Gesture::Idle)
+        // Every button presses alike, and `pressed` decides what its input does.
+        let answer = self.probing.at(point);
+        if answer.is_none() {
+            self.probing.wanted = Some(point);
+        }
+        let since = self.clock.now();
+        self.gestures.now =
+            Gesture::Press { pointer, button, from: point, trigger, answer, released: false, earlier, since };
+        true
     }
 
     fn moved(&mut self, pointer: u32, point: [f32; 2]) {
@@ -608,7 +600,8 @@ impl View {
         match answer.hit {
             Some(probed) if drags(&probed) => {
                 let grab = [probed.hit.point[0] - from[0], probed.hit.point[1] - from[1]];
-                self.gestures.now = Gesture::Drag { pointer, probed, grab };
+                let stood = self.placed(&probed.hit);
+                self.gestures.now = Gesture::Drag { pointer, probed, grab, from: stood };
                 self.drag(Phase::Start, trigger);
             }
             _ if action == Action::Scrub && self.plots() => {
@@ -628,16 +621,21 @@ impl View {
         }
     }
 
-    /// A press released where it began: a click, or a menu for the secondary button. On a plot
-    /// where the click's input scrubs, it also seeks.
+    /// A press released where it began: a click, a menu for the secondary button, and nothing for
+    /// the middle button, which only drags. On a plot where the click's input scrubs, it also
+    /// seeks.
     fn tap(&mut self, button: Button, hit: Option<Probed>, trigger: Trigger) {
-        if button == Button::Secondary {
-            self.menu(trigger);
-        } else {
-            if self.plots() && self.scene.controls.gestures.get(source(button), trigger.modifiers) == Action::Scrub {
-                self.seek(trigger.point);
+        match button {
+            Button::Secondary => self.menu(trigger),
+            Button::Middle => {}
+            Button::Primary => {
+                if self.plots()
+                    && self.scene.controls.gestures.get(Control::Primary, trigger.modifiers) == Action::Scrub
+                {
+                    self.seek(trigger.point);
+                }
+                self.click(hit, trigger);
             }
-            self.click(hit, trigger);
         }
     }
 
@@ -697,30 +695,51 @@ impl View {
         }
     }
 
-    /// Reports where the dragged row goes with the pointer at `trigger`: the hit point moved with
-    /// the pointer since the press, at the depth where the drag started, snapped to a diagram's
-    /// grid dots when the grid snaps.
+    /// Reports where the dragged row goes. With the pointer at `trigger`, the hit point moves with
+    /// it from the press, at the depth where the drag started, snapped to a diagram's grid dots
+    /// when the grid snaps. A cancel puts the row back where it stood, as its fields held it,
+    /// however the camera has moved since.
     fn drag(&mut self, phase: Phase, trigger: Trigger) {
-        let Gesture::Drag { probed, grab, .. } = &self.gestures.now else { return };
-        let view = self.projected();
-        // A cancelled drag puts the row back at the hit point.
-        let at = if phase == Phase::Cancel {
-            probed.hit.point
-        } else {
-            [trigger.point[0] + grab[0], trigger.point[1] + grab[1]]
-        };
-        let mut position = view.position(view.unproject(at.map(f64::from), f64::from(probed.depth)));
-        if let Space::Diagram(diagram) = &self.scene.space
-            && let Grid::Dots { pitch, snap: true } = diagram.grid
-            && pitch > 0.0
-        {
-            for v in &mut position[..2] {
-                *v = (*v / pitch).round() * pitch;
+        let Gesture::Drag { probed, grab, from, .. } = &self.gestures.now else { return };
+        let (position, place) = match (phase, *from) {
+            (Phase::Cancel, Some([x, y])) => ([x, y, probed.hit.position[2]], Some([x, y])),
+            (Phase::Cancel, None) => (probed.hit.position, None),
+            _ => {
+                let view = self.projected();
+                let at = [trigger.point[0] + grab[0], trigger.point[1] + grab[1]];
+                let mut position = view.position(view.unproject(at.map(f64::from), f64::from(probed.depth)));
+                if let Space::Diagram(diagram) = &self.scene.space
+                    && let Grid::Dots { pitch, snap: true } = diagram.grid
+                    && pitch > 0.0
+                {
+                    for v in &mut position[..2] {
+                        *v = (*v / pitch).round() * pitch;
+                    }
+                }
+                (position, Some([position[0], position[1]]))
             }
-        }
-        let place = [position[0], position[1]];
-        let patch = super::arranged(&self.scene, vec![(probed.hit.row.clone(), place)]).into_iter().next();
+        };
+        let row = probed.hit.row.clone();
+        let patch = place.and_then(|place| super::arranged(&self.scene, vec![(row, place)]).into_iter().next());
         self.events.tell(Event::Drag { phase, hit: probed.hit.clone(), position, patch, trigger });
+    }
+
+    /// Where `hit`'s row stands, as the table its frame drew holds it: the values of its mark's
+    /// position fields, or its point. `None` when its position is an expression or the row is gone.
+    fn placed(&self, hit: &Hit) -> Option<[f64; 2]> {
+        let crate::Mark::Vertices(mark) = self.scene.marks.get(hit.index)? else { return None };
+        let table = &self.marks.get(hit.index)?.holding.as_ref()?.table;
+        let value = |field: &str| table.get(hit.row.id.clone(), field);
+        match &mark.position {
+            None => match value(mark.point_field())? {
+                Value::Point(point) => Some(point),
+                _ => None,
+            },
+            Some([x, y]) => match (value(x.field_name()?)?, value(y.field_name()?)?) {
+                (Value::Number(x), Value::Number(y)) => Some([x, y]),
+                _ => None,
+            },
+        }
     }
 
     /// Shows the axis coordinate under `point` on a plot, reporting it when it changes.

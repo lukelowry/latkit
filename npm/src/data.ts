@@ -2,7 +2,16 @@
 
 import type * as bindings from '../pkg/latkit.js';
 import type { EnvelopeRequest, Id, Query } from './inputs.js';
-import { bytesOf, Handle, inner, wasm, waited, type ByteSource, type Wait } from './internal.js';
+import {
+  bytesOf,
+  due,
+  Handle,
+  inner,
+  wasm,
+  waited,
+  type ByteSource,
+  type Wait,
+} from './internal.js';
 import { load } from './load.js';
 import type { Description, Value } from './outputs.js';
 import { framed, Patch, type Fields, type RowIds, type Run, type Values } from './patch.js';
@@ -166,10 +175,12 @@ export class Data extends Dataset {
       base?: string;
     } & Wait = {},
   ): Promise<Data> {
-    await load();
-    const { bytes, base } = await bytesOf(source, options);
+    // Loading, reading the bytes, and decoding them share one deadline.
+    const until = due(options);
+    await waited(load(), until, 'loading latkit');
+    const { bytes, base } = await bytesOf(source, until);
     const read = wasm().Data.read(bytes, options.name, options.base ?? base);
-    return new Data(await waited<bindings.Data>(read, options, 'reading a dataset'));
+    return new Data(await waited<bindings.Data>(read, until, 'reading a dataset'));
   }
 
   /**
@@ -342,6 +353,6 @@ function bytesFrom(fetch: NonNullable<TilesOptions['fetch']>) {
     const got = await fetch(url, range);
     if (got instanceof Response && (got.status === 404 || got.status === 204))
       return new Uint8Array();
-    return (await bytesOf(got, {})).bytes;
+    return (await bytesOf(got, due())).bytes;
   };
 }

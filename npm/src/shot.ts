@@ -2,7 +2,16 @@
 
 import type * as bindings from '../pkg/latkit.js';
 import { encoded, type Placed } from './canvas.js';
-import { Handle, inner, thrown, waited, wasm, type LatkitError, type Wait } from './internal.js';
+import {
+  due,
+  Handle,
+  inner,
+  thrown,
+  waited,
+  wasm,
+  type LatkitError,
+  type Wait,
+} from './internal.js';
 import { canvasOf, type View } from './view.js';
 
 /** Options for a {@link Shot}. */
@@ -81,7 +90,7 @@ export class Shot {
    */
   async image(wait: Wait = {}): Promise<Image> {
     const taken = wasm().image(this.#json(), ...encoded(this.options.views ?? []));
-    return Image.made(await waited<bindings.Image>(taken, wait, 'taking a picture'));
+    return Image.made(await waited<bindings.Image>(taken, due(wait), 'taking a picture'));
   }
 
   /**
@@ -157,7 +166,7 @@ export class Image extends Handle {
     } & Wait = {},
   ): Promise<Uint8Array> {
     const encoding = inner<bindings.Image>(this).encode(format, options.quality);
-    return waited<Uint8Array>(encoding, options, 'encoding an image');
+    return waited<Uint8Array>(encoding, due(options), 'encoding an image');
   }
 }
 

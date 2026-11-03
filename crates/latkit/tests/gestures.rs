@@ -591,17 +591,78 @@ fn touch(pointer: u32, point: [f32; 2], down: bool) -> Input {
 }
 
 #[test]
-fn a_probe_asked_before_the_pointer_left_lands_unused() {
+fn a_probe_asked_before_the_pointer_left_or_focus_was_lost_lands_unused() {
     let Some(gpu) = gpu() else { return };
-    let mut view = on_plane(&gpu, &[]);
-    // The pointer rests on node 2 for one frame, which probes under it, then leaves before the
-    // probe's answer lands.
-    view.input(&moved([C + 40.0, C]), common::now());
-    step(&gpu, &mut view);
-    view.input(&Input::Leave, common::now());
+    for gone in [Input::Leave, Input::Blur] {
+        let mut view = on_plane(&gpu, &[]);
+        // The pointer rests on node 2 for one frame, which probes under it, then leaves or the view
+        // loses focus before the probe's answer lands.
+        view.input(&moved([C + 40.0, C]), common::now());
+        step(&gpu, &mut view);
+        view.input(&gone, common::now());
+        frame(&gpu, &mut view);
+        assert_eq!(view.hovered(), None, "after {gone:?}, nothing is hovered");
+        assert!(!view.events().any(|e| matches!(e, Event::Hovered { hit: Some(_), .. })), "no late hover: {gone:?}");
+    }
+}
+
+#[test]
+fn a_cancelled_drag_restores_the_row_exactly_wherever_the_camera_went() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", vec![1_u64]).field("x", vec![3.0]).field("y", vec![7.0])).expect("valid");
+    // The node stands off the grid that drags snap to.
+    let snapping = latkit::Diagram { grid: latkit::Grid::Dots { pitch: 10.0, snap: true } };
+    let scene = Scene::new(snapping)
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).drag(true));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
-    assert_eq!(view.hovered(), None, "nothing is hovered once the pointer left");
-    assert!(!view.events().any(|e| matches!(e, Event::Hovered { hit: Some(_), .. })), "no late hover");
+    // Dragged from its middle (y points down), as an editor would, applying each patch.
+    let inputs = [moved([C + 3.0, C + 7.0]), down([C + 3.0, C + 7.0], Button::Primary), moved([C + 30.0, C + 30.0])];
+    let started = |e: &Event| match e {
+        Event::Drag { phase: Phase::Start, patch, .. } => Some(patch.clone()),
+        _ => None,
+    };
+    data.apply(after(&gpu, &mut view, &inputs, started).expect("a patch")).expect("valid");
+    view.set_camera(Camera::Map { center: [25.0, -15.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 });
+    step(&gpu, &mut view);
+    assert!(view.input(&Input::Cancel { pointer: 1 }, common::now()), "the cancel stops the drag");
+    let (position, patch) = view
+        .events()
+        .find_map(|e| match e {
+            Event::Drag { phase: Phase::Cancel, position, patch, .. } => Some((position, patch)),
+            _ => None,
+        })
+        .expect("a cancel");
+    assert_eq!([position[0], position[1]], [3.0, 7.0], "where the row stood, unsnapped");
+    data.apply(patch.expect("a patch")).expect("valid");
+    let snapshot = data.snapshot();
+    let got = |field: &str| snapshot.get("Node", 1_u64, field, None);
+    assert_eq!((got("x"), got("y")), (Some(latkit::Value::Number(3.0)), Some(latkit::Value::Number(7.0))));
+}
+
+#[test]
+fn every_button_does_what_its_input_says() {
+    let Some(gpu) = gpu() else { return };
+    let controls = with(&[("middle", Action::Scrub)]);
+    let mut view = View::new(&gpu, Scene::new(latkit::Plot::default()).theme(plain_theme()).controls(controls));
+    let shown = Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) };
+    view.set_camera(shown);
+    frame(&gpu, &mut view);
+    // A middle click does nothing.
+    for input in [down([C, C], Button::Middle), up([C, C])] {
+        view.input(&input, common::now());
+    }
+    frame(&gpu, &mut view);
+    assert!(!view.events().any(|e| matches!(e, Event::At(_) | Event::Click { .. })), "a middle click does nothing");
+    // A middle drag scrubs, and leaves the camera where it was.
+    let dragged = [down([C, C], Button::Middle), moved([C + 20.0, C]), moved([C + 40.0, C]), up([C + 40.0, C])];
+    let seek = |e: &Event| if let Event::At(at) = e { Some(*at) } else { None };
+    let at = after(&gpu, &mut view, &dragged, seek);
+    assert!(at > 0.0 && *view.camera() == shown, "scrubbed to {at} without panning");
 }
 
 #[test]

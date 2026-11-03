@@ -43,7 +43,8 @@ pub enum Input {
         /// Which pointer.
         pointer: u32,
     },
-    /// The view lost focus. Every pointer is cancelled, and the keys stop pointing at a row.
+    /// The view lost focus. Every pointer is cancelled, the keys stop pointing at a row, and the
+    /// pointer is forgotten until it moves again, so nothing stays hovered.
     Blur,
     /// The wheel turned: CSS pixels, positive down and right.
     Wheel {

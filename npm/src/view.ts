@@ -9,7 +9,16 @@ import type { Canvas, Rect } from './canvas.js';
 import { Snapshot, sourceOf, Table, type Source } from './data.js';
 import { device, Gpu } from './gpu.js';
 import type { Arrange, Camera, Fit, Row, Rows, Scene } from './inputs.js';
-import { Handle, inner, onStop, thrown, waited, type LatkitError, type Wait } from './internal.js';
+import {
+  due,
+  Handle,
+  inner,
+  onStop,
+  thrown,
+  waited,
+  type LatkitError,
+  type Wait,
+} from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
 import { owned, Patch } from './patch.js';
 
@@ -325,7 +334,7 @@ export class View extends Handle {
    * `unsupported` error if the browser can't build a pipeline the view needs.
    */
   async done(wait: Wait = {}): Promise<void> {
-    await waited<void>(view(this).done(), wait, 'drawing');
+    await waited<void>(view(this).done(), due(wait), 'drawing');
   }
 
   /**
@@ -359,7 +368,7 @@ export class View extends Handle {
    * `null` when a camera move or another fit replaces it.
    */
   fit(fit: Fit = 'all', wait: Wait = {}): Promise<Camera | null> {
-    const framed = waited<string>(view(this).fit(JSON.stringify(fit)), wait, 'fitting');
+    const framed = waited<string>(view(this).fit(JSON.stringify(fit)), due(wait), 'fitting');
     const camera = framed.then((json) => JSON.parse(json) as Camera | null);
     // Most callers don't wait for a fit, so a timeout rejects only for those who do.
     camera.catch(() => {});
@@ -407,7 +416,7 @@ export class View extends Handle {
     } & Wait = {},
   ): Promise<Point | null> {
     const located = view(this).screenOf(JSON.stringify(row), options.port);
-    return waited<Point | null>(located, options, 'locating a row');
+    return waited<Point | null>(located, due(options), 'locating a row');
   }
 
   /**
@@ -422,7 +431,7 @@ export class View extends Handle {
     } & Wait = {},
   ): Promise<Hit[]> {
     const hits = view(this).pick(Float32Array.from(point), options.radius ?? 0);
-    return JSON.parse(await waited<string>(hits, options, 'picking')) as Hit[];
+    return JSON.parse(await waited<string>(hits, due(options), 'picking')) as Hit[];
   }
 
   /**
@@ -446,7 +455,7 @@ export class View extends Handle {
   async arrange(rows: Arrange = 'unplaced', wait: Wait = {}): Promise<Patch[]> {
     const frames = await waited<Uint8Array[]>(
       view(this).arrange(JSON.stringify(rows)),
-      wait,
+      due(wait),
       'arranging',
     );
     return Promise.all(frames.map((frame) => Patch.read(frame)));
