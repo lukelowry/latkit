@@ -82,7 +82,7 @@ export default [
   },
   {
     "space": { "plane": { "grid": { "lines": { "pitch": 1 } } } },
-    "controls": { "turn": false, "pickRadius": 14 },
+    "controls": { "gestures": { "secondary": "none", "shift+primary": "pan", "twist": "turn", "slide": "tilt" }, "pickRadius": 14 },
     "marks": [
       { "faces": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false },
       { "edges": ["mesh", "Spring"], "ends": ["a", "b"], "color": "#ffffff14" },
@@ -96,7 +96,7 @@ export default [
   },
   {
     "space": { "plot": { "y": { "format": "engineering", "precision": 1, "ticks": [0, [0.5, "half"], 1] } } },
-    "controls": { "selectBox": true },
+    "controls": { "gestures": { "shift+primary": "box", "alt+primary": "zoomBox", "wheel": "pan", "control+wheel": "zoom" } },
     "marks": [
       {
         "lines": ["mesh", "Body"],
@@ -126,7 +126,7 @@ export default [
   {
     "space": "diagram",
     "layout": { "stress": { "gap": 50 } },
-    "controls": { "connect": true, "delete": true },
+    "controls": { "gestures": { "alt+primary": "connect" }, "delete": true },
     "marks": [
       { "vertices": ["plant", "Area"], "contains": [["Device", "area"]], "label": "$name", "shadow": true },
       { "edges": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "arrows": true, "width": { "px": 1.5 } },

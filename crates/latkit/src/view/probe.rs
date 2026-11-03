@@ -183,9 +183,10 @@ impl View {
         self.scene.controls.pick_radius + if touch { 8.0 } else { 0.0 }
     }
 
+    /// Reads back the probe at `point`, stamped with the gesture session it was asked in.
     pub(super) fn probing(&mut self, point: [f32; 2], readback: Readback) {
         let drew = self.drew();
-        self.probing.reading.start(0, readback, (point, drew));
+        self.probing.reading.start(self.gestures.session, readback, (point, drew));
     }
 
     /// A record of what this frame drew, for decoding answers about it.
@@ -215,9 +216,13 @@ impl View {
         Drew { marks: marks.into(), projected: self.projected() }
     }
 
-    /// Hands a finished probe's answer to hover and gestures.
+    /// Hands a finished probe's answer to hover and gestures, unless a cancel or the pointer leaving
+    /// started a new session since it was asked.
     pub(super) fn settle_probe(&mut self) {
-        let Some((_, (point, drew), bytes)) = self.probing.reading.landed() else { return };
+        let Some((session, (point, drew), bytes)) = self.probing.reading.landed() else { return };
+        if session != self.gestures.session {
+            return;
+        }
         let answer = bytes.map_or_else(|_| Answer::default(), |bytes| answer(&wire::words(&bytes), &drew));
         self.landed(point, answer);
     }

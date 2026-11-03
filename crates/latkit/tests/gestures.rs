@@ -17,10 +17,10 @@ mod common;
 
 use std::time::Duration;
 
-use common::{SIZE, TICK, camera, diagram, frame, gpu, plain_theme, step};
+use common::{SIZE, TICK, camera, diagram, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Button, Camera, Controls, Data, Device, Edges, End, Event, Ids, Input, Key, Modifiers, Motion, Patch, Phase, Row,
-    Rows, Scene, Side, Table, Vertices, View, Zoom, field,
+    Action, Button, Camera, Controls, Data, Device, Edges, End, Event, Gestures, Ids, Input, Key, Modifiers, Motion,
+    Patch, Phase, Row, Rows, Scene, Side, Table, Vertices, View, field,
 };
 
 const C: f32 = SIZE as f32 / 2.0;
@@ -71,7 +71,13 @@ fn view_of(gpu: &latkit::Gpu, controls: Controls, graph: &Data) -> View {
 }
 
 fn editing() -> Controls {
-    Controls { connect: true, delete: true, ..Controls::default() }
+    Controls { delete: true, ..with(&[("alt+primary", Action::Connect)]) }
+}
+
+/// The default controls with the inputs `keys` name taking their actions.
+fn with(keys: &[(&str, Action)]) -> Controls {
+    let gestures = keys.iter().try_fold(Gestures::default(), |g, (key, action)| g.with(key, *action));
+    Controls { gestures: gestures.expect("inputs"), ..Controls::default() }
 }
 
 /// Feeds `inputs`, rendering two frames after each, then renders until `wanted` matches an event.
@@ -178,7 +184,7 @@ fn a_dragged_row_keeps_its_grab_point_under_the_pointer_and_its_patch_moves_it()
 #[test]
 fn scrubbing_a_plot_moves_the_coordinate_shown() {
     let Some(gpu) = gpu() else { return };
-    let controls = Controls { scrub: true, ..Controls::default() };
+    let controls = with(&[("primary", Action::Scrub)]);
     let mut view = View::new(&gpu, Scene::new(latkit::Plot::default()).theme(plain_theme()).controls(controls));
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
     frame(&gpu, &mut view);
@@ -305,7 +311,7 @@ fn delete_reports_the_selection() {
 #[test]
 fn a_shift_click_toggles_when_box_select_is_on() {
     let Some(gpu) = gpu() else { return };
-    let mut view = view(&gpu, Controls { select_box: true, ..Controls::default() });
+    let mut view = view(&gpu, with(&[("shift+primary", Action::Box)]));
     let (at, shift) = ([C + 40.0, C], Modifiers { shift: true, ..Modifiers::default() });
     let press = Input::Down { pointer: 1, point: at, button: Button::Primary, modifiers: shift, device: Device::Mouse };
     let release = Input::Up { pointer: 1, point: at, modifiers: shift };
@@ -466,7 +472,7 @@ fn the_wheel_zooms_as_the_controls_say() {
         delta: [0.0, -120.0],
         modifiers: Modifiers { control, ..Modifiers::default() },
     };
-    let mut view = view(&gpu, Controls { zoom: Zoom::Modifier, ..Controls::default() });
+    let mut view = view(&gpu, with(&[("wheel", Action::None), ("control+wheel", Action::Zoom)]));
     assert!(!view.input(&wheel(false), common::now()), "the plain wheel is left to scroll the page");
     assert!(view.input(&wheel(true), common::now()), "Control+wheel (a trackpad pinch) zooms");
     let mut view = view_off(&gpu);
@@ -496,7 +502,7 @@ fn zooming_at_the_zoom_limit_moves_nothing() {
 }
 
 fn view_off(gpu: &latkit::Gpu) -> View {
-    view(gpu, Controls { zoom: Zoom::Off, ..Controls::default() })
+    view(gpu, with(&[("wheel", Action::None), ("pinch", Action::None)]))
 }
 
 fn zoom(view: &View) -> f64 {
@@ -547,4 +553,187 @@ fn a_flat_map_keeps_the_camera_over_its_one_world() {
     view.set_camera(Camera::Map { center: [90.0, 60.0, 0.0], zoom: -3.0, pitch: 0.0, bearing: 0.0 });
     let Camera::Map { center, zoom, .. } = *view.camera() else { panic!("a map camera") };
     assert!((zoom + 1.0).abs() < 1e-9 && center[0].abs() < 1e-9 && center[1].abs() < 1e-9, "{center:?} {zoom}");
+}
+
+/// A plane with a draggable node at the origin and one 40 units right, seen from straight above,
+/// with every move applied at once.
+fn on_plane(gpu: &latkit::Gpu, keys: &[(&str, Action)]) -> View {
+    plane_view(gpu, Controls { motion: Motion::Reduced, ..with(keys) })
+}
+
+fn plane_view(gpu: &latkit::Gpu, controls: Controls) -> View {
+    let data = Data::new("graph");
+    data.apply(Table::new("Node", vec![1_u64, 2]).field("x", vec![0.0, 40.0]).field("y", vec![0.0, 0.0]))
+        .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .controls(controls)
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).drag(true));
+    let mut view = View::new(gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(gpu, &mut view);
+    view
+}
+
+fn map(view: &View) -> ([f64; 3], f64, f64, f64) {
+    let Camera::Map { center, zoom, pitch, bearing } = *view.camera() else { panic!("a map camera") };
+    (center, zoom, pitch, bearing)
+}
+
+fn touch(pointer: u32, point: [f32; 2], down: bool) -> Input {
+    let (modifiers, device) = (Modifiers::default(), Device::Touch);
+    if down {
+        Input::Down { pointer, point, button: Button::Primary, modifiers, device }
+    } else {
+        Input::Move { pointer, point, modifiers, device }
+    }
+}
+
+#[test]
+fn a_probe_asked_before_the_pointer_left_lands_unused() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = on_plane(&gpu, &[]);
+    // The pointer rests on node 2 for one frame, which probes under it, then leaves before the
+    // probe's answer lands.
+    view.input(&moved([C + 40.0, C]), common::now());
+    step(&gpu, &mut view);
+    view.input(&Input::Leave, common::now());
+    frame(&gpu, &mut view);
+    assert_eq!(view.hovered(), None, "nothing is hovered once the pointer left");
+    assert!(!view.events().any(|e| matches!(e, Event::Hovered { hit: Some(_), .. })), "no late hover");
+}
+
+#[test]
+fn a_cancelled_drag_puts_the_row_back_and_nothing_coasts() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = on_plane(&gpu, &[]);
+    let inputs = [moved([C, C]), down([C, C], Button::Primary), moved([C + 10.0, C - 10.0])];
+    let started = |e: &Event| matches!(e, Event::Drag { phase: Phase::Start, .. }).then_some(());
+    after(&gpu, &mut view, &inputs, started);
+    assert!(view.input(&Input::Cancel { pointer: 1 }, common::now()), "the cancel stops the drag");
+    let cancelled: Vec<[f64; 3]> = view
+        .events()
+        .filter_map(|e| match e {
+            Event::Drag { phase: Phase::Cancel, position, .. } => Some(position),
+            _ => None,
+        })
+        .collect();
+    let [back] = cancelled[..] else { panic!("one cancel: {cancelled:?}") };
+    assert!(back[0].abs() < 0.5 && back[1].abs() < 0.5, "the row goes back where it started: {back:?}");
+    assert!(!view.input(&Input::Cancel { pointer: 1 }, common::now()), "a second cancel finds nothing to stop");
+    // A fast pan cancelled mid-drag stops where it is, though released it would coast.
+    for cancel in [false, true] {
+        let mut view = plane_view(&gpu, Controls { motion: Motion::Full, ..Controls::default() });
+        let at = [C - 30.0, C + 30.0];
+        view.input(&down(at, Button::Primary), common::now());
+        frame(&gpu, &mut view);
+        for dx in [10.0, 20.0, 30.0] {
+            view.input(&moved([at[0] + dx, at[1]]), common::now());
+            step(&gpu, &mut view);
+        }
+        let stopped = *view.camera();
+        assert_ne!(stopped, camera(), "the drag panned");
+        let end = if cancel { Input::Cancel { pointer: 1 } } else { up([at[0] + 30.0, at[1]]) };
+        view.input(&end, common::now());
+        frame(&gpu, &mut view);
+        assert_eq!(*view.camera() == stopped, cancel, "released, the pan coasts; cancelled, it stops");
+    }
+}
+
+#[test]
+fn losing_focus_stops_a_press_and_the_keys() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = on_plane(&gpu, &[]);
+    view.input(&down([C + 40.0, C], Button::Primary), common::now());
+    view.input(&Input::Blur, common::now());
+    view.input(&up([C + 40.0, C]), common::now());
+    frame(&gpu, &mut view);
+    assert!(!view.events().any(|e| matches!(e, Event::Click { .. } | Event::Selection { .. })), "no click");
+    let stepped = |e: &Event| match e {
+        Event::Hovered { hit: Some(_), trigger } if trigger.device == Device::Keyboard => Some(()),
+        _ => None,
+    };
+    after(&gpu, &mut view, &[key(Key::Tab)], stepped);
+    view.input(&Input::Blur, common::now());
+    assert_eq!(view.hovered(), None, "the keys stop pointing at a row");
+}
+
+#[test]
+fn the_wheel_pans_and_tilts_as_bound() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = on_plane(&gpu, &[("wheel", Action::Pan), ("shift+wheel", Action::Tilt)]);
+    let wheel = |shift| Input::Wheel {
+        point: [C, C],
+        delta: [0.0, 20.0],
+        modifiers: Modifiers { shift, ..Modifiers::default() },
+    };
+    let (before, zoom, ..) = map(&view);
+    assert!(view.input(&wheel(false), common::now()), "the wheel pans");
+    step(&gpu, &mut view);
+    let (after, zoomed, pitch, _) = map(&view);
+    assert!(
+        (after[1] - before[1] + 20.0).abs() < 1e-6 && zoomed == zoom && pitch == 0.0,
+        "scrolled down 20: {after:?}"
+    );
+    assert!(view.input(&wheel(true), common::now()), "Shift+wheel tilts");
+    step(&gpu, &mut view);
+    let (_, _, tilted, bearing) = map(&view);
+    assert!((tilted - 6.0).abs() < 1e-6 && bearing == 0.0, "tilted 6°: {tilted}");
+}
+
+#[test]
+fn a_zoom_box_frames_the_box_dragged() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = on_plane(&gpu, &[("shift+primary", Action::ZoomBox)]);
+    let shift = Modifiers { shift: true, ..Modifiers::default() };
+    let device = Device::Mouse;
+    let (from, to) = ([C - 20.0, C - 20.0], [C + 20.0, C + 20.0]);
+    view.input(
+        &Input::Down { pointer: 1, point: from, button: Button::Primary, modifiers: shift, device },
+        common::now(),
+    );
+    view.input(&Input::Move { pointer: 1, point: to, modifiers: shift, device }, common::now());
+    view.input(&Input::Up { pointer: 1, point: to, modifiers: shift }, common::now());
+    frame(&gpu, &mut view);
+    // 40 pixels at zoom 0 fill the 80 pixels inside the view's 24-pixel padding at zoom 1.
+    let (center, zoom, ..) = map(&view);
+    assert!((zoom - 1.0).abs() < 0.05 && center[0].abs() < 0.5 && center[1].abs() < 0.5, "{center:?} {zoom}");
+    assert!(!view.events().any(|e| matches!(e, Event::Selection { .. })), "a zoom box selects nothing");
+}
+
+#[test]
+fn two_fingers_twist_and_slide_as_bound() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = on_plane(&gpu, &[("twist", Action::Turn), ("slide", Action::Tilt), ("pinch", Action::None)]);
+    view.input(&touch(1, [C - 30.0, C + 30.0], true), common::now());
+    view.input(&touch(2, [C + 30.0, C + 30.0], true), common::now());
+    // The fingers turn 30° clockwise about their middle, one finger at a time, which slides it
+    // too. Then both slide up 10 pixels.
+    let (s, c) = (30.0 * 30_f32.to_radians().sin(), 30.0 * 30_f32.to_radians().cos());
+    view.input(&touch(2, [C + c, C + 30.0 + s], false), common::now());
+    view.input(&touch(1, [C - c, C + 30.0 - s], false), common::now());
+    step(&gpu, &mut view);
+    let (_, _, pitch, bearing) = map(&view);
+    assert!((bearing - 330.0).abs() < 0.5, "the ground turns with the fingers: bearing {bearing}");
+    view.input(&touch(1, [C - c, C + 20.0 - s], false), common::now());
+    view.input(&touch(2, [C + c, C + 20.0 + s], false), common::now());
+    step(&gpu, &mut view);
+    let (_, zoom, tilted, _) = map(&view);
+    assert!((tilted - pitch - 3.0).abs() < 0.1 && zoom == 0.0, "sliding up 10 tilts 3°: {pitch} to {tilted}");
+}
+
+#[test]
+fn a_tilt_drag_keeps_the_bearing() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = on_plane(&gpu, &[("secondary", Action::Tilt)]);
+    let at = [C - 30.0, C + 30.0];
+    let inputs = [down(at, Button::Secondary), moved([at[0] + 40.0, at[1]]), moved([at[0] + 40.0, at[1] - 20.0])];
+    for input in &inputs {
+        view.input(input, common::now());
+        step(&gpu, &mut view);
+    }
+    frame(&gpu, &mut view);
+    let (_, _, pitch, bearing) = map(&view);
+    assert!(pitch > 5.0 && bearing == 0.0, "tilted {pitch}°, still facing north: {bearing}");
 }

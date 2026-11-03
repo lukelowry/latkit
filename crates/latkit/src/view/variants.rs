@@ -27,7 +27,7 @@ use crate::gpu::atlas::FIELDS;
 use crate::gpu::pipelines::{self, Asked, Urgency, Variant};
 use crate::gpu::shaders::{PATH_ENDS, PATH_GEOMETRY, Shader};
 use crate::scene::mark::MarkKind;
-use crate::{Mark, Marker, Scene, Space};
+use crate::{Action, Mark, Marker, Scene, Space};
 
 /// Writes the word of each drawn row of a paged mark from its runs.
 pub(super) const EXPAND_RUNS: Variant = Variant::compute(Shader::Lists, "expand_runs");
@@ -304,7 +304,8 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     // line that gestures draw.
     let legends = any(&|m| m.style().legend.is_some() && m.style().color.is_some());
     let written = matches!(scene.space, Space::Plot(_)) || scene.title.is_some() || legends;
-    if written || controls.select_box || controls.connect {
+    let draws = [Action::Box, Action::ZoomBox, Action::Connect].into_iter().any(|a| controls.gestures.any(a));
+    if written || draws {
         stages.text.push(draw(Shader::Overlay));
     }
     // The distance fields of text a frame sets are built before the frame draws.

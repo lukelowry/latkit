@@ -1,21 +1,27 @@
 //! Gestures: how a view interprets pointer and key input.
 //!
-//! A press decides what it does once the pointer moves a few pixels. With Shift it selects a box
-//! when box selection is on, otherwise it turns a map or plane. On a port, a vertex with Alt held,
-//! or an edge, it draws a connection when connecting is on. On a row of a draggable mark it drags
-//! the row. Elsewhere it pans, or on a plot with scrubbing on, it moves the coordinate shown, as a
-//! click there does too. A press that does not move clicks. With Shift, Control, or Meta it
-//! toggles its row in the selection. With cycling on, clicking again where nothing moved selects
-//! the next row under the point. A secondary press turns once it moves and opens a menu when it
-//! does not, as does a touch or pen held still. The wheel and pinches zoom, as the controls allow,
-//! and keys step. A diagram never turns, and its drags snap to its grid when the grid snaps. Every
-//! camera move is about the point under the pointer and goes through the rig, which lets a released
-//! drag coast and keeps the camera within its zoom and pan limits.
+//! The controls' `gestures` say what each input does: a drag with each button and modifier keys,
+//! the wheel, and two fingers that pinch, twist, or slide. A press decides once the pointer moves a
+//! few pixels. A box, to select or to zoom, starts whatever lies under the press. A turn or tilt
+//! turns a map or plane, and pans where the camera cannot turn. Otherwise, on a port or an edge's
+//! end the press connects when any input connects, on a row of a draggable mark it drags the row,
+//! and elsewhere it does its input's action. A press that does not move clicks. With Shift,
+//! Control, or Meta it toggles its row in the selection. With cycling on, clicking again where
+//! nothing moved selects the next row under the point. A secondary press opens a menu when it does
+//! not move, as does a touch or pen held still. A middle press acts at once, without a click. Keys
+//! step. A diagram never turns, and its drags snap to its grid when the grid snaps. Every camera
+//! move is about the point under the pointer and goes through the rig, which lets a released drag
+//! coast and keeps the camera within its zoom and pan limits.
 //!
 //! The point under a press comes from the latest probe if it was taken where the press is,
 //! otherwise from its own probe a frame or two later. The press waits for it, then catches up.
 //! Menus and connections report the rows under their point once a pick resolves, in their place
 //! among the intents.
+//!
+//! A cancelled pointer, or the view losing focus, stops what it was doing without acting: a drag
+//! reports `cancel`, and nothing coasts, clicks, selects, connects, or opens a menu. Probes are
+//! stamped with the session they were asked in. A cancel, or the pointer leaving, starts a new
+//! session, so an answer asked for before it lands unused.
 //!
 //! Keys can point at rows too. Tab steps to the row nearest the view's middle, and the next Tab
 //! or Shift+Tab lets focus leave the view. An arrow steps to the nearest row in its direction.
@@ -28,7 +34,8 @@ use super::input::{Button, Device, Input, Key, Modifiers};
 use super::marks::Shown;
 use super::probe::{Answer, Probed, near};
 use crate::scene::mark::MarkKind;
-use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space, Zoom};
+use crate::scene::{Action, Control, Gestures as Inputs};
+use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
@@ -92,26 +99,64 @@ pub(crate) enum Gesture {
     Scrub {
         pointer: u32,
     },
+    /// A drag turning a map or plane, or with `tilt` only tilting it.
     Turn {
         pointer: u32,
         anchor: [f64; 3],
         last: [f32; 2],
+        tilt: bool,
     },
     Pinch {
         pointers: [(u32, [f32; 2]); 2],
     },
-    /// A Shift drag with box selection on, selecting the rows in the box between the press and the
-    /// pointer.
+    /// A box between the press and the pointer, selecting the rows inside it, or with `zooms`
+    /// framing it.
     Box {
         pointer: u32,
         from: [f32; 2],
         to: [f32; 2],
+        zooms: bool,
     },
+}
+
+impl Gesture {
+    /// Whether `pointer` takes part in it.
+    fn holds(&self, pointer: u32) -> bool {
+        match self {
+            Gesture::Idle => false,
+            Gesture::Pinch { pointers } => pointers.iter().any(|(p, _)| *p == pointer),
+            Gesture::Press { pointer: p, .. }
+            | Gesture::Held { pointer: p }
+            | Gesture::Connect { pointer: p, .. }
+            | Gesture::Drag { pointer: p, .. }
+            | Gesture::Pan { pointer: p, .. }
+            | Gesture::Scrub { pointer: p }
+            | Gesture::Turn { pointer: p, .. }
+            | Gesture::Box { pointer: p, .. } => *p == pointer,
+        }
+    }
+}
+
+/// The input a drag with `button` is.
+fn source(button: Button) -> Control {
+    match button {
+        Button::Primary => Control::Primary,
+        Button::Secondary => Control::Secondary,
+        Button::Middle => Control::Middle,
+    }
+}
+
+/// Whether two fingers do anything with `modifiers` held.
+fn two_fingers(inputs: &Inputs, modifiers: Modifiers) -> bool {
+    [Control::Pinch, Control::Twist, Control::Slide].into_iter().any(|s| inputs.get(s, modifiers) != Action::None)
 }
 
 #[derive(Default)]
 pub(crate) struct Gestures {
     pub(crate) now: Gesture,
+    /// Counts cancels and the pointer leaving. A probe answers only the session it was asked in,
+    /// so an answer asked for before one of these lands unused.
+    pub(crate) session: u64,
     /// The rows the keys step through.
     pub(crate) keys: Stepping,
     /// The time of the input being handled, on the clock of whatever feeds the view its input.
@@ -210,9 +255,13 @@ impl View {
             }
             Input::Up { pointer, point, modifiers } => {
                 self.follow_pointer(Trigger { point, modifiers, device });
-                self.up(pointer, Some(point))
+                self.up(pointer, point)
             }
-            Input::Cancel { pointer } => self.up(pointer, None),
+            Input::Cancel { pointer } => self.cancel(Some(pointer)),
+            Input::Blur => {
+                self.cancel(None);
+                false
+            }
             Input::Wheel { point, delta, modifiers } => self.wheel(point, delta, modifiers),
             Input::Key { key, down: true, modifiers } => self.key(key, modifiers),
             Input::Key { .. } => false,
@@ -241,12 +290,13 @@ impl View {
         self.pointer.unwrap_or_default()
     }
 
-    /// Handles the pointer leaving. If no gesture is in progress, its probes are dropped, and the
-    /// hover clears unless the keys point at a row.
+    /// Handles the pointer leaving. If no gesture is in progress, its probes are dropped, including
+    /// one being read back, and the hover clears unless the keys point at a row.
     fn left(&mut self) {
         let trigger = self.pointing();
         self.pointer = None;
         if matches!(self.gestures.now, Gesture::Idle) {
+            self.gestures.session += 1;
             self.probing.wanted = None;
             self.probing.latest = None;
             if self.gestures.keys.at.is_none() {
@@ -258,11 +308,11 @@ impl View {
     fn down(&mut self, pointer: u32, button: Button) -> bool {
         let trigger = self.pointing();
         let point = trigger.point;
-        let controls = self.scene.controls;
+        let inputs = self.scene.controls.gestures;
         let earlier = match self.gestures.now {
             Gesture::Press { pointer: first, trigger: Trigger { point: at, .. }, .. }
             | Gesture::Pan { pointer: first, last: at, .. }
-                if first != pointer && controls.zoom != Zoom::Off =>
+                if first != pointer && two_fingers(&inputs, trigger.modifiers) =>
             {
                 self.rig.hold();
                 self.gestures.now = Gesture::Pinch { pointers: [(first, at), (pointer, point)] };
@@ -275,18 +325,27 @@ impl View {
             _ => return true,
         };
         self.rig.hold();
-        self.gestures.now = if button == Button::Middle && controls.pan {
-            let anchor = self.anchor(point, self.probing.at(point).as_ref());
-            Gesture::Pan { pointer, anchor, last: point }
-        } else if matches!(button, Button::Primary | Button::Secondary) {
+        self.gestures.now = if button == Button::Middle {
+            // A middle press clicks nothing, so it acts at once.
+            let anchor = || self.anchor(point, self.probing.at(point).as_ref());
+            match inputs.get(Control::Middle, trigger.modifiers) {
+                Action::None => Gesture::Idle,
+                Action::Box | Action::ZoomBox => {
+                    let zooms = inputs.get(Control::Middle, trigger.modifiers) == Action::ZoomBox;
+                    Gesture::Box { pointer, from: point, to: point, zooms }
+                }
+                action @ (Action::Turn | Action::Tilt) if self.turns() => {
+                    Gesture::Turn { pointer, anchor: anchor(), last: point, tilt: action == Action::Tilt }
+                }
+                _ => Gesture::Pan { pointer, anchor: anchor(), last: point },
+            }
+        } else {
             let answer = self.probing.at(point);
             if answer.is_none() {
                 self.probing.wanted = Some(point);
             }
             let since = self.clock.now();
             Gesture::Press { pointer, button, from: point, trigger, answer, released: false, earlier, since }
-        } else {
-            Gesture::Idle
         };
         !matches!(self.gestures.now, Gesture::Idle)
     }
@@ -313,9 +372,10 @@ impl View {
                 let camera = self.camera.panned(&self.projected(), anchor, delta);
                 self.move_camera(camera);
             }
-            Gesture::Turn { pointer: p, anchor, last } if *p == pointer => {
-                let (anchor, from) = (*anchor, std::mem::replace(last, point));
-                let degrees = [f64::from(point[0] - from[0]) * TURN, -f64::from(point[1] - from[1]) * TURN];
+            Gesture::Turn { pointer: p, anchor, last, tilt } if *p == pointer => {
+                let (anchor, from, tilt) = (*anchor, std::mem::replace(last, point), *tilt);
+                let across = if tilt { 0.0 } else { f64::from(point[0] - from[0]) * TURN };
+                let degrees = [across, -f64::from(point[1] - from[1]) * TURN];
                 self.gestures.track(degrees);
                 let camera = self.camera.turned(&self.projected(), anchor, degrees);
                 self.move_camera(camera);
@@ -325,31 +385,46 @@ impl View {
                 let before = *pointers;
                 pointers[i].1 = point;
                 let after = *pointers;
-                let middle = |p: [(u32, [f32; 2]); 2]| {
-                    [f32::midpoint(p[0].1[0], p[1].1[0]), f32::midpoint(p[0].1[1], p[1].1[1])]
-                };
-                let spread = |p: [(u32, [f32; 2]); 2]| (p[0].1[0] - p[1].1[0]).hypot(p[0].1[1] - p[1].1[1]).max(1.0);
-                let (from, to) = (middle(before), middle(after));
-                let anchor = self.anchor(from, None);
-                let delta = [f64::from(to[0] - from[0]), f64::from(to[1] - from[1])];
-                let camera = self.camera.panned(&self.projected(), anchor, delta);
-                let view = self.projected_with(&camera);
-                let levels = f64::from(spread(after) / spread(before)).log2();
-                let camera = camera.zoomed(&view, anchor, levels, &self.reach());
-                self.move_camera(camera);
+                self.pinched(before, after);
             }
             _ => {}
         }
     }
 
-    fn up(&mut self, pointer: u32, point: Option<[f32; 2]>) -> bool {
+    /// Moves the camera as two fingers moved from `before` to `after`, as the gestures say: sliding
+    /// together pans or tilts, twisting turns, and pinching zooms, each about the point under where
+    /// the fingers were.
+    fn pinched(&mut self, before: [(u32, [f32; 2]); 2], after: [(u32, [f32; 2]); 2]) {
+        let middle =
+            |p: [(u32, [f32; 2]); 2]| [f32::midpoint(p[0].1[0], p[1].1[0]), f32::midpoint(p[0].1[1], p[1].1[1])];
+        let spread = |p: [(u32, [f32; 2]); 2]| (p[0].1[0] - p[1].1[0]).hypot(p[0].1[1] - p[1].1[1]).max(1.0);
+        let angle = |p: [(u32, [f32; 2]); 2]| f64::from(p[1].1[1] - p[0].1[1]).atan2(f64::from(p[1].1[0] - p[0].1[0]));
+        let (from, to) = (middle(before), middle(after));
+        let anchor = self.anchor(from, None);
+        let delta = [f64::from(to[0] - from[0]), f64::from(to[1] - from[1])];
+        let (inputs, modifiers) = (self.scene.controls.gestures, self.pointing().modifiers);
+        let mut camera = self.camera;
+        match inputs.get(Control::Slide, modifiers) {
+            Action::Pan => camera = camera.panned(&self.projected(), anchor, delta),
+            Action::Tilt if self.turns() => camera = camera.turned(&self.projected(), anchor, [0.0, -delta[1] * TURN]),
+            _ => {}
+        }
+        if inputs.get(Control::Twist, modifiers) == Action::Turn && self.turns() {
+            // Fingers turning clockwise turn the ground with them, so the bearing turns the other way.
+            let twist = ((angle(after) - angle(before)).to_degrees() + 540.0).rem_euclid(360.0) - 180.0;
+            camera = camera.turned(&self.projected_with(&camera), anchor, [-twist, 0.0]);
+        }
+        if inputs.get(Control::Pinch, modifiers) == Action::Zoom {
+            let levels = f64::from(spread(after) / spread(before)).log2();
+            camera = camera.zoomed(&self.projected_with(&camera), anchor, levels, &self.reach());
+        }
+        self.move_camera(camera);
+    }
+
+    fn up(&mut self, pointer: u32, point: [f32; 2]) -> bool {
         let pointing = self.pointing();
         match &mut self.gestures.now {
             Gesture::Press { pointer: p, released, trigger, .. } if *p == pointer => {
-                if point.is_none() {
-                    self.gestures.now = Gesture::Idle;
-                    return true;
-                }
                 *trigger = pointing;
                 *released = true;
                 self.pressed();
@@ -380,23 +455,68 @@ impl View {
             Gesture::Pinch { pointers } if pointers.iter().any(|(p, _)| *p == pointer) => {
                 self.gestures.now = Gesture::Idle;
             }
-            Gesture::Box { pointer: p, from, to } if *p == pointer => {
-                let corners = [*from, point.unwrap_or(*to)];
+            Gesture::Box { pointer: p, from, zooms, .. } if *p == pointer => {
+                let (corners, zooms) = ([*from, point], *zooms);
                 self.gestures.now = Gesture::Idle;
-                if point.is_some() {
-                    self.select_box(corners, pointing);
+                if !near(corners[0], corners[1], SLOP) {
+                    self.boxed(corners, zooms, pointing);
                 }
             }
             Gesture::Connect { pointer: p, .. } if *p == pointer => {
                 let Gesture::Connect { from, edge, .. } = std::mem::take(&mut self.gestures.now) else { return true };
-                if let Some(point) = point {
-                    let hits = self.pick(point, self.scene.controls.pick_radius);
-                    self.events.tell_after(hits, Awaited::Connect { from, edge, trigger: pointing });
-                }
+                let hits = self.pick(point, self.scene.controls.pick_radius);
+                self.events.tell_after(hits, Awaited::Connect { from, edge, trigger: pointing });
             }
             _ => return false,
         }
         true
+    }
+
+    /// Stops what `pointer` is doing, or with `None` what every pointer and the keys are doing,
+    /// without acting on it: a drag reports [`Phase::Cancel`] with the row back where it started,
+    /// and nothing coasts, clicks, selects, connects, or opens a menu. A new session starts, so
+    /// probes asked for before land unused. Returns whether it stopped anything.
+    fn cancel(&mut self, pointer: Option<u32>) -> bool {
+        let pointers =
+            pointer.is_none_or(|p| self.gestures.now.holds(p)) && !matches!(self.gestures.now, Gesture::Idle);
+        let keys = &self.gestures.keys;
+        let keys = pointer.is_none() && (keys.at.is_some() || keys.picking.is_some() || !keys.queued.is_empty());
+        if !pointers && !keys {
+            return false;
+        }
+        if pointers {
+            if matches!(self.gestures.now, Gesture::Drag { .. }) {
+                self.drag(Phase::Cancel, self.pointing());
+            }
+            self.gestures.now = Gesture::Idle;
+            self.gestures.release();
+        }
+        if keys {
+            let pointed = self.gestures.keys.at.is_some();
+            // Dropping a pending pick cancels its query.
+            self.gestures.keys = Stepping::default();
+            if pointed {
+                self.hover(None, Trigger { point: self.middle(), device: Device::Keyboard, ..Trigger::default() });
+            }
+        }
+        self.gestures.session += 1;
+        self.probing.wanted = None;
+        true
+    }
+
+    /// Acts on a box dragged between screen points `corners`: selects the rows inside it, or with
+    /// `zooms` frames it.
+    fn boxed(&mut self, corners: [[f32; 2]; 2], zooms: bool, trigger: Trigger) {
+        if !zooms {
+            self.select_box(corners, trigger);
+            return;
+        }
+        // The box frames the positions under its four corners.
+        let [a, b] = corners;
+        let under = [a, [a[0], b[1]], b, [b[0], a[1]]].map(|p| self.anchor(p, None));
+        let min = std::array::from_fn(|k| under.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min));
+        let max = std::array::from_fn(|k| under.iter().map(|p| p[k]).fold(f64::NEG_INFINITY, f64::max));
+        self.fit(Fit::Bounds { min, max });
     }
 
     /// Handles a probe's answer at `point`. A press waiting for it decides what to do. Otherwise
@@ -434,25 +554,23 @@ impl View {
         self.events.tell(Event::Hovered { hit, trigger });
     }
 
-    /// Decides what a press does. A Shift drag with box selection on starts a box, regardless of
-    /// what lies under it. Otherwise, once the probe's answer is known, a release clicks or opens a
-    /// menu, and a move connects, drags, pans, or turns.
+    /// Decides what a press does, by what its input does. A box starts regardless of what lies
+    /// under the press. Otherwise, once the probe's answer is known, a release clicks or opens a
+    /// menu, and a move turns, connects, drags the row, or does its input's action.
     fn pressed(&mut self) {
         let Gesture::Press { pointer, button, from, trigger, answer, released, earlier, .. } = &mut self.gestures.now
         else {
             return;
         };
-        let boxing = *button == Button::Primary
-            && trigger.modifiers.shift
-            && self.scene.controls.select_box
-            && !near(*from, trigger.point, SLOP);
-        if boxing {
+        let action = self.scene.controls.gestures.get(source(*button), trigger.modifiers);
+        if matches!(action, Action::Box | Action::ZoomBox) && !near(*from, trigger.point, SLOP) {
             let (pointer, corners, trigger, released) = (*pointer, [*from, trigger.point], *trigger, *released);
+            let zooms = action == Action::ZoomBox;
             if released {
                 self.gestures.now = Gesture::Idle;
-                self.select_box(corners, trigger);
+                self.boxed(corners, zooms, trigger);
             } else {
-                self.gestures.now = Gesture::Box { pointer, from: corners[0], to: corners[1] };
+                self.gestures.now = Gesture::Box { pointer, from: corners[0], to: corners[1], zooms };
             }
             return;
         }
@@ -471,20 +589,15 @@ impl View {
         if near(from, to, SLOP) {
             return;
         }
-        // The secondary button turns a map or plane once it moves, and so does Shift.
-        let turns = self.turns() && matches!(self.camera, Camera::Map { .. });
-        if button == Button::Secondary || (trigger.modifiers.shift && turns) {
-            self.gestures.now = Gesture::Idle;
-            if turns {
-                let anchor = self.anchor(from, Some(&answer));
-                self.gestures.now = Gesture::Turn { pointer, anchor, last: from };
-                self.moved(pointer, to);
-            }
+        if matches!(action, Action::Turn | Action::Tilt) && self.turns() {
+            let anchor = self.anchor(from, Some(&answer));
+            self.gestures.now = Gesture::Turn { pointer, anchor, last: from, tilt: action == Action::Tilt };
+            self.moved(pointer, to);
             return;
         }
-        if self.scene.controls.connect
+        if self.connects()
             && let Some((from, edge, anchor)) =
-                answer.hit.as_ref().and_then(|probed| self.connect_from(probed, trigger.modifiers))
+                answer.hit.as_ref().and_then(|probed| self.connect_from(probed, action == Action::Connect))
         {
             let locating = anchor.is_none().then(|| self.screen_of(&from.row, None));
             self.gestures.now = Gesture::Connect { pointer, from, edge, anchor, locating, to };
@@ -498,11 +611,13 @@ impl View {
                 self.gestures.now = Gesture::Drag { pointer, probed, grab };
                 self.drag(Phase::Start, trigger);
             }
-            _ if self.scrubs() => {
+            _ if action == Action::Scrub && self.plots() => {
                 self.gestures.now = Gesture::Scrub { pointer };
                 self.seek(to);
             }
-            _ if self.scene.controls.pan => {
+            // Every other action pans here: a turn where the camera cannot turn, a scrub off a
+            // plot, and a connection from nothing that connects.
+            _ if action != Action::None => {
                 let anchor = self.anchor(from, Some(&answer));
                 let delta = [f64::from(to[0] - from[0]), f64::from(to[1] - from[1])];
                 self.gestures.now = Gesture::Pan { pointer, anchor, last: to };
@@ -513,13 +628,13 @@ impl View {
         }
     }
 
-    /// A press released where it began: a click, or a menu for the secondary button. On a plot with
-    /// scrubbing on, a click also seeks.
+    /// A press released where it began: a click, or a menu for the secondary button. On a plot
+    /// where the click's input scrubs, it also seeks.
     fn tap(&mut self, button: Button, hit: Option<Probed>, trigger: Trigger) {
         if button == Button::Secondary {
             self.menu(trigger);
         } else {
-            if self.scrubs() {
+            if self.plots() && self.scene.controls.gestures.get(source(button), trigger.modifiers) == Action::Scrub {
                 self.seek(trigger.point);
             }
             self.click(hit, trigger);
@@ -588,7 +703,12 @@ impl View {
     fn drag(&mut self, phase: Phase, trigger: Trigger) {
         let Gesture::Drag { probed, grab, .. } = &self.gestures.now else { return };
         let view = self.projected();
-        let at = [trigger.point[0] + grab[0], trigger.point[1] + grab[1]];
+        // A cancelled drag puts the row back at the hit point.
+        let at = if phase == Phase::Cancel {
+            probed.hit.point
+        } else {
+            [trigger.point[0] + grab[0], trigger.point[1] + grab[1]]
+        };
         let mut position = view.position(view.unproject(at.map(f64::from), f64::from(probed.depth)));
         if let Space::Diagram(diagram) = &self.scene.space
             && let Grid::Dots { pitch, snap: true } = diagram.grid
@@ -613,9 +733,35 @@ impl View {
         }
     }
 
-    /// Whether a primary press seeks: on a plot with scrubbing on.
-    fn scrubs(&self) -> bool {
-        self.scene.controls.scrub && matches!(self.scene.space, Space::Plot(_))
+    /// The touch input the view takes from the page, as CSS `touch-action` names it: `none` when a
+    /// finger dragging does something here (an input, a draggable mark, or a connection),
+    /// `pan-x pan-y` when only two fingers do, so one finger scrolls the page, and otherwise
+    /// `manipulation`, so the page pans and zooms.
+    #[cfg_attr(
+        not(all(feature = "web", target_arch = "wasm32")),
+        expect(dead_code, reason = "only a page hands touch input to the view")
+    )]
+    pub(crate) fn touch_action(&self) -> &'static str {
+        let inputs = &self.scene.controls.gestures;
+        let still = Modifiers::default();
+        let drags = self.scene.marks.iter().any(|m| m.style().interaction.drag);
+        if inputs.get(Control::Primary, still) != Action::None || drags || self.connects() {
+            "none"
+        } else if two_fingers(inputs, still) {
+            "pan-x pan-y"
+        } else {
+            "manipulation"
+        }
+    }
+
+    /// Whether the view shows a plot, where scrubbing moves the coordinate shown.
+    fn plots(&self) -> bool {
+        matches!(self.scene.space, Space::Plot(_))
+    }
+
+    /// Whether any input connects, so a press on a port or an edge's end connects too.
+    fn connects(&self) -> bool {
+        self.scene.controls.gestures.any(Action::Connect)
     }
 
     /// Whether a row is being dragged. Rows it moves then update without easing.
@@ -623,9 +769,9 @@ impl View {
         matches!(self.gestures.now, Gesture::Drag { .. })
     }
 
-    /// Whether gestures and keys turn the camera: never in a diagram.
+    /// Whether the camera can turn: a map camera, never in a diagram.
     fn turns(&self) -> bool {
-        self.scene.controls.turn && !matches!(self.scene.space, Space::Diagram(_))
+        matches!(self.camera, Camera::Map { .. }) && !matches!(self.scene.space, Space::Diagram(_))
     }
 
     /// Whether clicking a row of mark `mark` selects it.
@@ -633,14 +779,14 @@ impl View {
         self.scene.marks.get(mark).is_some_and(|m| m.style().interaction.select)
     }
 
-    /// Where a connection starts from what a press hit: at a port, at a vertex with Alt held, or,
-    /// for an edge with ends, at the end that stays (the end pressed nearer detaches). Also returns
-    /// the edge, and the start's screen point when known.
-    fn connect_from(&self, probed: &Probed, modifiers: Modifiers) -> Option<(End, Option<Row>, Option<[f32; 2]>)> {
+    /// Where a connection starts from what a press hit: at a port, at a vertex when the press's
+    /// input `connects`, or, for an edge with ends, at the end that stays (the end pressed nearer
+    /// detaches). Also returns the edge, and the start's screen point when known.
+    fn connect_from(&self, probed: &Probed, connects: bool) -> Option<(End, Option<Row>, Option<[f32; 2]>)> {
         let hit = &probed.hit;
         let shown = self.marks.get(hit.index)?;
         match shown.kind() {
-            MarkKind::Vertices if hit.port.is_some() || modifiers.alt => {
+            MarkKind::Vertices if hit.port.is_some() || connects => {
                 Some((End { row: hit.row.clone(), port: hit.port.clone() }, None, Some(hit.point)))
             }
             MarkKind::Edges => {
@@ -730,20 +876,20 @@ impl View {
             && !self.scene.controls.press.is_zero()
     }
 
-    /// Zooms about the point under the wheel, as the controls allow. Otherwise leaves the wheel to
-    /// the page.
+    /// Zooms, pans, turns, or tilts about the point under the wheel, as the wheel's input says.
+    /// Otherwise leaves the wheel to the page. The wheel scrolls the view as it would a page, so it
+    /// pans and turns the opposite way to a drag.
     fn wheel(&mut self, point: [f32; 2], delta: [f32; 2], modifiers: Modifiers) -> bool {
-        let zooms = match self.scene.controls.zoom {
-            Zoom::Wheel => true,
-            Zoom::Modifier => modifiers.control || modifiers.meta,
-            Zoom::Off => false,
+        let [dx, dy] = delta.map(f64::from);
+        let (pan, turn, zoom) = match self.scene.controls.gestures.get(Control::Wheel, modifiers) {
+            Action::Zoom => ([0.0; 2], [0.0; 2], (-dy / 400.0).clamp(-1.0, 1.0)),
+            Action::Turn if self.turns() => ([0.0; 2], [-dx * TURN, dy * TURN], 0.0),
+            Action::Tilt if self.turns() => ([0.0; 2], [0.0, dy * TURN], 0.0),
+            Action::Pan | Action::Turn | Action::Tilt => ([-dx, -dy], [0.0; 2], 0.0),
+            _ => return false,
         };
-        if !zooms {
-            return false;
-        }
         let anchor = self.anchor(point, self.probing.at(point).as_ref());
-        let levels = f64::from(-delta[1] / 400.0).clamp(-1.0, 1.0);
-        self.rig.owe(anchor, [0.0; 2], [0.0; 2], levels);
+        self.rig.owe(anchor, pan, turn, zoom);
         true
     }
 
@@ -805,13 +951,18 @@ impl View {
             Key::Down => Some([0.0, -1.0]),
             _ => None,
         };
+        // The keys move the camera only in the ways some input does.
+        let inputs = controls.gestures;
+        let turns = self.turns() && (inputs.any(Action::Turn) || inputs.any(Action::Tilt));
         match (key, arrow) {
-            (_, Some([dx, dy])) if modifiers.shift && self.turns() => {
+            (_, Some([dx, dy])) if modifiers.shift && turns => {
                 self.rig.owe(anchor, [0.0; 2], [-dx * STEP_TURN, dy * STEP_TURN], 0.0);
             }
-            (_, Some([dx, dy])) if controls.pan => self.rig.owe(anchor, [dx * STEP, dy * STEP], [0.0; 2], 0.0),
-            (Key::Plus, _) if controls.zoom != Zoom::Off => self.rig.owe(anchor, [0.0; 2], [0.0; 2], STEP_ZOOM),
-            (Key::Minus, _) if controls.zoom != Zoom::Off => self.rig.owe(anchor, [0.0; 2], [0.0; 2], -STEP_ZOOM),
+            (_, Some([dx, dy])) if inputs.any(Action::Pan) => {
+                self.rig.owe(anchor, [dx * STEP, dy * STEP], [0.0; 2], 0.0);
+            }
+            (Key::Plus, _) if inputs.any(Action::Zoom) => self.rig.owe(anchor, [0.0; 2], [0.0; 2], STEP_ZOOM),
+            (Key::Minus, _) if inputs.any(Action::Zoom) => self.rig.owe(anchor, [0.0; 2], [0.0; 2], -STEP_ZOOM),
             (Key::Home, _) => self.fit(Fit::All),
             (Key::Escape, _) => self.reselect(Vec::new(), Some(trigger)),
             _ => return false,

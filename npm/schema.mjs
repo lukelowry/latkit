@@ -197,7 +197,10 @@ function declare(defs, prefix, roots, declared) {
       return `${value.description ? doc(value.description) : ''}${key}${optional ? '?' : ''}: ${type(shown)};`;
     });
     const rest = schema.additionalProperties;
-    if (rest && typeof rest === 'object') lines.push(`[name: string]: ${type(rest)};`);
+    if (rest && typeof rest === 'object') {
+      const about = rest.description ? doc(rest.description) : '';
+      lines.push(`${about}[name: string]: ${type({ ...rest, description: undefined })};`);
+    }
     return `{ ${lines.join('\n')} }`;
   };
 

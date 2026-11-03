@@ -362,20 +362,22 @@ How a view responds to the pointer and keyboard, and how much it animates on its
 (`"none"` or `"inspect"`), or options that change the defaults. Each mark sets whether its own
 rows pick, select, and drag. These options control the view itself.
 
-{#controls-pan .member}
-**`pan`**`?: boolean` [¶](#controls-pan){.headerlink}
-: Whether dragging the background pans the camera. Defaults to `true`.
+{#controls-gestures .member}
+**`gestures`**`?:` [`Gestures`](#gestures) [¶](#controls-gestures){.headerlink}
+: What each input does, as in `{ "shift+primary": "box", "wheel": "pan" }`. Each key names an
+  input after any modifier keys held with it (`shift+`, `control+`, `alt+`, `meta+`), and each
+  value is the [`Action`](#action) it takes. Each key given replaces its default, and `none` turns the input
+  off. An input held with modifier keys no key names takes the action of the input alone.
 
-{#controls-zoom .member}
-**`zoom`**`?:` [`Zoom`](#zoom) [¶](#controls-zoom){.headerlink}
-: Which input zooms the view. `wheel` zooms with the wheel and pinching. `modifier` zooms with
-  pinching, and with the wheel only while Control or Meta is held (as trackpad pinches send it),
-  so the plain wheel scrolls the page. `off` turns zooming off. Defaults to `wheel`.
+  The inputs are a drag with the `primary`, `secondary`, or `middle` button (a finger drags as
+  `primary`), the `wheel`, and two fingers that `pinch` (spread or close), `twist` (turn about
+  each other), or `slide` (move together). A drag can `pan`, `turn`, `tilt`, `box`, `zoomBox`,
+  `scrub`, or `connect`. The wheel can `zoom`, `pan`, `turn`, or `tilt`. A pinch can `zoom`, a
+  twist can `turn`, and a slide can `pan` or `tilt`.
 
-{#controls-turn .member}
-**`turn`**`?: boolean` [¶](#controls-turn){.headerlink}
-: Whether dragging with the secondary button, or with Shift, rotates and tilts a map or plane.
-  Defaults to `true`.
+  Defaults: `primary` and `middle` pan, `shift+primary` and `secondary` turn, `wheel` and `pinch`
+  zoom, and `slide` pans. Whatever the input, a drag that starts on a row of a draggable mark
+  drags the row, unless the input turns, tilts, or draws a box.
 
 {#controls-keyboard .member}
 **`keyboard`**`?: boolean` [¶](#controls-keyboard){.headerlink}
@@ -384,6 +386,7 @@ rows pick, select, and drag. These options control the view itself.
   tab order. Arrow keys step to the nearest row in their direction. Enter opens the row stepped
   to, Space selects it, and Escape stops stepping. With no row stepped to, arrow keys pan
   (Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the selection.
+  The keys pan, turn, and zoom only if some input in `gestures` does.
 
 {#controls-hover .member}
 **`hover`**`?: boolean` [¶](#controls-hover){.headerlink}
@@ -396,17 +399,6 @@ rows pick, select, and drag. These options control the view itself.
 : How far a row can be from the pointer and still be picked, in CSS pixels. Touch adds 8. Defaults
   to 6.
 
-{#controls-selectbox .member}
-**`selectBox`**`?: boolean` [¶](#controls-selectbox){.headerlink}
-: Whether Shift+drag selects the rows inside a box instead of turning the camera. Shift+click
-  still toggles one row. Defaults to `false`.
-
-{#controls-connect .member}
-**`connect`**`?: boolean` [¶](#controls-connect){.headerlink}
-: Whether the user can draw connections by dragging from a port, from a vertex with Alt held, or
-  an edge's end off its vertex. Connections are reported as a `'connect'` event. Defaults to
-  `false`.
-
 {#controls-delete .member}
 **`delete`**`?: boolean` [¶](#controls-delete){.headerlink}
 : Whether Delete and Backspace report the selection as a `'delete'` event. Defaults to `false`.
@@ -415,11 +407,6 @@ rows pick, select, and drag. These options control the view itself.
 **`cycle`**`?: boolean` [¶](#controls-cycle){.headerlink}
 : Whether clicking again at the same point, with the camera unmoved, selects the next row under
   the pointer, nearest first. This lets overlapping rows each be selected. Defaults to `false`.
-
-{#controls-scrub .member}
-**`scrub`**`?: boolean` [¶](#controls-scrub){.headerlink}
-: Whether clicking or dragging across a plot moves the coordinate shown to the pointer, instead of
-  panning. Moves are reported as a `'at'` event. Defaults to `false`.
 
 {#controls-press .member}
 **`press`**`?: number` [¶](#controls-press){.headerlink}
@@ -431,6 +418,65 @@ rows pick, select, and drag. These options control the view itself.
 : How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
   options that read `elapsed`. `system` follows the user's reduced-motion setting, `full` animates
   everything, and `reduced` animates only motion the user drives. Defaults to `system`.
+
+(gestures)=
+
+### `Gestures`
+
+{.signature}
+`type Gestures = { [name: string]:` [`Action`](#action) `}`
+
+What each input does, by the input and the modifier keys held with it. See [`controls.gestures`](#controls-gestures).
+
+(action)=
+
+### `Action`
+
+{.signature}
+`type Action = 'pan' | 'turn' | 'tilt' | 'zoom' | 'box' | 'zoomBox' | 'scrub' | 'connect' | 'none'`
+
+What an input does. See [`controls.gestures`](#controls-gestures).
+
+{#action-pan .member}
+**`'pan'`** [¶](#action-pan){.headerlink}
+: Moves the camera with the pointer.
+
+{#action-turn .member}
+**`'turn'`** [¶](#action-turn){.headerlink}
+: Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, in a
+  diagram or on a plot, it pans instead.
+
+{#action-tilt .member}
+**`'tilt'`** [¶](#action-tilt){.headerlink}
+: Tilts a map or plane about the point pressed, keeping its bearing. Where the camera cannot turn,
+  it pans instead.
+
+{#action-zoom .member}
+**`'zoom'`** [¶](#action-zoom){.headerlink}
+: Zooms about the pointer.
+
+{#action-box .member}
+**`'box'`** [¶](#action-box){.headerlink}
+: Selects the rows inside the box dragged, whatever lies under the press.
+
+{#action-zoombox .member}
+**`'zoomBox'`** [¶](#action-zoombox){.headerlink}
+: Zooms to frame the box dragged, whatever lies under the press.
+
+{#action-scrub .member}
+**`'scrub'`** [¶](#action-scrub){.headerlink}
+: On a plot, moves the axis coordinate shown with the pointer, reported as a `'at'` event, and a
+  click there moves it too. Elsewhere it pans.
+
+{#action-connect .member}
+**`'connect'`** [¶](#action-connect){.headerlink}
+: Draws a connection from the vertex or port pressed, or drags an edge's end off its vertex,
+  reported as a `'connect'` event. Once any input connects, a drag from a port or an edge's end
+  connects whatever its input. Elsewhere it pans.
+
+{#action-none .member}
+**`'none'`** [¶](#action-none){.headerlink}
+: Nothing.
 
 (motion)=
 
@@ -453,28 +499,6 @@ How much a view animates on its own.
 **`'reduced'`** [¶](#motion-reduced){.headerlink}
 : Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits, and
   comets and options that read `elapsed` stay still.
-
-(zoom)=
-
-### `Zoom`
-
-{.signature}
-`type Zoom = 'wheel' | 'modifier' | 'off'`
-
-Which input zooms a view.
-
-{#zoom-wheel .member}
-**`'wheel'`** [¶](#zoom-wheel){.headerlink}
-: The wheel, pinching, and the keys.
-
-{#zoom-modifier .member}
-**`'modifier'`** [¶](#zoom-modifier){.headerlink}
-: Pinching and the keys, and the wheel only with Control or Meta held (as trackpad pinches send
-  it), so the plain wheel scrolls the page.
-
-{#zoom-off .member}
-**`'off'`** [¶](#zoom-off){.headerlink}
-: No input zooms.
 
 (layout)=
 
@@ -2221,8 +2245,8 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 
 {#viewevent-connect .member}
 **`'connect'`** [¶](#viewevent-connect){.headerlink}
-: A connection was drawn with [`controls.connect`](#controls-connect) on: from a port, from a vertex with Alt held, or
-  by dragging an edge's end off it.
+: A connection was drawn where an input in [`controls.gestures`](#controls-gestures) connects: from a port, from a
+  vertex with that input, or by dragging an edge's end off it.
 
   {#viewevent-connect-from .member}
   **`from`**`:` [`End`](#end) [¶](#viewevent-connect-from){.headerlink}
@@ -2283,8 +2307,8 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 
 {#viewevent-at .member}
 **`'at'`**`: number` [¶](#viewevent-at){.headerlink}
-: The axis coordinate shown changed: [`view.at`](#view-at). A press on a plot with [`controls.scrub`](#controls-scrub) on moved
-  it.
+: The axis coordinate shown changed: [`view.at`](#view-at). A press on a plot whose input scrubs, as
+  [`controls.gestures`](#controls-gestures) says, moved it.
 
 {#viewevent-waiting .member}
 **`'waiting'`**`:` [`Waiting`](#waiting) [¶](#viewevent-waiting){.headerlink}
@@ -2381,7 +2405,7 @@ A failure as JSON, in the same form as the npm package's [`LatkitError`](#latkit
 ### `Phase`
 
 {.signature}
-`type Phase = 'start' | 'move' | 'end'`
+`type Phase = 'start' | 'move' | 'end' | 'cancel'`
 
 The phase of a `Drag`.
 
@@ -2395,7 +2419,12 @@ The phase of a `Drag`.
 
 {#phase-end .member}
 **`'end'`** [¶](#phase-end){.headerlink}
-: The pointer was released, or the drag was cancelled.
+: The pointer was released.
+
+{#phase-cancel .member}
+**`'cancel'`** [¶](#phase-cancel){.headerlink}
+: The drag was cancelled: the platform took the pointer, or the view lost focus. Its `position`
+  and `patch` put the row back where the drag started.
 
 (trigger)=
 

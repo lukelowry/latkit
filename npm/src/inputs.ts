@@ -3,6 +3,31 @@
 import type { TableInput } from './data.js';
 import type { Color, ExprInput } from './scene.js';
 
+/** What an input does. See `controls.gestures`. */
+export type Action =
+  | /** Moves the camera with the pointer. */ 'pan'
+  | /**
+     * Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, in a
+     * diagram or on a plot, it pans instead.
+     */ 'turn'
+  | /**
+     * Tilts a map or plane about the point pressed, keeping its bearing. Where the camera cannot turn,
+     * it pans instead.
+     */ 'tilt'
+  | /** Zooms about the pointer. */ 'zoom'
+  | /** Selects the rows inside the box dragged, whatever lies under the press. */ 'box'
+  | /** Zooms to frame the box dragged, whatever lies under the press. */ 'zoomBox'
+  | /**
+     * On a plot, moves the axis coordinate shown with the pointer, reported as a `'at'` event, and a
+     * click there moves it too. Elsewhere it pans.
+     */ 'scrub'
+  | /**
+     * Draws a connection from the vertex or port pressed, or drags an edge's end off its vertex,
+     * reported as a `'connect'` event. Once any input connects, a drag from a port or an edge's end
+     * connects whatever its input. Elsewhere it pans.
+     */ 'connect'
+  | /** Nothing. */ 'none';
+
 /** Defaults for areas. */
 export interface AreaTheme {
   /** The area color. */
@@ -319,25 +344,30 @@ export type Controls =
   | 'none'
   | 'inspect'
   | {
-      /** Whether dragging the background pans the camera. Defaults to `true`. */
-      pan?: boolean;
       /**
-       * Which input zooms the view. `wheel` zooms with the wheel and pinching. `modifier` zooms with
-       * pinching, and with the wheel only while Control or Meta is held (as trackpad pinches send it),
-       * so the plain wheel scrolls the page. `off` turns zooming off. Defaults to `wheel`.
+       * What each input does, as in `{ "shift+primary": "box", "wheel": "pan" }`. Each key names an
+       * input after any modifier keys held with it (`shift+`, `control+`, `alt+`, `meta+`), and each
+       * value is the `Action` it takes. Each key given replaces its default, and `none` turns the input
+       * off. An input held with modifier keys no key names takes the action of the input alone.
+       *
+       * The inputs are a drag with the `primary`, `secondary`, or `middle` button (a finger drags as
+       * `primary`), the `wheel`, and two fingers that `pinch` (spread or close), `twist` (turn about
+       * each other), or `slide` (move together). A drag can `pan`, `turn`, `tilt`, `box`, `zoomBox`,
+       * `scrub`, or `connect`. The wheel can `zoom`, `pan`, `turn`, or `tilt`. A pinch can `zoom`, a
+       * twist can `turn`, and a slide can `pan` or `tilt`.
+       *
+       * Defaults: `primary` and `middle` pan, `shift+primary` and `secondary` turn, `wheel` and `pinch`
+       * zoom, and `slide` pans. Whatever the input, a drag that starts on a row of a draggable mark
+       * drags the row, unless the input turns, tilts, or draws a box.
        */
-      zoom?: Zoom;
-      /**
-       * Whether dragging with the secondary button, or with Shift, rotates and tilts a map or plane.
-       * Defaults to `true`.
-       */
-      turn?: boolean;
+      gestures?: Gestures;
       /**
        * Whether the keyboard controls the view. Defaults to `true`. Tab steps to the row nearest the
        * view's center, and the next Tab or Shift+Tab leaves the view, so it is one stop in the page's
        * tab order. Arrow keys step to the nearest row in their direction. Enter opens the row stepped
        * to, Space selects it, and Escape stops stepping. With no row stepped to, arrow keys pan
        * (Shift+arrows turn), `+` and `-` zoom, Home fits everything, and Escape clears the selection.
+       * The keys pan, turn, and zoom only if some input in `gestures` does.
        */
       keyboard?: boolean;
       /**
@@ -351,17 +381,6 @@ export type Controls =
        * to 6.
        */
       pickRadius?: number;
-      /**
-       * Whether Shift+drag selects the rows inside a box instead of turning the camera. Shift+click
-       * still toggles one row. Defaults to `false`.
-       */
-      selectBox?: boolean;
-      /**
-       * Whether the user can draw connections by dragging from a port, from a vertex with Alt held, or
-       * an edge's end off its vertex. Connections are reported as a `'connect'` event. Defaults to
-       * `false`.
-       */
-      connect?: boolean;
       /** Whether Delete and Backspace report the selection as a `'delete'` event. Defaults to `false`. */
       delete?: boolean;
       /**
@@ -369,11 +388,6 @@ export type Controls =
        * the pointer, nearest first. This lets overlapping rows each be selected. Defaults to `false`.
        */
       cycle?: boolean;
-      /**
-       * Whether clicking or dragging across a plot moves the coordinate shown to the pointer, instead of
-       * panning. Moves are reported as a `'at'` event. Defaults to `false`.
-       */
-      scrub?: boolean;
       /**
        * How many seconds a touch or pen must hold still to request a menu (a `'menu'` event), like the
        * secondary button. 0 turns this off. Defaults to 0.5.
@@ -683,6 +697,15 @@ export type Format =
   | /** Fixed decimals: `1500.0`. */ 'fixed'
   | /** A significand and a power of ten: `1.5e3`. */ 'scientific'
   | /** A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`. */ 'engineering';
+
+/** What each input does, by the input and the modifier keys held with it. See `controls.gestures`. */
+export type Gestures = {
+  /**
+   * The action of the input the key names, after any modifier keys held with it, as in
+   * `shift+primary`.
+   */
+  [name: string]: Action;
+};
 
 /** A plane's or a diagram's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`. */
 export type Grid =
@@ -1430,12 +1453,3 @@ export interface WhenNode {
   /** The value where no condition holds. */
   otherwise: ExprInput;
 }
-
-/** Which input zooms a view. */
-export type Zoom =
-  | /** The wheel, pinching, and the keys. */ 'wheel'
-  | /**
-     * Pinching and the keys, and the wheel only with Control or Meta held (as trackpad pinches send
-     * it), so the plain wheel scrolls the page.
-     */ 'modifier'
-  | /** No input zooms. */ 'off';

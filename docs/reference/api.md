@@ -1071,7 +1071,7 @@ shares.
 
 CSS pixels from a vertex to the pointer. Vertex marks only, and not in a vertex's position.
 
-(zoom-function)=
+(zoom)=
 
 ### `zoom()`
 

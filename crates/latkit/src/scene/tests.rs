@@ -64,7 +64,7 @@ fn rows_pick_by_default_and_geometry_only_when_asked() {
 fn faces_lines_and_controls_match_builders() {
     let json = r##"{
         "space": "plane",
-        "controls": { "turn": false, "pickRadius": 12 },
+        "controls": { "gestures": { "secondary": "none" }, "pickRadius": 12 },
         "marks": [
             { "faces": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false },
             { "lines": ["mesh", "Body"], "geometry": "outline", "color": "#66c7ff", "width": 2, "flow": 8 },
@@ -72,7 +72,11 @@ fn faces_lines_and_controls_match_builders() {
         ]
     }"##;
     let built = Scene::new(Plane::default())
-        .controls(Controls { turn: false, pick_radius: 12.0, ..Controls::default() })
+        .controls(Controls {
+            gestures: Gestures::default().with("secondary", Action::None).expect("an input"),
+            pick_radius: 12.0,
+            ..Controls::default()
+        })
         .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
         .draw(
             Lines::of("mesh", "Body")
@@ -201,16 +205,31 @@ fn presets_equal_their_values() {
     let controls = |json: &str| serde_json::from_str::<Controls>(json).expect("controls");
     assert_eq!(controls(r#""inspect""#), Controls::inspect());
     assert_eq!(controls(r#""none""#), Controls::none());
-    let options = controls(r#"{ "zoom": "modifier", "cycle": true, "press": 0.8, "motion": "reduced" }"#);
+    let options = controls(
+        r#"{ "gestures": { "wheel": "pan", "control+wheel": "zoom" }, "cycle": true, "press": 0.8, "motion": "reduced" }"#,
+    );
+    let gestures = Gestures::default().with("wheel", Action::Pan).and_then(|g| g.with("control+wheel", Action::Zoom));
     let expected = Controls {
-        zoom: Zoom::Modifier,
+        gestures: gestures.expect("inputs"),
         cycle: true,
         press: Duration::from_millis(800),
         motion: Motion::Reduced,
         ..Controls::default()
     };
     assert_eq!(options, expected);
-    assert!(serde_json::from_str::<Controls>(r#"{ "zoom": true }"#).is_err(), "zoom names an input, not a boolean");
+    for (wrong, why) in [
+        (r#"{ "gestures": { "wheel": "box" } }"#, "the wheel cannot draw a box"),
+        (r#"{ "gestures": { "primry": "pan" } }"#, "a misspelled input"),
+        (r#"{ "gestures": { "shift+shift+primary": "pan" } }"#, "a modifier twice"),
+        (r#"{ "gestures": { "primary": "spin" } }"#, "an unknown action"),
+    ] {
+        assert!(serde_json::from_str::<Controls>(wrong).is_err(), "{why}");
+    }
+    assert_eq!(
+        Gestures::default().with("pinch", Action::Pan).map_err(|e| e.to_string()),
+        Err("pinch: \"pinch\" cannot pan".to_owned()),
+        "the error names the input and the action"
+    );
     assert_eq!(serde_json::from_str::<Layout>(r#""layered""#).expect("a layout"), Layout::Layered(Layered::default()));
     let layered = r#"{ "layered": { "direction": "down", "rankGap": 40 } }"#;
     let layered = serde_json::from_str::<Layout>(layered).expect("a layout");

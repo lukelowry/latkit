@@ -23,7 +23,8 @@ mod vertices;
 use std::time::Duration;
 
 pub use areas::Areas;
-pub use controls::{Controls, Motion, Zoom};
+pub(crate) use controls::Control;
+pub use controls::{Action, Controls, Gestures, Motion};
 pub use edges::Edges;
 pub use faces::Faces;
 pub(crate) use form::seconds;

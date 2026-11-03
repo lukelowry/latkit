@@ -184,7 +184,8 @@ fn hidden_rows_have_no_screen_position() {
 #[test]
 fn a_shift_drag_selects_the_rows_in_its_box() {
     let Some(gpu) = gpu() else { return };
-    let mut view = view(&gpu, Controls { select_box: true, ..Controls::default() });
+    let gestures = latkit::Gestures::default().with("shift+primary", latkit::Action::Box).expect("an input");
+    let mut view = view(&gpu, Controls { gestures, ..Controls::default() });
     let c = SIZE as f32 / 2.0;
     let (shift, device) = (Modifiers { shift: true, ..Modifiers::default() }, Device::Mouse);
     let down = Input::Down { pointer: 1, point: [c - 5.0, c - 5.0], button: Button::Primary, modifiers: shift, device };
