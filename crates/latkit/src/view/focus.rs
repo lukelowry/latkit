@@ -1,5 +1,6 @@
 //! Focus words: selection, hover, and the rows a fit measures, as bits in one word per held row of
-//! every mark, kept in its focus word pages and written only where they change.
+//! every mark, kept in its focus word pages and written only where they change. Focus belongs to
+//! the row, so every mark drawing a row shows it, whether or not the pointer reaches the mark.
 //!
 //! A selected or hovered row lights the rows one reference from it in every mark: the rows it
 //! references, and the rows that reference it, through any reference field of the tables marks
@@ -107,8 +108,8 @@ impl View {
         if dirty {
             let mut standing = FxHashMap::default();
             let selection = std::mem::take(&mut self.focus.selection);
-            let kept = self.light(&selection, wgsl::SELECTED, wgsl::RELATED_SELECTED, true, &mut standing);
-            self.light(&self.focus.fitting, wgsl::FIT, 0, false, &mut standing);
+            let kept = self.light(&selection, wgsl::SELECTED, wgsl::RELATED_SELECTED, &mut standing);
+            self.light(&self.focus.fitting, wgsl::FIT, 0, &mut standing);
             // Rows the data no longer holds leave the selection.
             if kept.len() < selection.len() {
                 self.events.tell(Event::Selection { rows: Rows::group(kept.iter().cloned()), trigger: None });
@@ -119,7 +120,7 @@ impl View {
         }
         let mut passing = FxHashMap::default();
         if let Some(row) = &self.focus.hovered {
-            self.light(std::slice::from_ref(row), wgsl::HOVERED, wgsl::RELATED_HOVERED, true, &mut passing);
+            self.light(std::slice::from_ref(row), wgsl::HOVERED, wgsl::RELATED_HOVERED, &mut passing);
         }
         let before = std::mem::replace(&mut self.focus.passing, passing);
         // The words that may have changed: all of them after the selection or fit changed, else
@@ -184,11 +185,11 @@ impl View {
         self.lay_out_lit(&changes, glowing, dirty);
     }
 
-    /// Sets `bit` in the words of `rows` in every mark drawing their tables (only pickable marks
-    /// when `picked`), and `related` in those of the rows one reference from them. Returns the rows
-    /// the data still holds. A row of a table the data has, but without that row, is dropped. A row
-    /// of a dataset or table this view lacks is kept.
-    fn light(&self, rows: &[Row], bit: u32, related: u32, picked: bool, words: &mut FxHashMap<At, u32>) -> Vec<Row> {
+    /// Sets `bit` in the words of `rows` in every mark drawing their tables, and `related` in those
+    /// of the rows one reference from them. Returns the rows the data still holds. A row of a table
+    /// the data has, but without that row, is dropped. A row of a dataset or table this view lacks
+    /// is kept.
+    fn light(&self, rows: &[Row], bit: u32, related: u32, words: &mut FxHashMap<At, u32>) -> Vec<Row> {
         let mut kept = Vec::with_capacity(rows.len());
         // The rows of each table, found in the data, in the order the tables first appear.
         let mut tables: Vec<((&Name, &Name), Vec<usize>)> = Vec::new();
@@ -210,7 +211,7 @@ impl View {
             let Some(table) = data.table(table_name) else { continue };
             for (i, shown) in self.marks.iter().enumerate() {
                 let style = shown.mark.style();
-                if style.data != *data_name || (picked && !shown.mark.picks()) {
+                if style.data != *data_name {
                     continue;
                 }
                 let mut light = |r: u32, bit: u32| {

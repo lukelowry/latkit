@@ -112,6 +112,8 @@ impl View {
         self.answer_arranging();
         self.stream(&mut inner);
         let fresh = self.lay_out(encoder, &mut inner);
+        // A legend over a field's whole history shows the domain the layout just wrote.
+        self.lay_out_guides(&mut inner);
         let (elapsed, travel) = self.effect_clock();
         let pages = inner.arena.buffer().clone();
         self.write_focus(queue, &pages, fresh);
@@ -353,8 +355,17 @@ impl View {
     }
 
     /// Reports the failures when they changed. Runs after the frame takes the latest data versions,
-    /// so a dataset filled between frames reports nothing about the version before.
+    /// so a dataset filled between frames reports nothing about the version before. Failures change
+    /// only with the scene or the data, so most frames only compare each mark's with what it last
+    /// reported.
     fn tell_failures(&mut self) {
+        let due = std::mem::take(&mut self.scene_failures_due) || self.marks.iter().any(|m| m.failures != m.told);
+        if !due {
+            return;
+        }
+        for shown in &mut self.marks {
+            shown.told.clone_from(&shown.failures);
+        }
         let failures: Vec<Error> = self.failures().collect();
         if failures != self.told_failures {
             self.events.tell(Event::Failures(failures.clone()));

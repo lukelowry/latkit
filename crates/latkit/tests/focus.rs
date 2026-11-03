@@ -1,7 +1,8 @@
 //! Focus shared between views. A view keeps selected and hovered rows that no mark of it draws, and
-//! the rows one reference from them, such as the machines of a selected bus, read as related. A
-//! hover the application sets stays until the pointer hovers a row, and the pointer moving along
-//! one traced line reports each sample it passes.
+//! the rows one reference from them, such as the machines of a selected bus, read as related. Every
+//! mark drawing a row shows its focus, whether or not it picks. A hover the application sets stays
+//! until what the pointer hovers changes, and the pointer moving along one traced line reports each
+//! sample it passes.
 
 #![cfg(feature = "gpu")]
 
@@ -31,10 +32,15 @@ fn grid() -> Data {
 
 /// A view of the machines alone: red where related to a selected or hovered row, else white.
 fn machines(gpu: &latkit::Gpu, data: &Data) -> View {
+    shown(gpu, data, true)
+}
+
+/// `machines`, with rows that pick or not.
+fn shown(gpu: &latkit::Gpu, data: &Data, pick: bool) -> View {
     let color = when(related()).then(RED).otherwise(Color::WHITE);
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("grid", "Machine").position(field("x"), field("y")).radius(6.0).color(color));
+        .draw(Vertices::of("grid", "Machine").position(field("x"), field("y")).radius(6.0).color(color).pick(pick));
     let mut view = View::new(gpu, scene);
     view.set_camera(camera());
     view.set_sources([data]).expect("a source");
@@ -64,6 +70,45 @@ fn a_view_keeps_a_shared_selection_and_lights_its_related_rows() {
     frame(&gpu, &mut view);
     assert_eq!(view.selection(), Vec::<Rows>::new());
     assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn marks_that_do_not_pick_show_the_selection() {
+    let Some(gpu) = gpu() else { return };
+    let data = grid();
+    let mut view = shown(&gpu, &data, false);
+    frame(&gpu, &mut view);
+    view.set_selection([Rows::new("grid", "Bus", [1_u64]), Rows::new("grid", "Machine", [20_u64])]);
+    let pixels = frame(&gpu, &mut view);
+    let (left, right) = (at(&pixels, C - 30, C), at(&pixels, C + 30, C));
+    assert!(left[0] > 200 && left[1] < 60, "machine 10, at bus 1, is related: {left:?}");
+    assert!(right[1] > 200, "machine 20 is selected, so it does not dim: {right:?}");
+}
+
+#[test]
+fn a_hover_the_application_sets_outlasts_a_pointer_resting_on_a_row() {
+    let Some(gpu) = gpu() else { return };
+    let data = grid();
+    let mut view = machines(&gpu, &data);
+    frame(&gpu, &mut view);
+    view.input(&moved([(C + 30) as f32, C as f32]), common::now());
+    for _ in 0..30 {
+        step(&gpu, &mut view);
+    }
+    assert_eq!(view.hovered(), Some(&Row::new("grid", "Machine", 20_u64)));
+    // The view probes again as it redraws, but the pointer has not moved.
+    let bus = Row::new("grid", "Bus", 1_u64);
+    view.set_hovered(Some(bus.clone()));
+    for _ in 0..30 {
+        step(&gpu, &mut view);
+    }
+    assert_eq!(view.hovered(), Some(&bus));
+    // Leaving the row changes what the pointer hovers, so the hover follows the pointer.
+    view.input(&moved([C as f32, (C + 40) as f32]), common::now());
+    for _ in 0..30 {
+        step(&gpu, &mut view);
+    }
+    assert_eq!(view.hovered(), None);
 }
 
 #[test]

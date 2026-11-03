@@ -9,7 +9,8 @@ use super::form::{Text, text_or, text_schema};
 
 /// Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the
 /// marks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's
-/// background. A title and legends in one place stack in scene order, the title first.
+/// background. Either way, the pointer reaches no row under it. A title and legends in one place
+/// stack in scene order, the title first.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Place {

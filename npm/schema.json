@@ -2060,7 +2060,7 @@
           "description": "Over the marks, at the bottom right."
         }
       ],
-      "description": "Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the\nmarks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's\nbackground. A title and legends in one place stack in scene order, the title first."
+      "description": "Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the\nmarks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's\nbackground. Either way, the pointer reaches no row under it. A title and legends in one place\nstack in scene order, the title first."
     },
     "MarkOptions": {
       "type": "object",
@@ -2104,7 +2104,7 @@
             "boolean",
             "null"
           ],
-          "description": "Whether rows respond to hover, clicks, and picks. Defaults to on for vertices,\nedges, faces, and plot traces, and off for geometry: areas, and lines along paths\nsuch as coasts, borders, and roads."
+          "description": "Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices,\nedges, faces, and plot traces, and off for geometry: areas, and lines along paths\nsuch as coasts, borders, and roads. Either way, the mark shows which rows are\nselected and hovered."
         },
         "select": {
           "type": "boolean",

@@ -64,8 +64,20 @@ pub(crate) struct Guides {
     pub(crate) room: [f64; 4],
     /// The space a plot's axes take, which `room` includes.
     pub(crate) axes: Gutters,
+    /// Whether the atlas had no room for some text, so the next frame measures again. It is asked
+    /// for once, not again after a second such layout.
+    pub(crate) retry: bool,
     /// The guides in drawing order, each corner's backdrop before the guides on it.
     shown: Vec<(Guide, Area)>,
+}
+
+impl Guides {
+    /// Whether `[x, y]`, in CSS pixels, lies on a corner's backdrop, over the marks.
+    pub(crate) fn covers(&self, [x, y]: [f64; 2]) -> bool {
+        self.shown
+            .iter()
+            .any(|(guide, a)| matches!(guide, Guide::Backdrop) && x >= a[0] && x <= a[2] && y >= a[1] && y <= a[3])
+    }
 }
 
 /// A guide, measured.
@@ -106,8 +118,8 @@ enum Wanted {
     Legend(usize),
 }
 
-/// Measures text as the overlay sets it. Text the atlas cannot set yet is estimated, and noted, so
-/// the layout is measured again.
+/// Measures text as the overlay sets it. Text the atlas cannot set is estimated. Text it had no room
+/// for this frame is noted, so the layout is measured again.
 struct Measure<'a> {
     inner: &'a mut Inner,
     theme: &'a Theme,
@@ -120,8 +132,8 @@ impl Measure<'_> {
     fn size(&mut self, text: &str, scale: f64) -> [f64; 2] {
         let measured = Writer::new(self.inner, self.theme, scale, self.ratio, Color::WHITE).size(text);
         measured.unwrap_or_else(|| {
-            // Without a host no text is set, so there is nothing to wait for.
-            self.guessed |= self.inner.host.is_some();
+            // Text that no host sets, or that the host can't set, keeps its estimate.
+            self.guessed |= self.inner.atlas.full();
             let em = f64::from(self.theme.text.size) * scale;
             [0.6 * em * text.chars().count() as f64, 1.25 * em]
         })
@@ -210,8 +222,9 @@ impl View {
             return;
         }
         let (mut guides, guessed) = self.measure_guides(inner);
-        // Text the atlas could not set yet was estimated, so measure it again next frame.
+        // Text the atlas had no room for was estimated, so measure it again next frame.
         guides.stamp = if guessed { 0 } else { stamp };
+        guides.retry = guessed && !self.guides.retry;
         if guides.room != self.guides.room {
             self.fitting.plot_due = true;
         }
@@ -243,7 +256,7 @@ impl View {
                 Place::Bottom => 2,
                 _ => continue,
             };
-            if let Some((guide, size)) = self.guide(want, false, 0.0, &mut m) {
+            if let Some((guide, size)) = self.guide(want, false, across, &mut m) {
                 stack(&mut sides[side], guide, size, true, across, gap, matches!(want, Wanted::Title));
             }
         }
@@ -282,7 +295,7 @@ impl View {
         shown.extend(place(bottom_lanes, true, [bounds[3] - pad, -1.0], [left_edge, 1.0], false, gap));
         shown.extend(place(left_lanes, false, [left_edge, 1.0], [area[1], 1.0], false, gap));
         shown.extend(place(right_lanes, false, [right_edge, -1.0], [area[1], 1.0], false, gap));
-        (Guides { stamp: 0, room, axes, shown }, m.guessed)
+        (Guides { stamp: 0, room, axes, retry: false, shown }, m.guessed)
     }
 
     /// The guides in the corners of `area`, over the marks, stacked away from their corner. Each
@@ -291,12 +304,13 @@ impl View {
         let em = f64::from(self.scene.theme.text.size);
         let (pad, gap, inset) = (PAD * em, GAP * em, INSET * em);
         let inside = [area[0] + pad, area[1] + pad, area[2] - pad, area[3] - pad];
+        let wide = (inside[2] - inside[0]).max(0.0);
         let (mut backdrops, mut shown) = (Vec::new(), Vec::new());
         for corner in [Place::TopLeft, Place::TopRight, Place::BottomLeft, Place::BottomRight] {
             let mut columns: Lanes = Vec::new();
             for &(place, want) in wanted {
                 if place == corner
-                    && let Some((guide, size)) = self.guide(want, false, 0.0, m)
+                    && let Some((guide, size)) = self.guide(want, false, wide, m)
                 {
                     stack(&mut columns, guide, size, false, (inside[3] - inside[1]).max(0.0), gap, false);
                 }
@@ -337,9 +351,10 @@ impl View {
         title.into_iter().chain(legends).collect()
     }
 
-    /// `want` measured, and its size. A legend's bar stands `upright` beside the marks, as long as
-    /// `tall` CSS pixels allow. `None` for a legend with nothing to show yet.
-    fn guide(&self, want: Wanted, upright: bool, tall: f64, m: &mut Measure<'_>) -> Option<(Guide, [f64; 2])> {
+    /// `want` measured, and its size. A legend's bar stands `upright` beside the marks or lies
+    /// flat, as long as `room` CSS pixels along it allow. `None` for a legend with nothing to show
+    /// yet.
+    fn guide(&self, want: Wanted, upright: bool, room: f64, m: &mut Measure<'_>) -> Option<(Guide, [f64; 2])> {
         let em = f64::from(self.scene.theme.text.size);
         match want {
             Wanted::Title => {
@@ -351,17 +366,17 @@ impl View {
                 Some((Guide::Title(text, subtitle), size))
             }
             Wanted::Legend(i) => {
-                let legend = self.legend(i, upright, tall, m)?;
+                let legend = self.legend(i, upright, room, m)?;
                 let size = legend.size(em);
                 Some((Guide::Legend(legend), size))
             }
         }
     }
 
-    /// Mark `i`'s legend, measured: a bar of its colormap across the domain it shows, upright in
-    /// `tall` CSS pixels or flat, or a swatch for each named category. `None` while no domain has
-    /// been fitted.
-    fn legend(&self, i: usize, upright: bool, tall: f64, m: &mut Measure<'_>) -> Option<Legend> {
+    /// Mark `i`'s legend, measured: a bar of its colormap across the domain it shows, upright or
+    /// flat in `room` CSS pixels along it, or a swatch for each named category. `None` while no
+    /// domain has been fitted.
+    fn legend(&self, i: usize, upright: bool, room: f64, m: &mut Measure<'_>) -> Option<Legend> {
         let theme = &self.scene.theme;
         let style = self.scene.marks.get(i)?.style();
         let legend = style.legend.as_ref()?;
@@ -376,9 +391,7 @@ impl View {
             return Some(Legend { title, body: Body::Swatches(swatches.collect()) });
         }
         let domain = self.legend_domain(i)?;
-        let over = title.as_ref().map_or(0.0, |t| t.size[1] + TICK * em);
-        let length = if upright { (tall - over - em).clamp(SHORTEST * em, BAR[0] * em) } else { BAR[0] * em };
-        let (mut fills, mut labels) = (Vec::new(), Vec::new());
+        let (mut fills, mut categories) = (Vec::new(), Vec::new());
         let categorical = colormap.kind() == ColormapKind::Categorical;
         if categorical {
             let first = domain[0].min(domain[1]).ceil() as i64;
@@ -388,12 +401,18 @@ impl View {
                 let category = first + k as i64;
                 let span = [k as f64 / count as f64, (k + 1) as f64 / count as f64];
                 fills.push((span, color(category.unsigned_abs() as usize % 256)));
-                labels.push((span[0].midpoint(span[1]), m.text(&Arc::from(category.to_string()), SMALL)));
+                categories.push((span[0].midpoint(span[1]), Arc::from(category.to_string())));
             }
         } else {
             for k in 0..CELLS {
                 let t = ((k as f64 + 0.5) / CELLS as f64 * 255.0).round() as usize;
                 fills.push(([k as f64 / CELLS as f64, (k + 1) as f64 / CELLS as f64], color(t)));
+            }
+        }
+        // The labels along a bar `length` long: each category's, or ticks spaced to suit it.
+        let mut labels_along = |length: f64| -> Vec<(f64, Text)> {
+            if categorical {
+                return categories.iter().map(|(t, name)| (*t, m.text(name, SMALL))).collect();
             }
             // Where a value lies along the bar, as the GPU maps it: either way round, and a domain
             // of one value puts it in the middle.
@@ -405,13 +424,26 @@ impl View {
             let axis = Axis::default();
             let values: Vec<f64> = if hi > lo { ticks([lo, hi], step).collect() } else { vec![lo] };
             let greatest = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            for v in values {
-                let mut text = label(v, step, &axis);
-                if let Some(unit) = legend.unit.as_deref().filter(|_| v == greatest) {
-                    text.push_str(unit);
-                }
-                labels.push((along(v), m.text(&Arc::from(text), SMALL)));
-            }
+            values
+                .into_iter()
+                .map(|v| {
+                    let mut text = label(v, step, &axis);
+                    if let Some(unit) = legend.unit.as_deref().filter(|_| v == greatest) {
+                        text.push_str(unit);
+                    }
+                    (along(v), m.text(&Arc::from(text), SMALL))
+                })
+                .collect()
+        };
+        // Labels reach past the bar's ends, and an upright bar's title sits above it. A bar whose
+        // labels would pass `room` shortens to keep them in it, down to its least length.
+        let over = title.as_ref().filter(|_| upright).map_or(0.0, |t| t.size[1] + TICK * em);
+        let mut length = (room - over - em).clamp(SHORTEST * em, BAR[0] * em);
+        let mut labels = labels_along(length);
+        let excess = bar_layout(&labels, length, upright, em).0[usize::from(upright)] + over - room;
+        if excess > 0.0 && length > SHORTEST * em {
+            length = (length - excess).max(SHORTEST * em);
+            labels = labels_along(length);
         }
         Some(Legend { title, body: Body::Bar { fills, ticks: labels, length, upright, gapped: categorical } })
     }
@@ -574,26 +606,7 @@ impl Body {
     /// lies within them. Labels can reach past a bar's ends.
     fn layout(&self, em: f64) -> ([f64; 2], [f64; 2]) {
         match self {
-            Body::Bar { ticks, length, upright, .. } => {
-                let thick = BAR[1] * em;
-                let mark = TICK * em;
-                let tallest = ticks.iter().map(|(_, l)| l.size[1]).fold(0.0, f64::max);
-                let widest = ticks.iter().map(|(_, l)| l.size[0]).fold(0.0, f64::max);
-                // How far labels reach before and after the bar along it.
-                let reach = |center: &dyn Fn(f64) -> f64, half: &dyn Fn(&Text) -> f64| {
-                    ticks.iter().fold([0.0_f64, *length], |[lo, hi], (t, label)| {
-                        let c = center(*t);
-                        [lo.min(c - half(label)), hi.max(c + half(label))]
-                    })
-                };
-                if *upright {
-                    let [lo, hi] = reach(&|t| (1.0 - t) * length, &|l| l.size[1] / 2.0);
-                    ([thick + mark + LABEL_GAP * em + widest, hi - lo], [0.0, -lo])
-                } else {
-                    let [lo, hi] = reach(&|t| t * length, &|l| l.size[0] / 2.0);
-                    ([hi - lo, thick + mark + tallest], [-lo, 0.0])
-                }
-            }
+            Body::Bar { ticks, length, upright, .. } => bar_layout(ticks, *length, *upright, em),
             Body::Swatches(swatches) => {
                 let rows = swatches.len().min(ROWS);
                 let width: f64 = swatches
@@ -604,6 +617,29 @@ impl Body {
                 ([width, rows as f64 * ROW * em], [0.0, 0.0])
             }
         }
+    }
+}
+
+/// The width and height in CSS pixels of a bar `length` long with labels `ticks`, for text `em`
+/// pixels high, and where the bar's corner lies within them. Labels can reach past its ends.
+fn bar_layout(ticks: &[(f64, Text)], length: f64, upright: bool, em: f64) -> ([f64; 2], [f64; 2]) {
+    let thick = BAR[1] * em;
+    let mark = TICK * em;
+    let tallest = ticks.iter().map(|(_, l)| l.size[1]).fold(0.0, f64::max);
+    let widest = ticks.iter().map(|(_, l)| l.size[0]).fold(0.0, f64::max);
+    // How far labels reach before and after the bar along it.
+    let reach = |center: &dyn Fn(f64) -> f64, half: &dyn Fn(&Text) -> f64| {
+        ticks.iter().fold([0.0_f64, length], |[lo, hi], (t, label)| {
+            let c = center(*t);
+            [lo.min(c - half(label)), hi.max(c + half(label))]
+        })
+    };
+    if upright {
+        let [lo, hi] = reach(&|t| (1.0 - t) * length, &|l| l.size[1] / 2.0);
+        ([thick + mark + LABEL_GAP * em + widest, hi - lo], [0.0, -lo])
+    } else {
+        let [lo, hi] = reach(&|t| t * length, &|l| l.size[0] / 2.0);
+        ([hi - lo, thick + mark + tallest], [-lo, 0.0])
     }
 }
 

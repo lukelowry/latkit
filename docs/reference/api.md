@@ -1229,8 +1229,8 @@ const view = await View.create(canvas, {
 {#view-hovered .member}
 **`hovered`**`:` [`Row`](#row) `| null` [¶](#view-hovered){.headerlink}
 : The hovered row: the row under the pointer, the row keyboard navigation moved to, or the row
-  set here, or `null`. A set row stays until the pointer or keyboard hovers another, and need not
-  be one a mark here draws. Rows one reference from it draw on top, and [`related()`](#related) reads them,
+  set here, or `null`. A set row stays until what the pointer or keyboard hovers changes, and need
+  not be one a mark here draws. Rows one reference from it draw on top, and [`related()`](#related) reads them,
   so views can share a hover. The `hovered` event tells where the pointer hit the row.
 
 {#view-waiting .member}
@@ -1337,7 +1337,7 @@ const view = await View.create(canvas, {
 {#view-pick .member}
 **`pick`**`(point:` [`Point`](#point)`, options?: { radius?: number } &` [`Wait`](#wait)`): Promise<`[`Hit`](#hit)`[]>` [¶](#view-pick){.headerlink}
 : Resolves, once a frame draws the view, to every row of a pickable mark near `point`, nearest
-  first.
+  first. None under a title, a legend, or a plot's axes, which clip or cover the marks.
 
   {#view-pick-radius .member}
   **`radius`**`?: number` [¶](#view-pick-radius){.headerlink}

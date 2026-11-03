@@ -80,7 +80,8 @@ A scene's title: its text, or options with its text, a subtitle, and a place.
 
 Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the
 marks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's
-background. A title and legends in one place stack in scene order, the title first.
+background. Either way, the pointer reaches no row under it. A title and legends in one place
+stack in scene order, the title first.
 
 {#place-top .member}
 **`'top'`** [¶](#place-top){.headerlink}
@@ -1010,9 +1011,9 @@ The options every mark has.
 
 {#markoptions-pick .member}
 **`pick`**`?: boolean | null` [¶](#markoptions-pick){.headerlink}
-: Whether rows respond to hover, clicks, and picks. Defaults to on for vertices, edges, faces, and
-  plot traces, and off for geometry: areas, and lines along paths such as coasts, borders, and
-  roads.
+: Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, faces,
+  and plot traces, and off for geometry: areas, and lines along paths such as coasts, borders, and
+  roads. Either way, the mark shows which rows are selected and hovered.
 
 {#markoptions-select .member}
 **`select`**`?: boolean` [¶](#markoptions-select){.headerlink}

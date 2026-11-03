@@ -136,8 +136,11 @@ export class Stage {
     return this.once(async () => {
       for (const canvas of this.canvases) {
         const view = await View.create(canvas, scene, { gpu: this.gpu, sources, camera });
-        const told = (error: LatkitError) =>
-          this.errors.push(`${error.path ?? ''} ${error.message}`.trim());
+        // Each `failures` event lists them all again, so each is recorded once.
+        const told = (error: LatkitError) => {
+          const text = `${error.path ?? ''} ${error.message}`.trim();
+          if (!this.errors.includes(text)) this.errors.push(text);
+        };
         view.on('error', told);
         view.on('failures', (failures) => failures.forEach(told));
         this.views.push(view);

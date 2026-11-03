@@ -160,8 +160,9 @@ const scene: Scene = {
 ```
 
 The title and each legend sit in a corner over the marks, on a backdrop, or on a side (`top`,
-`right`, `bottom`, `left`), which takes room from the marks so they never cover them. A plot puts
-them on its top and right, and other spaces in their top-left and bottom-right corners. Views that
+`right`, `bottom`, `left`), which takes room from the marks so they never cover them. Either way,
+the pointer reaches no row under them. A plot puts them on its top and right, and other spaces in
+their top-left and bottom-right corners. A legend's bar shortens to fit a small view. Views that
 share a theme line up their titles, legends, and axes. An axis's or legend's `unit` follows its
 last value, so it needs no title.
 
@@ -185,6 +186,7 @@ A mark's kind key holds the table it draws: `{ vertices: grid.table('Bus') }`. A
 dataset its marks draw from. `JSON.stringify` writes a table as `[data, table]`, the form the
 command line reads, where `data` names one of the view's `sources`. The pointer hovers and clicks
 vertices, edges, faces, and a plot's traces. Set `pick: true` to make areas and lines respond too.
+Either way, every mark shows which of its rows are selected and hovered.
 
 | Mark       | Draws each row as                                                        |
 | ---------- | ------------------------------------------------------------------------ |

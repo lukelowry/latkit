@@ -109,6 +109,8 @@ pub struct View {
     scene_version: u64,
     /// Why options of the scene draw as if unset: those its JSON left out, and those it can't use.
     scene_failures: Vec<Error>,
+    /// Whether the scene's failures changed since the last frame reported failures.
+    scene_failures_due: bool,
     /// The failures the last `Failures` event reported.
     told_failures: Vec<Error>,
     /// The sources the application gave, each a named dataset.
@@ -220,6 +222,7 @@ impl View {
             scene: Scene::new(scene.space.clone()),
             scene_version: 0,
             scene_failures: Vec::new(),
+            scene_failures_due: false,
             told_failures: Vec::new(),
             sources: Vec::new(),
             snapshots: Vec::new(),
@@ -317,6 +320,7 @@ impl View {
         let mut failures = std::mem::take(&mut scene.unread);
         failures.extend(scene.sanitize());
         self.scene_failures = failures;
+        self.scene_failures_due = true;
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
@@ -565,7 +569,8 @@ impl View {
         self.snapshots.retain(|d| d.name() != name);
         self.drawings.retain(|key, _| key.0 != name);
         for (i, shown) in self.marks.iter_mut().enumerate() {
-            if shown.mark.style().data == *name {
+            // A twin keeps its failure, since no data changes it.
+            if shown.mark.style().data == *name && !shown.twin {
                 shown.failures.clear();
             }
             if shown.compiled.as_ref().is_some_and(|c| c.schemas.iter().any(|(n, _)| n == name)) {
@@ -770,14 +775,15 @@ impl View {
         self.focus.hovered.as_ref()
     }
 
-    /// Hovers `row`, whether or not a mark here draws it, without emitting an event, until the
-    /// pointer or keyboard hovers another. `None` clears it. The row glows when hover glows, and
-    /// rows one reference from it draw on top, where [`related`](crate::related) reads them, so
+    /// Hovers `row`, whether or not a mark here draws it, without emitting an event, until what
+    /// the pointer or keyboard hovers changes. `None` clears it. The row glows when hover glows,
+    /// and rows one reference from it draw on top, where [`related`](crate::related) reads them, so
     /// views can share a hover.
     pub fn set_hovered(&mut self, row: Option<Row>) {
+        // The pointer's spot stays, so a pointer resting on a row keeps the row set here until the
+        // spot changes.
         if row != self.focus.hovered {
             self.focus.hovered = row;
-            self.focus.spot = None;
             self.focus.hovering = true;
             self.wake();
         }
@@ -948,6 +954,7 @@ impl View {
         let moves = self.moves();
         self.changed
             || self.fonts != crate::host::fonts()
+            || self.guides.retry
             || self.signal.landed()
             || self.derived.tiles.pending()
             || self.rig.easing()
@@ -983,8 +990,9 @@ impl View {
 
     /// Whether this frame left work for the next one (taking `input` or not): pages over the
     /// frame's upload budget, pages that did not fit in the arena, a due fit, probe, or query, tile
-    /// pieces to take, or a transition to begin. Nothing else would wake the view for these. Jobs,
-    /// texts, fetches, and readbacks wake it themselves when they arrive.
+    /// pieces to take, a transition to begin, or a title or legend to measure again. Nothing else
+    /// would wake the view for these. Jobs, texts, fetches, and readbacks wake it themselves when
+    /// they arrive.
     fn due(&self, input: bool) -> bool {
         self.gpu.0.lock().arena.uploading()
             || self.room != frame::Room::Found
@@ -992,6 +1000,7 @@ impl View {
             || (input && self.answers() && (self.probing.due() || self.queries.due()))
             || self.derived.tiles.pending()
             || self.marks.iter().any(|m| m.begin.is_some())
+            || self.guides.retry
     }
 
     fn wake(&mut self) {
@@ -1048,6 +1057,15 @@ impl View {
         let [top, right, bottom, left]: [f64; 4] =
             std::array::from_fn(|i| f64::from(self.insets[i]) + self.guides.room[i]);
         [left, top, (w - right).max(left + 1.0), (h - bottom).max(top + 1.0)]
+    }
+
+    /// Whether marks show at `point`, CSS pixels from the top left. Under a title or legend on a
+    /// side, or a plot's axes, they are clipped away, and a corner's backdrop covers them, so
+    /// nothing there can be hovered or picked.
+    pub(super) fn marks_show_at(&self, point: [f32; 2]) -> bool {
+        let [x, y] = point.map(f64::from);
+        self.drawn_area().is_none_or(|a| x >= a[0] && x <= a[2] && y >= a[1] && y <= a[3])
+            && !self.guides.covers([x, y])
     }
 
     /// Where marks draw, in CSS pixels: the area on sides where guides take room, and the view's

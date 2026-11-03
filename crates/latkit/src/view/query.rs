@@ -123,8 +123,17 @@ impl Queries {
 
 impl View {
     /// Every row of a pickable mark within `radius` CSS pixels of `point`, nearest first, as the
-    /// next frames draw them.
+    /// next frames draw them. None under a title, a legend, or a plot's axes, which clip or cover
+    /// the marks.
     pub fn pick(&mut self, point: [f32; 2], radius: f32) -> Pending<Vec<Hit>> {
+        if !self.marks_show_at(point) {
+            return Pending::ready(Ok(Vec::new()));
+        }
+        self.hits(point, radius)
+    }
+
+    /// [`pick`](View::pick), wherever `point` lies, as the keys use to list the rows in view.
+    pub(super) fn hits(&mut self, point: [f32; 2], radius: f32) -> Pending<Vec<Hit>> {
         let (answer, reply) = Pending::new();
         self.queries.waiting.push_back(Ask::Hits { point, radius: radius.max(0.0), room: HITS, reply });
         self.wake();

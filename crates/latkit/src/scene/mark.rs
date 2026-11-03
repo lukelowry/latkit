@@ -157,7 +157,7 @@ impl Stroke {
 /// How a mark's rows respond to the pointer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Interaction {
-    /// Whether rows respond to hover, clicks, and picks. When unset, the mark's kind decides (see
+    /// Whether the pointer hovers, clicks, and picks rows. When unset, the mark's kind decides (see
     /// [`Mark::picks`]).
     pub(crate) pick: Option<bool>,
     pub(crate) select: bool,
@@ -452,7 +452,7 @@ impl Mark {
         }
     }
 
-    /// Whether the mark's rows respond to hover, clicks, and picks. `pick` decides when set.
+    /// Whether the pointer hovers, clicks, and picks the mark's rows. `pick` decides when set.
     /// Otherwise vertices, edges, faces, and plot traces pick, and geometry (areas, and lines along
     /// paths such as coasts, borders, and roads) does not, so hovering never probes it.
     pub(crate) fn picks(&self) -> bool {
@@ -855,9 +855,10 @@ macro_rules! mark {
             priority: Option<$crate::Expr>,
             /// Distinguishes two marks of the same table across scenes, and names the mark in hits.
             name: Option<$crate::Name>,
-            /// Whether rows respond to hover, clicks, and picks. Defaults to on for vertices,
+            /// Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices,
             /// edges, faces, and plot traces, and off for geometry: areas, and lines along paths
-            /// such as coasts, borders, and roads.
+            /// such as coasts, borders, and roads. Either way, the mark shows which rows are
+            /// selected and hovered.
             pick: Option<bool>,
             /// Whether clicking a row selects it. Defaults to `true`.
             #[serde(default = "crate::scene::mark::on")]
@@ -950,9 +951,10 @@ macro_rules! style_methods {
                 self
             }
 
-            /// Sets whether rows respond to hover, clicks, and picks. Defaults to on for vertices,
-            /// edges, faces, and plot traces, and off for geometry: areas, and lines along paths
-            /// such as coasts, borders, and roads.
+            /// Sets whether the pointer hovers, clicks, and picks rows. Defaults to on for
+            /// vertices, edges, faces, and plot traces, and off for geometry: areas, and lines
+            /// along paths such as coasts, borders, and roads. Either way, the mark shows which
+            /// rows are selected and hovered.
             #[must_use]
             pub fn pick(mut self, on: bool) -> Self {
                 self.style.interaction.pick = Some(on);

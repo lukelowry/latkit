@@ -165,8 +165,9 @@ pub(crate) struct Shown {
     /// The rows its focus draw lights.
     pub(crate) lit: super::focus::Lit,
     /// Why its options, or the whole mark when it is not compiled, do not fit the data, kept until
-    /// the data fits again.
+    /// the data fits again. `told` holds those the view last reported.
     pub(crate) failures: Vec<Error>,
+    pub(crate) told: Vec<Error>,
     /// Whether it has an earlier mark's key, so it draws nothing.
     pub(crate) twin: bool,
 }
@@ -218,6 +219,7 @@ impl Shown {
             place_version: 0,
             lit: super::focus::Lit::default(),
             failures: Vec::new(),
+            told: Vec::new(),
             twin: false,
         }
     }
