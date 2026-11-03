@@ -104,7 +104,11 @@ export interface Modifiers {
 export type Phase =
   | /** The pointer moved far enough to drag. */ 'start'
   | /** The pointer moved. */ 'move'
-  | /** The pointer was released, or the drag was cancelled. */ 'end';
+  | /** The pointer was released. */ 'end'
+  | /**
+     * The drag was cancelled: the platform took the pointer, or the view lost focus. Its `position`
+     * and `patch` put the row back where the drag started.
+     */ 'cancel';
 
 /** A sample of a traced field: its frame, the axis coordinate it was recorded at, and its value. */
 export interface Sample {
@@ -235,8 +239,8 @@ export type ViewEvent =
       };
     }
   | /**
-     * A connection was drawn with `controls.connect` on: from a port, from a vertex with Alt held, or
-     * by dragging an edge's end off it.
+     * A connection was drawn where an input in `controls.gestures` connects: from a port, from a
+     * vertex with that input, or by dragging an edge's end off it.
      */ {
       type: 'connect';
       detail: {
@@ -282,8 +286,8 @@ export type ViewEvent =
      * back within its zoom and pan limits after the view's size, insets, or space changed.
      */ { type: 'camera'; detail: Camera }
   | /**
-     * The axis coordinate shown changed: `view.at`. A press on a plot with `controls.scrub` on moved
-     * it.
+     * The axis coordinate shown changed: `view.at`. A press on a plot whose input scrubs, as
+     * `controls.gestures` says, moved it.
      */ { type: 'at'; detail: number }
   | /** The work the last frame waited on changed: `view.waiting`. Empty once frames are complete. */ {
       type: 'waiting';

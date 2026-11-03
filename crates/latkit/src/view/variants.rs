@@ -27,7 +27,7 @@ use crate::gpu::atlas::FIELDS;
 use crate::gpu::pipelines::{self, Asked, Urgency, Variant};
 use crate::gpu::shaders::{PATH_ENDS, PATH_GEOMETRY, Shader};
 use crate::scene::mark::MarkKind;
-use crate::{Mark, Marker, Scene, Space};
+use crate::{Action, Mark, Marker, Scene, Space};
 
 /// Writes the word of each drawn row of a paged mark from its runs.
 pub(super) const EXPAND_RUNS: Variant = Variant::compute(Shader::Lists, "expand_runs");
@@ -54,12 +54,13 @@ pub(super) const GATHER: Variant = Variant::compute(Shader::Freeze, "gather");
 /// Sums each face's normal into its corners.
 pub(super) const NORMALS: Variant = Variant::compute(Shader::Normals, "accumulate");
 
-/// Which of a mark's draws: its rows, the rows its focus lights, or its rows' depth alone.
+/// Which of a mark's draws: its rows, the rows its focus lights, or its rows' opaque pixels, which
+/// draw first where depth varies.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Draw {
     Rows,
     Lit,
-    Depth,
+    Opaque,
 }
 
 /// What a mark's pipelines are specialized for: its kind, the `PATH_` code its rows follow, and a
@@ -94,15 +95,14 @@ impl<'a> MarkVariants<'a> {
         self.kind.primitive().code()
     }
 
-    /// The shader for draw `draw`. `None` for a face's lit rows, and for the depth of faces and
-    /// areas.
+    /// The shader for draw `draw`. `None` for a face's lit rows.
     pub(super) fn shader(self, draw: Draw) -> Option<Shader> {
         let custom = self.custom.is_some();
         let (every, focus) = self.kind.shaders(custom);
         match draw {
             Draw::Rows => Some(every),
             Draw::Lit => focus,
-            Draw::Depth => self.kind.depth_shader(custom),
+            Draw::Opaque => Some(self.kind.opaque_shader(custom)),
         }
     }
 
@@ -153,7 +153,7 @@ impl<'a> MarkVariants<'a> {
 }
 
 /// The pipelines a view requested for frames into one target, with or without input, by tier: draw,
-/// text, and answer (transitions, lit rows, probes, and queries). `depths` are the depth draws,
+/// text, and answer (transitions, lit rows, probes, and queries). `opaque` are the opaque draws,
 /// requested with the answers (or with the draws for pictures), which frames use once they are ready.
 pub(super) struct Asking {
     target: (wgpu::TextureFormat, u32),
@@ -161,7 +161,7 @@ pub(super) struct Asking {
     drawing: Vec<Asked>,
     texts: Vec<Asked>,
     answering: Vec<Asked>,
-    depths: Vec<Asked>,
+    opaque: Vec<Asked>,
 }
 
 /// The pipelines nearly every scene draws with, which the GPU compiles ahead for later views:
@@ -200,22 +200,22 @@ impl View {
         let at = if let Some(at) = self.asked.iter().position(|a| a.target == target && a.input == input) {
             at
         } else {
-            let Stages { draw, text, changes, lit, depth, input: inputs } = stages(&self.scene, target.0, target.1);
+            let Stages { draw, text, changes, lit, opaque, input: inputs } = stages(&self.scene, target.0, target.1);
             let (mut drawing, mut texts, mut answering) = if input {
-                (draw, text, [changes, lit, depth.clone(), inputs].concat())
+                (draw, text, [changes, lit, opaque.clone(), inputs].concat())
             } else {
-                ([draw, text, changes, lit, depth.clone()].concat(), Vec::new(), Vec::new())
+                ([draw, text, changes, lit, opaque.clone()].concat(), Vec::new(), Vec::new())
             };
-            let mut depths = depth;
+            let mut opaque = opaque;
             // Several marks can need the same pipeline. Request each once.
-            for asked in [&mut drawing, &mut texts, &mut answering, &mut depths] {
+            for asked in [&mut drawing, &mut texts, &mut answering, &mut opaque] {
                 let mut seen = rustc_hash::FxHashSet::default();
                 asked.retain(|need| seen.insert(need.clone()));
             }
             inner.pipelines.ask(device, &drawing, Urgency::Draw, &self.waker);
             inner.pipelines.ask(device, &texts, Urgency::Text, &self.waker);
             inner.pipelines.ask(device, &answering, Urgency::Answer, &self.waker);
-            self.asked.push(Asking { target, input, drawing, texts, answering, depths });
+            self.asked.push(Asking { target, input, drawing, texts, answering, opaque });
             self.asked.len() - 1
         };
         inner.pipelines.ask(device, &self.channels(), Urgency::Draw, &self.waker);
@@ -240,7 +240,7 @@ impl View {
         let pipelines = &inner.pipelines;
         self.asked
             .iter()
-            .flat_map(|a| [&a.drawing, &a.texts, &a.answering, &a.depths])
+            .flat_map(|a| [&a.drawing, &a.texts, &a.answering, &a.opaque])
             .find_map(|needs| pipelines.refused(needs))
             .or_else(|| pipelines.refused(&self.channels()))
     }
@@ -264,10 +264,10 @@ impl View {
         self.asked.iter().all(|a| inner.pipelines.ready(&a.texts))
     }
 
-    /// Whether the depth draws for frames into `format` at `samples` per pixel are compiled. Until
-    /// then, frames draw points and strokes in order, as where depth does not vary.
-    pub(super) fn depths_ready(&self, inner: &Inner, format: wgpu::TextureFormat, samples: u32) -> bool {
-        self.asked.iter().filter(|a| a.target == (format, samples)).all(|a| inner.pipelines.ready(&a.depths))
+    /// Whether the opaque draws for frames into `format` at `samples` per pixel are compiled. Until
+    /// then, frames draw every mark in order, as where depth does not vary.
+    pub(super) fn opaque_ready(&self, inner: &Inner, format: wgpu::TextureFormat, samples: u32) -> bool {
+        self.asked.iter().filter(|a| a.target == (format, samples)).all(|a| inner.pipelines.ready(&a.opaque))
     }
 
     /// Whether, for every target that frames taking input draw into, the pipelines for easing, lit
@@ -277,15 +277,15 @@ impl View {
     }
 }
 
-/// The pipelines a scene's frames use, by stage: drawing, text, transitions, lit rows, depth, and
-/// input.
+/// The pipelines a scene's frames use, by stage: drawing, text, transitions, lit rows, opaque
+/// pixels, and input.
 #[derive(Default)]
 struct Stages {
     draw: Vec<Asked>,
     text: Vec<Asked>,
     changes: Vec<Asked>,
     lit: Vec<Asked>,
-    depth: Vec<Asked>,
+    opaque: Vec<Asked>,
     input: Vec<Asked>,
 }
 
@@ -304,7 +304,8 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     // line that gestures draw.
     let legends = any(&|m| m.style().legend.is_some() && m.style().color.is_some());
     let written = matches!(scene.space, Space::Plot(_)) || scene.title.is_some() || legends;
-    if written || controls.select_box || controls.connect {
+    let draws = [Action::Box, Action::ZoomBox, Action::Connect].into_iter().any(|a| controls.gestures.any(a));
+    if written || draws {
         stages.text.push(draw(Shader::Overlay));
     }
     // The distance fields of text a frame sets are built before the frame draws.
@@ -341,7 +342,7 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
     stages.lit.extend(variants.draw(Draw::Lit, format, samples));
     // Depth varies only where the camera can tilt or the globe shows: on a plane or the earth.
     if matches!(scene.space, Space::Plane(_) | Space::Earth(_)) {
-        stages.depth.extend(variants.draw(Draw::Depth, format, samples));
+        stages.opaque.extend(variants.draw(Draw::Opaque, format, samples));
     }
     stages.draw.extend(variants.bounds().map(Asked::Shader));
     if variants.listed() {

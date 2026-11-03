@@ -45,13 +45,13 @@ const ENTRIES: &[Entry] = &[
             ("main", &[]),
             ("custom", &["custom"]),
             ("custom_focus", &["custom", "focused"]),
-            ("custom_depth", &["custom", "depth"]),
+            ("custom_opaque", &["custom", "opaque"]),
             ("ports", &["ports"]),
             ("focus", &["focused"]),
-            ("depth", &["depth"]),
+            ("opaque", &["opaque"]),
         ],
     },
-    Entry { module: "draw::strokes", variants: &[("main", &[]), ("focus", &["focused"]), ("depth", &["depth"])] },
+    Entry { module: "draw::strokes", variants: &[("main", &[]), ("focus", &["focused"]), ("opaque", &["opaque"])] },
     Entry { module: "draw::triangles", variants: &[("main", &[])] },
     Entry { module: "draw::areas", variants: &[("main", &[]), ("focus", &["focused"])] },
     Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
@@ -61,7 +61,7 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "compute::fields", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "atomic", "custom", "multisampled", "lists", "ports", "focused", "depth"];
+const FEATURES: &[&str] = &["writes", "atomic", "custom", "multisampled", "lists", "ports", "focused", "opaque"];
 
 /// A placeholder custom marker function, appended to validate the custom variants.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";
@@ -234,9 +234,6 @@ fn manifest_entries(
         .filter(|e| e.stage == naga::ShaderStage::Compute)
         .map(|e| format!("{:?}", e.name))
         .collect();
-    // A depth variant's fragment stage writes no color.
-    let colors =
-        !module.entry_points.iter().any(|e| e.stage == naga::ShaderStage::Fragment && e.function.result.is_none());
     let append = if custom { CUSTOM_MARKER } else { "" };
     combinations(shader, module, types)
         .iter()
@@ -252,7 +249,7 @@ fn manifest_entries(
             assert!(checked.overrides.is_empty(), "{file}: a pipeline's module sets every constant itself");
             fs::write(out.join(&file), &specialized).unwrap();
             format!(
-                "  {{ \"file\": {file:?}, \"draws\": {draws}, \"colors\": {colors}, \"compute\": [{}], \"append\": {append:?} }}",
+                "  {{ \"file\": {file:?}, \"draws\": {draws}, \"compute\": [{}], \"append\": {append:?} }}",
                 compute.join(", "),
                 draws = compute.is_empty(),
             )

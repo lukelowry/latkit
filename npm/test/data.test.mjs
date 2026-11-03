@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const directory = process.env.LATKIT_TEST_PACKAGE ?? path.resolve(import.meta.dirname, '..');
-const { load, Data, Patch, reference, field } = await import(
+const { load, Data, Handle, Patch, reference, field } = await import(
   pathToFileURL(path.join(directory, 'dist/index.js')).href
 );
 const wasm = new WebAssembly.Module(fs.readFileSync(path.join(directory, 'pkg/latkit_bg.wasm')));
@@ -323,6 +323,38 @@ test('blobs and streams read within their signal, fail as io, and cancel when st
   await assert.rejects(reading, { code: 'cancelled', cause: 'stop' });
   await assert.rejects(Data.read(stalled(), { signal: stopped }), { code: 'cancelled' });
   assert.deepEqual(cancelled, ['stop', 'stop'], 'a stream stopped mid-read or before is cancelled');
+});
+
+test('a call given no signal times out once, and cancels the read it gave up on', async (t) => {
+  // The default deadline, shortened so the test is quick.
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, 'timeout', () => timeout(20));
+  const cancelled = [];
+  const stalled = new ReadableStream({
+    pull: () => new Promise(() => {}),
+    cancel: (why) => cancelled.push(why?.name),
+  });
+  await assert.rejects(Data.read(stalled), { code: 'timeout' });
+  await new Promise((settled) => setTimeout(settled, 0));
+  assert.deepEqual(cancelled, ['TimeoutError'], 'the stalled read is cancelled');
+  assert.equal(stalled.locked, false, 'and its lock released');
+});
+
+test('an object frees its memory once, even when its own cleanup throws', () => {
+  let freed = 0;
+  class Thing extends Handle {
+    constructor() {
+      super({ free: () => freed++ }, 'thing');
+    }
+    freeing() {
+      throw new Error('cleanup failed');
+    }
+  }
+  const thing = new Thing();
+  assert.throws(() => thing.destroy(), /cleanup failed/);
+  assert.equal(freed, 1, 'freed although its cleanup failed');
+  thing.destroy();
+  assert.equal(freed, 1, 'and only once');
 });
 
 test('Data.read detects JSON, latkit bytes, and GeoJSON by their first bytes', async () => {

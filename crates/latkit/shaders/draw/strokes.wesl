@@ -13,14 +13,14 @@ import package::lib::path::{
 };
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::focus::focus_of;
-import package::lib::mark::{fringe, occupies, px_per_length};
+import package::lib::mark::{coverage, fringe, px_per_length};
 import package::lib::stroke::{Stroke, gap, stroke, stroke_distance};
 import package::lib::daylight::daylight;
 import package::lib::color::{output, OPAQUE};
 
 struct Varyings {
     // The corner in clip space. In the fragment, the target pixel, which `pixel` reads. Invariant,
-    // so the depth variant and the color draws compute the same depth.
+    // so the opaque variant and the other draws compute the same depth.
     @invariant @builtin(position) clip: vec4f,
     @location(0) @interpolate(flat) a: vec2f,
     @location(1) @interpolate(flat) b: vec2f,
@@ -119,24 +119,28 @@ fn segment_of(v: Varyings) -> Stroke {
     return Stroke(v.a, v.b, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, (v.arrow & 1u) != 0u);
 }
 
-@if(!focused && !depth)
+@if(!focused && !opaque)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let c = stroke(pixel(v), segment_of(v));
     return output(vec4f(c.rgb * c.a, c.a));
 }
 
-// The depth variant writes the depth of an opaque row's line wherever it covers the pixel, at least
-// a target pixel wide however thin it draws. Translucent rows (dimmed by a selection, fading, or of
-// a translucent color), dash gaps, and comets leave what lies behind them showing.
-@if(depth)
+// The opaque variant draws the pixels an opaque row's line covers fully, outside dash gaps, and
+// keeps their depth. It tests the distance first, so the other pixels cost no color. Antialiased
+// edges, lines too thin to cover a pixel, and translucent rows (dimmed by a selection, fading, or of
+// a translucent color) draw after, over them.
+@if(opaque)
 @fragment
-fn fragment(v: Varyings) {
+fn fragment(v: Varyings) -> @location(0) vec4f {
     let s = segment_of(v);
-    let d = stroke_distance(pixel(v), s);
-    if s.color.a < OPAQUE || !occupies(d.x, s.width) || gap(d, s) {
+    let p = pixel(v);
+    let d = stroke_distance(p, s);
+    if s.color.a < OPAQUE || coverage(d.x) < 1.0 || gap(d, s) {
         discard;
     }
+    let c = stroke(p, s);
+    return output(vec4f(c.rgb * c.a, c.a));
 }
 
 @if(focused)

@@ -60,8 +60,8 @@ pub enum Event {
         /// The pointer.
         trigger: Trigger,
     },
-    /// A connection was drawn with [`Controls::connect`](crate::Controls) on: from a port, from a
-    /// vertex with Alt held, or by dragging an edge's end off it.
+    /// A connection was drawn where an input in [`Controls::gestures`](crate::Controls) connects:
+    /// from a port, from a vertex with that input, or by dragging an edge's end off it.
     Connect {
         /// The end it was drawn from. For a dragged edge end, the edge's other end.
         from: End,
@@ -98,8 +98,8 @@ pub enum Event {
     /// orbit moved it, or it moved back within its zoom and pan limits after the view's size,
     /// insets, or space changed.
     Camera(Camera),
-    /// The axis coordinate shown changed: [`View::at`](crate::View::at). A press on a plot with
-    /// [`Controls::scrub`](crate::Controls) on moved it.
+    /// The axis coordinate shown changed: [`View::at`](crate::View::at). A press on a plot whose
+    /// input scrubs, as [`Controls::gestures`](crate::Controls) says, moved it.
     At(f64),
     /// The work the last frame waited on changed: [`View::waiting`](crate::View::waiting). Empty
     /// once frames are complete.
@@ -316,8 +316,11 @@ pub enum Phase {
     Start,
     /// The pointer moved.
     Move,
-    /// The pointer was released, or the drag was cancelled.
+    /// The pointer was released.
     End,
+    /// The drag was cancelled: the platform took the pointer, or the view lost focus. Its
+    /// `position` and `patch` put the row back where the drag started.
+    Cancel,
 }
 
 /// What [`View::fit`](crate::View::fit) frames.

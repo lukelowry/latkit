@@ -41,9 +41,10 @@ fn on_sphere(hi: vec2f, lo: vec2f) -> vec3f {
     return vec3f(v.x, v.y * cos(lat0) - v.z * sin(lat0), v.y * sin(lat0) + v.z * cos(lat0));
 }
 
-// World coordinates: plane or plot units relative to the center, or Mercator radians morphing onto
-// the globe. Only a morph in progress computes both projections.
-fn world(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
+// World coordinates of a position raised by `elevation`: plane or plot units relative to the
+// center, or Mercator radians morphing onto the globe. Only a morph in progress computes both
+// projections.
+fn surface(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
     if frame.space != SPACE_EARTH {
         return vec3f(relative(hi, lo), elevation);
     }
@@ -59,6 +60,28 @@ fn world(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
         return round;
     }
     return mix(vec3f(mercator(hi, lo), z), round, frame.globe);
+}
+
+// The world point a row at a position draws at. A row appears raised by `eye.parallax` of its
+// elevation and lies as deep as raised by all of it: on the eye's ray through where it appears.
+// Looking straight down, elevation so sets only depth, and every row draws over its ground
+// position. Tilting the camera eases the parallax to 1, where the point is the raised position.
+fn world(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
+    let raised = surface(hi, lo, elevation);
+    if eye.parallax >= 1.0 || elevation == 0.0 {
+        return raised;
+    }
+    let apparent = surface(hi, lo, eye.parallax * elevation);
+    let depth = clip_of(apparent).w;
+    if !(depth > 0.0) {
+        return raised;
+    }
+    // Past the globe's edge, a row hides where it appears.
+    if !shows(apparent) {
+        return apparent;
+    }
+    let e = eye.position.xyz;
+    return e + (apparent - e) * (clip_of(raised).w / depth);
 }
 
 fn clip_of(w: vec3f) -> vec4f {

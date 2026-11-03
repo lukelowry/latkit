@@ -330,23 +330,26 @@ fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
     }
 }
 
-/// Whether `shader` writes only depth: the depth variants of points and strokes, drawn before any
-/// color where depth varies.
-pub(crate) fn depth_only(shader: Shader) -> bool {
-    matches!(shader, Shader::PointsDepth | Shader::PointsCustomDepth | Shader::StrokesDepth)
+/// Whether `shader` draws the opaque pixels of points or strokes, which where depth varies draw
+/// before any pixel blends.
+fn opaque(shader: Shader) -> bool {
+    matches!(shader, Shader::PointsOpaque | Shader::PointsCustomOpaque | Shader::StrokesOpaque)
 }
 
-/// A render shader's depth state, with reversed depth. The backdrop writes the globe's depth,
-/// triangles write theirs, and the depth variants write the depth of points and strokes. The overlay
-/// and glyphs ignore depth, and every other mark draws only where nothing nearer was drawn.
+/// A render shader's depth state, with reversed depth. The backdrop writes the globe's depth, faces
+/// theirs, and the opaque variants that of the opaque pixels of points and strokes. The rows of
+/// points, strokes, and areas draw only in front of what is drawn, so where depth varies they skip
+/// the pixels the opaque variants drew, their own included. Lit rows and ports draw where nothing
+/// nearer was drawn, and the overlay and glyphs ignore depth.
 fn depth(shader: Shader) -> wgpu::DepthStencilState {
     let compare = match shader {
         Shader::Backdrop | Shader::Overlay | Shader::Glyphs => wgpu::CompareFunction::Always,
+        Shader::Points | Shader::PointsCustom | Shader::Strokes | Shader::Areas => wgpu::CompareFunction::Greater,
         _ => wgpu::CompareFunction::GreaterEqual,
     };
     wgpu::DepthStencilState {
         format: DEPTH,
-        depth_write_enabled: Some(matches!(shader, Shader::Triangles | Shader::Backdrop) || depth_only(shader)),
+        depth_write_enabled: Some(matches!(shader, Shader::Triangles | Shader::Backdrop) || opaque(shader)),
         depth_compare: Some(compare),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
@@ -768,15 +771,11 @@ impl Pipelines {
                 module,
                 entry_point: Some("fragment"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(if depth_only(shader) {
-                    wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::empty() }
-                } else {
-                    wgpu::ColorTargetState {
-                        format,
-                        // Blend premultiplied colors over what is already drawn.
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    // Blend premultiplied colors over what is already drawn.
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
             multiview_mask: None,

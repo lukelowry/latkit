@@ -3,7 +3,17 @@
 import type * as bindings from '../pkg/latkit.js';
 import { Canvas, type Target } from './canvas.js';
 import type { Budget } from './inputs.js';
-import { Handle, inner, rebind, stopped, wasm, waited, type Wait } from './internal.js';
+import {
+  due,
+  Handle,
+  inner,
+  rebind,
+  stopped,
+  wasm,
+  waited,
+  type Due,
+  type Wait,
+} from './internal.js';
 import { firstDevice, load } from './load.js';
 import type { Work } from './outputs.js';
 import type { View } from './view.js';
@@ -42,8 +52,9 @@ export class Gpu extends Handle {
    * when the browser has no WebGPU device.
    */
   static async create(wait: Wait = {}): Promise<Gpu> {
-    await waited(load(), wait, 'loading latkit');
-    const gpu = new Gpu(await requested(firstDevice() ?? wasm().Gpu.create(), wait));
+    const until = due(wait);
+    await waited(load(), until, 'loading latkit');
+    const gpu = new Gpu(await requested(firstDevice() ?? wasm().Gpu.create(), until));
     if (!Gpu.#shared || Gpu.#shared.lost) Gpu.#shared = gpu;
     return gpu;
   }
@@ -53,7 +64,7 @@ export class Gpu extends Handle {
     const shared = Gpu.#shared;
     if (shared && !shared.lost) return Promise.resolve(shared);
     Gpu.#creating ??= Gpu.create().finally(() => (Gpu.#creating = undefined));
-    return waited(Gpu.#creating, wait, 'requesting a GPU');
+    return waited(Gpu.#creating, due(wait), 'requesting a GPU');
   }
 
   /**
@@ -157,7 +168,7 @@ export class Gpu extends Handle {
    * pipeline a view or shot requested has compiled. A frame stepped after that uses all of them.
    */
   async done(wait: Wait = {}): Promise<void> {
-    await waited<void>(device(this).done(), wait, 'waiting for the GPU');
+    await waited<void>(device(this).done(), due(wait), 'waiting for the GPU');
   }
 
   /**
@@ -166,7 +177,7 @@ export class Gpu extends Handle {
    * awaits it to know when to step again.
    */
   async landed(wait: Wait = {}): Promise<void> {
-    await waited<void>(device(this).landed(), wait, 'waiting for work');
+    await waited<void>(device(this).landed(), due(wait), 'waiting for work');
   }
 
   /**
@@ -213,11 +224,11 @@ export function device(owner: Gpu): bindings.Gpu {
 async function replacement(): Promise<bindings.Gpu> {
   await shown();
   try {
-    return await requested(wasm().Gpu.create(), {});
+    return await requested(wasm().Gpu.create(), due());
   } catch (error) {
     if (!hidden()) throw error;
     await shown();
-    return requested(wasm().Gpu.create(), {});
+    return requested(wasm().Gpu.create(), due());
   }
 }
 
@@ -239,10 +250,10 @@ function shown(): Promise<void> {
   });
 }
 
-/** The device `request` resolves to, within `wait`. A device that arrives after the wait is freed. */
-async function requested(request: Promise<bindings.Gpu>, wait: Wait): Promise<bindings.Gpu> {
+/** The device `request` resolves to, within `until`. A device that arrives after it is freed. */
+async function requested(request: Promise<bindings.Gpu>, until: Due): Promise<bindings.Gpu> {
   try {
-    return await waited(request, wait, 'requesting a GPU');
+    return await waited(request, until, 'requesting a GPU');
   } catch (error) {
     request.then(
       (late) => late.free(),

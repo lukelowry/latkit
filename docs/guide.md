@@ -243,7 +243,9 @@ CSS gradient, for legends drawn in HTML.
 - `theme` is `'dark'`, `'light'`, or overrides of a base theme, grouped by what they style:
   `{ base: 'light', text: { size: 12 }, edge: { width: 2 } }`.
 - `controls` sets what the pointer and keys do. By default the pointer pans, zooms, turns, and
-  hovers. `'inspect'` leaves the camera to your application, and `'none'` suits a still picture.
+  hovers. `gestures` binds each input to what it does, as in
+  `{ gestures: { wheel: 'pan', 'control+wheel': 'zoom', 'shift+primary': 'box' } }`. `'inspect'`
+  leaves the camera to your application, and `'none'` suits a still picture.
 - `layout` places vertex rows that have no position: `'stress'` or `'layered'`. A row keeps its
   place once laid out.
 

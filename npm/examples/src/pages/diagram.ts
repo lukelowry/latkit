@@ -137,7 +137,7 @@ export default page({
           ? { stress: { gap: 50 } }
           : { layered: { direction: s.layout, gap: 30, rankGap: 70 } },
       theme: { base: 'dark', background: '#101214', diagram: { outline: '#ffffff1f' } },
-      controls: { connect: true, delete: true },
+      controls: { gestures: { 'alt+primary': 'connect' }, delete: true },
       marks: [
         {
           vertices: data.table('Group'),
@@ -196,9 +196,17 @@ export default page({
     };
     count();
 
-    // A drag moves a block at once and is undone as one edit.
+    // A drag moves a block at once and is undone as one edit. A cancelled drag is no edit: the
+    // data goes back to the version before it.
     let dragging = false;
     shown.on('drag', ({ phase, patch }) => {
+      if (phase === 'cancel') {
+        const before = dragging ? undo.pop() : undefined;
+        if (before) data.restore(before);
+        before?.destroy();
+        dragging = false;
+        return;
+      }
       const move = () => patch && data.apply(patch);
       if (phase === 'start' && !dragging) {
         dragging = true;

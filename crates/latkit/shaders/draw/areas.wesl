@@ -1,7 +1,8 @@
 // Areas: one instanced triangle per area triangle, numbered by the mark's list, flat on the ground
-// in its row's color and lit by the earth's daylight. Areas lie under anything drawn after them:
-// they test depth but do not write it. The focus variant redraws the lit rows' triangles over
-// everything, tinted toward the theme's focus colors.
+// in its row's color and lit by the earth's daylight. Areas lie under anything drawn after them,
+// and where depth varies, under every pixel that blends: they test depth but do not write it. The
+// focus variant redraws the lit rows' triangles over everything, tinted toward the theme's focus
+// colors.
 
 import package::lib::types::{SELECTED, HOVERED};
 import package::lib::bind::frame;

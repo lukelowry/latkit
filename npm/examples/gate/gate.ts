@@ -62,12 +62,10 @@ const args = process.argv.slice(2);
 const software = args.includes('--software') || process.platform === 'linux';
 
 /** A shader module listed in shaders.json: a shader variant specialized as latkit's pipelines use
- * it. `append` is source added after the file's own. A draw module without `colors` writes only
- * depth. */
+ * it. `append` is source added after the file's own. */
 interface Module {
   file: string;
   draws: boolean;
-  colors: boolean;
   compute: string[];
   append: string;
 }
@@ -77,7 +75,6 @@ interface Pipeline {
   label: string;
   code: string;
   draws: boolean;
-  colors: boolean;
   entry: string;
 }
 
@@ -105,7 +102,6 @@ function pipelines(dir: string): Pipeline[] {
       label: module.draws ? name : `${name} ${entry}`,
       code,
       draws: module.draws,
-      colors: module.colors,
       entry,
     }));
   });
@@ -156,7 +152,7 @@ async function time({
           fragment: {
             module,
             entryPoint: 'fragment',
-            targets: [{ format: 'rgba8unorm', writeMask: pipeline.colors ? 0xf : 0 }],
+            targets: [{ format: 'rgba8unorm' }],
           },
           primitive: { topology: 'triangle-list' },
           depthStencil: {

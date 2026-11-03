@@ -85,7 +85,8 @@ Options that bound how long a promise waits.
 **`signal`**`?: AbortSignal` [¶](#wait-signal){.headerlink}
 : Aborts the wait. A timeout rejects with a `timeout` error. Any other abort rejects with a
   `cancelled` error, with the abort reason as its `cause`. Either way, latkit cancels the call's
-  pending work where it can. Without a signal, each wait times out after 30 seconds.
+  pending work where it can. Without a signal, the call times out after 30 seconds, counting
+  every step it takes.
 
 (handle)=
 
@@ -1071,7 +1072,7 @@ shares.
 
 CSS pixels from a vertex to the pointer. Vertex marks only, and not in a vertex's position.
 
-(zoom-function)=
+(zoom)=
 
 ### `zoom()`
 

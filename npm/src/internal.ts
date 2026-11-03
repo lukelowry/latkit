@@ -35,9 +35,24 @@ export interface Wait {
   /**
    * Aborts the wait. A timeout rejects with a `timeout` error. Any other abort rejects with a
    * `cancelled` error, with the abort reason as its `cause`. Either way, latkit cancels the call's
-   * pending work where it can. Without a signal, each wait times out after 30 seconds.
+   * pending work where it can. Without a signal, the call times out after 30 seconds, counting
+   * every step it takes.
    */
   signal?: AbortSignal;
+}
+
+/** @internal One call's deadline, resolved from its {@link Wait} at the start of the call. */
+export interface Due {
+  readonly signal: AbortSignal;
+}
+
+/**
+ * @internal Resolves `wait` for one call: its signal, or a 30-second deadline. Every step of the
+ * call, and the fetch or stream read it starts, waits on this one signal, so a timeout also
+ * cancels the work it gave up on.
+ */
+export function due({ signal }: Wait = {}): Due {
+  return { signal: signal ?? AbortSignal.timeout(30_000) };
 }
 
 /**
@@ -135,9 +150,12 @@ export abstract class Handle {
     entry.bound = undefined;
     try {
       this.freeing();
-      if (!halted) bound.free();
     } catch (error) {
       if (!halted) throw error;
+    } finally {
+      // Freed even when `freeing` throws, since the object can't be destroyed again. Once latkit
+      // has stopped, its memory can't be used, so there is nothing to free.
+      if (!halted) bound.free();
     }
   }
 
@@ -193,44 +211,36 @@ export type ByteSource =
 
 /**
  * @internal Reads `source` into bytes, with the URL they came from as `base` (empty if none). An
- * object that is not a {@link ByteSource} is encoded as JSON text. Waits within `wait`, and
- * cancels a fetch or stream it gives up on.
+ * object that is not a {@link ByteSource} is encoded as JSON text. Waits within `due`. A response
+ * or blob is read as a stream, like any other, so giving up cancels the fetch or read.
  */
 export async function bytesOf(
   source: ByteSource | object,
-  wait: Wait,
+  due: Due,
 ): Promise<{ bytes: Uint8Array; base: string }> {
-  const failed = (message: string) => (cause: unknown) =>
-    Promise.reject(thrown({ code: 'io', message, cause }));
-  const reading = (what: string, bytes: Promise<ArrayBuffer>) =>
-    waited(
-      bytes.then((read) => new Uint8Array(read), failed(`${what} could not be read`)),
-      wait,
-      `reading ${what}`,
-    );
   if (source instanceof Uint8Array) return { bytes: source, base: '' };
   if (source instanceof ArrayBuffer) return { bytes: new Uint8Array(source), base: '' };
   if (typeof source === 'string') {
-    const fetched = fetch(source, { signal: wait.signal }).catch(
-      failed(`${source} could not be fetched`),
+    const fetched = fetch(source, { signal: due.signal }).catch((cause: unknown) =>
+      Promise.reject(thrown({ code: 'io', message: `${source} could not be fetched`, cause })),
     );
-    return bytesOf(await waited(fetched, wait, `fetching ${source}`), wait);
+    return bytesOf(await waited(fetched, due, `fetching ${source}`), due);
   }
+  let stream: ReadableBytes | AsyncIterable<Uint8Array> | undefined;
+  let what = 'the stream';
+  let base = '';
   if (source instanceof Response) {
-    const { url, status, statusText } = source;
+    const { url, status, statusText, body } = source;
     if (!source.ok) throw thrown({ code: 'io', message: `${url}: ${status} ${statusText}` });
-    return { bytes: await reading(url || 'the response', source.arrayBuffer()), base: url };
+    if (!body) return { bytes: new Uint8Array(), base: url };
+    [stream, what, base] = [body, url || 'the response', url];
+  } else if (source instanceof Blob) {
+    [stream, what] = [source.stream(), 'the blob'];
+  } else if ('getReader' in source || Symbol.asyncIterator in source) {
+    stream = source as ReadableBytes | AsyncIterable<Uint8Array>;
   }
-  if (source instanceof Blob)
-    return { bytes: await reading('the blob', source.arrayBuffer()), base: '' };
-  if ('getReader' in source || Symbol.asyncIterator in source) {
-    const stream = source as ReadableBytes | AsyncIterable<Uint8Array>;
-    return {
-      bytes: await waited(collect(stream, wait.signal), wait, 'reading the stream'),
-      base: '',
-    };
-  }
-  return { bytes: new TextEncoder().encode(JSON.stringify(source)), base: '' };
+  if (!stream) return { bytes: new TextEncoder().encode(JSON.stringify(source)), base: '' };
+  return { bytes: await waited(collect(stream, due.signal), due, `reading ${what}`), base };
 }
 
 /** The bytes of `stream` in one array; see {@link chunks}. */
@@ -286,16 +296,16 @@ export async function* chunks(
 }
 
 /**
- * @internal Awaits `pending`, a promise or a bindings task, until `signal` aborts. The signal
- * defaults to a 30-second timeout. If the signal aborts first, a task is cancelled so its work is
- * skipped, and the call rejects with an error naming `what`: `timeout` for a timeout, else
- * `cancelled`. Work that fails after the signal aborted, such as a fetch given the same signal,
- * rejects the same way. A task's wait rejects with the `stopped` error as soon as latkit stops. A
- * task is always freed, unless latkit has stopped.
+ * @internal Awaits `pending`, a promise or a bindings task, until the call's deadline, `due`,
+ * passes. If it passes first, a task is cancelled so its work is skipped, and the call rejects
+ * with an error naming `what`: `timeout` for a timeout, else `cancelled`. Work that fails after
+ * the deadline passed, such as a fetch given the same signal, rejects the same way. A task's wait
+ * rejects with the `stopped` error as soon as latkit stops. A task is always freed, unless latkit
+ * has stopped.
  */
 export async function waited<T>(
   pending: Promise<T> | Bindings.Task,
-  { signal = AbortSignal.timeout(30_000) }: Wait,
+  { signal }: Due,
   what: string,
 ): Promise<T> {
   const task = pending instanceof Promise ? undefined : pending;

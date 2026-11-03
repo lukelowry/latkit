@@ -36,11 +36,16 @@ pub enum Input {
         /// Modifier keys held.
         modifiers: Modifiers,
     },
-    /// The platform cancelled a pointer.
+    /// The platform cancelled a pointer, or took it away. What the pointer was doing stops without
+    /// acting: a drag ends with [`Phase::Cancel`](crate::Phase), and nothing coasts, clicks,
+    /// selects, connects, or opens a menu. A pointer the view is not following is ignored.
     Cancel {
         /// Which pointer.
         pointer: u32,
     },
+    /// The view lost focus. Every pointer is cancelled, the keys stop pointing at a row, and the
+    /// pointer is forgotten until it moves again, so nothing stays hovered.
+    Blur,
     /// The wheel turned: CSS pixels, positive down and right.
     Wheel {
         /// Where the pointer is.

@@ -534,6 +534,8 @@ struct Painted {
     /// When a pointer was last released, in milliseconds on the events' clock.
     released: f64,
     cursor: Cursor,
+    /// The element's CSS `touch-action`.
+    touch: &'static str,
     handlers: Vec<Handler>,
     resize: Option<Resizing>,
 }
@@ -548,6 +550,7 @@ impl Canvas {
     pub fn new(gpu: &Gpu, element: &HtmlCanvasElement, layout: Vec<Panel>) -> Result<Canvas> {
         let size = [element.width(), element.height()];
         let surface = Surface::new(gpu, wgpu::SurfaceTarget::Canvas(element.clone()), size)?;
+        // The views take every touch until they say which they use.
         let _ = element.style().set_property("touch-action", "none");
         // Make the element focusable so keys reach the views directly.
         if !element.has_attribute("tabindex") {
@@ -600,6 +603,7 @@ impl Canvas {
             focus: 0,
             released: f64::NEG_INFINITY,
             cursor: Cursor::Default,
+            touch: "none",
             handlers: Vec::new(),
             resize: None,
         }));
@@ -748,9 +752,18 @@ impl Painted {
         Some(texture)
     }
 
-    /// Sets the element's cursor to the one the view under the pointer requests.
+    /// Sets the element's cursor to the one the view under the pointer requests, and its touch
+    /// handling to take the touches any of its views take.
     fn show_cursor(&mut self) {
+        // From the most the page keeps to the least.
+        const TOUCHES: [&str; 3] = ["manipulation", "pan-x pan-y", "none"];
         let Target::Element(element) = &self.target else { return };
+        let rank = |touch: &str| TOUCHES.iter().position(|t| *t == touch).unwrap_or(TOUCHES.len() - 1);
+        let touch = self.views.iter().map(|v| rank(v.read(View::touch_action))).max().map_or("none", |i| TOUCHES[i]);
+        if touch != self.touch {
+            self.touch = touch;
+            let _ = element.style().set_property("touch-action", touch);
+        }
         let cursor = self.hovered.and_then(|i| self.views.get(i)).map_or(Cursor::Default, |v| v.read(View::cursor));
         if cursor != self.cursor {
             self.cursor = cursor;
@@ -809,6 +822,11 @@ impl Painted {
             Input::Wheel { point, .. } => routed.extend(under(point).map(|i| (i, local(i, input)))),
             Input::Key { .. } => routed.push((self.focus.min(self.views.len().saturating_sub(1)), input)),
             Input::Leave => routed.extend(self.hovered.take().map(|i| (i, Input::Leave))),
+            // Losing focus stops every view's gestures and keys.
+            Input::Blur => {
+                self.captured.clear();
+                routed.extend((0..self.views.len()).map(|i| (i, Input::Blur)));
+            }
         }
         routed.retain(|(i, _)| *i < self.views.len());
         routed
@@ -1072,17 +1090,28 @@ fn listen(state: &Rc<RefCell<Painted>>, element: &HtmlCanvasElement) -> Result<(
         let event = event.dyn_ref::<PointerEvent>()?;
         Some(Input::Cancel { pointer: event.pointer_id() as u32 })
     })?;
+    // A pointer also loses its capture after its release or cancel, and its view then ignores the
+    // cancel. Otherwise something took the pointer away.
+    add("lostpointercapture", |_, event| {
+        let event = event.dyn_ref::<PointerEvent>()?;
+        Some(Input::Cancel { pointer: event.pointer_id() as u32 })
+    })?;
     add("pointerleave", |_, _| Some(Input::Leave))?;
+    add("blur", |_, _| Some(Input::Blur))?;
     add("wheel", |element, event| {
         let event = event.dyn_ref::<WheelEvent>()?;
-        let scale = match event.delta_mode() {
+        // Lines are 16 CSS pixels, and pages the element's size.
+        let scale = |page: i32| match event.delta_mode() {
             1 => 16.0,
-            2 => 400.0,
+            2 => f64::from(page.max(1)),
             _ => 1.0,
         };
         Some(Input::Wheel {
             point: point(element, event),
-            delta: [(event.delta_x() * scale) as f32, (event.delta_y() * scale) as f32],
+            delta: [
+                (event.delta_x() * scale(element.client_width())) as f32,
+                (event.delta_y() * scale(element.client_height())) as f32,
+            ],
             modifiers: modifiers!(event),
         })
     })?;
@@ -1090,18 +1119,21 @@ fn listen(state: &Rc<RefCell<Painted>>, element: &HtmlCanvasElement) -> Result<(
         let event = event.dyn_ref::<web_sys::MouseEvent>()?;
         Some(Input::Key { key: Key::Menu, down: true, modifiers: modifiers!(event) })
     })?;
-    for kind in ["keydown", "keyup"] {
-        add(kind, |_, event| keyed(event))?;
-    }
+    add("keydown", |_, event| keyed(event))?;
     Ok(())
 }
 
-/// A mouse event's point in CSS pixels from the element's top left.
+/// A mouse event's point in CSS pixels from the element's top left, inside its border. A CSS
+/// transform that scales the element scales its rendered box, so the point is scaled back.
 fn point(element: &HtmlCanvasElement, event: &web_sys::MouseEvent) -> [f32; 2] {
     let rect = element.get_bounding_client_rect();
+    let scale = |rendered: f64, laid_out: i32| {
+        if rendered > 0.0 && laid_out > 0 { rendered / f64::from(laid_out) } else { 1.0 }
+    };
+    let (sx, sy) = (scale(rect.width(), element.offset_width()), scale(rect.height(), element.offset_height()));
     [
-        (f64::from(event.client_x()) - rect.left() - f64::from(element.client_left())) as f32,
-        (f64::from(event.client_y()) - rect.top() - f64::from(element.client_top())) as f32,
+        ((f64::from(event.client_x()) - rect.left()) / sx - f64::from(element.client_left())) as f32,
+        ((f64::from(event.client_y()) - rect.top()) / sy - f64::from(element.client_top())) as f32,
     ]
 }
 

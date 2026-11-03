@@ -166,6 +166,18 @@ function read(file) {
         const entry = { kind, name, doc: about, overloads: [overload], static: isStatic };
         byName.set(`${name}()`, entry);
         out.push(entry);
+      } else if (ts.isIndexSignatureDeclaration(m)) {
+        // A map's entries: any key, each value of one type.
+        out.push({
+          kind: 'property',
+          name: `[${m.parameters.map(text).join(', ')}]`,
+          doc: about,
+          type: text(m.type),
+          optional: false,
+          readonly: has(m, ts.SyntaxKind.ReadonlyKeyword),
+          static: false,
+          fields: [],
+        });
       } else assert.fail(`${file}: ${text(m)} is a kind of member the reference cannot show`);
     }
     return out;
@@ -791,8 +803,9 @@ const sections = {
         'Format',
         'Grid',
         'Controls',
+        'Gestures',
+        'Action',
         'Motion',
-        'Zoom',
         'Layout',
         'Layered',
         'Stress',

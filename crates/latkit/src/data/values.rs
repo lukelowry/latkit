@@ -675,6 +675,15 @@ impl From<Vec<[f64; 2]>> for Values {
     }
 }
 
+impl From<Vec<Option<[f64; 2]>>> for Values {
+    fn from(points: Vec<Option<[f64; 2]>>) -> Values {
+        let valid = Bits::from_fn(points.len(), |i| points[i].is_some());
+        let mut values = Values::from(points.iter().map(|p| p.unwrap_or_default()).collect::<Vec<_>>());
+        values.valid = (!valid.all()).then_some(valid);
+        values
+    }
+}
+
 impl From<Vec<Vec<[f64; 2]>>> for Values {
     fn from(paths: Vec<Vec<[f64; 2]>>) -> Values {
         geometries(1, paths.into_iter().map(Value::Path))

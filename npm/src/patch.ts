@@ -9,6 +9,7 @@ import type { Id, Ids } from './inputs.js';
 import {
   bytesOf,
   chunks,
+  due,
   thrown,
   waited,
   wasm,
@@ -168,11 +169,13 @@ export class Patch {
       limit?: number;
     } & Wait = {},
   ): Promise<Patch> {
-    const { bytes, base } = await bytesOf(source, options);
+    // Reading the bytes and decoding them share one deadline.
+    const until = due(options);
+    const { bytes, base } = await bytesOf(source, until);
     if (MAGIC.every((byte, i) => bytes[i] === byte))
       return Patch.#owning(bytes.slice(), options.limit);
     const read = wasm().readPatch(bytes, options.base ?? base);
-    return Patch.#owning(await waited<Uint8Array>(read, options, 'reading a patch'), options.limit);
+    return Patch.#owning(await waited<Uint8Array>(read, until, 'reading a patch'), options.limit);
   }
 
   /**
