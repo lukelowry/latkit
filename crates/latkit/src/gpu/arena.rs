@@ -547,6 +547,14 @@ impl Arena {
         self.refused
     }
 
+    /// Records that the device refused the pool more than `granted` bytes after it moved into the
+    /// buffer, as a browser answers late.
+    #[cfg(test)]
+    pub(crate) fn refuse(&mut self, granted: u64) {
+        self.refused = Some(granted);
+        self.broken = true;
+    }
+
     /// Once the pool has moved into a buffer the device refused, the pool's bytes before it. It
     /// is returned once.
     pub(crate) fn broken(&mut self) -> Option<u64> {

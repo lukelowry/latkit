@@ -254,15 +254,30 @@ impl<S: Sink> Video<S> {
                 self.hand_on().await?;
             }
             let time = self.time();
-            views.lend(|views| self.drawing.begin(views))?;
-            let readback = loop {
-                match views.lend(|views| self.drawing.step(views, time, false))? {
-                    Step::Done(readback) => break readback,
-                    Step::Easing => {}
-                    Step::Waiting => self.drawing.wait().await,
+            let movable = views.movable();
+            loop {
+                views.lend(|views| self.drawing.begin(views, movable))?;
+                let readback = loop {
+                    match views.lend(|views| self.drawing.step(views, time, false))? {
+                        Step::Done(readback) => break readback,
+                        Step::Easing => {}
+                        Step::Waiting => self.drawing.wait().await,
+                    }
+                };
+                if self.drawn || !movable {
+                    self.flight.push_back((self.index, Some(readback)));
+                    break;
                 }
-            };
-            self.flight.push_back((self.index, Some(readback)));
+                // The first frame has none before it to show again if the device goes before it
+                // comes back, so it is read now, and drawn again once the views move.
+                match self.drawing.read(&readback).await {
+                    Err(Error::DeviceLost) => {}
+                    read => {
+                        self.sink.frame(self.index, Some(read?)).await?;
+                        break;
+                    }
+                }
+            }
             self.drawn = true;
         }
         self.index += 1;
@@ -283,11 +298,16 @@ impl<S: Sink> Video<S> {
         Ok(self.sink)
     }
 
-    /// Reads back the oldest frame, if it was drawn, and passes it to the sink.
+    /// Reads back the oldest frame, if it was drawn, and passes it to the sink. A frame the device
+    /// went before it came back shows the frame before it again, when its views move to a new
+    /// device and the video goes on.
     async fn hand_on(&mut self) -> Result<()> {
         let Some((index, readback)) = self.flight.pop_front() else { return Ok(()) };
         let pixels = match readback {
-            Some(readback) => Some(self.drawing.read(&readback).await?),
+            Some(readback) => match self.drawing.read(&readback).await {
+                Err(Error::DeviceLost) if self.drawing.movable() => None,
+                read => Some(read?),
+            },
             None => None,
         };
         self.sink.frame(index, pixels).await

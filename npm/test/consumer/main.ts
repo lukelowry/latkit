@@ -161,6 +161,42 @@ async function run(custom: boolean, compiled: boolean) {
     const restored = await new Shot([64, 64], { views: [headless] }).image();
     restored.destroy();
   }
+  // A lost device moves the views to a new one as the same views. What waited on the old device is
+  // answered on the new one, pictures and videos in progress follow their views, and nothing is an
+  // error: the views' error listeners throw.
+  const budget = gpu.budget;
+  const uploaded = gpu.work.uploaded;
+  const recorder = await View.create(null, scene, { gpu, sources: [data] });
+  recorder.on('error', (error) => {
+    throw error;
+  });
+  const recording = videoTested
+    ? new Shot([64, 64], { views: [recorder] }).video({ fps: 30, output: new WritableStream() })
+    : undefined;
+  const waits = Promise.all([
+    first.fit('all'),
+    second.pick([128, 128], { radius: 8 }),
+    new Shot([64, 64], { views: [headless] }).image(),
+    recording?.record((time) => time < 0.1),
+  ]);
+  (gpu as unknown as { lose(): void }).lose();
+  const [framed, moving, moved] = await waits;
+  check(!recording || recording.frames === 3, 'a video in progress follows its view too');
+  recorder.destroy();
+  check(framed !== null, 'a fit asked before the loss applies on the new device');
+  check(
+    moving.some((hit) => hit.row.table === 'Bus'),
+    'a pick asked before the loss answers there',
+  );
+  check(moved.width === 64, 'a picture in progress follows its view to the new device');
+  moved.destroy();
+  check(!gpu.lost && gpu.budget.bytes === budget.bytes, 'the GPU moved, keeping its budget');
+  check(
+    gpu.work.uploaded > uploaded,
+    'the views uploaded their data again to the new device, counted with the old',
+  );
+  await first.done();
+  check(first.stats.drawn === 1, 'a moved view draws its row on the new device');
   headless.destroy();
   const hits = await first.pick([128, 128], { radius: 8 });
   check(

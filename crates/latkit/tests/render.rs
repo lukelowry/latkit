@@ -444,7 +444,7 @@ fn a_view_is_complete_only_once_a_frame_draws_it() {
 }
 
 #[test]
-fn a_view_rebuilt_on_another_gpu_keeps_its_state_and_draws_the_same_frame() {
+fn a_view_moved_to_another_gpu_keeps_its_state_and_draws_the_same_frame() {
     let (Some(first), Some(second)) = (gpu(), gpu()) else { return };
     let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 30.0]).field("y", vec![0.0, 20.0]))
@@ -458,9 +458,10 @@ fn a_view_rebuilt_on_another_gpu_keeps_its_state_and_draws_the_same_frame() {
     view.set_at(5.0);
     view.set_selection([latkit::Rows::new("graph", "Node", [1_u64])]);
     let pixels = frame(&first, &mut view);
-    let mut rebuilt = view.rebuilt(&second).expect("rebuilt");
-    assert_eq!((rebuilt.camera(), rebuilt.at(), rebuilt.selection()), (view.camera(), view.at(), view.selection()));
-    assert!(frame(&second, &mut rebuilt) == pixels, "the same frame");
+    let before = (*view.camera(), view.at(), view.selection());
+    view.move_to(&second);
+    assert_eq!((*view.camera(), view.at(), view.selection()), before);
+    assert!(frame(&second, &mut view) == pixels, "the same frame, drawn with the new GPU");
 }
 
 #[test]

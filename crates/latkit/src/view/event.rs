@@ -194,6 +194,16 @@ impl Events {
         self.0.push_back(Slot::Ready(event));
     }
 
+    /// Puts `old`'s events still to be read before this view's, as when the view moves to a new
+    /// device. Intents waiting on a pick keep waiting: the pick moves with the view. The device's
+    /// loss is not carried, since the move answers it.
+    pub(crate) fn adopt(&mut self, old: &mut Events) {
+        let mut all = std::mem::take(&mut old.0);
+        all.retain(|slot| !matches!(slot, Slot::Ready(Event::Error(Error::DeviceLost))));
+        all.append(&mut self.0);
+        self.0 = all;
+    }
+
     /// Queues the intent `awaited` produces once `hits` resolves.
     pub(crate) fn tell_after(&mut self, hits: Pending<Vec<Hit>>, awaited: Awaited) {
         self.0.push_back(Slot::Picking(hits, awaited));

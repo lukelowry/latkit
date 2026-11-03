@@ -404,6 +404,28 @@ impl PageView {
         result
     }
 
+    /// Moves the view to `gpu`, which must come from [`Gpu::new`], as when its device is lost. It
+    /// stays the same view, with its listeners, and draws from the next animation frame of `gpu`.
+    /// See [`View::move_to`].
+    pub fn move_to(&self, gpu: &Gpu) {
+        let old = {
+            let mut held = self.0.borrow_mut();
+            held.view.move_to(gpu);
+            held.view.set_waker(waker(gpu));
+            if gpu.0.lock().host.is_none() {
+                gpu.set_host(crate::host::Browser);
+            }
+            let frames = frames_of(gpu);
+            frames.borrow_mut().views.push(Rc::downgrade(&self.0));
+            held.due = true;
+            std::mem::replace(&mut held.frames, frames)
+        };
+        old.borrow_mut().views.retain(|view| !std::ptr::eq(view.as_ptr(), Rc::as_ptr(&self.0)));
+        release_idle(&old);
+        let frames = self.0.borrow().frames.clone();
+        schedule(&frames);
+    }
+
     /// Calls `f` with the view to read it, without requesting a frame.
     pub fn read<R>(&self, f: impl FnOnce(&View) -> R) -> R {
         f(&self.0.borrow().view)
@@ -937,6 +959,11 @@ impl Views for Lending<'_> {
             view.dispatch();
         }
         result
+    }
+
+    /// The page moves its views to a new device between steps when their device is lost.
+    fn movable(&self) -> bool {
+        true
     }
 }
 

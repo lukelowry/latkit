@@ -18,6 +18,13 @@ pub struct View {
 
 #[wasm_bindgen]
 impl View {
+    /// Moves the view to `gpu`, as when its device is lost. It stays the same view, with its
+    /// events, and everything waiting on it carries over.
+    #[wasm_bindgen(js_name = moveTo)]
+    pub fn move_to(&self, gpu: &crate::gpu::Gpu) {
+        self.view.move_to(&gpu.0);
+    }
+
     /// Replaces the scene with `scene` (JSON). A scene that can't be read changes nothing.
     #[wasm_bindgen(js_name = setScene)]
     pub fn set_scene(&self, scene: &str) -> Result<(), Error> {

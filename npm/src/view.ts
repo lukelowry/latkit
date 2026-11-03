@@ -9,16 +9,7 @@ import type { Canvas, Rect } from './canvas.js';
 import { Snapshot, sourceOf, Table, type Source } from './data.js';
 import { device, Gpu } from './gpu.js';
 import type { Arrange, Camera, Fit, Row, Rows, Scene } from './inputs.js';
-import {
-  Handle,
-  inner,
-  onStop,
-  rebind,
-  thrown,
-  waited,
-  type LatkitError,
-  type Wait,
-} from './internal.js';
+import { Handle, inner, onStop, thrown, waited, type LatkitError, type Wait } from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
 import { owned, Patch } from './patch.js';
 
@@ -86,8 +77,6 @@ export class View extends Handle {
   #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
   /** Stops listening for latkit stopping. */
   #unstop: () => void;
-  /** The function the bindings view sends its events to. */
-  #told: (json: string) => void;
   #gpu: Gpu;
   #canvas: Canvas | undefined;
   #region: Rect;
@@ -105,7 +94,6 @@ export class View extends Handle {
     const { json, tables } = encoded(scene);
     super(device(gpu).view(json, tell), 'View');
     told.view = this;
-    this.#told = tell;
     this.#unstop = onStop((error) => this.#emit('error', error));
     this.#gpu = gpu;
     this.#region = region;
@@ -493,9 +481,12 @@ export class View extends Handle {
     }
   }
 
-  /** @internal Moves the view to `device`, with its state, once its GPU's device is lost. */
+  /**
+   * @internal Moves the view to `device` once its GPU's device is lost. It stays the same view:
+   * its promises, listeners, and any picture or video drawing it carry over.
+   */
   moved(device: bindings.Gpu): void {
-    rebind<bindings.View>(this, device.rebuild(view(this), this.#told)).free();
+    view(this).moveTo(device);
   }
 
   /** Calls the listeners of `type` with `event`. */

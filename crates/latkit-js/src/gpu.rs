@@ -10,7 +10,7 @@ use crate::{Error, json, to_json};
 
 /// The GPU device views draw with.
 #[wasm_bindgen]
-pub struct Gpu(latkit::Gpu);
+pub struct Gpu(pub(crate) latkit::Gpu);
 
 #[wasm_bindgen]
 impl Gpu {
@@ -26,10 +26,10 @@ impl Gpu {
         Ok(telling(latkit::View::new(&self.0, json("scene", scene)?), tell))
     }
 
-    /// Creates a view like `view` that draws with this GPU and sends its events to `tell`, as after
-    /// `view`'s device was lost.
-    pub fn rebuild(&self, view: &View, tell: js_sys::Function) -> Result<View, Error> {
-        Ok(telling(view.view.read(|v| v.rebuilt(&self.0))?, tell))
+    /// Destroys the device, as a browser does when it loses one, so its views move to a new device.
+    /// For tests of that move.
+    pub fn lose(&self) {
+        self.0.device().destroy();
     }
 
     /// Creates a canvas showing `views` in `target`, each at its four fractions of `at`. `target`

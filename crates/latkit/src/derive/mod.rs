@@ -118,6 +118,11 @@ impl<C, A: Answer> Working<C, A> {
         self.pending = None;
     }
 
+    /// Drops the pending work, whose answer can no longer land, and returns what it was for.
+    pub(crate) fn abandon(&mut self) -> Option<C> {
+        self.pending.take().map(|(_, _, context)| context)
+    }
+
     /// Takes finished work: its stamp, context, and bytes or error.
     pub(crate) fn landed(&mut self) -> Option<(u64, C, Result<Vec<u8>>)> {
         let answer = self.pending.as_ref()?.1.take()?;
@@ -453,6 +458,19 @@ pub(crate) struct Derivations {
 pub(crate) type Beside<'a> = [Option<&'a Table>; 3];
 
 impl Derivations {
+    /// Takes over `old`'s derivations that depend only on the data and the scene, as when the view
+    /// moves to a new device: the sheet, the places, lanes, and stars layouts gave, the shapes, and
+    /// the text matches. Rows keep their laid-out places, and an arrangement or job in progress
+    /// lands here. Tiles and paged tables belong to the old device, so they start again.
+    pub(crate) fn carry(&mut self, old: &mut Derivations) {
+        std::mem::swap(&mut self.sheet, &mut old.sheet);
+        std::mem::swap(&mut self.lanes, &mut old.lanes);
+        std::mem::swap(&mut self.places, &mut old.places);
+        std::mem::swap(&mut self.stars, &mut old.stars);
+        std::mem::swap(&mut self.shapes, &mut old.shapes);
+        std::mem::swap(&mut self.matches, &mut old.matches);
+    }
+
     /// Updates every derivation to `input`, spending what remains of `jobs`' frame budget after
     /// the tiles. Returns whether any table changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {

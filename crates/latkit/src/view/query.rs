@@ -115,6 +115,16 @@ pub(crate) struct Queries {
 }
 
 impl Queries {
+    /// Takes over `old`'s queries, in order, as when the view moves to a new device. The one being
+    /// read back there, and the one running, can no longer land, so they run again here first.
+    pub(crate) fn adopt(&mut self, old: &mut Queries) {
+        let again = old.reading.abandon().map(|reading| reading.ask);
+        let again = again.into_iter().chain(old.running.take().map(|running| running.ask));
+        let mut waiting: VecDeque<Ask> = again.chain(old.waiting.drain(..)).collect();
+        waiting.append(&mut self.waiting);
+        self.waiting = waiting;
+    }
+
     /// Whether a query is running, or waiting to run with someone still awaiting it.
     pub(crate) fn due(&self) -> bool {
         self.running.is_some() || self.waiting.iter().any(|ask| !ask.cancelled())

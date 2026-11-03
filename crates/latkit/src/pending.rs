@@ -11,8 +11,9 @@ use crate::{Error, Result};
 /// A future value, resolved by its [`Resolver`] from a view's frames, a host's worker, or the
 /// network. Await it, or poll it with [`take`](Pending::take) from a frame loop.
 ///
-/// A view's answers resolve to an error when the device is lost, and stay pending while no frames
-/// are drawn. Dropping their owner cancels them.
+/// A view's answers stay pending while no frames are drawn, as while its device is lost. A view
+/// [moved](crate::View::move_to) to a new device answers them there. Dropping their owner cancels
+/// them.
 #[must_use = "a pending value does nothing unless awaited or taken"]
 pub struct Pending<T>(Arc<Mutex<Slot<T>>>);
 
