@@ -245,17 +245,23 @@ impl MarkKind {
         }
     }
 
-    /// The shader writing the depth of its rows where depth varies, before any color draws: points
-    /// and strokes. With `custom`, the shader for a vertex mark's custom marker. Faces write their
-    /// depth as they draw, and areas lie on the ground.
-    pub(crate) fn depth_shader(self, custom: bool) -> Option<wgsl::Shader> {
+    /// The shader that draws its rows' opaque pixels where depth varies, before any pixel blends:
+    /// the opaque variant of points and strokes (with `custom`, for a vertex mark's custom marker),
+    /// and the rows of faces, which write their depth, and of areas, which lie on the ground.
+    pub(crate) fn opaque_shader(self, custom: bool) -> wgsl::Shader {
         use wgsl::Shader;
         match self {
-            MarkKind::Vertices if custom => Some(Shader::PointsCustomDepth),
-            MarkKind::Vertices => Some(Shader::PointsDepth),
-            MarkKind::Edges | MarkKind::Lines => Some(Shader::StrokesDepth),
-            MarkKind::Areas | MarkKind::Faces => None,
+            MarkKind::Vertices if custom => Shader::PointsCustomOpaque,
+            MarkKind::Vertices => Shader::PointsOpaque,
+            MarkKind::Edges | MarkKind::Lines => Shader::StrokesOpaque,
+            MarkKind::Faces => Shader::Triangles,
+            MarkKind::Areas => Shader::Areas,
         }
+    }
+
+    /// Whether its opaque shader draws all of its rows, so where depth varies they draw nothing more.
+    pub(crate) fn opaque_whole(self) -> bool {
+        matches!(self, MarkKind::Faces | MarkKind::Areas)
     }
 
     /// The bounds shader entry point that measures its extents for a fit. `None` for edges and

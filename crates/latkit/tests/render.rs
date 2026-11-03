@@ -1217,11 +1217,11 @@ fn where_depth_varies_the_nearest_mark_shows_whatever_order_it_draws_in() {
     assert!(close(center(false), [255, 0, 0, 255]), "on flat ground, the row drawn last shows: {:?}", center(false));
 }
 
-/// The middle pixel of `lines` drawn between two pairs of buses, seen from straight above: line 0
-/// raised 30 units nearer the camera, and line 1 on the ground under it, crossing it at the middle
-/// and drawn after it. Each line's `near` field is 1 for the raised one. `selected` lines are
+/// A frame of `lines` drawn between two pairs of buses, seen from straight above: line 0 raised 30
+/// units nearer the camera along the middle row, and line 1 on the ground under it along the middle
+/// column, drawn after it. Each line's `near` field is 1 for the raised one. `selected` lines are
 /// selected.
-fn crossing(gpu: &latkit::Gpu, lines: Edges, selected: &[u64]) -> [u8; 4] {
+fn crossing(gpu: &latkit::Gpu, lines: Edges, selected: &[u64]) -> Vec<[u8; 4]> {
     let data = Data::new("d");
     data.apply(
         Patch::new()
@@ -1249,17 +1249,25 @@ fn crossing(gpu: &latkit::Gpu, lines: Edges, selected: &[u64]) -> [u8; 4] {
     if !selected.is_empty() {
         view.set_selection([latkit::Rows::new("d", "Line", selected.to_vec())]);
     }
-    at(&frame(gpu, &mut view), SIZE / 2, SIZE / 2)
+    frame(gpu, &mut view)
 }
 
 #[test]
-fn where_depth_varies_the_nearer_of_two_crossing_hairlines_shows() {
+fn where_depth_varies_a_thin_line_blends_over_the_line_behind_it() {
     let Some(gpu) = gpu() else { return };
     let (blue, red) = (Color::rgb(0.0, 0.0, 1.0), Color::rgb(1.0, 0.0, 0.0));
-    // Lines thinner than a pixel cover none fully, yet still hide what lies behind them.
-    let lines = Edges::of("d", "Line").width(0.75).color(latkit::when(field("near").gt(0.5)).then(blue).otherwise(red));
-    let pixel = crossing(&gpu, lines, &[]);
-    assert!(pixel[2] > pixel[0], "the nearer line shows where they cross: {pixel:?}");
+    // The raised line is thinner than a pixel, so it covers every pixel only in part. The ground
+    // line under it is 4 pixels wide.
+    let near = || latkit::when(field("near").gt(0.5));
+    let lines = Edges::of("d", "Line").width(near().then(0.75).otherwise(4.0)).color(near().then(blue).otherwise(red));
+    let pixels = crossing(&gpu, lines, &[]);
+    let middle = SIZE / 2;
+    let column: Vec<[u8; 4]> = (middle - 3..=middle + 3).map(|y| at(&pixels, middle, y)).collect();
+    assert!(
+        column.iter().all(|p| p[0] > 64),
+        "the ground line shows all along, never cut to the background: {column:?}"
+    );
+    assert!(column.iter().any(|p| p[2] > 32), "the thin line shows over it: {column:?}");
 }
 
 #[test]
@@ -1267,8 +1275,8 @@ fn where_depth_varies_a_translucent_line_hides_nothing_behind_it() {
     let Some(gpu) = gpu() else { return };
     let (blue, red) = (Color::rgb(0.0, 0.0, 1.0).alpha(0.5), Color::rgb(1.0, 0.0, 0.0));
     let lines = Edges::of("d", "Line").width(4.0).color(latkit::when(field("near").gt(0.5)).then(blue).otherwise(red));
-    let pixel = crossing(&gpu, lines, &[]);
-    assert!(pixel[0] > pixel[2], "the line behind, drawn after, shows through: {pixel:?}");
+    let pixel = at(&crossing(&gpu, lines, &[]), SIZE / 2, SIZE / 2);
+    assert!(pixel[0] > 64 && pixel[2] > 64, "the line behind shows through the translucent one over it: {pixel:?}");
 }
 
 #[test]
@@ -1277,12 +1285,12 @@ fn where_depth_varies_rows_a_selection_dims_never_hide_the_selected_ones() {
     let (red, blue) = (Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0));
     // The ground line is selected, so the raised one over it dims.
     let lines = Edges::of("d", "Line").width(4.0).color(latkit::when(field("near").gt(0.5)).then(red).otherwise(blue));
-    let pixel = crossing(&gpu, lines, &[1]);
+    let pixel = at(&crossing(&gpu, lines, &[1]), SIZE / 2, SIZE / 2);
     assert!(pixel[2] > pixel[0], "the selected line shows under the dimmed one: {pixel:?}");
 }
 
 #[test]
-fn where_depth_varies_a_marker_smaller_than_a_pixel_hides_a_line_under_it() {
+fn where_depth_varies_a_marker_smaller_than_a_pixel_shows_over_a_line_under_it() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("d");
     // A bus raised 30 units over the middle of a line drawn after it, between two others on the ground.
@@ -1314,8 +1322,12 @@ fn where_depth_varies_a_marker_smaller_than_a_pixel_hides_a_line_under_it() {
     let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
+    // The bus covers the pixel only in part, so it tints the line there instead of hiding it.
     let pixel = at(&frame(&gpu, &mut view), SIZE / 2, SIZE / 2);
-    assert!(pixel[2] > pixel[0], "the raised bus hides the line under it however small: {pixel:?}");
+    assert!(
+        pixel[2] > 16 && pixel[0] > 64,
+        "the raised bus shows over the line drawn after it, however small: {pixel:?}"
+    );
 }
 
 #[test]

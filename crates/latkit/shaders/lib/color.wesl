@@ -34,8 +34,10 @@ fn colormap(layer: u32, kind: u32, x: f32, domain: vec2f) -> u32 {
     return pack4x8unorm(textureSampleLevel(colormaps, ramp, vec2f((t * 255.0 + 0.5) / 256.0, 0.5), layer, 0.0));
 }
 
-// The least alpha that writes depth: what an 8-bit target shows as fully opaque. A partly covered
-// pixel then blends over what lies behind it, not over the background.
+// The least alpha of a pixel that hides what lies behind it: what an 8-bit target shows as fully
+// opaque. Where depth varies, these pixels draw first and keep their depth, and every other pixel
+// blends over them, so a partly covered pixel blends over what lies behind it, never over the
+// background.
 const OPAQUE: f32 = 1.0 - 0.5 / 255.0;
 
 fn to_linear(c: vec3f) -> vec3f {

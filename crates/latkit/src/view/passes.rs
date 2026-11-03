@@ -118,7 +118,7 @@ struct Marks<'a> {
 
 impl Marks<'_> {
     /// Draws mark `i`: every instance, only the rows its focus lights, glowing, or every
-    /// instance's depth alone.
+    /// instance's opaque pixels.
     fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -723,9 +723,9 @@ impl View {
             Shader::PointsCustomFocus,
             Shader::StrokesFocus,
             Shader::AreasFocus,
-            Shader::PointsDepth,
-            Shader::PointsCustomDepth,
-            Shader::StrokesDepth,
+            Shader::PointsOpaque,
+            Shader::PointsCustomOpaque,
+            Shader::StrokesOpaque,
             Shader::Glyphs,
             Shader::GlyphsPorts,
             Shader::Overlay,
@@ -760,18 +760,22 @@ impl View {
         if let Some([x, y, w, h]) = clip {
             pass.set_scissor_rect(x, y, w, h);
         }
-        // Where depth varies, points and strokes first write their depth, so wherever marks overlap
-        // the nearest shows, whatever their order. An opaque row writes it over its shape, however
-        // thin. A translucent row writes none, so rows a selection dims never hide the lit rows.
-        if self.deep() && self.depths_ready(inner, frame.format, samples) {
+        // Where depth varies, opaque pixels draw first and keep their depth: those of points and
+        // strokes, and faces and areas whole. Every other pixel then blends over them in mark order,
+        // only in front of what is drawn: antialiased edges, marks too thin to cover a pixel, and
+        // translucent rows, such as those a selection dims. So the nearest opaque pixel shows
+        // whatever the order of the marks, and a partly covered pixel blends over what lies behind
+        // it, never over the background.
+        let layered = self.deep() && self.opaque_ready(inner, frame.format, samples);
+        if layered {
             for (i, shown) in self.marks.iter().enumerate() {
                 if shown.drawable() && shown.instances() > 0 {
-                    marks.draw(&mut pass, drawn, inner, i, shown, Draw::Depth);
+                    marks.draw(&mut pass, drawn, inner, i, shown, Draw::Opaque);
                 }
             }
         }
         for (i, shown) in self.marks.iter().enumerate() {
-            if !shown.drawable() || shown.instances() == 0 {
+            if !shown.drawable() || shown.instances() == 0 || (layered && shown.kind().opaque_whole()) {
                 continue;
             }
             marks.draw(&mut pass, drawn, inner, i, shown, Draw::Rows);
