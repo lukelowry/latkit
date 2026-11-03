@@ -23,7 +23,7 @@ impl Gpu {
     /// as a JSON array of `{ type, detail }`. A canvas shows it. A shot draws it with or without
     /// a canvas.
     pub fn view(&self, scene: &str, tell: js_sys::Function) -> Result<View, Error> {
-        Ok(telling(latkit::View::new(&self.0, json("scene", scene)?)?, tell))
+        Ok(telling(latkit::View::new(&self.0, json("scene", scene)?), tell))
     }
 
     /// Creates a view like `view` that draws with this GPU and sends its events to `tell`, as after

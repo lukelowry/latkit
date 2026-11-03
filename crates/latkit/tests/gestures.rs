@@ -63,7 +63,7 @@ fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
 
 /// A view of `graph`, rendered until settled.
 fn view_of(gpu: &latkit::Gpu, controls: Controls, graph: &Data) -> View {
-    let mut view = View::new(gpu, scene(controls)).expect("valid scene");
+    let mut view = View::new(gpu, scene(controls));
     view.set_camera(camera());
     view.set_sources([graph]).expect("a source");
     frame(gpu, &mut view);
@@ -157,7 +157,7 @@ fn a_dragged_row_keeps_its_grab_point_under_the_pointer_and_its_patch_moves_it()
     let scene = Scene::new(diagram())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).drag(true));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
@@ -179,8 +179,7 @@ fn a_dragged_row_keeps_its_grab_point_under_the_pointer_and_its_patch_moves_it()
 fn scrubbing_a_plot_moves_the_coordinate_shown() {
     let Some(gpu) = gpu() else { return };
     let controls = Controls { scrub: true, ..Controls::default() };
-    let mut view =
-        View::new(&gpu, Scene::new(latkit::Plot::default()).theme(plain_theme()).controls(controls)).expect("valid");
+    let mut view = View::new(&gpu, Scene::new(latkit::Plot::default()).theme(plain_theme()).controls(controls));
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
     frame(&gpu, &mut view);
     let seek = |e: &Event| if let Event::At(at) = e { Some(*at) } else { None };
@@ -203,7 +202,7 @@ fn a_lit_block_keeps_its_ports_on_top() {
     for _ in 0..30 {
         pixels = step(&gpu, &mut view);
     }
-    assert_eq!(view.hovered().map(|hit| hit.row.clone()), Some(Row::new("graph", "Node", 1_u64)), "node 1 is lit");
+    assert_eq!(view.hovered().cloned(), Some(Row::new("graph", "Node", 1_u64)), "node 1 is lit");
     assert!(common::close(port(&pixels), before), "the port is unchanged: lit {:?}, unlit {before:?}", port(&pixels));
 }
 
@@ -213,7 +212,7 @@ fn the_first_frame_requests_every_pipeline_the_scene_can_use() {
     // The first frame requests every pipeline the scene can use. A menu, a connection, a selection,
     // the keys, and a later transition then need no pipeline requested late.
     let scene = scene(editing()).ease(std::time::Duration::from_millis(200));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([graph()]).expect("a source");
     frame(&gpu, &mut view);
@@ -328,7 +327,7 @@ fn the_keys_step_open_and_select() {
         _ => None,
     });
     assert_eq!(hovered, (link.clone(), Device::Keyboard));
-    assert_eq!(view.hovered().map(|hit| &hit.row), Some(&link));
+    assert_eq!(view.hovered(), Some(&link));
     let opened = after(&gpu, &mut view, &[key(Key::Enter)], |e| match e {
         Event::Open { hit, trigger } => Some((hit.row.clone(), trigger.device)),
         _ => None,
@@ -534,7 +533,7 @@ fn reduced_motion_applies_every_move_at_once() {
 #[test]
 fn a_flat_map_keeps_the_camera_over_its_one_world() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, Scene::new(latkit::Earth::default()).theme(plain_theme())).expect("valid scene");
+    let mut view = View::new(&gpu, Scene::new(latkit::Earth::default()).theme(plain_theme()));
     // Set before the first frame gives the view its size, the camera moves within its limits on
     // that frame, which reports it. At zoom 4 the world is 4096 pixels across, and the center keeps
     // half the view's width from the antimeridian.

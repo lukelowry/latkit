@@ -109,8 +109,7 @@ pub(crate) struct Style {
     pub(crate) name: Option<Name>,
     pub(crate) interaction: Interaction,
     pub(crate) label: Option<Label>,
-    /// A legend of the colors, under this title.
-    pub(crate) legend: Option<Arc<str>>,
+    pub(crate) legend: Option<super::Legend>,
 }
 
 /// Options of marks that draw strokes: edges and lines.
@@ -158,7 +157,7 @@ impl Stroke {
 /// How a mark's rows respond to the pointer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Interaction {
-    /// Whether rows respond to hover, clicks, and picks. When unset, the mark's kind decides (see
+    /// Whether the pointer hovers, clicks, and picks rows. When unset, the mark's kind decides (see
     /// [`Mark::picks`]).
     pub(crate) pick: Option<bool>,
     pub(crate) select: bool,
@@ -433,7 +432,7 @@ impl Mark {
         }
     }
 
-    fn style_mut(&mut self) -> &mut Style {
+    pub(crate) fn style_mut(&mut self) -> &mut Style {
         match self {
             Mark::Vertices(m) => &mut m.style,
             Mark::Edges(m) => &mut m.style,
@@ -453,7 +452,7 @@ impl Mark {
         }
     }
 
-    /// Whether the mark's rows respond to hover, clicks, and picks. `pick` decides when set.
+    /// Whether the pointer hovers, clicks, and picks the mark's rows. `pick` decides when set.
     /// Otherwise vertices, edges, faces, and plot traces pick, and geometry (areas, and lines along
     /// paths such as coasts, borders, and roads) does not, so hovering never probes it.
     pub(crate) fn picks(&self) -> bool {
@@ -500,37 +499,52 @@ impl Mark {
         }
     }
 
-    /// The first option of this mark that its space does not allow, with the reason. Outside a
-    /// diagram: ports, groups, nets (edges without ends), orthogonal routes, and shadows. In a
-    /// diagram: elevation, poles, and joins.
-    pub(crate) fn misplaced(&self, diagram: bool) -> Option<(&'static str, &'static str)> {
-        const ONLY: &str = "only a diagram has ports, groups, nets, orthogonal routes, and shadows";
-        if diagram {
-            if let Mark::Edges(e) = self
-                && e.poles
-            {
-                return Some(("poles", "a diagram is flat, so it cannot have poles"));
-            }
-            if let Mark::Edges(e) = self
-                && e.joins.is_some()
-            {
-                return Some(("joins", "in a diagram, nets join vertex ports instead"));
-            }
-            if let Mark::Vertices(v) = self
-                && v.elevation != Expr::from(0.0)
-            {
-                return Some(("elevation", "a diagram is flat, so vertices cannot have elevation"));
-            }
-            return None;
-        }
+    /// Resets each option of this mark that its space lacks, and returns each with the reason.
+    /// Outside a diagram: ports, groups, orthogonal routes, and shadows. In a diagram: elevation,
+    /// poles, and joins.
+    pub(crate) fn unplace(&mut self, diagram: bool) -> Vec<(&'static str, &'static str)> {
+        const ONLY: &str = "only a diagram has ports, groups, orthogonal routes, and shadows";
+        let mut reset = Vec::new();
         match self {
-            Mark::Vertices(v) if !v.ports.is_empty() => Some(("port", ONLY)),
-            Mark::Vertices(v) if !v.contains.is_empty() => Some(("contains", ONLY)),
-            Mark::Vertices(v) if v.shadow => Some(("shadow", ONLY)),
-            Mark::Edges(e) if e.ends.is_none() && !e.poles && e.joins.is_none() => Some(("ends", ONLY)),
-            Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => Some(("route", ONLY)),
-            _ => None,
+            Mark::Vertices(v) if diagram => {
+                if v.elevation != Expr::from(0.0) {
+                    v.elevation = 0.0.into();
+                    reset.push(("elevation", "a diagram is flat, so vertices cannot have elevation"));
+                }
+            }
+            Mark::Vertices(v) => {
+                if !v.ports.is_empty() {
+                    v.ports.clear();
+                    reset.push(("ports", ONLY));
+                }
+                if !v.contains.is_empty() {
+                    v.contains.clear();
+                    reset.push(("contains", ONLY));
+                }
+                if v.shadow {
+                    v.shadow = false;
+                    reset.push(("shadow", ONLY));
+                }
+            }
+            Mark::Edges(e) if diagram => {
+                if e.poles {
+                    e.poles = false;
+                    reset.push(("poles", "a diagram is flat, so it cannot have poles"));
+                }
+                if e.joins.is_some() {
+                    e.joins = None;
+                    reset.push(("joins", "in a diagram, nets join vertex ports instead"));
+                }
+            }
+            Mark::Edges(e) => {
+                if e.route == Some(super::Route::Orthogonal) {
+                    e.route = None;
+                    reset.push(("route", ONLY));
+                }
+            }
+            Mark::Faces(_) | Mark::Lines(_) | Mark::Areas(_) => {}
         }
+        reset
     }
 
     /// Calls `f` with every expression in the mark's options.
@@ -841,9 +855,10 @@ macro_rules! mark {
             priority: Option<$crate::Expr>,
             /// Distinguishes two marks of the same table across scenes, and names the mark in hits.
             name: Option<$crate::Name>,
-            /// Whether rows respond to hover, clicks, and picks. Defaults to on for vertices,
+            /// Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices,
             /// edges, faces, and plot traces, and off for geometry: areas, and lines along paths
-            /// such as coasts, borders, and roads.
+            /// such as coasts, borders, and roads. Either way, the mark shows which rows are
+            /// selected and hovered.
             pick: Option<bool>,
             /// Whether clicking a row selects it. Defaults to `true`.
             #[serde(default = "crate::scene::mark::on")]
@@ -854,12 +869,8 @@ macro_rules! mark {
             drag: bool,
             /// Each row's label: a text field, or label options.
             label: Option<$crate::Label>,
-            /// A legend of the mark's colors at the view's bottom right, with this title. It shows
-            /// a ticked colormap across its domain, a cell for each category, or a swatch for each
-            /// name in the colormap's `categories`. `color` must map through a colormap with a
-            /// fixed domain or named categories. In a conditional, `otherwise` is searched before
-            /// the cases.
-            legend: Option<std::sync::Arc<str>>,
+            /// A legend of the mark's colors: its title, or legend options.
+            legend: Option<$crate::Legend>,
         }
 
         impl Form {
@@ -940,9 +951,10 @@ macro_rules! style_methods {
                 self
             }
 
-            /// Sets whether rows respond to hover, clicks, and picks. Defaults to on for vertices,
-            /// edges, faces, and plot traces, and off for geometry: areas, and lines along paths
-            /// such as coasts, borders, and roads.
+            /// Sets whether the pointer hovers, clicks, and picks rows. Defaults to on for
+            /// vertices, edges, faces, and plot traces, and off for geometry: areas, and lines
+            /// along paths such as coasts, borders, and roads. Either way, the mark shows which
+            /// rows are selected and hovered.
             #[must_use]
             pub fn pick(mut self, on: bool) -> Self {
                 self.style.interaction.pick = Some(on);
@@ -971,14 +983,11 @@ macro_rules! style_methods {
                 self
             }
 
-            /// Draws a legend of the mark's colors at the view's bottom right, with `title`. It
-            /// shows a ticked colormap across its domain, a cell for each category, or a swatch for
-            /// each of the [named categories](crate::Colormap::categories). The color must map
-            /// through a colormap with a fixed domain or named categories. In a conditional,
-            /// `otherwise` is searched before the cases. Legends stack upward in mark order.
+            /// Draws a [`Legend`](crate::Legend) of the mark's colors: a title, or legend options.
+            /// The color must map through a colormap with a fixed domain or named categories.
             #[must_use]
-            pub fn legend(mut self, title: impl Into<std::sync::Arc<str>>) -> Self {
-                self.style.legend = Some(title.into());
+            pub fn legend(mut self, legend: impl Into<$crate::Legend>) -> Self {
+                self.style.legend = Some(legend.into());
                 self
             }
         }

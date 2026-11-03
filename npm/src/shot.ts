@@ -76,7 +76,8 @@ export class Shot {
 
   /**
    * Draws the picture once every view is complete, as `capture` says, and resolves to the
-   * {@link Image}. Rejects with the first error a view reports while drawing.
+   * {@link Image}. Each view draws as it does on screen, its `failures` included. Rejects with the
+   * first `error` a view reports while drawing.
    */
   async image(wait: Wait = {}): Promise<Image> {
     const taken = wasm().image(this.#json(), ...encoded(this.options.views ?? []));

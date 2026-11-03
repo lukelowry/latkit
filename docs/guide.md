@@ -135,8 +135,9 @@ const hot = grid.query({
 ## Scenes
 
 A scene is plain data: a `space`, a list of `marks` drawn in order, and optional `layout`, `theme`,
-`controls`, `ease` (how many seconds a change eases over), `title`, and `subtitle`. Set
-`view.scene = next` to replace the scene. Each row eases from where it was drawn.
+`controls`, `ease` (how many seconds a change eases over), and `title`. Set `view.scene = next` to
+replace the scene. Each row eases from where it was drawn. An option that can't be read or doesn't
+fit the data draws as if unset, and `view.failures` lists why.
 
 ```ts
 const scene: Scene = {
@@ -149,13 +150,21 @@ const scene: Scene = {
       radius: units('$kv', { atLeast: 2 }),
       color: field('vm').colormap('balance').domain(0.95, 1.05),
       label: when(field('kv').ge(230)).then(field('name')).otherwise(null),
-      legend: 'Voltage (pu)',
+      legend: { title: 'Voltage', unit: ' pu', place: 'right' },
     },
   ],
   theme: { base: 'light', vertex: { radius: 4 } },
   controls: 'inspect',
+  title: { text: 'Grid', subtitle: 'Bus voltages', place: 'top' },
 };
 ```
+
+The title and each legend sit in a corner over the marks, on a backdrop, or on a side (`top`,
+`right`, `bottom`, `left`), which takes room from the marks so they never cover them. Either way,
+the pointer reaches no row under them. A plot puts them on its top and right, and other spaces in
+their top-left and bottom-right corners. A legend's bar shortens to fit a small view. Views that
+share a theme line up their titles, legends, and axes. An axis's or legend's `unit` follows its
+last value, so it needs no title.
 
 The [scene types](reference/types.md#scene) document every option and its default.
 
@@ -177,6 +186,7 @@ A mark's kind key holds the table it draws: `{ vertices: grid.table('Bus') }`. A
 dataset its marks draw from. `JSON.stringify` writes a table as `[data, table]`, the form the
 command line reads, where `data` names one of the view's `sources`. The pointer hovers and clicks
 vertices, edges, faces, and a plot's traces. Set `pick: true` to make areas and lines respond too.
+Either way, every mark shows which of its rows are selected and hovered.
 
 | Mark       | Draws each row as                                                        |
 | ---------- | ------------------------------------------------------------------------ |
@@ -223,9 +233,10 @@ field('vm').from(weather.table('Station')); // read from another dataset, joined
 ```
 
 Sizes are in CSS pixels, or in position units in a diagram. Wrap a size in `px()` or `units()` to
-choose its unit. State expressions read the view: `selected()`, `hovered()`, `pointer()`,
-`elapsed()`, and `zoom()`. `colormaps()` lists the colormap catalog with each map's colors, and
-`colormapCss(map)` returns a colormap as a CSS gradient, for legends drawn in HTML.
+choose its unit. State expressions read the view: `selected()`, `hovered()`, `related()` (one
+reference from a selected or hovered row), `pointer()`, `elapsed()`, and `zoom()`. `colormaps()`
+lists the colormap catalog with each map's colors, and `colormapCss(map)` returns a colormap as a
+CSS gradient, for legends drawn in HTML.
 
 ### Themes, controls, and layouts
 
@@ -285,14 +296,31 @@ scale, and one with nothing to frame waits for rows.
 ### Events
 
 Intent events (`click`, `open`, `menu`, `drag`, `connect`, `delete`) fire once per action, in the
-order the user acted. Change events (`hovered`, `selection`, `camera`, `waiting`) carry the latest
-state, which the property of the same name also holds. Setting a property fires no event.
+order the user acted. Change events (`hovered`, `selection`, `camera`, `at`, `waiting`,
+`failures`) carry the latest state, which the property of the same name also holds. Setting a
+property fires no event. An `error` event means the view can't draw.
 
 ```ts
 view.on('click', ({ hit }) => console.log(hit.row, hit.point));
 view.on('drag', ({ patch }) => patch && grid.apply(patch)); // the dragged row's new place
 view.on('selection', ({ rows }) => inspect(rows));
-view.on('error', (error) => console.error(error.code, error.path, error.message));
+view.on('failures', (failures) => show(failures.map((f) => `${f.path}: ${f.message}`)));
+view.on('error', (error) => console.error(error.code, error.message));
+```
+
+Views share their selection, hover, and time through these events. In every view, the rows one
+reference from a selected or hovered row, such as the machines of a selected bus, draw on top. A
+selection keeps them bright while the rest dim, and `related()` styles them:
+
+```ts
+for (const [from, to] of [
+  [map, monitor],
+  [monitor, map],
+]) {
+  from.on('selection', ({ rows }) => (to.selection = rows));
+  from.on('hovered', ({ hit }) => (to.hovered = hit?.row ?? null));
+  from.on('at', (at) => (to.at = at));
+}
 ```
 
 ### Rows
@@ -323,6 +351,11 @@ per frame. Set it before data draws, on a `Gpu` created before any view or on `v
 of one GPU share the budget. A view that needs less than an even split gets all it needs, and the
 other views divide the rest. A table too large for its view's share is split into pages, and the
 view draws only the pages on screen. A patch re-evaluates only the pages it wrote.
+
+The budget defaults to half the device's largest storage buffer, at most 1 GiB. GPU memory that
+latkit replaces, or that a closed view or a finished picture leaves behind, is freed by the next
+frame rather than whenever the browser collects it. A device without the memory to grow the data
+further is given up, and the views move to a new one with the budget lowered to what it gave.
 
 `view.stats`, `gpu.work`, `gpu.resident`, and `gpu.uploading` report what the views draw and what
 work the GPU did. To drive frames yourself in a test or benchmark, call `gpu.step(now)` and wait on

@@ -20,16 +20,25 @@
 //! A per-row word page is a block of its own. It is cleared when handed out if it is read before
 //! anything writes it, and freed only once the frame that released it is done. The pool grows only
 //! before a frame records writes to the pages, since growing copies the buffer. A block that finds
-//! no space after that waits for the next frame.
+//! no space after that waits for the next frame. A reservation grows the pool once for all its
+//! missing pages, and the buffer it replaces is retired, so its memory is freed once the GPU is
+//! done with it.
+//!
+//! A device without the memory refuses a larger buffer. Natively it says so at once, and the pool
+//! keeps its buffer and grows no further. In a browser it says so a frame or so later, once the
+//! pool has moved into the refused buffer and lost its pages, and the `Gpu` gives up the device.
+//! Either way the budget is lowered to the pool's size, so a new device stays within it.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 
 use rustc_hash::{FxBuildHasher, FxHasher};
 
 use crate::data::{AxisPage, FRAME_PAGE_WORDS, FramePage, PageId, Value, Values};
 use crate::expr::compile::Words;
+use crate::gpu::pipelines::Check;
 use crate::gpu::shaders::{MISSING, NONE, POINT_BITS};
 use crate::gpu::work::Queue;
 
@@ -341,6 +350,14 @@ pub(crate) struct Arena {
     /// `short` counts the words of blocks that found no space. The next frame grows the pool by it.
     writing: bool,
     short: u64,
+    /// The device's answer, still to come, to each larger buffer the pool moved into, with the
+    /// pool's bytes before it.
+    asked: Vec<(u64, Check)>,
+    /// The pool's bytes when the device last refused it a larger buffer, until the limit is set
+    /// again. `broken` is set when the pool had already moved into the refused buffer, so it holds
+    /// none of its pages.
+    refused: Option<u64>,
+    broken: bool,
 }
 
 impl Arena {
@@ -365,6 +382,9 @@ impl Arena {
             freed: Vec::new(),
             writing: false,
             short: 0,
+            asked: Vec::new(),
+            refused: None,
+            broken: false,
         }
     }
 
@@ -393,6 +413,25 @@ impl Arena {
         let held: Vec<bool> = asks.iter().map(|ask| self.blocks.contains_key(&ask.key)).collect();
         for ask in asks.iter().zip(&held).filter(|&(_, &held)| held).map(|(ask, _)| ask) {
             self.pin(ask.key);
+        }
+        // Grow once for every missing page, instead of doubling chunk by chunk as each is placed,
+        // so a large load copies the pool once.
+        if !self.writing {
+            let mut counted: HashSet<PageKey, FxBuildHasher> = HashSet::default();
+            let missing: u64 = asks
+                .iter()
+                .zip(&held)
+                .filter(|&(ask, &held)| !held && counted.insert(ask.key))
+                .filter_map(|(ask, _)| {
+                    ask.content.as_ref().map(|c| u64::from(class_words(c.class(c.len().max(ask.need)))))
+                })
+                .sum();
+            let room = self.free.len() as u64 * u64::from(CHUNK_WORDS);
+            if missing > room {
+                let chunks = self.chunks.len() as u64;
+                let short = (missing - room).div_ceil(u64::from(CHUNK_WORDS));
+                self.grow(device, queue, (chunks + short).max(2 * chunks).min(u64::from(u32::MAX)) as u32);
+            }
         }
         let mut placed: HashMap<PageKey, (u32, usize), FxBuildHasher> = HashMap::default();
         let mut room = true;
@@ -484,6 +523,35 @@ impl Arena {
     /// Lets the pool grow to at most `bytes` from now on. It never shrinks.
     pub(crate) fn set_limit(&mut self, device: &wgpu::Device, bytes: u64) {
         self.limit = limit_of(device, bytes).max(self.chunks.len() as u32);
+        self.refused = None;
+    }
+
+    /// Hears the device's answers to the buffers the pool moved into. Returns the pool's bytes when
+    /// the device last refused it a larger buffer, until the limit is set again.
+    pub(crate) fn refused(&mut self) -> Option<u64> {
+        let mut context = Context::from_waker(Waker::noop());
+        let mut refused: Option<u64> = None;
+        self.asked.retain_mut(|(bytes, answer)| match answer.as_mut().poll(&mut context) {
+            Poll::Pending => true,
+            Poll::Ready(error) => {
+                if error.is_some() {
+                    refused = Some(refused.map_or(*bytes, |r| r.min(*bytes)));
+                }
+                false
+            }
+        });
+        if let Some(bytes) = refused {
+            self.refused = Some(self.refused.map_or(bytes, |r| r.min(bytes)));
+            self.broken = true;
+        }
+        self.refused
+    }
+
+    /// Once the pool has moved into a buffer the device refused, the pool's bytes before it. It
+    /// is returned once.
+    pub(crate) fn broken(&mut self) -> Option<u64> {
+        let refused = self.refused();
+        if std::mem::take(&mut self.broken) { refused } else { None }
     }
 
     /// The offset of the block holding at least `need` words of `key`, if any.
@@ -643,20 +711,34 @@ impl Arena {
         }
     }
 
-    /// Grows the buffer to `chunks`, capped at the limit, copying its contents. Returns whether it
-    /// grew.
+    /// Grows the buffer to `chunks`, capped at the limit, copying its contents and retiring the old
+    /// buffer. Returns whether it grew. The new buffer is asked for in an out-of-memory scope, so a
+    /// device that refuses it at once leaves the pool as it was.
     fn grow(&mut self, device: &wgpu::Device, queue: &Queue, chunks: u32) -> bool {
         let before = self.chunks.len() as u32;
         let chunks = chunks.min(self.limit);
         if chunks <= before {
             return false;
         }
+        let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let buffer = create(device, chunks);
+        let mut answer: Check = Box::pin(scope.pop());
+        let bytes = u64::from(before) * CHUNK_BYTES;
+        match answer.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(Some(_)) => {
+                queue.retired().retire(buffer);
+                self.limit = before;
+                self.refused = Some(bytes);
+                return false;
+            }
+            Poll::Ready(None) => {}
+            Poll::Pending => self.asked.push((bytes, answer)),
+        }
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit arena") });
         encoder.copy_buffer_to_buffer(&self.buffer, 0, &buffer, 0, self.buffer.size());
         queue.submit([encoder.finish()]);
-        self.buffer = buffer;
+        queue.retired().retire(std::mem::replace(&mut self.buffer, buffer));
         self.chunks.resize(chunks as usize, Chunk::FREE);
         self.free.extend(before..chunks);
         self.generation += 1;
@@ -695,6 +777,29 @@ mod tests {
         assert_eq!(CLASSES, 12);
         assert_eq!(slots(0), 2048);
         assert_eq!(slots(CLASSES - 1), 1);
+    }
+
+    #[test]
+    fn a_reservation_grows_the_pool_once_and_retires_the_buffer_it_replaces() {
+        let gpu = match pollster::block_on(crate::Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let mut arena = Arena::new(device, 64 << 20);
+        // Twenty pages of a whole chunk each, for a pool of eight chunks.
+        let page = || Ask {
+            key: PageKey::of(PageId::next(), Words::Values, false),
+            need: CHUNK_WORDS,
+            content: Some(Content::Computed(vec![0; CHUNK_WORDS as usize])),
+        };
+        let mut asks: Vec<Ask> = (0..20).map(|_| page()).collect();
+        let destroyed = gpu.work().destroyed;
+        assert!(arena.reserve(device, queue, &mut asks));
+        assert_eq!((arena.generation, arena.chunks.len()), (1, 20), "the pool grew once, to fit them all");
+        let freed = gpu.work().destroyed - destroyed;
+        assert_eq!(freed, u64::from(INITIAL_CHUNKS) * CHUNK_BYTES, "the buffer it replaced is destroyed");
     }
 
     #[test]

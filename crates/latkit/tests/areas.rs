@@ -35,7 +35,7 @@ fn polygons(rows: Vec<Vec<Ring>>) -> Data {
 }
 
 fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
-    let mut view = View::new(gpu, scene.theme(plain_theme())).expect("valid scene");
+    let mut view = View::new(gpu, scene.theme(plain_theme()));
     view.set_camera(camera());
     view.set_sources([data]).expect("a source");
     view
@@ -159,7 +159,7 @@ fn areas_require_a_polygon_field() {
     )
     .expect("valid");
     let mut view = view(&gpu, Scene::new(plane()), &data);
-    view.set_scene(Scene::new(plane()).draw(Areas::of("map", "Zone"))).expect("a valid scene");
+    view.set_scene(Scene::new(plane()).draw(Areas::of("map", "Zone")));
     let failures: Vec<String> = view.failures().map(|e| e.to_string()).collect();
     assert!(failures.len() == 1 && failures[0].starts_with("marks[0]"), "areas reject a path field: {failures:?}");
 }

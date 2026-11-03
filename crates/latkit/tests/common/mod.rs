@@ -157,6 +157,11 @@ pub fn errors(view: &mut View) -> Vec<latkit::Error> {
     view.events().filter_map(|e| if let latkit::Event::Error(e) = e { Some(e) } else { None }).collect()
 }
 
+/// The failures the view reported since the last call, if they changed.
+pub fn failures(view: &mut View) -> Option<Vec<latkit::Error>> {
+    view.events().filter_map(|e| if let latkit::Event::Failures(f) = e { Some(f) } else { None }).last()
+}
+
 pub fn at(pixels: &[[u8; 4]], x: u32, y: u32) -> [u8; 4] {
     pixels[(y * SIZE + x) as usize]
 }

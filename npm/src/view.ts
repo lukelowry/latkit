@@ -31,12 +31,25 @@ export let canvasOf: (view: View) => Canvas | undefined;
 /**
  * The events a view emits, mapping each type to its detail. Intents (`click`, `open`, `menu`,
  * `drag`, `connect`, `delete`) are emitted once each, in the order the user acted. Changes
- * (`hovered`, `selection`, `camera`, `waiting`) are named after the property that changed and carry
- * only its latest value. An `error` event's detail is a {@link LatkitError}. Setters emit nothing,
- * so events report only what the application did not do itself.
+ * (`hovered`, `selection`, `camera`, `at`, `waiting`, `failures`) are named after the property that
+ * changed and carry only its latest value. An `error` event says the view can't draw, and its
+ * detail is a {@link LatkitError}. Setters emit nothing, so events report only what the application
+ * did not do itself. Views share their selection, hover, and time through these events:
+ *
+ * ```ts
+ * for (const [from, to] of [[map, monitor], [monitor, map]]) {
+ *   from.on('selection', ({ rows }) => (to.selection = rows));
+ *   from.on('hovered', ({ hit }) => (to.hovered = hit?.row ?? null));
+ *   from.on('at', (at) => (to.at = at));
+ * }
+ * ```
  */
 export type ViewEvents = {
-  [E in ViewEvent as E['type']]: E extends { type: 'error' } ? LatkitError : E['detail'];
+  [E in ViewEvent as E['type']]: E extends { type: 'error' }
+    ? LatkitError
+    : E extends { type: 'failures' }
+      ? readonly LatkitError[]
+      : E['detail'];
 };
 
 /** CSS pixels kept clear at the top, right, bottom, and left. */
@@ -102,9 +115,11 @@ export class View extends Handle {
 
   /**
    * Creates a view that draws `scene` on `canvas`, in `options.region`, over any views already
-   * there. With a `null` canvas, the view draws only into pictures. The view loads every dataset
-   * its scene uses. Unless given a camera, it frames everything when it first draws. Creating the
-   * default GPU waits within `options`.
+   * there. The view loads every dataset its scene uses. Unless given a camera, it frames everything
+   * when it first draws. Creating the default GPU waits within `options`.
+   *
+   * With a `null` canvas, the view draws only when a `Shot` or `Video` draws it. Its fit applies,
+   * and its queries answer, in that picture, so take the picture without awaiting them first.
    */
   static async create(
     canvas: HTMLCanvasElement | OffscreenCanvas | null,
@@ -165,9 +180,10 @@ export class View extends Handle {
 
   /**
    * The scene drawn. A mark that matches one in the previous scene by kind, dataset, table, and
-   * name keeps its state and eases to its new options. An option that does not fit the data draws
-   * as if unset, and a mark that does not fit draws nothing. Both are listed in `failures` until
-   * the data fits. A scene that is invalid on its own throws and leaves the current one in place.
+   * name keeps its state and eases to its new options. An option that can't be read, that the scene
+   * can't use, or that doesn't fit the data draws as if unset, and a mark that doesn't fit draws
+   * nothing. Each is listed in `failures`. Only a scene whose space, marks, or a mark's table can't
+   * be read throws, and leaves the current one in place.
    */
   get scene(): Scene {
     return this.#scene;
@@ -273,7 +289,11 @@ export class View extends Handle {
     view(this).orbit = degreesPerSecond;
   }
 
-  /** The selected rows, one set per table. Setting it selects exactly those rows. */
+  /**
+   * The selected rows, one set per table. Setting it selects exactly those rows. A row stays
+   * selected while the data holds it, whether or not a mark here draws it, so views can share a
+   * selection. Selected rows glow, and rows one reference from them stay bright while the rest dim.
+   */
   get selection(): readonly Rows[] {
     return JSON.parse(view(this).selection) as Rows[];
   }
@@ -282,9 +302,18 @@ export class View extends Handle {
     view(this).setSelection(JSON.stringify(rows));
   }
 
-  /** The row under the pointer or the row keyboard navigation moved to, or `null`. */
-  get hovered(): Hit | null {
-    return JSON.parse(view(this).hovered) as Hit | null;
+  /**
+   * The hovered row: the row under the pointer, the row keyboard navigation moved to, or the row
+   * set here, or `null`. A set row stays until what the pointer or keyboard hovers changes, and need
+   * not be one a mark here draws. Rows one reference from it draw on top, and `related()` reads them,
+   * so views can share a hover. The `hovered` event tells where the pointer hit the row.
+   */
+  get hovered(): Row | null {
+    return JSON.parse(view(this).hovered) as Row | null;
+  }
+
+  set hovered(row: Row | null) {
+    view(this).setHovered(JSON.stringify(row));
   }
 
   /**
@@ -309,9 +338,10 @@ export class View extends Handle {
   }
 
   /**
-   * An error for each option that draws as if unset, and each mark that draws nothing, because the
-   * data does not fit it, such as a missing field or table. Each error's `path` names the mark and
-   * option, such as `marks[2].color`.
+   * An error for each option that draws as if unset, and each mark that draws nothing: the scene's
+   * JSON can't be read there, the scene can't use it, or the data doesn't fit it, such as a missing
+   * field or table. Each error's `path` names the option, such as `marks[2].color`. The `failures`
+   * event reports changes, and a picture of the view draws the same.
    */
   get failures(): readonly LatkitError[] {
     return (JSON.parse(view(this).failures) as Failure[]).map(thrown);
@@ -391,7 +421,7 @@ export class View extends Handle {
 
   /**
    * Resolves, once a frame draws the view, to every row of a pickable mark near `point`, nearest
-   * first.
+   * first. None under a title, a legend, or a plot's axes, which clip or cover the marks.
    */
   async pick(
     point: Point,
@@ -489,9 +519,13 @@ function view(owner: View): bindings.View {
   return inner<bindings.View>(owner);
 }
 
-/** `event`'s detail as listeners take it: an error as a `LatkitError`, a drag's patch as a `Patch`. */
+/**
+ * `event`'s detail as listeners take it: an error, and each failure, as a `LatkitError`, and a
+ * drag's patch as a `Patch`.
+ */
 function detail(event: ViewEvent): unknown {
   if (event.type === 'error') return thrown(event.detail);
+  if (event.type === 'failures') return event.detail.map(thrown);
   if (event.type === 'drag' && event.detail.patch) {
     const bytes = Uint8Array.from(event.detail.patch as unknown as number[]);
     return { ...event.detail, patch: owned(bytes) };

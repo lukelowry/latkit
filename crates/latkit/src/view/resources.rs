@@ -1,6 +1,7 @@
 //! A view's buffers, textures, and bind groups. A buffer that runs out of room grows
 //! ([`Grown`]). Replacing a buffer increments the generation, and bind groups are rebuilt when a
-//! generation they were built from changes.
+//! generation they were built from changes. Every buffer and texture replaced, and all of them
+//! when the view goes, are retired, so their memory is freed once the GPU is done with them.
 //!
 //! Every shader's pass group (group 2) uses the same bindings: 0 the arena pages (the data, and the
 //! marks' per-row words), 2 extents, 4 domains, 5 probe words and query results, 6 depth,
@@ -11,6 +12,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use crate::gpu::grown::{self, Grown};
+use crate::gpu::retired::Retired;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::work::Queue;
 use crate::gpu::{Inner, Shared};
@@ -52,14 +54,23 @@ pub(crate) struct Groups {
     pub(crate) mark: wgpu::BindGroup,
 }
 
-/// The textures a frame draws into: multisampled color (resolved into the target) when it
-/// multisamples, and depth.
+/// The textures a frame draws into, with their views: multisampled color (resolved into the
+/// target) when it multisamples, and depth.
 struct Targets {
-    color: Option<wgpu::TextureView>,
-    depth: wgpu::TextureView,
+    color: Option<(wgpu::Texture, wgpu::TextureView)>,
+    depth: (wgpu::Texture, wgpu::TextureView),
     size: [u32; 2],
     format: wgpu::TextureFormat,
     samples: u32,
+}
+
+impl Targets {
+    fn retire(self, retired: &Retired) {
+        if let Some((color, _)) = self.color {
+            retired.retire(color);
+        }
+        retired.retire(self.depth.0);
+    }
 }
 
 pub(crate) struct Resources {
@@ -93,39 +104,38 @@ pub(crate) struct Resources {
     passes: HashMap<Shader, wgpu::BindGroup>,
     passes_generation: (u64, u64, u64),
     targets: Option<Targets>,
+    retired: Retired,
 }
 
 impl Resources {
-    pub(crate) fn new(device: &wgpu::Device) -> Resources {
+    pub(crate) fn new(device: &wgpu::Device, retired: &Retired) -> Resources {
         let storage = wgpu::BufferUsages::STORAGE;
         let uniform = wgpu::BufferUsages::UNIFORM;
+        let grown = |label, usage| Grown::new(device, retired, label, usage);
         Resources {
             frame: grown::buffer(device, "latkit frame", uniform, size_of::<wgsl::Frame>() as u64),
             eye: grown::buffer(device, "latkit eye", uniform, size_of::<wgsl::Eye>() as u64),
-            marks: Grown::new(device, "latkit marks", uniform),
+            marks: grown("latkit marks", uniform),
             // A copy source, so growing keeps its contents.
-            program: Grown::new(device, "latkit program", storage | wgpu::BufferUsages::COPY_SRC),
-            lit: Grown::new(device, "latkit lit", storage),
-            blocks: Grown::new(device, "latkit blocks", storage),
-            remap: Grown::new(device, "latkit remap", storage),
-            domains: Grown::new(device, "latkit domains", storage),
-            extents: Grown::new(device, "latkit extents", storage | wgpu::BufferUsages::COPY_SRC),
-            probe: Grown::new(device, "latkit probe", storage | wgpu::BufferUsages::COPY_SRC),
+            program: grown("latkit program", storage | wgpu::BufferUsages::COPY_SRC),
+            lit: grown("latkit lit", storage),
+            blocks: grown("latkit blocks", storage),
+            remap: grown("latkit remap", storage),
+            domains: grown("latkit domains", storage),
+            extents: grown("latkit extents", storage | wgpu::BufferUsages::COPY_SRC),
+            probe: grown("latkit probe", storage | wgpu::BufferUsages::COPY_SRC),
             steps: steps(device),
-            sprites: Grown::new(device, "latkit sprites", storage),
-            lists: Grown::new(
-                device,
-                "latkit lists",
-                storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
-            ),
+            sprites: grown("latkit sprites", storage),
+            lists: grown("latkit lists", storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC),
             labels: grown::buffer(device, "latkit labels", LABELS, 256),
-            cells: Grown::new(device, "latkit label cells", storage),
+            cells: grown("latkit label cells", storage),
             generation: 0,
             lists_generation: 0,
             groups: None,
             passes: HashMap::new(),
             passes_generation: (u64::MAX, 0, 0),
             targets: None,
+            retired: retired.clone(),
         }
     }
 
@@ -214,6 +224,7 @@ impl Resources {
         let program = &self.program.buffer;
         encoder.copy_buffer_to_buffer(program, u64::from(from) * 4, &between, 0, size);
         encoder.copy_buffer_to_buffer(&between, 0, program, u64::from(to) * 4, size);
+        self.retired.retire(between);
     }
 
     /// Makes room for `words` probe words, including the running query's results.
@@ -241,7 +252,8 @@ impl Resources {
 
     /// Replaces the labels buffer with `words` of zeros.
     pub(crate) fn replace_labels(&mut self, device: &wgpu::Device, words: u64) {
-        self.labels = grown::buffer(device, "latkit labels", LABELS, (words + 1) * 4);
+        let labels = grown::buffer(device, "latkit labels", LABELS, (words + 1) * 4);
+        self.retired.retire(std::mem::replace(&mut self.labels, labels));
         self.generation += 1;
     }
 
@@ -365,7 +377,7 @@ impl Resources {
                     4 => self.domains.buffer.as_entire_binding(),
                     5 => self.probe.buffer.as_entire_binding(),
                     6 => wgpu::BindingResource::TextureView(
-                        &self.targets.as_ref().expect("a frame drew before probing").depth,
+                        &self.targets.as_ref().expect("a frame drew before probing").depth.1,
                     ),
                     7 => self.sprites.buffer.as_entire_binding(),
                     8 => wgpu::BindingResource::TextureView(&inner.atlas.view),
@@ -403,22 +415,18 @@ impl Resources {
     ) -> (Option<wgpu::TextureView>, wgpu::TextureView) {
         if self.targets.as_ref().is_none_or(|t| t.size != size || t.format != format || t.samples != samples) {
             let texture = |label, format, usage| {
-                device
-                    .create_texture(&wgpu::TextureDescriptor {
-                        label: Some(label),
-                        size: wgpu::Extent3d {
-                            width: size[0].max(1),
-                            height: size[1].max(1),
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: samples,
-                        dimension: wgpu::TextureDimension::D2,
-                        format,
-                        usage,
-                        view_formats: &[],
-                    })
-                    .create_view(&wgpu::TextureViewDescriptor::default())
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: samples,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (texture, view)
             };
             let color =
                 (samples > 1).then(|| texture("latkit samples", format, wgpu::TextureUsages::RENDER_ATTACHMENT));
@@ -427,15 +435,29 @@ impl Resources {
                 DEPTH,
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             );
-            self.targets = Some(Targets { color, depth, size, format, samples });
+            // A canvas being resized changes size every frame, so the old textures go at once.
+            if let Some(old) = self.targets.replace(Targets { color, depth, size, format, samples }) {
+                old.retire(&self.retired);
+            }
             self.generation += 1;
         }
         let targets = self.targets.as_ref().expect("created");
-        (targets.color.clone(), targets.depth.clone())
+        (targets.color.as_ref().map(|(_, view)| view.clone()), targets.depth.1.clone())
     }
 
     /// Samples per pixel of the frame's targets.
     pub(crate) fn samples(&self) -> u32 {
         self.targets.as_ref().map_or(1, |t| t.samples)
+    }
+}
+
+impl Drop for Resources {
+    fn drop(&mut self) {
+        for buffer in [&self.frame, &self.eye, &self.steps, &self.labels] {
+            self.retired.retire(buffer.clone());
+        }
+        if let Some(targets) = self.targets.take() {
+            targets.retire(&self.retired);
+        }
     }
 }

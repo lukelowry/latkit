@@ -23,7 +23,8 @@ struct Boxes;
 impl Host for Boxes {
     fn rasterize(&self, run: &TextRun) -> latkit::Result<Raster> {
         let size = [(0.6 * (run.text.chars().count() as u32 * run.size_px) as f32) as u32, run.size_px];
-        Ok(Raster { size, coverage: vec![255; (size[0] * size[1]) as usize], baseline: size[1] as f32 * 0.8 })
+        let line_box = [0.0, 0.0, size[0] as f32, size[1] as f32];
+        Ok(Raster { size, coverage: vec![255; (size[0] * size[1]) as usize], baseline: size[1] as f32 * 0.8, line_box })
     }
 }
 
@@ -40,7 +41,8 @@ impl Host for Padded {
             let at = row * size[0] as usize + 2;
             coverage[at..at + line.len()].copy_from_slice(line);
         }
-        Ok(Raster { size, coverage, baseline: inner.baseline })
+        let [l, t, r, b] = inner.line_box;
+        Ok(Raster { size, coverage, baseline: inner.baseline, line_box: [l + 2.0, t, r + 2.0, b] })
     }
 }
 
@@ -76,7 +78,7 @@ fn shown(gpu: &latkit::Gpu, x: Vec<f64>, shape: impl Fn(Vertices) -> Vertices) -
     let scene = Scene::new(plane())
         .theme(haloless())
         .draw(shape(Vertices::of("d", "V").position(field("x"), field("y"))).pick(false).label(label));
-    let mut view = View::new(gpu, scene).expect("valid scene");
+    let mut view = View::new(gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     view
@@ -155,7 +157,7 @@ fn an_empty_text_gives_no_label_and_claims_no_room() {
     data.apply(rows.field("name", vec!["abcdef", ""])).expect("valid");
     let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
     let mark = Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).pick(false).label(label);
-    let mut view = View::new(&gpu, Scene::new(plane()).theme(haloless()).draw(mark)).expect("valid scene");
+    let mut view = View::new(&gpu, Scene::new(plane()).theme(haloless()).draw(mark));
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let first = at(&frame(&gpu, &mut view), c + 7, c);
@@ -184,7 +186,7 @@ fn only_labels_that_show_near_the_view_have_their_text_rasterized() {
             .pick(false)
             .label(Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0))),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -215,7 +217,7 @@ fn a_dense_view_settles_with_texts_for_the_labels_that_fit() {
             .pick(false)
             .label(Label::new(field("name")).size(10.0)),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
@@ -239,7 +241,7 @@ fn a_one_row_label_edit_evaluates_one_page() {
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
         Vertices::of("d", "V").position(field("x"), field("y")).radius(1.0).label(Label::new(field("name")).size(10.0)),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
@@ -270,7 +272,7 @@ fn diagram_block(gpu: &latkit::Gpu, zoom: f64) -> Vec<[u8; 4]> {
             .pick(false)
             .label(label),
     );
-    let mut view = View::new(gpu, scene).expect("valid scene");
+    let mut view = View::new(gpu, scene);
     view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
     let pixels = frame(gpu, &mut view);
@@ -325,7 +327,7 @@ fn a_conditional_text_labels_only_the_rows_it_names() {
         .color(Color::rgb(0.0, 0.0, 1.0))
         .pick(false);
     let scene = Scene::new(plane()).theme(haloless()).draw(marks.label(label));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -352,7 +354,7 @@ fn a_number_label_writes_its_value_as_an_axis_writes_ticks() {
     let label = Label::new(field("v")).size(10.0).unit("%").color(Color::rgb(1.0, 0.0, 0.0));
     let marks = Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).pick(false);
     let scene = Scene::new(plane()).theme(haloless()).draw(marks.color(Color::rgb(0.0, 0.0, 1.0)).label(label));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -384,7 +386,7 @@ fn a_label_keeps_showing_while_its_mark_gains_texts() {
     let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
     let marks = Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).pick(false);
     let scene = Scene::new(plane()).theme(haloless()).draw(marks.label(label));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let c = SIZE / 2;

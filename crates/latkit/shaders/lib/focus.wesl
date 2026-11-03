@@ -1,7 +1,7 @@
 // Selection and hover: one word of focus bits per held row, in pages listed by the page table at
 // `mark.focus`. Also how much of a row shows during a transition.
 
-import package::lib::types::{SELECTED, HOVERED, FADE_IN, FADE_OUT};
+import package::lib::types::{SELECTED, HOVERED, RELATED, RELATED_SELECTED, FADE_IN, FADE_OUT};
 import package::lib::bind::{frame, mark, word};
 import package::lib::state::record_at;
 
@@ -21,6 +21,11 @@ fn is_hovered(row: u32) -> bool {
     return (focus_of(row) & HOVERED) != 0u;
 }
 
+// Whether the row is one reference from a selected or hovered row.
+fn is_related(row: u32) -> bool {
+    return (focus_of(row) & RELATED) != 0u;
+}
+
 // A row's opacity factor during a transition: appearing rows fade in, leaving rows fade out.
 fn presence(flags: u32) -> f32 {
     if (flags & FADE_IN) != 0u {
@@ -38,8 +43,10 @@ fn growth(flags: u32) -> f32 {
     return select(1.0, mark.motion, (flags & FADE_IN) != 0u);
 }
 
-// A row's opacity: rows outside a non-empty selection dim, and rows easing in or out fade.
+// A row's opacity: while the selection lights rows, rows neither selected nor one reference from a
+// selected row dim, and rows easing in or out fade.
 fn faded(row: u32, flags: u32) -> f32 {
-    let dim = select(1.0, frame.dim, frame.selecting != 0u && !is_selected(row));
+    let bright = (focus_of(row) & (SELECTED | RELATED_SELECTED)) != 0u;
+    let dim = select(1.0, frame.dim, frame.selecting != 0u && !bright);
     return dim * presence(flags);
 }

@@ -41,7 +41,7 @@ fn graph() -> Data {
 #[test]
 fn moved_vertices_start_where_they_were_and_their_edges_follow() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, scene()).expect("valid scene");
+    let mut view = View::new(&gpu, scene());
     view.set_camera(camera());
     let data = graph();
     view.set_sources([&data]).expect("a source");
@@ -64,7 +64,7 @@ fn moved_vertices_start_where_they_were_and_their_edges_follow() {
 #[test]
 fn removed_rows_fade_where_they_stood_and_new_rows_grow() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, scene()).expect("valid scene");
+    let mut view = View::new(&gpu, scene());
     view.set_camera(camera());
     let data = graph();
     view.set_sources([&data]).expect("a source");
@@ -92,7 +92,7 @@ fn removed_rows_fade_where_they_stood_and_new_rows_grow() {
 #[test]
 fn another_dataset_of_the_same_name_replaces_rows_rather_than_moving_them() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, scene()).expect("valid scene");
+    let mut view = View::new(&gpu, scene());
     view.set_camera(camera());
     view.set_sources([graph()]).expect("a source");
     let c = SIZE / 2;
@@ -113,7 +113,7 @@ fn another_dataset_of_the_same_name_replaces_rows_rather_than_moving_them() {
 #[test]
 fn zero_ease_moves_a_vertex_at_once() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, scene().ease(Duration::ZERO)).expect("valid scene");
+    let mut view = View::new(&gpu, scene().ease(Duration::ZERO));
     view.set_camera(camera());
     let data = graph();
     view.set_sources([&data]).expect("a source");
@@ -127,7 +127,7 @@ fn zero_ease_moves_a_vertex_at_once() {
 #[test]
 fn sampled_fields_and_new_frames_change_at_once() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, scene()).expect("valid scene");
+    let mut view = View::new(&gpu, scene());
     view.set_camera(camera());
     let data = Data::new("graph");
     data.apply(
@@ -160,7 +160,7 @@ fn sampled_fields_and_new_frames_change_at_once() {
 #[test]
 fn a_transition_evaluates_once_and_eases_without_evaluating() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, scene()).expect("valid scene");
+    let mut view = View::new(&gpu, scene());
     view.set_camera(camera());
     let data = graph();
     view.set_sources([&data]).expect("a source");
@@ -188,7 +188,7 @@ fn a_change_to_one_page_evaluates_only_its_rows() {
         .theme(plain_theme())
         .ease(Duration::ZERO)
         .draw(Vertices::of("points", "P").position(field("x"), field("y")).radius(1.0).color(Color::WHITE));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     let xs: Vec<f64> = (0..rows).map(|r| f64::from(r % 100) - 50.0).collect();
     let data = Data::new("points");

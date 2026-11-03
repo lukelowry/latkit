@@ -64,13 +64,15 @@ pub(crate) struct FieldRef {
     pub(crate) component: Option<u8>,
 }
 
-/// View state of each row: `selected`, `hovered`, `pointer` (CSS pixels from a vertex to the
-/// pointer), `elapsed` (seconds since the view was created), or `zoom` (the camera's zoom).
+/// View state of each row: `selected`, `hovered`, `related` (one reference from a selected or
+/// hovered row), `pointer` (CSS pixels from a vertex to the pointer), `elapsed` (seconds since the
+/// view was created), or `zoom` (the camera's zoom).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum State {
     Selected,
     Hovered,
+    Related,
     Pointer,
     Elapsed,
     Zoom,
@@ -155,9 +157,16 @@ pub fn selected() -> Expr {
     node(Node::State(State::Selected))
 }
 
-/// Whether the row is hovered, by the pointer or by keyboard stepping.
+/// Whether the row is hovered, by the pointer, by keyboard stepping, or by the application.
 pub fn hovered() -> Expr {
     node(Node::State(State::Hovered))
+}
+
+/// Whether the row is one reference from a selected or hovered row: a row it references, or one
+/// that references it, such as a branch of a selected bus. The selected row may be one that another
+/// view shares.
+pub fn related() -> Expr {
+    node(Node::State(State::Related))
 }
 
 /// CSS pixels from each vertex to the pointer. Use it only in vertex marks, and not in a position.

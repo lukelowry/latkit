@@ -10,6 +10,8 @@ use std::ops::{Deref, Sub};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
+use super::retired::Retired;
+
 /// Defines [`Work`], a [`Count`] variant for each of its fields, and the [`Counters`] that hold
 /// them, from one list.
 macro_rules! work {
@@ -90,18 +92,28 @@ work! {
     /// on the GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not
     /// request.
     late: Late,
+    /// Bytes of GPU memory freed: buffers and textures replaced, or no longer used, once the GPU is
+    /// done with them. In a browser they are freed then, not when JavaScript collects them.
+    destroyed: Destroyed,
 }
 
-/// The device's queue, which counts what is written through it. Everything else passes through to
-/// the queue.
+/// The device's queue, which counts what is written through it and holds what latkit retired until
+/// the GPU is done with it. Everything else passes through to the queue.
 pub(crate) struct Queue {
     raw: wgpu::Queue,
     counters: Arc<Counters>,
+    retired: Retired,
 }
 
 impl Queue {
     pub(crate) fn new(raw: wgpu::Queue, counters: Arc<Counters>) -> Queue {
-        Queue { raw, counters }
+        let retired = Retired::new(counters.clone());
+        Queue { raw, counters, retired }
+    }
+
+    /// The buffers and textures latkit retired, destroyed once no command being recorded uses them.
+    pub(crate) fn retired(&self) -> &Retired {
+        &self.retired
     }
 
     /// Writes `bytes` into `buffer` at `offset`, counted as written.
@@ -130,6 +142,7 @@ impl Queue {
             usage: wgpu::BufferUsages::COPY_SRC,
         });
         encoder.copy_buffer_to_buffer(&upload, 0, buffer, offset, bytes.len() as u64);
+        self.retired.retire(upload);
     }
 
     /// Clears `size` bytes of `buffer` from `offset` in `encoder`, counted as cleared.

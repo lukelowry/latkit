@@ -417,14 +417,21 @@ impl View {
         }
     }
 
-    /// Hovers `hit`, reporting a change when the row differs.
+    /// Hovers `hit`, reporting a change when the row, its port, or the traced sample differs. A
+    /// row the application hovered stays until the pointer or keys hover a row, or leave one.
     fn hover(&mut self, hit: Option<Hit>, trigger: Trigger) {
-        if hit.as_ref().map(|h| &h.row) != self.focus.hovered.as_ref().map(|h| &h.row) {
-            self.focus.dirty = true;
-            self.events.tell(Event::Hovered { hit: hit.clone(), trigger });
+        let spot = hit.as_ref().map(|h| (h.row.clone(), h.port.clone(), h.sample.map(|s| s.frame)));
+        if spot == self.focus.spot {
+            return;
+        }
+        self.focus.spot = spot;
+        let row = hit.as_ref().map(|h| h.row.clone());
+        if row != self.focus.hovered {
+            self.focus.hovered = row;
+            self.focus.hovering = true;
             self.wake();
         }
-        self.focus.hovered = hit;
+        self.events.tell(Event::Hovered { hit, trigger });
     }
 
     /// Decides what a press does. A Shift drag with box selection on starts a box, regardless of
@@ -830,8 +837,8 @@ impl View {
             if !self.marks.iter().any(Shown::probed) {
                 return false;
             }
-            let [w, h] = self.size.map(|v| v as f32);
-            let picking = self.pick(self.middle(), w.hypot(h) / 2.0);
+            let [left, top, right, bottom] = self.area();
+            let picking = self.hits(self.middle(), ((right - left).hypot(bottom - top) / 2.0) as f32);
             self.gestures.keys.picking = Some(picking);
         }
         let keys = &self.gestures.keys;
@@ -854,10 +861,11 @@ impl View {
 
     /// Takes the keys' rows once their pick resolves, and steps the keys that waited for them.
     fn settle_keys(&mut self) {
+        let Some(rows) = self.gestures.keys.picking.as_ref().and_then(Pending::take) else { return };
+        // The keys pass over rows that a title, a legend, or a plot's axes hide.
+        let rows: Vec<Hit> = rows.unwrap_or_default().into_iter().filter(|hit| self.marks_show_at(hit.point)).collect();
         let keys = &mut self.gestures.keys;
-        let Some(rows) = keys.picking.as_ref().and_then(Pending::take) else { return };
         let held = keys.row().map(|hit| hit.row.clone());
-        let rows = rows.unwrap_or_default();
         // The row stepped to keeps its position among the newly picked rows.
         keys.at = held.as_ref().and_then(|row| rows.iter().position(|hit| hit.row == *row));
         keys.rows = Some(rows);
@@ -872,10 +880,10 @@ impl View {
         }
     }
 
-    /// The middle of the view, CSS pixels from the top left.
+    /// The middle of the part of the view the camera frames, CSS pixels from the top left.
     fn middle(&self) -> [f32; 2] {
-        let [w, h] = self.size.map(|v| v as f32);
-        [w / 2.0, h / 2.0]
+        let [left, top, right, bottom] = self.area();
+        [left.midpoint(right) as f32, top.midpoint(bottom) as f32]
     }
 }
 

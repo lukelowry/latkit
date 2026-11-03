@@ -1,13 +1,20 @@
 //! Readbacks from the GPU. Bytes are copied in a frame's encoder and mapped when the caller submits
 //! it, so reading never stalls a frame or submits on its own. Once mapped, a readback wakes its
 //! waker. Map buffers come from a pool and return to it once read, so hovering allocates nothing.
+//! The pool keeps at most `POOLED` bytes. A larger readback, such as a picture's, is retired once
+//! read, as is one dropped while still mapping.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Waker;
 
+use super::retired::Retired;
 use super::work::{Count, Counters};
 use crate::{Error, Result};
+
+/// Bytes of free map buffers a pool keeps: room for two 4K pictures' buffers, so a video reuses
+/// its buffers frame after frame.
+const POOLED: u64 = 64 << 20;
 
 /// A pool of free map buffers. It also holds the counters for its readbacks and the number still
 /// mapping. Each pool is created as counted or uncounted, so no pool skips counting by default.
@@ -16,17 +23,28 @@ pub(crate) struct Readbacks {
     free: Arc<Mutex<Vec<wgpu::Buffer>>>,
     counters: Option<Arc<Counters>>,
     mapping: Arc<AtomicU64>,
+    retired: Retired,
 }
 
 impl Readbacks {
     /// A pool whose readbacks are counted in `counters`, like the `Gpu`'s pool.
-    pub(crate) fn counted(counters: Arc<Counters>) -> Readbacks {
-        Readbacks { free: Arc::default(), counters: Some(counters), mapping: Arc::default() }
+    pub(crate) fn counted(counters: Arc<Counters>, retired: &Retired) -> Readbacks {
+        Readbacks { free: Arc::default(), counters: Some(counters), mapping: Arc::default(), retired: retired.clone() }
     }
 
     /// A pool whose readbacks are not counted: the frame timer's, which only some devices support.
-    pub(crate) fn uncounted() -> Readbacks {
-        Readbacks { free: Arc::default(), counters: None, mapping: Arc::default() }
+    pub(crate) fn uncounted(retired: &Retired) -> Readbacks {
+        Readbacks { free: Arc::default(), counters: None, mapping: Arc::default(), retired: retired.clone() }
+    }
+
+    /// Returns `buffer` to the pool, or retires it when the pool holds `POOLED` bytes without it.
+    fn give(&self, buffer: wgpu::Buffer) {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        if free.iter().map(wgpu::Buffer::size).sum::<u64>() + buffer.size() <= POOLED {
+            free.push(buffer);
+        } else {
+            self.retired.retire(buffer);
+        }
     }
 
     /// Readbacks from this pool the GPU has not mapped yet.
@@ -121,13 +139,15 @@ impl Readback {
 impl Drop for Readback {
     fn drop(&mut self) {
         let Some(buffer) = self.buffer.take() else { return };
-        // A buffer still mapping cannot return to the pool, so it is dropped instead.
+        // A buffer still mapping cannot return to the pool, so it is retired instead.
         let mapping = *self.mapping.lock().unwrap_or_else(PoisonError::into_inner);
         if mapping == Mapping::Ready {
             buffer.unmap();
         }
         if matches!(mapping, Mapping::Ready | Mapping::Read) {
-            self.pool.free.lock().unwrap_or_else(PoisonError::into_inner).push(buffer);
+            self.pool.give(buffer);
+        } else {
+            self.pool.retired.retire(buffer);
         }
     }
 }

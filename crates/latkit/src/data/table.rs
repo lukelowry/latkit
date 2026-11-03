@@ -381,6 +381,14 @@ impl Table {
         Some(&self.fields[i].1)
     }
 
+    /// Its reference fields.
+    pub(crate) fn references(&self) -> impl Iterator<Item = &Reference> {
+        self.fields.iter().filter_map(|(_, field)| match field {
+            Field::Reference(reference) => Some(reference),
+            _ => None,
+        })
+    }
+
     pub(crate) fn insert(&mut self, name: Name, field: Field) {
         match self.fields.binary_search_by(|(n, _)| n.cmp(&name)) {
             Ok(i) => self.fields[i].1 = field,

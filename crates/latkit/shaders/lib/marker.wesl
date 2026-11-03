@@ -159,19 +159,17 @@ fn premultiplied(m: MarkerColor) -> vec4f {
     return vec4f(m.color.rgb * m.color.a, m.color.a);
 }
 
-// A premultiplied color with a glow around its shape for focus bits `focus`: the selection color,
-// the hover color, or for the end of a lit edge, a fainter hover color.
+// A premultiplied color with a glow around its shape for focus bits `focus`: the selection color
+// or the hover color. A row lit only as one reference from a selected or hovered row draws without
+// a glow, so many of them never merge into one.
 fn glow(m: MarkerColor, focus: u32) -> vec4f {
     let base = premultiplied(m);
-    if focus == 0u || frame.glow <= 0.0 {
+    if (focus & (SELECTED | HOVERED)) == 0u || frame.glow <= 0.0 {
         return base;
     }
     let own = vec4f(m.color.rgb, frame.selected.a);
     let selected = select(frame.selected, own, frame.selected.r < 0.0);
-    var tint = select(frame.hover, selected, (focus & SELECTED) != 0u);
-    if (focus & (SELECTED | HOVERED)) == 0u {
-        tint.a *= 0.55;
-    }
+    let tint = select(frame.hover, selected, (focus & SELECTED) != 0u);
     let halo = tint.a * (1.0 - smoothstep(0.0, frame.glow, max(m.distance, 0.0)));
     return base + vec4f(tint.rgb * halo, halo) * (1.0 - base.a);
 }

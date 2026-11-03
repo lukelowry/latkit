@@ -7,9 +7,10 @@
 //! In a browser, compiles run in the background and in parallel. Draw pipelines start at once,
 //! text pipelines as the browser's compile workers free up, and the rest a few at a time. Anything
 //! that uses a pipeline waits until its compile finishes. So no frame waits on a compile, and
-//! creating the pipeline afterwards finds it compiled. Natively, a pipeline is created in process
-//! when first used, which is just as cheap. Every pipeline shares the view and mark group layouts.
-//! Each shader's pass group layout comes from its WGSL.
+//! creating the pipeline afterwards takes the one compiled. Natively, a pipeline is created in
+//! process when first used, which is just as cheap. Every pipeline shares the view and mark group
+//! layouts. Each shader's pass group layout comes from its WGSL. Every pipeline's label names it
+//! exactly.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -41,18 +42,24 @@ pub(crate) enum Urgency {
 /// the CPU. Each finished compile starts the next.
 const WORKERS: u64 = 8;
 
-/// A pending check of a custom marker's shader, resolving to its error if any. It is `Send`
-/// natively, and stays on the page's single thread in browsers.
+/// A pending answer from an error scope, resolving to its error if any. It is `Send` natively, and
+/// stays on the page's single thread in browsers.
 #[cfg(not(target_arch = "wasm32"))]
-type Check = Pin<Box<dyn Future<Output = Option<wgpu::Error>> + Send>>;
+pub(crate) type Check = Pin<Box<dyn Future<Output = Option<wgpu::Error>> + Send>>;
 #[cfg(target_arch = "wasm32")]
-type Check = Pin<Box<dyn Future<Output = Option<wgpu::Error>>>>;
+pub(crate) type Check = Pin<Box<dyn Future<Output = Option<wgpu::Error>>>>;
 
-/// A custom marker's pipeline, compiled from its source the first time a view draws it.
+/// A custom marker's pipeline, compiled from its source the first time a view draws it, with the
+/// check of its WGSL until it answers, and why it failed to compile, if it did.
 struct Custom {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Option<wgpu::RenderPipeline>,
     check: Option<Check>,
-    failed: bool,
+    failed: Option<Error>,
+}
+
+/// The failure of a custom marker whose WGSL does not compile, for `message`.
+fn failure(message: &str) -> Error {
+    Error::invalid(format!("the custom marker does not compile: {message}")).at("marker")
 }
 
 /// One pipeline: a shader's entry point specialized for one primitive's geometry (`PRIMITIVE`),
@@ -136,6 +143,23 @@ impl Variant {
         self.shader.source().overrides.contains(&name)
     }
 
+    /// A label naming exactly this pipeline. Browsers show it in their errors, and it finds the
+    /// pipeline compiled ahead for it.
+    fn label(&self) -> String {
+        let Reads { joined, timed, viewed } = self.reads;
+        let target = self.target.map(|(format, samples)| format!(" {format:?}x{samples}")).unwrap_or_default();
+        format!(
+            "latkit {:?} {} PRIMITIVE={} PATH={} JOINED={} TIMED={} VIEWED={}{target}",
+            self.shader,
+            self.entry,
+            self.primitive,
+            self.path,
+            u8::from(joined),
+            u8::from(timed),
+            u8::from(viewed),
+        )
+    }
+
     /// Values for the pipeline constants its shader declares.
     fn constants(&self) -> Vec<(&'static str, f64)> {
         let value = |name: &str| match name {
@@ -164,6 +188,17 @@ impl Asked {
         match self {
             Asked::Shader(variant) => variant.shader.source().size(),
             Asked::Custom(source, variant) => variant.shader.source().size() + source.len(),
+        }
+    }
+
+    /// A label naming exactly this pipeline: its variant's, and for a custom marker, a stamp of its
+    /// WGSL.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Asked::Shader(variant) => variant.label(),
+            Asked::Custom(source, variant) => {
+                format!("{} custom {:016x}", variant.label(), crate::derive::stamp_of(source))
+            }
         }
     }
 }
@@ -227,6 +262,10 @@ pub(crate) struct Pipelines {
     /// Whether the pipelines for future views were queued.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     warmed: bool,
+    /// The device's pipeline creation methods, replaced to compile in the background and keep what
+    /// compiled. `None` for a device that is not a browser's.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    compiled: Option<compiled::Compiled>,
     /// Counts the pipelines compiled.
     counters: Arc<Counters>,
     /// The GPU these belong to, so a finished compile can start the next.
@@ -308,6 +347,8 @@ impl Pipelines {
             warming: false,
             #[cfg(all(feature = "web", target_arch = "wasm32"))]
             warmed: false,
+            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            compiled: compiled::Compiled::install(device),
             counters,
             gpu,
         }
@@ -436,7 +477,13 @@ impl Pipelines {
     fn compile_ahead(&mut self, device: &wgpu::Device, need: &Asked, ahead: &Arc<Ahead>, draws: bool) -> bool {
         #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
-            let Some(promise) = compiled::capture(device, || self.create(device, need)) else { return false };
+            let Some(compiled) = self.compiled.take() else { return false };
+            let started = compiled.start(|| self.create(device, need));
+            let (kept, rejected, created) =
+                (compiled.kept.clone(), compiled.rejected.clone(), compiled.created.clone());
+            self.compiled = Some(compiled);
+            let Some(promise) = started else { return false };
+            let (label, custom) = (need.label(), matches!(need, Asked::Custom(..)));
             self.counters.add(Count::Pipelines, 1);
             ahead.compiled.store(true, Ordering::Release);
             let (ahead, landed, compiling) = (ahead.clone(), self.landed.clone(), self.compiling.clone());
@@ -447,9 +494,20 @@ impl Pipelines {
                 drawing.fetch_add(1, Ordering::AcqRel);
             }
             wasm_bindgen_futures::spawn_local(async move {
-                // A descriptor the browser rejects also finishes. Creating the pipeline later
-                // reports why, as it would without compiling ahead.
-                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                // The compiled pipeline is kept, so creating it later takes it. A descriptor the
+                // browser rejects keeps nothing, and creating it later reports why, as it would
+                // without compiling ahead. A custom marker's rejection is kept, so the marker says
+                // why without being created.
+                let compiled = wasm_bindgen_futures::JsFuture::from(promise).await;
+                // A pipeline created meanwhile compiled then, so nothing is left to take this one.
+                let taken = created.borrow_mut().remove(&label);
+                match compiled {
+                    Ok(pipeline) if !taken => drop(kept.borrow_mut().insert(label, pipeline)),
+                    Err(error) if custom && !taken => {
+                        drop(rejected.borrow_mut().insert(label, compiled::message(&error)));
+                    }
+                    _ => {}
+                }
                 compiling.fetch_sub(1, Ordering::AcqRel);
                 if let Some(drawing) = drawing {
                     drawing.fetch_sub(1, Ordering::AcqRel);
@@ -471,28 +529,30 @@ impl Pipelines {
         }
     }
 
-    /// Creates `need` through wgpu without caching or counting it, for compiling ahead to capture.
-    /// A custom marker's WGSL errors are caught in a scope of their own here, so only creating it
-    /// for real reports why it fails.
+    /// Creates `need` through wgpu without caching or counting it, for compiling ahead to start. A
+    /// custom marker's WGSL errors are caught in a scope of their own here, so only the compile, or
+    /// creating it for real, reports why it fails.
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     fn create(&mut self, device: &wgpu::Device, need: &Asked) {
+        let label = need.label();
         match need {
             Asked::Shader(variant) if variant.target.is_some() => {
                 let module = self.module(device, variant.shader);
-                drop(self.pipeline(device, *variant, &module));
+                drop(self.pipeline(device, *variant, &module, &label));
             }
-            Asked::Shader(variant) => drop(self.compute_made(device, *variant)),
+            Asked::Shader(variant) => drop(self.compute_made(device, *variant, &label)),
             Asked::Custom(source, variant) => {
                 let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
                 let module = custom_module(device, source, variant.shader);
-                drop(self.pipeline(device, *variant, &module));
+                drop(self.pipeline(device, *variant, &module, &label));
                 drop(scope.pop());
             }
         }
     }
 
     /// Counts a pipeline created for `need`: as compiled now unless it compiled ahead, and as late
-    /// if it was never requested.
+    /// if it was never requested. One created before its compile ahead finished compiles now, so
+    /// what that compile makes is dropped when it finishes, rather than kept.
     fn count(&self, need: &Asked) {
         let ahead = self.asked.get(need);
         if !ahead.is_some_and(|ahead| ahead.compiled.load(Ordering::Acquire)) {
@@ -500,6 +560,27 @@ impl Pipelines {
         }
         if ahead.is_none() {
             self.counters.add(Count::Late, 1);
+        }
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
+        if let Some(compiled) = &self.compiled
+            && ahead.is_some_and(|ahead| ahead.compiled.load(Ordering::Acquire) && !ahead.landed())
+        {
+            compiled.created.borrow_mut().insert(need.label());
+        }
+    }
+
+    /// Why the browser rejected the custom marker compiled ahead under `label`, if it did.
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", feature = "web")),
+        expect(clippy::unused_self, reason = "only a browser's device compiles ahead")
+    )]
+    fn rejected(&self, label: &str) -> Option<String> {
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
+        return self.compiled.as_ref().and_then(|compiled| compiled.rejected.borrow().get(label).cloned());
+        #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+        {
+            let _ = label;
+            None
         }
     }
 
@@ -548,7 +629,9 @@ impl Pipelines {
     }
 
     /// The pipeline that draws a custom marker of `source`: `variant`, with `source` appended to
-    /// its shader. `None` once that WGSL failed to compile.
+    /// its shader. `None` once that WGSL failed to compile, which
+    /// [`custom_failure`](Pipelines::custom_failure) then tells. Natively the device answers at
+    /// once, and in a browser the compile ahead of use does, so a broken marker never draws.
     pub(crate) fn custom(
         &mut self,
         device: &wgpu::Device,
@@ -557,33 +640,44 @@ impl Pipelines {
     ) -> Option<wgpu::RenderPipeline> {
         let key = (source.clone(), variant);
         if let Some(custom) = self.custom.get(&key) {
-            return (!custom.failed).then(|| custom.pipeline.clone());
+            return custom.pipeline.clone().filter(|_| custom.failed.is_none());
         }
-        self.count(&Asked::Custom(key.0.clone(), key.1));
+        let need = Asked::Custom(key.0.clone(), key.1);
+        let label = need.label();
+        if let Some(message) = self.rejected(&label) {
+            self.custom.insert(key, Custom { pipeline: None, check: None, failed: Some(failure(&message)) });
+            return None;
+        }
+        self.count(&need);
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = custom_module(device, source, variant.shader);
-        let pipeline = self.pipeline(device, variant, &module);
-        let check: Check = Box::pin(scope.pop());
-        let custom = Custom { pipeline: pipeline.clone(), check: Some(check), failed: false };
+        let pipeline = self.pipeline(device, variant, &module, &label);
+        let mut check: Check = Box::pin(scope.pop());
+        let mut custom = Custom { pipeline: Some(pipeline), check: None, failed: None };
+        match check.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(error) => custom.failed = error.map(|error| failure(&error.to_string())),
+            Poll::Pending => custom.check = Some(check),
+        }
+        let drawn = custom.pipeline.clone().filter(|_| custom.failed.is_none());
         self.custom.insert(key, custom);
-        Some(pipeline)
+        drawn
     }
 
-    /// Errors found in custom markers' shaders since the last call.
-    pub(crate) fn custom_errors(&mut self) -> Vec<Error> {
+    /// Hears the checks of custom markers' WGSL still waiting for the device's answer.
+    pub(crate) fn check_custom(&mut self) {
         let mut context = Context::from_waker(Waker::noop());
-        let mut errors = Vec::new();
         for custom in self.custom.values_mut() {
             let Some(check) = &mut custom.check else { continue };
             if let Poll::Ready(error) = check.as_mut().poll(&mut context) {
                 custom.check = None;
-                if let Some(error) = error {
-                    custom.failed = true;
-                    errors.push(Error::invalid(format!("the custom marker does not compile: {error}")).at("marker"));
-                }
+                custom.failed = error.map(|error| failure(&error.to_string()));
             }
         }
-        errors
+    }
+
+    /// Why the custom marker of `source` does not compile, if it does not.
+    pub(crate) fn custom_failure(&self, source: &Arc<str>) -> Option<&Error> {
+        self.custom.iter().filter(|((of, _), _)| of == source).find_map(|(_, custom)| custom.failed.as_ref())
     }
 
     /// The render pipeline `variant` names.
@@ -591,9 +685,10 @@ impl Pipelines {
         if let Some(pipeline) = self.render.get(&variant) {
             return pipeline.clone();
         }
-        self.count(&Asked::Shader(variant));
+        let need = Asked::Shader(variant);
+        self.count(&need);
         let module = self.module(device, variant.shader);
-        let pipeline = self.pipeline(device, variant, &module);
+        let pipeline = self.pipeline(device, variant, &module, &need.label());
         self.render.insert(variant, pipeline.clone());
         pipeline
     }
@@ -603,6 +698,7 @@ impl Pipelines {
         device: &wgpu::Device,
         variant: Variant,
         module: &wgpu::ShaderModule,
+        label: &str,
     ) -> wgpu::RenderPipeline {
         let shader = variant.shader;
         let (format, samples) = variant.target.expect("a render variant");
@@ -610,7 +706,7 @@ impl Pipelines {
         let constants = variant.constants();
         let options = || wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(shader.source().label),
+            label: Some(label),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module,
@@ -646,18 +742,19 @@ impl Pipelines {
         if let Some(pipeline) = self.compute.get(&variant) {
             return pipeline.clone();
         }
-        self.count(&Asked::Shader(variant));
-        let pipeline = self.compute_made(device, variant);
+        let need = Asked::Shader(variant);
+        self.count(&need);
+        let pipeline = self.compute_made(device, variant, &need.label());
         self.compute.insert(variant, pipeline.clone());
         pipeline
     }
 
-    fn compute_made(&mut self, device: &wgpu::Device, variant: Variant) -> wgpu::ComputePipeline {
+    fn compute_made(&mut self, device: &wgpu::Device, variant: Variant, label: &str) -> wgpu::ComputePipeline {
         let module = self.module(device, variant.shader);
         let layout = self.pipeline_layout(device, variant.shader);
         let constants = variant.constants();
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(variant.entry),
+            label: Some(label),
             layout: Some(&layout),
             module: &module,
             entry_point: Some(variant.entry),
@@ -675,13 +772,18 @@ fn custom_module(device: &wgpu::Device, source: &str, shader: Shader) -> wgpu::S
     })
 }
 
-/// Compiling ahead in a browser. A browser compiles a pipeline created with `createRenderPipeline`
-/// on the GPU's thread, delaying every frame and readback behind it. One created with the async
-/// variant compiles on worker threads, in parallel with others. Chrome caches compiled pipelines by
-/// descriptor, so creating the same descriptor later finds it compiled.
+/// Compiling ahead in a browser. A pipeline created with `createRenderPipeline` compiles on the
+/// GPU's thread, delaying every frame and readback behind it. One created with the async variant
+/// compiles on worker threads, in parallel with others. wgpu calls only the first, so the device's
+/// two creation methods are replaced once with ones that pass each call through, except in two
+/// cases. While compiling ahead, they start the async variant, which receives the exact descriptor
+/// wgpu builds. And a call for a pipeline compiled ahead returns that pipeline instead of compiling
+/// again, matched by its label, which names it exactly. So the pipeline drawn with is the one
+/// compiled ahead, in every browser.
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod compiled {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
     use std::rc::Rc;
 
     use wasm_bindgen::closure::Closure;
@@ -693,39 +795,115 @@ mod compiled {
         ("createComputePipeline", "createComputePipelineAsync"),
     ];
 
-    /// Has the browser compile, in the background, the pipeline that `make` creates through wgpu.
-    /// While `make` runs, the device's creation methods are swapped for their async variants. These
-    /// receive the exact descriptor wgpu builds, so what compiles is exactly what wgpu creates
-    /// later. Returns `None` if the device is not a browser's or `make` created nothing.
-    pub(super) fn capture(device: &wgpu::Device, make: impl FnOnce()) -> Option<js_sys::Promise> {
-        let raw: &JsValue = device.as_webgpu()?.as_ref();
-        let twins: Vec<js_sys::Function> = MAKERS
-            .iter()
-            .map(|(_, twin)| js_sys::Reflect::get(raw, &JsValue::from_str(twin)).ok()?.dyn_into().ok())
-            .collect::<Option<_>>()?;
-        let caught: Rc<RefCell<Option<js_sys::Promise>>> = Rc::default();
-        let shims: Vec<Closure<dyn FnMut(JsValue) -> JsValue>> = twins
-            .into_iter()
-            .map(|twin| {
-                let (device, caught) = (raw.clone(), caught.clone());
-                Closure::new(move |descriptor: JsValue| {
-                    let promise = twin.call1(&device, &descriptor).unwrap_or(JsValue::UNDEFINED);
-                    *caught.borrow_mut() = promise.clone().dyn_into().ok();
-                    promise
+    pub(super) struct Compiled {
+        device: JsValue,
+        /// Whether a pipeline created now compiles ahead, in the background.
+        ahead: Rc<Cell<bool>>,
+        /// The compile that the last pipeline created ahead started.
+        started: Rc<RefCell<Option<js_sys::Promise>>>,
+        /// Pipelines compiled ahead and not created yet, by label.
+        pub(super) kept: Rc<RefCell<HashMap<String, JsValue>>>,
+        /// Why the browser rejected custom markers compiled ahead, by label.
+        pub(super) rejected: Rc<RefCell<HashMap<String, String>>>,
+        /// Labels of pipelines created before their compile ahead finished.
+        pub(super) created: Rc<RefCell<std::collections::HashSet<String>>>,
+        shims: Vec<Closure<dyn FnMut(JsValue) -> JsValue>>,
+    }
+
+    impl Compiled {
+        /// Replaces `device`'s pipeline creation methods. `None` if it is not a browser's device.
+        pub(super) fn install(device: &wgpu::Device) -> Option<Compiled> {
+            let raw: &JsValue = device.as_webgpu()?.as_ref();
+            let raw = raw.clone();
+            let method = |name: &str| -> Option<js_sys::Function> {
+                js_sys::Reflect::get(&raw, &JsValue::from_str(name)).ok()?.dyn_into().ok()
+            };
+            let methods: Vec<(js_sys::Function, js_sys::Function)> =
+                MAKERS.iter().map(|(made, twin)| Some((method(made)?, method(twin)?))).collect::<Option<_>>()?;
+            let (ahead, started) = (Rc::<Cell<bool>>::default(), Rc::<RefCell<Option<js_sys::Promise>>>::default());
+            let kept = Rc::<RefCell<HashMap<String, JsValue>>>::default();
+            let shims = methods
+                .into_iter()
+                .map(|(made, twin)| {
+                    let (device, ahead, started, kept) = (raw.clone(), ahead.clone(), started.clone(), kept.clone());
+                    Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |descriptor: JsValue| {
+                        if ahead.get() {
+                            let promise =
+                                twin.call1(&device, &descriptor).unwrap_or_else(|e| wasm_bindgen::throw_val(e));
+                            *started.borrow_mut() = promise.clone().dyn_into().ok();
+                            return promise;
+                        }
+                        let label = js_sys::Reflect::get(&descriptor, &JsValue::from_str("label")).ok();
+                        if let Some(pipeline) =
+                            label.and_then(|l| l.as_string()).and_then(|l| kept.borrow_mut().remove(&l))
+                        {
+                            return pipeline;
+                        }
+                        made.call1(&device, &descriptor).unwrap_or_else(|e| wasm_bindgen::throw_val(e))
+                    })
                 })
-            })
-            .collect();
-        let swapped = MAKERS
-            .iter()
-            .zip(&shims)
-            .all(|((maker, _), shim)| js_sys::Reflect::set(raw, &JsValue::from_str(maker), shim.as_ref()).is_ok());
-        if swapped {
+                .collect();
+            let compiled =
+                Compiled { device: raw, ahead, started, kept, rejected: Rc::default(), created: Rc::default(), shims };
+            // Dropping `compiled` puts back any method already replaced.
+            for ((made, _), shim) in MAKERS.iter().zip(&compiled.shims) {
+                js_sys::Reflect::set(&compiled.device, &JsValue::from_str(made), shim.as_ref()).ok()?;
+            }
+            Some(compiled)
+        }
+
+        /// Starts compiling, in the background, the pipeline that `make` creates through wgpu.
+        /// `None` if `make` created nothing.
+        pub(super) fn start(&self, make: impl FnOnce()) -> Option<js_sys::Promise> {
+            self.ahead.set(true);
             make();
+            self.ahead.set(false);
+            self.started.take()
         }
-        for (maker, _) in MAKERS {
-            let _ = js_sys::Reflect::delete_property(raw.unchecked_ref::<js_sys::Object>(), &JsValue::from_str(maker));
+    }
+
+    impl Drop for Compiled {
+        fn drop(&mut self) {
+            // The methods of the device's prototype show through again.
+            let device: &js_sys::Object = self.device.unchecked_ref();
+            for (made, _) in MAKERS {
+                let _ = js_sys::Reflect::delete_property(device, &JsValue::from_str(made));
+            }
         }
-        drop(shims);
-        caught.take()
+    }
+
+    /// The message of a compile the browser rejected.
+    pub(super) fn message(error: &JsValue) -> String {
+        js_sys::Reflect::get(error, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|message| message.as_string())
+            .unwrap_or_else(|| format!("{error:?}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn labels_name_each_pipeline_exactly() {
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let variants = [
+            Variant::draw(Shader::Triangles, format, 1),
+            Variant::draw(Shader::Triangles, format, 4),
+            Variant::draw(Shader::Triangles, wgpu::TextureFormat::Rgba8Unorm, 1),
+            Variant::draw(Shader::Backdrop, format, 1),
+            Variant::compute(Shader::Probe, "answer"),
+            Variant::compute(Shader::ProbeMultisampled, "answer"),
+            Variant::channels(Reads::ALL),
+            Variant::channels(Reads::NONE),
+        ];
+        let labels: HashSet<String> = variants.iter().map(|&variant| Asked::Shader(variant).label()).collect();
+        assert_eq!(labels.len(), variants.len(), "variants that differ have labels that differ: {labels:?}");
+        let custom = |source: &str| Asked::Custom(Arc::from(source), variants[0]).label();
+        assert_ne!(custom("a"), custom("b"), "custom markers differ by their WGSL");
+        assert!(!labels.contains(&custom("a")), "and from the shader they extend");
     }
 }

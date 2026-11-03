@@ -248,8 +248,14 @@ const state = (name: State): Expr => new Expr({ state: name });
 export const field = (name: string): Expr => new Expr(`$${name}`);
 /** Whether the row is selected. */
 export const selected = (): Expr => state('selected');
-/** Whether the pointer is over the row. */
+/** Whether the row is hovered: under the pointer, stepped to by the keyboard, or set by `view.hovered`. */
 export const hovered = (): Expr => state('hovered');
+/**
+ * Whether the row is one reference from a selected or hovered row: a row it references, or one
+ * that references it, such as a branch of a selected bus. The selected row may be one a linked view
+ * shares.
+ */
+export const related = (): Expr => state('related');
 /** CSS pixels from a vertex to the pointer. Vertex marks only, and not in a vertex's position. */
 export const pointer = (): Expr => state('pointer');
 /** Seconds since the view was created. A mark that reads it redraws every frame. */

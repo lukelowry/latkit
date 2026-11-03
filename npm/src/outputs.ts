@@ -290,8 +290,12 @@ export type ViewEvent =
       detail: Waiting;
     }
   | /**
-     * Something failed. Reported once. A mark that no longer fits its data is also listed in
-     * `view.failures`.
+     * The failures changed: `view.failures`. Each option that draws as if unset, and each mark that
+     * draws nothing, with why. Empty once everything draws.
+     */ { type: 'failures'; detail: Failure[] }
+  | /**
+     * The view can't draw: the device was lost, a limit was reached, latkit stopped, a fetch or text
+     * failed. Reported once. Shots and videos fail with it.
      */ { type: 'error'; detail: Failure };
 
 /**
@@ -356,4 +360,9 @@ export interface Work {
    * GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not request.
    */
   late: number;
+  /**
+   * Bytes of GPU memory freed: buffers and textures replaced, or no longer used, once the GPU is
+   * done with them. In a browser they are freed then, not when JavaScript collects them.
+   */
+  destroyed: number;
 }

@@ -123,7 +123,7 @@ fn an_index_that_is_not_tile_json_fails_as_invalid_input() {
     // The host serves empty bytes for anything outside `tiles/`.
     gpu.set_host(Serving(Arc::new(Served::default())));
     let scene = Scene::new(Earth::default()).draw(Areas::of("base", "water"));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&Tiles::new("base", "index.json")]).expect("a source");
     frame(&gpu, &mut view);
     let errors = errors(&mut view);
@@ -142,7 +142,7 @@ fn tiles_the_camera_needs_draw_as_a_dataset() {
         .theme(plain_theme());
     let camera = Camera::Map { center: [0.0, 0.0, 0.0], zoom: 2.0, pitch: 0.0, bearing: 0.0 };
     let tiles = Tiles::new("base", "tiles/{z}/{x}/{y}.pbf");
-    let mut view = View::new(&gpu, scene.clone()).expect("valid scene");
+    let mut view = View::new(&gpu, scene.clone());
     view.set_camera(camera);
     view.set_sources([&tiles]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -159,7 +159,7 @@ fn tiles_the_camera_needs_draw_as_a_dataset() {
     assert!(at(&pixels, C + 8, C + 8)[0] > 150, "filled: {:?}", at(&pixels, C + 8, C + 8));
     assert_eq!(errors(&mut view), Vec::new());
     // A second view of the same tiles draws what the first fetched, without fetching again.
-    let mut second = View::new(&gpu, scene).expect("valid scene");
+    let mut second = View::new(&gpu, scene);
     second.set_camera(camera);
     second.set_sources([&tiles]).expect("a source");
     let asked = served.fetched.lock().expect("unpoisoned").len();
@@ -196,7 +196,7 @@ fn tiles_arrive_shaped_by_the_jobs_that_decode_them() {
     gpu.set_host(Serving(served.clone()));
     let earth = Earth { graticule: false, ..Earth::default() };
     let scene = Scene::new(earth).draw(Areas::of("base", "water")).theme(plain_theme());
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     let camera = |zoom| Camera::Map { center: [10.0, 10.0, 0.0], zoom, pitch: 0.0, bearing: 0.0 };
     view.set_camera(camera(2.0));
     view.set_sources([&Tiles::new("base", "tiles/{z}/{x}/{y}.pbf")]).expect("a source");
@@ -258,11 +258,11 @@ fn time_tiles_draw_the_spans_a_plot_window_needs() {
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").trace("v").color(red).width(2.0));
     let camera = Camera::Plot { x: [1000.0, 1400.0], y: Some([0.0, 1.0]) };
-    let mut whole = View::new(&gpu, scene.clone()).expect("valid scene");
+    let mut whole = View::new(&gpu, scene.clone());
     whole.set_sources([&data]).expect("a source");
     whole.set_camera(camera);
     let expected = frame(&gpu, &mut whole);
-    let mut tiled = View::new(&gpu, scene).expect("valid scene");
+    let mut tiled = View::new(&gpu, scene);
     tiled.set_sources([Tiles::new("signals", "history/frames.json")]).expect("a source");
     tiled.set_camera(camera);
     let pixels = frame(&gpu, &mut tiled);
@@ -315,7 +315,7 @@ fn time_tiles_the_app_fetches_refresh_as_frames_are_recorded() {
         Pending::ready(file.ok_or_else(|| latkit::Error::Io("no such file".into())))
     });
     let scene = Scene::new(Plot::default()).theme(plain_theme()).draw(Lines::of("signals", "Signal").trace("v"));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([tiles.clone()]).expect("a source");
     view.set_camera(Camera::Plot { x: [0.0, 300.0], y: Some([0.0, 1.0]) });
     let mut last = || {
@@ -347,7 +347,7 @@ fn geojson_draws_as_lines_and_vertices_on_the_globe() {
         .draw(Lines::of("map", "lines").width(3.0).color(red))
         .draw(Vertices::of("map", "points").radius(6.0).color(red))
         .theme(plain_theme());
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Map { center: [0.0, 0.0, 0.0], zoom: 0.5, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);

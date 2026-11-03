@@ -3,8 +3,19 @@
  * they arrive and the oldest are forgotten. Pause or scrub the timeline to read back what passed.
  * Every 20 seconds one area dips and recovers. Strike one yourself, and query for the signals hit
  * hardest. Or draw a recorded day, fetched span by span as time tiles at the detail the plot needs.
+ * A map of the areas shares its selection and hover with the plot: each signal references its area,
+ * so an area lights its signals' traces, and a trace its area.
  */
-import { Data, Tiles, field, selected, when, type CustomColormap } from 'latkit';
+import {
+  Data,
+  Tiles,
+  field,
+  reference,
+  related,
+  selected,
+  when,
+  type CustomColormap,
+} from 'latkit';
 import { choice, page } from '../shell/page.js';
 import { random } from '../random.js';
 
@@ -49,7 +60,18 @@ export default page({
 
   async open({ settings, view, actions, timeline, frame, detail }) {
     let s = signals(settings.count);
-    const live = new Data('live').axis('time', 's').set('Signal', { name: s.name, area: s.area });
+    /** The signals, each referencing its area. */
+    const table = () => ({ name: s.name, area: s.area, zone: reference('Area', s.area) });
+    const live = new Data('live')
+      .axis('time', 's')
+      // The areas, in a column beside the plot.
+      .set('Area', {
+        name: AREAS,
+        area: AREAS.map((_, i) => i),
+        x: AREAS.map(() => 0),
+        y: AREAS.map((_, i) => -i),
+      })
+      .set('Signal', table());
     const day = new Tiles('scada', 'history/frames.json');
     let t = 0;
     let struck = -Infinity;
@@ -59,32 +81,56 @@ export default page({
       (settings) => {
         const table = settings.source === 'live' ? live.table('Signal') : day.table('Signal');
         return {
-          space: {
-            plot: {
-              x: { label: settings.source === 'live' ? 'Time (s)' : 'Time of day (s)' },
-              y: { label: 'Voltage (pu)' },
-            },
-          },
+          space: { plot: { x: { unit: ' s' }, y: { unit: ' pu' } } },
           theme: { base: 'dark', background: '#101214', focus: { dim: 0.15 } },
           ease: 0,
           marks: [
             {
               lines: table,
               trace: 'value',
-              width: when(selected())
+              // Selected traces, and those of a selected or hovered area, stand out.
+              width: when(selected().or(related()))
                 .then(2.5)
                 .otherwise(settings.count > 2000 ? 0.6 : 1),
               color:
                 settings.color === 'area'
                   ? field('area').colormap(BY_AREA)
                   : field('value').colormap('coolwarm').domain(0.94, 1.04),
-              legend: settings.color === 'area' ? 'Area' : 'Voltage (pu)',
+              legend: settings.color === 'area' ? 'Area' : { title: 'Voltage', unit: ' pu' },
             },
           ],
         };
       },
-      { camera: { x: [-WINDOW, 0] } },
+      { region: [0, 0, 0.78, 1], camera: { x: [-WINDOW, 0] } },
     );
+    const map = await view(
+      () => ({
+        space: { plane: { grid: 'off' } },
+        theme: { base: 'dark', background: '#14171b' },
+        controls: 'inspect',
+        title: { text: 'Areas', place: 'top' },
+        marks: [
+          {
+            vertices: live.table('Area'),
+            position: ['$x', '$y'],
+            radius: 14,
+            color: field('area').colormap(BY_AREA),
+            // An area rings while one of its signals is selected or hovered in the plot.
+            ring: when(related()).then('#ffffff').otherwise(null),
+            label: '$name',
+          },
+        ],
+      }),
+      { region: [0.78, 0, 0.22, 1], label: 'The areas: hover or click one to light its signals' },
+    );
+    // The views share their selection and hover. Setting one emits no event, so this never loops.
+    for (const [from, to] of [
+      [plot, map],
+      [map, plot],
+    ] as const) {
+      from.on('selection', ({ rows }) => (to.selection = rows));
+      from.on('hovered', ({ hit }) => (to.hovered = hit?.row ?? null));
+    }
     timeline({ data: live, keep: KEEP });
 
     actions('Actions', [
@@ -108,7 +154,7 @@ export default page({
             limit: 12,
             at: t,
           });
-          plot.selection = [{ data: 'live', table: 'Signal', ids: lowest.ids }];
+          plot.selection = map.selection = [{ data: 'live', table: 'Signal', ids: lowest.ids }];
         },
       },
     ]);
@@ -142,7 +188,7 @@ export default page({
         if (key === 'count') {
           s = signals(next.count);
           values = new Float32Array(next.count);
-          live.replace('Signal', { name: s.name, area: s.area });
+          live.replace('Signal', table());
           detail(`${next.count.toLocaleString()} signals at ${RATE} Hz, ${KEEP} s kept`);
         }
         if (key === 'source')

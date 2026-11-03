@@ -36,7 +36,7 @@ fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
         .controls(controls)
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0))
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0));
-    let mut view = View::new(gpu, scene).expect("valid scene");
+    let mut view = View::new(gpu, scene);
     view.set_camera(camera());
     view.set_sources([graph()]).expect("a source");
     frame(gpu, &mut view);
@@ -113,7 +113,7 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
         .theme(plain_theme())
         .draw(Edges::of("grid", "Line").ends("from", "to"))
         .draw(Vertices::of("grid", "Bus").position(field("lon"), field("lat")));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     frame(&gpu, &mut view);
@@ -164,7 +164,7 @@ fn hidden_rows_have_no_screen_position() {
         .draw(Faces::of("graph", "Face").corners("a", "b", "c").visible(field("on")))
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0).visible(field("on")))
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
@@ -216,7 +216,7 @@ fn picking_a_trace_returns_its_sample() {
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").trace("v").width(3.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
@@ -247,7 +247,7 @@ fn a_trace_keeps_large_absolute_indexes_on_the_gpu() {
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").trace("v").width(3.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);

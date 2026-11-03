@@ -1,6 +1,6 @@
 //! Markers draw from their inputs: a gauge filled to its value, a pie's slices, an icon, a custom
-//! WGSL marker, and a status ring. A custom marker that fails to compile is reported as an error,
-//! not drawn.
+//! WGSL marker, and a status ring. A custom marker that fails to compile is listed as a failure of
+//! its mark, and not drawn.
 
 #![cfg(feature = "gpu")]
 
@@ -19,7 +19,7 @@ fn one(marker: Marker) -> (View, latkit::Gpu) {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(20.0).color(Color::WHITE).marker(marker));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     (view, gpu)
@@ -87,10 +87,15 @@ fn custom_markers_draw_their_wgsl_and_bad_ones_are_reported() {
 
     let (mut view, gpu) =
         one(Marker::Wgsl { source: "fn marker(f: MarkerFragment) -> MarkerColor { oops }".into(), inputs: vec![] });
+    let pixels = frame(&gpu, &mut view);
     frame(&gpu, &mut view);
-    frame(&gpu, &mut view);
-    let told = view.events().any(|e| matches!(e, Event::Error(error) if error.to_string().contains("custom marker")));
-    assert!(told, "the broken marker is reported");
+    let failures: Vec<String> = view.failures().map(|f| f.to_string()).collect();
+    let listed = failures.iter().any(|f| f.starts_with("marks[0].marker: the custom marker does not compile"));
+    assert!(listed, "the broken marker is listed: {failures:?}");
+    let events: Vec<Event> = view.events().collect();
+    assert!(events.iter().any(|e| matches!(e, Event::Failures(f) if !f.is_empty())), "in a failures event");
+    assert!(!events.iter().any(|e| matches!(e, Event::Error(_))), "and stops nothing else drawing: {events:?}");
+    assert!(close(at(&pixels, SIZE / 2, SIZE / 2), BLACK), "it draws nothing");
 }
 
 #[test]
@@ -105,7 +110,7 @@ fn status_rings_surround_their_markers() {
             .color(Color::WHITE)
             .ring(Color::rgb(1.0, 0.0, 0.0)),
     );
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -131,7 +136,7 @@ fn a_missing_status_draws_no_ring_in_either_branch() {
         let scene = Scene::new(plane()).theme(plain_theme()).draw(
             Vertices::of("d", "V").position(field("x"), field("y")).radius(10.0).color(Color::WHITE).ring(status),
         );
-        let mut view = View::new(&gpu, scene).expect("valid scene");
+        let mut view = View::new(&gpu, scene);
         view.set_camera(camera());
         view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);

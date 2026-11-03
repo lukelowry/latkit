@@ -69,7 +69,9 @@ export class Gpu extends Handle {
 
   /**
    * Whether the device is lost. latkit then requests a new one, so this is true only until it
-   * arrives, or when there is none. Also true once an internal error stopped latkit.
+   * arrives, or when there is none. Also true once an internal error stopped latkit. latkit also
+   * gives up a device that has no memory to grow its data, and the new one gets the budget lowered
+   * to what the old one gave.
    */
   get lost(): boolean {
     return stopped() || device(this).lost;
@@ -98,7 +100,7 @@ export class Gpu extends Handle {
 
   /**
    * The GPU memory budget for data, shared by every view on this GPU. See {@link Budget}. Defaults
-   * to half the device's largest storage buffer, with 32 MiB uploaded per frame.
+   * to half the device's largest storage buffer, at most 1 GiB, with 32 MiB uploaded per frame.
    */
   get budget(): Budget {
     return JSON.parse(device(this).budget) as Budget;

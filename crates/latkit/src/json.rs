@@ -84,21 +84,75 @@ pub(crate) fn nested<T: DeserializeOwned, E: serde::de::Error>(value: serde_json
     })
 }
 
+/// Deserializes `T` from `value`, a buffered part of the input [`read`] is reading, leaving out each
+/// part that can't be read. Returns the value and an error for each part left out, at its path.
+/// `option` names the part to leave out for an error at a path, or `None` when the value can't be
+/// read without it, which fails the whole value as [`nested`] does.
+pub(crate) fn lenient<T: DeserializeOwned, E: serde::de::Error>(
+    mut value: serde_json::Value,
+    option: impl Fn(&Path) -> Option<Path>,
+) -> std::result::Result<(T, Vec<Error>), E> {
+    let mut unread = Vec::new();
+    loop {
+        match read::<T, _>(&value) {
+            Ok(read) => return Ok((read, unread)),
+            Err(Error::Invalid { path, reason }) => {
+                if option(&path).is_none_or(|option| !take(&mut value, &option)) {
+                    WITHIN.set(Some(path));
+                    return Err(E::custom(reason));
+                }
+                unread.push(Error::Invalid { path, reason });
+            }
+            Err(error) => return Err(E::custom(error)),
+        }
+    }
+}
+
+/// Removes the part of `value` at `path`. Returns whether there was one.
+fn take(value: &mut serde_json::Value, path: &Path) -> bool {
+    use serde_json::Value;
+    let Some((last, parents)) = path.0.split_last() else { return false };
+    let mut at = value;
+    for step in parents {
+        let next = match (step, at) {
+            (Step::Name(name), Value::Object(map)) => map.get_mut(name.as_str()),
+            (Step::Index(i), Value::Array(items)) => items.get_mut(*i),
+            _ => None,
+        };
+        let Some(next) = next else { return false };
+        at = next;
+    }
+    match (last, at) {
+        (Step::Name(name), Value::Object(map)) => map.shift_remove(name.as_str()).is_some(),
+        (Step::Index(i), Value::Array(items)) if *i < items.len() => {
+            items.remove(*i);
+            true
+        }
+        _ => false,
+    }
+}
+
 #[cfg(all(test, feature = "gpu"))]
 mod tests {
     use crate::{Scene, from_json};
 
     #[test]
     fn errors_name_the_path_through_presets_and_marks() {
-        let at = |json: &str| from_json::<Scene>(json).unwrap_err().to_string();
-        let grid = at(r#"{"space": {"plane": {"grid": "bogus"}}, "marks": []}"#);
+        // An option that can't be read is left out of the scene, and why is kept at its path.
+        let unread = |json: &str| {
+            let scene = from_json::<Scene>(json).expect("a scene");
+            scene.unread.first().map(ToString::to_string).unwrap_or_default()
+        };
+        let grid = unread(r#"{"space": {"plane": {"grid": "bogus"}}, "marks": []}"#);
         assert!(grid.starts_with("space.plane.grid:"), "{grid}");
-        let mark = at(r#"{"space": "plane", "marks": [{"vertices": ["d", "t"], "colour": "x"}]}"#);
+        let mark = unread(r#"{"space": "plane", "marks": [{"vertices": ["d", "t"], "colour": "x"}]}"#);
         assert!(mark.starts_with("marks[0].colour:") && !mark.contains(" at line "), "{mark}");
         // An option before the key naming the mark's kind still names its own path.
         let radius =
-            at(r#"{"space": "plane", "marks": [{"edges": ["d", "e"]}, {"radius": [1], "vertices": ["d", "t"]}]}"#);
+            unread(r#"{"space": "plane", "marks": [{"edges": ["d", "e"]}, {"radius": [1], "vertices": ["d", "t"]}]}"#);
         assert!(radius.starts_with("marks[1].radius"), "{radius}");
+        // A mark that names no kind can't be read, so neither can the scene.
+        let at = |json: &str| from_json::<Scene>(json).unwrap_err().to_string();
         let none = at(r#"{"space": "plane", "marks": [{"of": ["d", "t"]}]}"#);
         assert!(none.starts_with("marks[0]:") && none.contains("vertices"), "{none}");
         assert!(from_json::<Scene>(r#"{"space": "plane", "marks": []} trailing"#).is_err());

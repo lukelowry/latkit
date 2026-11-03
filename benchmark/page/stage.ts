@@ -11,7 +11,17 @@
  * shows in its own frame, and its CPU and GPU times are per frame. A lost device fails the phase at
  * once, and every wait has a deadline that cancels the work it waits on.
  */
-import { Data, Patch, Tiles, View, type Camera, type Gpu, type Scene, type Work } from 'latkit';
+import {
+  Data,
+  Patch,
+  Tiles,
+  View,
+  type Camera,
+  type Gpu,
+  type LatkitError,
+  type Scene,
+  type Work,
+} from 'latkit';
 import { quantile } from '../../npm/examples/gate/quantile.ts';
 
 /** Writes a dataset's rows into a patch, from arrays made beforehand. */
@@ -126,9 +136,13 @@ export class Stage {
     return this.once(async () => {
       for (const canvas of this.canvases) {
         const view = await View.create(canvas, scene, { gpu: this.gpu, sources, camera });
-        view.on('error', (error) =>
-          this.errors.push(`${error.path ?? ''} ${error.message}`.trim()),
-        );
+        // Each `failures` event lists them all again, so each is recorded once.
+        const told = (error: LatkitError) => {
+          const text = `${error.path ?? ''} ${error.message}`.trim();
+          if (!this.errors.includes(text)) this.errors.push(text);
+        };
+        view.on('error', told);
+        view.on('failures', (failures) => failures.forEach(told));
         this.views.push(view);
       }
     });

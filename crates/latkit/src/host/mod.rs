@@ -112,4 +112,17 @@ pub struct Raster {
     pub coverage: Vec<u8>,
     /// Pixels from the top to the baseline.
     pub baseline: f32,
+    /// The text's line box in pixels from the raster's top left: left, top, right, and bottom. Its
+    /// width is the text's advance and its height the lines' height, without the padding around
+    /// them. Text aligns by it.
+    pub line_box: [f32; 4],
+}
+
+/// How many times fonts finished loading in the browser. Text set before a font loaded is set again
+/// in it. Natively it stays 0, since fonts load before any text is set.
+pub(crate) fn fonts() -> u64 {
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    return browser::fonts();
+    #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+    0
 }

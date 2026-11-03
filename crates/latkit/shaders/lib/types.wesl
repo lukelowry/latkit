@@ -55,6 +55,7 @@ const OP_EXP: u32 = 42u;
 const OP_ZOOM: u32 = 43u;
 // The value below the top, or the top where that value is missing. `a` is 1 for colors.
 const OP_FALLBACK: u32 = 44u;
+const OP_RELATED: u32 = 45u;
 
 // Depth of the expression machine's value stack.
 const STACK: u32 = 16u;
@@ -318,13 +319,16 @@ const SHADOW: u32 = 256u;
 // A vertex mark whose rows contain other rows. Its rows draw as containers.
 const GROUP: u32 = 512u;
 
-// Focus bits per row. SELECTED, HOVERED, and END (an end of a selected or hovered edge) make a row
-// lit, and the focus draw redraws lit rows over everything. FIT marks the rows a fit measures.
+// Focus bits per row. SELECTED and HOVERED mark the selected and hovered rows, and RELATED_SELECTED
+// and RELATED_HOVERED the rows one reference from them. Any of these makes a row lit, and the focus
+// draw redraws lit rows over everything. FIT marks the rows a fit measures.
 const SELECTED: u32 = 1u;
 const HOVERED: u32 = 2u;
 const FIT: u32 = 4u;
-const END: u32 = 8u;
-const LIT: u32 = 11u;
+const RELATED_SELECTED: u32 = 8u;
+const RELATED_HOVERED: u32 = 16u;
+const RELATED: u32 = 24u;
+const LIT: u32 = 27u;
 
 // Words per mark in the extents buffer, as order-preserving bits (`ordered`): the complements of
 // the least x, y, and z, then the greatest x, y, and z, then the widest margin in CSS pixels that
@@ -465,6 +469,7 @@ struct Frame {
     mercator_y: f32,
     probe_radius: f32,
     elapsed: f32,
+    // 1 while the selection lights rows of this view, so the others dim.
     selecting: u32,
     // 1 while a fit measures only the rows marked FIT.
     fitting: u32,

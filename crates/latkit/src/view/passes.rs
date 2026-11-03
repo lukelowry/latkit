@@ -32,8 +32,7 @@ const WORKGROUP: u32 = 256;
 /// The most workgroups per dispatch dimension that every device supports.
 const MAX_GROUPS: u32 = 65_535;
 
-/// The scissor rectangle `[x, y, width, height]`, in target pixels, covering `area`. A plot's lines
-/// draw only inside its axes.
+/// The scissor rectangle `[x, y, width, height]`, in target pixels, covering `area`.
 fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
     let [w, h] = frame.size.map(f64::from);
     let r = f64::from(frame.pixel_ratio);
@@ -115,8 +114,6 @@ struct Marks<'a> {
     groups: &'a super::resources::Groups,
     passes: &'a [(Shader, wgpu::BindGroup)],
     lists: &'a wgpu::Buffer,
-    clip: Option<[u32; 4]>,
-    size: [u32; 2],
 }
 
 impl Marks<'_> {
@@ -147,19 +144,12 @@ impl Marks<'_> {
         let corners = shown.kind().primitive().corners();
         let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         pass.set_bind_group(1, &self.groups.mark, &[offset(i)]);
-        let clip = self.clip.filter(|_| shown.kind() == MarkKind::Lines);
-        if let Some([x, y, w, h]) = clip {
-            pass.set_scissor_rect(x, y, w, h);
-        }
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(2, group, &[]);
         if draw == Draw::Lit {
             drawn.draw(pass, corners, shown.lit.rows * shown.lit.pieces);
         } else {
             shown.record(pass, drawn, corners, self.lists);
-        }
-        if clip.is_some() {
-            pass.set_scissor_rect(0, 0, self.size[0], self.size[1]);
         }
     }
 
@@ -714,8 +704,7 @@ impl View {
         }
         let background =
             if self.signal.transparent() { [0.0; 4] } else { self.scene.theme.background.to_array().map(f64::from) };
-        let plot = matches!(self.scene.space, Space::Plot(_));
-        let scissor = scissor(self.area(), frame);
+        let clip = self.drawn_area().map(|area| scissor(area, frame)).filter(|s| s[2] > 0 && s[3] > 0);
         let samples = gpu.samples_for(frame.pixel_ratio);
         let resources = self.resources.as_mut().expect("created before passes");
         let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
@@ -766,16 +755,11 @@ impl View {
         if texts && under > 0 {
             overlay(&mut pass, drawn, inner, 0..under);
         }
-        let marks = Marks {
-            device,
-            format: frame.format,
-            samples,
-            groups: &groups,
-            passes: &passes,
-            lists: &lists,
-            clip: (plot && scissor[2] > 0 && scissor[3] > 0).then_some(scissor),
-            size: frame.size,
-        };
+        let marks = Marks { device, format: frame.format, samples, groups: &groups, passes: &passes, lists: &lists };
+        // Marks and their labels draw only where no guide on a side takes room.
+        if let Some([x, y, w, h]) = clip {
+            pass.set_scissor_rect(x, y, w, h);
+        }
         // Where depth varies, points and strokes first write their depth, so wherever marks overlap
         // the nearest shows, whatever their order.
         if self.deep() && self.depths_ready(inner, frame.format, samples) {
@@ -805,6 +789,9 @@ impl View {
         }
         let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(group);
         self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, glyphs);
+        if clip.is_some() {
+            pass.set_scissor_rect(0, 0, frame.size[0], frame.size[1]);
+        }
         if sprites > under {
             overlay(&mut pass, drawn, inner, under..sprites);
         }

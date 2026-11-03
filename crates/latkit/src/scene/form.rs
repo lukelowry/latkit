@@ -97,6 +97,50 @@ pub(crate) fn preset_schema<T: Presets>(schema: &mut Schema) {
     }
 }
 
+/// A type read from its text alone, or from its options.
+pub(crate) trait Text: Sized {
+    /// The type with `text` and every other option at its default.
+    fn of_text(text: &str) -> Self;
+
+    /// Reads the type from its options object with the derived implementation.
+    fn options<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>;
+}
+
+/// Reads `T` from a string or from its options. Options are read in place, so an error names the
+/// path to the option that failed.
+pub(crate) fn text_or<'de, D: Deserializer<'de>, T: Text>(deserializer: D) -> Result<T, D::Error> {
+    struct Written<T>(PhantomData<T>);
+
+    impl<'de, T: Text> Visitor<'de> for Written<T> {
+        type Value = T;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("text, or options")
+        }
+
+        fn visit_str<E: de::Error>(self, text: &str) -> Result<T, E> {
+            Ok(T::of_text(text))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+            T::options(MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(Written(PhantomData))
+}
+
+/// Rewrites `T`'s derived schema to accept a string or the derived form. The description moves to
+/// the combined schema.
+pub(crate) fn text_schema(schema: &mut Schema) {
+    let mut derived = std::mem::replace(schema, json_schema!({}));
+    let description = derived.remove("description");
+    *schema = json_schema!({ "anyOf": [{ "type": "string" }, derived] });
+    if let Some(description) = description {
+        schema.insert("description".into(), description);
+    }
+}
+
 /// Reads a duration in seconds. Errors on negative or out-of-range values.
 pub(crate) fn seconds<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
     let seconds = f64::deserialize(deserializer)?;

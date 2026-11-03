@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
@@ -153,6 +154,33 @@ impl Encoder for Script {
 /// Padding in pixels around each run, so antialiasing and overhangs are not clipped.
 const PAD: f64 = 2.0;
 
+/// How many times the page's or worker's fonts finished loading.
+static FONTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    /// Whether a listener counts finished font loads.
+    static LISTENING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// How many times fonts finished loading. The first call starts counting, and each load after it
+/// requests a frame of every view, which sets its text again.
+pub(super) fn fonts() -> u64 {
+    if !LISTENING.replace(true) {
+        let fonts = js_sys::Reflect::get(&js_sys::global(), &"fonts".into())
+            .ok()
+            .and_then(|fonts| fonts.dyn_into::<web_sys::EventTarget>().ok());
+        if let Some(fonts) = fonts {
+            let loaded = Closure::<dyn FnMut()>::new(|| {
+                FONTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                crate::web::wake_all();
+            });
+            let _ = fonts.add_event_listener_with_callback("loadingdone", loaded.as_ref().unchecked_ref());
+            loaded.forget();
+        }
+    }
+    FONTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Breaks `text` into lines, each with its width: at each newline, then at spaces so no line is
 /// wider than `max_width`. A word wider than `max_width` gets a line of its own.
 fn lines(
@@ -269,7 +297,9 @@ impl Host for Browser {
             }
             let rgba = context.get_image_data(0.0, 0.0, f64::from(size[0]), f64::from(size[1])).ok()?.data();
             let coverage = rgba.0.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
-            Some(Raster { size, coverage, baseline: (PAD + layout.ascent) as f32 })
+            let [width, height] = layout.size().map(|side| side - 2.0 * PAD);
+            let line_box = [PAD, PAD, PAD + width, PAD + height].map(|v| v as f32);
+            Some(Raster { size, coverage, baseline: (PAD + layout.ascent) as f32, line_box })
         })
         .ok_or_else(|| Error::Unsupported("browser text rasterization failed".into()))
     }

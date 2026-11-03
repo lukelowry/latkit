@@ -44,7 +44,7 @@ fn view(gpu: &latkit::Gpu, zoom: f64) -> View {
         .draw(
             Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0).color(Color::rgb(1.0, 0.0, 0.0)),
         );
-    let mut view = View::new(gpu, scene).expect("valid scene");
+    let mut view = View::new(gpu, scene);
     view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
     view.set_sources([graph()]).expect("a source");
     view
@@ -80,7 +80,7 @@ fn a_lit_group_glows_around_its_border_and_hides_nothing() {
     for _ in 0..30 {
         pixels = common::step(&gpu, &mut view);
     }
-    assert_eq!(view.hovered().map(|hit| hit.row.table.to_string()), Some("Area".into()), "the group is lit");
+    assert_eq!(view.hovered().map(|row| row.table.to_string()), Some("Area".into()), "the group is lit");
     assert!(at(&pixels, C - 15, C)[0] > 120, "its members still draw over it");
     assert!(blue(&pixels, C, C + 7), "its body shows away from its border");
     assert_eq!(errors(&mut view), Vec::new());

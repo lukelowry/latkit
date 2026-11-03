@@ -27,7 +27,7 @@ fn dot(x: f64, color: Color) -> (Scene, Data) {
 }
 
 fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
-    let mut view = View::new(gpu, scene).expect("valid scene");
+    let mut view = View::new(gpu, scene);
     view.set_camera(camera());
     view.set_sources([data]).expect("a source");
     view
@@ -149,7 +149,7 @@ fn a_picture_waits_for_easing_to_finish() {
 fn a_frame_reports_whether_it_drew_placeholders() {
     let Some(gpu) = gpu() else { return };
     let (scene, data) = dot(0.0, Color::rgb(1.0, 0.0, 0.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     assert!(!view.complete(), "nothing drawn yet");
     view.set_sources([&data]).expect("a source");
@@ -179,7 +179,7 @@ fn timeouts_and_font_errors_return_the_view_without_a_partial_image() {
     data.apply(Table::new("Node", Ids::count(1)).field("name", vec!["Hello"])).unwrap();
     let scene = Scene::new(latkit::Diagram::default())
         .draw(Vertices::of("labels", "Node").label(latkit::Label::new(field("name"))));
-    view.set_scene(scene).unwrap();
+    view.set_scene(scene);
     view.set_sources([&data]).expect("a source");
     let error = pollster::block_on(Shot::new([128, 128]).image(&mut [&mut view])).unwrap_err();
     assert!(error.to_string().contains("test font failure"));
@@ -231,6 +231,27 @@ fn native_fonts_draw_visible_glyphs_into_the_export() {
     assert!(white > 15, "the image contains real white glyphs, not just the red vertex: {white}");
 }
 
+/// Where `image` shows `color` within `rows`, give or take 24 per channel, as `(x, y)` pixels.
+fn found(image: &Image, color: [u8; 3], rows: std::ops::Range<u32>) -> Vec<(u32, u32)> {
+    let near = |p: [u8; 4]| p.iter().zip(color).all(|(x, y)| x.abs_diff(y) <= 24);
+    rows.flat_map(|y| (0..image.size[0]).map(move |x| (x, y))).filter(|&(x, y)| near(pixel(image, x, y))).collect()
+}
+
+/// Viridis's low and high ends.
+const PURPLE: [u8; 3] = [68, 1, 84];
+const YELLOW: [u8; 3] = [253, 231, 37];
+
+/// Checks that `image`, 400 × 200, shows a flat viridis bar 220 pixels long in its bottom right
+/// corner, with the low end left, inside 16.5 pixels of padding.
+fn bottom_right_bar(image: &Image) {
+    let (low, high) = (found(image, PURPLE, 130..200), found(image, YELLOW, 130..200));
+    let left = low.iter().map(|p| p.0).min().expect("the bar's low end");
+    let right = high.iter().map(|p| p.0).max().expect("its high end");
+    assert!((right - left).abs_diff(219) <= 3, "220 pixels long: {left} to {right}");
+    assert!(left > 100 && right <= 383, "in the bottom right, inside the padding: {left} to {right}");
+    assert!(high.iter().chain(&low).all(|p| p.1 <= 183), "above the bottom padding");
+}
+
 #[test]
 fn a_legend_draws_its_marks_colormap_across_the_domain() {
     let Some(gpu) = gpu() else { return };
@@ -248,15 +269,10 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0).color(colors).legend(""));
     let mut view = view(&gpu, scene, &data);
     let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
-    // The bar ends 16 px from the right edge. Its middle row is above the tick labels.
-    let y = 200 - 16 - 16 - 4 - 4;
-    let near = |a: [u8; 4], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 24);
-    let low = pixel(&image, 400 - 16 - 218, y);
-    let high = pixel(&image, 400 - 16 - 2, y);
-    assert!(near(low, [68, 1, 84]), "viridis's low end: {low:?}");
-    assert!(near(high, [253, 231, 37]), "viridis's high end: {high:?}");
+    bottom_right_bar(&image);
     let scene = Scene::new(plane()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")).legend(""));
-    assert!(View::new(&gpu, scene).is_err(), "a legend needs a colormap");
+    let failures: Vec<String> = View::new(&gpu, scene).failures().map(|f| f.to_string()).collect();
+    assert_eq!(failures, ["marks[0].legend: a legend needs a color mapped through a colormap"]);
 }
 
 #[test]
@@ -276,10 +292,7 @@ fn a_legend_shows_the_domain_a_colormap_fits_to_its_values() {
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0).color(colors).legend(""));
     let mut view = view(&gpu, scene, &data);
     let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
-    let y = 200 - 16 - 16 - 4 - 4;
-    let near = |a: [u8; 4], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 24);
-    let (low, high) = (pixel(&image, 400 - 16 - 218, y), pixel(&image, 400 - 16 - 2, y));
-    assert!(near(low, [68, 1, 84]) && near(high, [253, 231, 37]), "viridis across the fitted domain: {low:?} {high:?}");
+    bottom_right_bar(&image);
 }
 
 #[test]
@@ -299,7 +312,7 @@ fn a_colormap_over_equal_values_draws_its_middle() {
 }
 
 #[test]
-fn a_plots_legend_stays_clear_of_its_axes() {
+fn a_legend_beside_the_marks_takes_room_from_them() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("d");
     let frames: Vec<f64> = (0..10).map(f64::from).collect();
@@ -310,25 +323,21 @@ fn a_plots_legend_stays_clear_of_its_axes() {
         [("v", values)],
     ))
     .expect("valid");
+    // A trace in the colormap's high end, yellow, and its legend: an upright bar right of the plot.
     let colors = field("k").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
-    // The lowest row holding the colormap's yellow high end: the bottom of the legend's bar.
-    let bar_bottom = |scene: Scene| {
-        let mut view = view(&gpu, scene, &data);
-        let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
-        let yellow = |p: [u8; 4]| p[0] > 200 && p[1] > 190 && p[2] < 90;
-        (0..200).rev().find(|&y| (300..400).any(|x| yellow(pixel(&image, x, y)))).expect("a legend")
-    };
-    let on_plane = bar_bottom(
-        Scene::new(plane())
-            .theme(plain_theme())
-            .draw(Vertices::of("d", "S").position(0.0, 0.0).color(colors.clone()).legend("")),
-    );
-    let on_plot = bar_bottom(
-        Scene::new(latkit::Plot::default())
-            .theme(plain_theme())
-            .draw(Lines::of("d", "S").trace("v").color(colors).legend("")),
-    );
-    assert!(on_plot + 20 < on_plane, "above the axis labels: {on_plot} on the plot, {on_plane} on a plane");
+    let scene = Scene::new(latkit::Plot::default())
+        .theme(plain_theme())
+        .draw(Lines::of("d", "S").trace("v").color(colors).legend(""));
+    let mut view = view(&gpu, scene, &data);
+    view.fit(Fit::All);
+    let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
+    let bar = found(&image, PURPLE, 0..200);
+    let column = bar.iter().map(|p| p.0).min().expect("the bar's low end");
+    let (top, bottom) = (bar.iter().map(|p| p.1).min().unwrap_or(0), bar.iter().map(|p| p.1).max().unwrap_or(0));
+    assert!(column > 300, "the bar stands right of the plot: {column}");
+    assert!(found(&image, YELLOW, 0..200).iter().any(|p| p.0 < column - 100), "the trace draws in the plot");
+    let traced = found(&image, YELLOW, top..bottom + 1).into_iter().filter(|p| p.0 < column).map(|p| p.0).max();
+    assert!(traced.is_none_or(|x| x + 8 <= column), "the trace stops short of the legend: {traced:?} {column}");
 }
 
 #[test]
@@ -348,13 +357,14 @@ fn a_legend_lists_named_categories_by_their_colors() {
     let node = Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0);
     let scene = Scene::new(plane()).theme(plain_theme());
     let unnamed = scene.clone().draw(node.clone().color(field("k").colormap(map.clone())).legend(""));
-    assert!(View::new(&gpu, unnamed).is_ok(), "categories without names show a cell for each");
+    assert_eq!(View::new(&gpu, unnamed).failures().count(), 0, "categories without names show a cell for each");
     let named = field("k").colormap(map.categories(["red", "blue"]));
     let mut view = view(&gpu, scene.draw(node.color(named).legend("")), &data);
     let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
-    // Without a host no names are rasterized, so the swatches end at the right margin, one row each
-    // above the bottom margin: rows of 16.5 px, starting 16 px above the bottom.
-    let x = 400 - 16 - 4;
-    assert!(close(pixel(&image, x, 200 - 16 - 25), RED), "the first category: {:?}", pixel(&image, x, 159));
-    assert!(close(pixel(&image, x, 200 - 16 - 8), [0, 0, 255, 255]), "the second: {:?}", pixel(&image, x, 176));
+    // Each category's swatch, one row each in the bottom right corner, the first on top.
+    let mean = |pixels: &[(u32, u32)]| pixels.iter().map(|p| f64::from(p.1)).sum::<f64>() / pixels.len().max(1) as f64;
+    let (red, blue) = (found(&image, [255, 0, 0], 130..200), found(&image, [0, 0, 255], 130..200));
+    assert!(!red.is_empty() && !blue.is_empty(), "both swatches");
+    assert!(mean(&red) + 10.0 < mean(&blue), "red over blue: {} {}", mean(&red), mean(&blue));
+    assert!(red.iter().chain(&blue).all(|p| p.0 > 300 && p.0 <= 383 && p.1 <= 183), "in the corner's padding");
 }

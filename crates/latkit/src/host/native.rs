@@ -91,7 +91,7 @@ impl Native {
 impl Host for Native {
     fn rasterize(&self, run: &TextRun) -> Result<Raster> {
         self.with_text(|text| {
-            let (mut buffer, bounds, baseline) = text.layout(run)?;
+            let (mut buffer, bounds, baseline, line_box) = text.layout(run)?;
             let size = [(bounds[2] - bounds[0]) as u32, (bounds[3] - bounds[1]) as u32];
             let mut coverage = vec![0; size[0] as usize * size[1] as usize];
             buffer.draw(&mut text.fonts, &mut text.cache, Color::rgb(255, 255, 255), |x, y, w, h, color| {
@@ -104,13 +104,13 @@ impl Host for Native {
                     }
                 }
             });
-            Ok(Raster { size, coverage, baseline: baseline - bounds[1] as f32 })
+            Ok(Raster { size, coverage, baseline: baseline - bounds[1] as f32, line_box })
         })
     }
 
     fn measure(&self, run: &TextRun) -> Result<[f32; 2]> {
         self.with_text(|text| {
-            let (_, bounds, _) = text.layout(run)?;
+            let (_, bounds, ..) = text.layout(run)?;
             Ok([(bounds[2] - bounds[0]) as f32, (bounds[3] - bounds[1]) as f32])
         })
     }
@@ -183,7 +183,9 @@ impl Text {
         Self { fonts: FontSystem::new_with_locale_and_db("en-US".into(), db), cache: SwashCache::new() }
     }
 
-    fn layout(&mut self, run: &TextRun) -> Result<(Buffer, [i32; 4], f32)> {
+    /// Lays out `run`. Returns its buffer, the raster bounds (the line box and every glyph drawn,
+    /// padded by 2 pixels), the baseline, and the line box within the raster.
+    fn layout(&mut self, run: &TextRun) -> Result<(Buffer, [i32; 4], f32, [f32; 4])> {
         if run.size_px == 0 || run.size_px > 4096 || run.max_width == Some(0) {
             return Err(Error::invalid("text size must be 1..=4096 pixels and wrap width must be positive"));
         }
@@ -220,6 +222,7 @@ impl Text {
                 ));
             }
         }
+        let line = [0, 0, bounds[2], bounds[3]];
         buffer.draw(&mut self.fonts, &mut self.cache, Color::rgb(255, 255, 255), |x, y, w, h, _| {
             bounds[0] = bounds[0].min(x);
             bounds[1] = bounds[1].min(y);
@@ -233,7 +236,9 @@ impl Text {
         if bounds[2] - bounds[0] > 4096 || bounds[3] - bounds[1] > 4096 {
             return Err(Error::Limit("text raster exceeds 4096 pixels on one axis".into()));
         }
-        Ok((buffer, bounds, baseline))
+        let line_box =
+            [line[0] - bounds[0], line[1] - bounds[1], line[2] - bounds[0], line[3] - bounds[1]].map(|v| v as f32);
+        Ok((buffer, bounds, baseline, line_box))
     }
 }
 

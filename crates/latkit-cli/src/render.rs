@@ -46,7 +46,7 @@ impl Inputs {
         }
         let inputs = Inputs { scenes, data, tiles, cameras, fit: inputs::fit(&job.fit)?, host };
         for (path, scene) in &inputs.scenes {
-            scene.validate(&inputs.sources()).map_err(|e| Failure::at(e, path))?;
+            first_failure(scene, &inputs.sources()).map_err(|e| Failure::at(e, path))?;
         }
         Ok(inputs)
     }
@@ -66,7 +66,7 @@ impl Inputs {
     fn views(&self, gpu: &Gpu, job: &Job) -> Result<Vec<View>, Failure> {
         let mut views = Vec::with_capacity(self.scenes.len());
         for (i, (path, scene)) in self.scenes.iter().enumerate() {
-            let mut view = View::new(gpu, scene.clone()).map_err(|e| Failure::at(e, path))?;
+            let mut view = View::new(gpu, scene.clone());
             view.set_sources(self.sources()).map_err(|e| Failure::at(e, path))?;
             if let Some(insets) = job.insets {
                 view.set_insets(insets);
@@ -352,9 +352,15 @@ pub(crate) fn validate(job: &Job) -> Result<(), Failure> {
         let at = |error: Error| blame(&file, index, error);
         if apply(&inputs.data, &inputs.scenes, &frame, patches).map_err(at)? {
             for (_, scene) in &inputs.scenes {
-                scene.validate(&inputs.sources()).map_err(at)?;
+                first_failure(scene, &inputs.sources()).map_err(at)?;
             }
         }
     }
     Ok(())
+}
+
+/// Fails with the first of `scene`'s failures drawn from `sources`. A view would draw such a scene as
+/// if the options were unset, but the command refuses it, since its inputs never change.
+fn first_failure(scene: &Scene, sources: &[latkit::Source]) -> Result<(), Error> {
+    scene.failures(sources)?.into_iter().next().map_or(Ok(()), Err)
 }

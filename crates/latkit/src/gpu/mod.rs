@@ -11,6 +11,7 @@ mod layers;
 pub(crate) mod packed;
 pub(crate) mod pipelines;
 pub(crate) mod readback;
+pub(crate) mod retired;
 pub(crate) mod shaders;
 pub(crate) mod work;
 
@@ -42,7 +43,7 @@ pub struct Gpu(pub(crate) Arc<Shared>);
 #[derive(Clone)]
 pub struct DeviceEvents {
     lost: Arc<AtomicBool>,
-    errors: Arc<Mutex<Vec<Error>>>,
+    raised: Arc<Mutex<Raised>>,
 }
 
 impl DeviceEvents {
@@ -51,12 +52,50 @@ impl DeviceEvents {
         self.lost.store(true, Ordering::Release);
     }
 
-    /// Reports an uncaptured device error to latkit's views.
+    /// Reports an uncaptured device error to every view sharing this GPU.
     pub fn error(&self, error: &wgpu::Error) {
-        self.errors
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Error::Unsupported(format!("GPU error: {error}").into()));
+        self.raise(Error::Unsupported(format!("GPU error: {error}").into()));
+    }
+
+    fn raise(&self, error: Error) {
+        self.raised.lock().unwrap_or_else(PoisonError::into_inner).push(error);
+    }
+}
+
+/// Errors the device raised outside any error scope, numbered, so every view reports each one once,
+/// whichever view draws first.
+#[derive(Default)]
+pub(crate) struct Raised {
+    errors: std::collections::VecDeque<Error>,
+    /// The number of the oldest error held.
+    first: u64,
+}
+
+impl Raised {
+    /// The most errors held. Older ones are dropped, since views report them every frame.
+    const HELD: usize = 32;
+
+    fn push(&mut self, error: Error) {
+        // A broken resource fails every frame the same way, so a repeat of the last error is held
+        // once.
+        if self.errors.back() == Some(&error) {
+            return;
+        }
+        if self.errors.len() == Raised::HELD {
+            self.errors.pop_front();
+            self.first += 1;
+        }
+        self.errors.push_back(error);
+    }
+
+    /// The number the next error raised gets.
+    pub(crate) fn next(&self) -> u64 {
+        self.first + self.errors.len() as u64
+    }
+
+    /// The errors numbered `seen` and later.
+    pub(crate) fn since(&self, seen: u64) -> impl Iterator<Item = &Error> {
+        self.errors.iter().skip(seen.saturating_sub(self.first) as usize)
     }
 }
 
@@ -72,8 +111,8 @@ pub(crate) struct Shared {
     pub(crate) counters: Arc<Counters>,
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) lost: Arc<AtomicBool>,
-    /// Errors the device reported outside any error scope, for views to report.
-    pub(crate) errors: Arc<Mutex<Vec<Error>>>,
+    /// Errors the device raised outside any error scope, for every view to report.
+    pub(crate) raised: Arc<Mutex<Raised>>,
     /// Multisample count of every frame drawn with this GPU. It is set once from the screen's pixel
     /// ratio, so a later change (browser zoom, a window moved to another screen) never rebuilds a
     /// scene's pipelines.
@@ -123,12 +162,17 @@ pub(crate) struct Allowance {
 impl Inner {
     /// Begins view `view`'s part of a frame. If no view has drawn yet, or `view` already drew in
     /// the current frame, starts a new one: resets the allowance, frees the blocks the last frame
-    /// released, and grows the pool to cover its shortfall.
+    /// released, and grows the pool to cover its shortfall. A budget the device could not give the
+    /// pool is lowered to what it gave. Views drawn into one encoder can start a new frame before
+    /// it is submitted, so retired memory is never destroyed here.
     pub(crate) fn begin_frame(&mut self, view: u64, device: &wgpu::Device, queue: &Queue) {
         if self.frame.drawn.is_empty() || self.frame.drawn.contains(&view) {
             self.frame =
                 Allowance { drawn: Vec::new(), upload: self.budget.upload_per_frame, work: crate::derive::FRAME_WORK };
             self.arena.begin_frame(device, queue);
+            if let Some(granted) = self.arena.refused() {
+                self.budget.bytes = self.budget.bytes.min(granted);
+            }
         }
         self.frame.drawn.push(view);
     }
@@ -200,21 +244,27 @@ pub struct Budget {
     /// per-row state. A table too large for a view's share draws as a paged table, with only the
     /// pages the camera needs, so it always fits. Pages no view draws stay cached in the rest of
     /// the budget, and the least recently drawn are evicted first. Defaults to half the device's
-    /// largest storage buffer. The page pool grows as data needs it and never shrinks, so set the
-    /// budget before drawing data.
+    /// largest storage buffer, at most 1 GiB. The page pool grows as data needs it and never
+    /// shrinks, so set the budget before drawing data. A device without the memory to grow the pool
+    /// further lowers the budget to the pool's size.
     pub bytes: u64,
     /// The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to
     /// 32 MiB.
     pub upload_per_frame: u64,
 }
 
+/// The most bytes the default budget holds. How far a binding can address says nothing about free
+/// memory, and the limits a device reports do not tell which allocations succeed. An application
+/// that knows its device sets more.
+const DEFAULT_BYTES: u64 = 1 << 30;
+
 impl Budget {
-    /// The default budget: half the largest storage buffer `device` binds, and 32 MiB uploaded per
-    /// frame.
+    /// The default budget: half the largest storage buffer `device` binds, at most
+    /// `DEFAULT_BYTES`, and 32 MiB uploaded per frame.
     fn of(device: &wgpu::Device) -> Budget {
         let limits = device.limits();
         let largest = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
-        Budget { bytes: largest / 2, upload_per_frame: 32 << 20 }
+        Budget { bytes: (largest / 2).min(DEFAULT_BYTES), upload_per_frame: 32 << 20 }
     }
 }
 
@@ -280,7 +330,9 @@ impl Gpu {
     /// Draws with an application-owned device and queue without replacing their callbacks.
     /// Forward device loss and uncaptured errors through [`Gpu::device_events`]. Clone this
     /// `Gpu` to share its caches and budget between views. Errors if the device does not meet
-    /// WebGPU's default limits.
+    /// WebGPU's default limits. In a browser, latkit replaces the device's two pipeline creation
+    /// methods with ones that pass every other call through, so each pipeline it compiles in the
+    /// background is created once.
     pub fn from_wgpu(device: wgpu::Device, queue: wgpu::Queue) -> Result<Gpu> {
         if !wgpu::Limits::default().check_limits(&device.limits()) {
             return Err(Error::Unsupported("the device does not meet WebGPU's default limits".into()));
@@ -290,7 +342,39 @@ impl Gpu {
 
     /// A handle that the application's own device callbacks report to. It does not own the GPU.
     pub fn device_events(&self) -> DeviceEvents {
-        DeviceEvents { lost: self.0.lost.clone(), errors: self.0.errors.clone() }
+        DeviceEvents { lost: self.0.lost.clone(), raised: self.0.raised.clone() }
+    }
+
+    /// Raises `error` for every view of this GPU to report once. In a page it wakes the views, so
+    /// they report it even when nothing else would draw a frame.
+    pub(crate) fn raise(&self, error: Error) {
+        self.device_events().raise(error);
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        crate::web::waker(self).wake();
+    }
+
+    /// Gives up the device once the page pool moved into a buffer the device then refused for lack
+    /// of memory, so the pool holds nothing. The budget is lowered to the pool's size before, an
+    /// error says why, and the device counts as lost, so views move to a new device within the
+    /// lowered budget. A device latkit created is destroyed, which frees its memory at once.
+    pub(crate) fn give_up_if_refused(&self) {
+        let granted = {
+            let mut inner = self.0.lock();
+            let Some(granted) = inner.arena.broken() else { return };
+            inner.budget.bytes = inner.budget.bytes.min(granted);
+            granted
+        };
+        self.raise(Error::Limit(
+            format!(
+                "the GPU has no memory for data past {} MiB, so latkit lowers the budget to that and needs a new device",
+                granted >> 20
+            )
+            .into(),
+        ));
+        self.device_events().lost();
+        if self.0.instance.is_some() {
+            self.0.device.destroy();
+        }
     }
 
     fn create(
@@ -300,7 +384,7 @@ impl Gpu {
         queue: wgpu::Queue,
     ) -> Gpu {
         let lost = Arc::new(AtomicBool::new(false));
-        let errors: Arc<Mutex<Vec<Error>>> = Arc::default();
+        let raised: Arc<Mutex<Raised>> = Arc::default();
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("latkit ramp"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -324,9 +408,9 @@ impl Gpu {
                 dictionaries: Dictionaries::default(),
                 packed: Packed::new(counters.clone()),
                 tiles: crate::tiles::Cache::default(),
-                atlas: Atlas::new(&device, counters.clone()),
+                atlas: Atlas::new(&device, counters.clone(), queue.retired()),
                 icons: Icons::icons(&device),
-                readbacks: Readbacks::counted(counters.clone()),
+                readbacks: Readbacks::counted(counters.clone(), queue.retired()),
                 host: None,
                 budget,
                 ledger: Ledger::default(),
@@ -340,7 +424,7 @@ impl Gpu {
                 counters,
                 sampler,
                 lost,
-                errors,
+                raised,
                 samples: std::sync::OnceLock::new(),
                 inner: Mutex::new(inner),
             }
@@ -355,15 +439,20 @@ impl Gpu {
         if gpu.0.instance.is_some() {
             let events = gpu.device_events();
             let loss = events.clone();
-            // In a page, a lost device wakes the views, so their next frame reports it.
+            // In a page, a lost device or an error wakes the views, so they report it even when
+            // nothing else would draw a frame.
             #[cfg(all(feature = "web", target_arch = "wasm32"))]
-            let wake = crate::web::waker(&gpu);
+            let (wake, wake_on_error) = (crate::web::waker(&gpu), crate::web::waker(&gpu));
             gpu.0.device.set_device_lost_callback(move |_, _| {
                 loss.lost();
                 #[cfg(all(feature = "web", target_arch = "wasm32"))]
                 wake.wake_by_ref();
             });
-            gpu.0.device.on_uncaptured_error(Arc::new(move |error| events.error(&error)));
+            gpu.0.device.on_uncaptured_error(Arc::new(move |error| {
+                events.error(&error);
+                #[cfg(all(feature = "web", target_arch = "wasm32"))]
+                wake_on_error.wake_by_ref();
+            }));
         }
         gpu
     }
@@ -403,7 +492,8 @@ impl Gpu {
         inner.budget = budget;
     }
 
-    /// How much GPU memory latkit uses.
+    /// How much GPU memory latkit uses: the budget set, or the default, lowered to what the device
+    /// gave if it had no memory for more.
     pub fn budget(&self) -> Budget {
         self.0.lock().budget
     }
@@ -426,9 +516,23 @@ impl Gpu {
         inner.atlas.rehost();
     }
 
-    /// Whether the device was lost. Drawing then does nothing, and a new `Gpu` is needed.
+    /// Whether the device was lost. Drawing then does nothing, and a new `Gpu` is needed. latkit
+    /// also gives up a device whose page pool lost its pages for lack of memory, after lowering the
+    /// [`budget`](Gpu::budget) to what the device gave, so a new `Gpu` with that budget stays
+    /// within it.
     pub fn lost(&self) -> bool {
         self.0.lost.load(Ordering::Acquire)
+    }
+}
+
+/// In a page, nothing records once the last view and shot of a `Gpu` are gone, so the pool and the
+/// memory retired go at once, instead of whenever JavaScript collects them. Natively, dropping them
+/// frees them once the GPU is done with them.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+impl Drop for Shared {
+    fn drop(&mut self) {
+        self.queue.retired().destroy();
+        self.lock().arena.buffer().destroy();
     }
 }
 
@@ -456,7 +560,24 @@ impl std::fmt::Debug for Gpu {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ask, Ledger};
+    use super::{Ask, Error, Ledger, Raised};
+
+    #[test]
+    fn raised_errors_are_numbered_for_each_view_and_repeats_held_once() {
+        let mut raised = Raised::default();
+        let seen = raised.next();
+        raised.push(Error::invalid("a"));
+        raised.push(Error::invalid("a"));
+        raised.push(Error::invalid("b"));
+        let told: Vec<String> = raised.since(seen).map(ToString::to_string).collect();
+        assert_eq!(told, ["input: a", "input: b"], "a repeat of the last error is held once");
+        assert_eq!(raised.since(raised.next()).count(), 0, "a view that saw them all sees none again");
+        for i in 0..40 {
+            raised.push(Error::invalid(format!("{i}")));
+        }
+        assert_eq!(raised.since(seen).count(), Raised::HELD, "only the latest are held");
+        assert_eq!(raised.since(seen).last().map(ToString::to_string).as_deref(), Some("input: 39"));
+    }
 
     fn own(bytes: f64) -> Ask {
         Ask { own: bytes, shared: Vec::new() }

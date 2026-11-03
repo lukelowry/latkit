@@ -56,8 +56,12 @@ impl View {
         self.record(encoder, frame, false);
     }
 
-    /// Whether the device is lost, reporting it once as an error event.
-    pub(crate) fn tell_lost(&mut self) -> bool {
+    /// Reports what happened to the device since this view last looked: the errors it raised
+    /// outside any scope, then its loss, each once. Gives up a device whose page pool lost its
+    /// pages for lack of memory. Returns whether the device is lost.
+    pub(crate) fn tell_device(&mut self) -> bool {
+        self.gpu.give_up_if_refused();
+        self.tell_raised();
         if self.gpu.lost() && !self.told_lost {
             self.told_lost = true;
             self.events.tell(Event::Error(Error::DeviceLost));
@@ -65,8 +69,15 @@ impl View {
         self.gpu.lost()
     }
 
+    /// Reports each error the device raised since this view last looked.
+    fn tell_raised(&mut self) {
+        let raised = self.gpu.0.raised.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.events.extend(raised.since(self.raised_seen).cloned().map(Event::Error));
+        self.raised_seen = raised.next();
+    }
+
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>, input: bool) {
-        if self.tell_lost() {
+        if self.tell_device() {
             return;
         }
         // Set the frame's size first, so the sources load the tiles this frame shows. Clear the
@@ -90,8 +101,13 @@ impl View {
         }
         // Runs the callbacks of finished readbacks. A no-op in browsers, which run them themselves.
         let _ = device.poll(wgpu::PollType::Poll);
-        self.tell_gpu_errors();
-        self.measure_gutters();
+        // The guides take their room before fits frame what they leave.
+        let mut inner = gpu.0.lock();
+        inner.atlas.tick();
+        self.fonts = crate::host::fonts();
+        self.fit_legends();
+        self.lay_out_guides(&mut inner);
+        drop(inner);
         self.settle();
         self.advance(dt);
         let mut inner = gpu.0.lock();
@@ -100,13 +116,14 @@ impl View {
             self.start_over(&mut inner);
         }
         inner.begin_frame(self.id, device, queue);
-        inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.derive(&mut inner);
-        self.tell_failures();
+        self.tell_failures(&mut inner);
         self.answer_arranging();
         self.stream(&mut inner);
         let fresh = self.lay_out(encoder, &mut inner);
+        // A legend over a field's whole history shows the domain the layout just wrote.
+        self.lay_out_guides(&mut inner);
         let (elapsed, travel) = self.effect_clock();
         let pages = inner.arena.buffer().clone();
         self.write_focus(queue, &pages, fresh);
@@ -127,7 +144,7 @@ impl View {
             uniform.background[3] = 0.0;
         }
         uniform.pointer = self.pointer.map_or([-1e9, -1e9], |p| p.point);
-        uniform.selecting = u32::from(!self.focus.selection.is_empty());
+        uniform.selecting = u32::from(self.focus.lighting);
         uniform.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
         if let Some(point) = probe {
             uniform.probe = point;
@@ -137,7 +154,6 @@ impl View {
             uniform.query = words;
         }
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
-        self.fit_legends();
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
         self.write_uniforms(&uniform, &eye, &sprites);
@@ -165,10 +181,23 @@ impl View {
             shown.remap = wgsl::NONE;
             shown.carry = false;
         }
-        self.events.extend(inner.atlas.errors.drain(..).map(Event::Error));
-        self.events.extend(self.derived.take_errors().into_iter().map(Event::Error));
+        let atlas = std::mem::take(&mut inner.atlas.errors);
         drop(inner);
+        self.tell_errors(atlas);
         self.end(started, input);
+    }
+
+    /// Reports this frame's errors. Those of the view's derivations, and of the jobs and fetches it
+    /// started, are its own. The atlas serves every view, so its errors, `atlas`, reach every view,
+    /// each once.
+    fn tell_errors(&mut self, atlas: Vec<Error>) {
+        self.events.extend(self.derived.take_errors().into_iter().map(Event::Error));
+        let failed = std::mem::take(&mut *self.job_errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        self.events.extend(failed.into_iter().map(Event::Error));
+        for error in atlas {
+            self.gpu.raise(error);
+        }
+        self.tell_raised();
     }
 
     /// The effect time for this frame, and the seconds comets travel to reach it. Channels reading
@@ -223,7 +252,7 @@ impl View {
             let geodesic = self.geodesic(&self.marks[i]);
             self.marks[i].geodesic = geodesic;
         }
-        self.resources.get_or_insert_with(|| Resources::new(device));
+        self.resources.get_or_insert_with(|| Resources::new(device, gpu.0.queue.retired()));
         let fresh = self.fit_words(inner);
         self.fit_easing(inner);
         inner.arena.clear(device, &gpu.0.queue);
@@ -348,15 +377,33 @@ impl View {
         self.settle_gestures();
     }
 
-    /// Reports, once each, why marks failed against the data drawn. Runs after the frame takes the
-    /// latest data versions, so a dataset filled between frames reports nothing about the version
-    /// before.
-    fn tell_failures(&mut self) {
-        for (i, shown) in self.marks.iter_mut().enumerate() {
-            for error in &shown.failures[shown.told..] {
-                self.events.tell(Event::Error(error.clone().at(i).at("marks")));
+    /// Reports the failures when they changed. Runs after the frame takes the latest data versions,
+    /// so a dataset filled between frames reports nothing about the version before. Failures change
+    /// only with the scene, the data, or a custom marker's check, so most frames only compare each
+    /// mark's with what it last reported. A custom marker whose WGSL does not compile draws
+    /// nothing, and every mark drawing it says why.
+    fn tell_failures(&mut self, inner: &mut Inner) {
+        inner.pipelines.check_custom();
+        for shown in self.marks.iter_mut().filter(|shown| !shown.twin) {
+            let crate::Mark::Vertices(vertices) = &shown.mark else { continue };
+            let crate::Marker::Wgsl { source, .. } = &vertices.marker else { continue };
+            if let Some(failure) = inner.pipelines.custom_failure(source)
+                && !shown.failures.contains(failure)
+            {
+                shown.failures.push(failure.clone());
             }
-            shown.told = shown.failures.len();
+        }
+        let due = std::mem::take(&mut self.scene_failures_due) || self.marks.iter().any(|m| m.failures != m.told);
+        if !due {
+            return;
+        }
+        for shown in &mut self.marks {
+            shown.told.clone_from(&shown.failures);
+        }
+        let failures: Vec<Error> = self.failures().collect();
+        if failures != self.told_failures {
+            self.events.tell(Event::Failures(failures.clone()));
+            self.told_failures = failures;
         }
     }
 
@@ -372,7 +419,7 @@ impl View {
         let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
         // One work budget for the frame, spent on paged tables first, then on other derivations.
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
-        let errors = self.gpu.0.errors.clone();
+        let errors = self.job_errors.clone();
         let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, inner.frame.work);
         let budget = inner.budget.bytes;
         self.update_plan(&mut inner.ledger, budget);
@@ -409,7 +456,7 @@ impl View {
         let reading = self.reading();
         let asked = crate::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
-        let errors = self.gpu.0.errors.clone();
+        let errors = self.job_errors.clone();
         let jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, 0);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
         tiles.update(&self.derive_input(host.as_deref()), &asked, &mut inner.tiles, &jobs);
@@ -480,16 +527,6 @@ impl View {
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(&uniform));
         }
         marks
-    }
-
-    /// Reports errors the device raised outside any error scope, and custom pipeline errors, once
-    /// each.
-    pub(super) fn tell_gpu_errors(&mut self) {
-        let errors: Vec<Error> =
-            std::mem::take(&mut *self.gpu.0.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        self.events.extend(errors.into_iter().map(Event::Error));
-        let custom = self.gpu.0.lock().pipelines.custom_errors();
-        self.events.extend(custom.into_iter().map(Event::Error));
     }
 
     /// The plot's x range that traces span, and its width in device pixel columns, capped by the

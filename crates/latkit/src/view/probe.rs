@@ -170,7 +170,7 @@ impl View {
         }
         // Where nothing is drawn, nothing is under the point, so a press waiting on it goes ahead.
         let point = self.probing.wanted.take()?;
-        if !self.marks.iter().any(Shown::drawable) {
+        if !self.marks.iter().any(Shown::drawable) || !self.marks_show_at(point) {
             self.landed(point, Answer::default());
             return None;
         }

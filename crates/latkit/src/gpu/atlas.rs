@@ -48,6 +48,8 @@ pub(crate) struct Glyphs {
     pub(crate) rect: [u32; 4],
     /// Texels from the top of the rectangle to the baseline.
     pub(crate) baseline: f32,
+    /// The text's line box in texels from the rectangle's top left: left, top, right, and bottom.
+    pub(crate) line: [f32; 4],
 }
 
 impl Glyphs {
@@ -103,10 +105,12 @@ pub(crate) struct Atlas {
     pub(crate) evictions: u64,
     /// Counts the texts the host is asked to rasterize.
     counters: Arc<Counters>,
+    /// How many times fonts had finished loading when the runs were rasterized.
+    fonts: u64,
 }
 
 impl Atlas {
-    pub(crate) fn new(device: &wgpu::Device, counters: Arc<Counters>) -> Atlas {
+    pub(crate) fn new(device: &wgpu::Device, counters: Arc<Counters>, retired: &super::retired::Retired) -> Atlas {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("latkit text"),
             size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
@@ -125,19 +129,31 @@ impl Atlas {
             shelves: Vec::new(),
             runs: HashMap::new(),
             waiting: Vec::new(),
-            work: Grown::new(device, "latkit fields", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC),
+            work: Grown::new(
+                device,
+                retired,
+                "latkit fields",
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            ),
             work_group: None,
             clock: 0,
             full: false,
             evictions: 0,
             counters,
+            fonts: 0,
         }
     }
 
-    /// Starts a frame. Runs requested from now on count as used in it.
+    /// Starts a frame. Runs requested from now on count as used in it. Once more fonts have loaded,
+    /// every run is rasterized again, in them.
     pub(crate) fn tick(&mut self) {
         self.clock += 1;
         self.full = false;
+        let fonts = crate::host::fonts();
+        if fonts != self.fonts {
+            self.fonts = fonts;
+            self.rehost();
+        }
     }
 
     /// Whether a run found no room this frame, so the atlas takes no more until the next.
@@ -198,7 +214,9 @@ impl Atlas {
             self.full = true;
             return Held::Full;
         };
-        let glyphs = Glyphs { rect: [left, top, left + width, top + height], baseline: raster.baseline + PAD as f32 };
+        let pad = PAD as f32;
+        let line = raster.line_box.map(|v| v + pad);
+        let glyphs = Glyphs { rect: [left, top, left + width, top + height], baseline: raster.baseline + pad, line };
         self.waiting.push(Waiting { raster, shelf, corner: [left, top] });
         Held::Placed(glyphs, shelf)
     }
@@ -425,7 +443,12 @@ mod tests {
         }
         coverage[5 * width + 37] = 40;
         let mut inner = gpu.0.lock();
-        let raster = Raster { size: [width as u32, height as u32], coverage: coverage.clone(), baseline: 20.0 };
+        let raster = Raster {
+            size: [width as u32, height as u32],
+            coverage: coverage.clone(),
+            baseline: 20.0,
+            line_box: [0.0, 0.0, width as f32, height as f32],
+        };
         let Held::Placed(glyphs, _) = inner.atlas.hold(raster) else { panic!("placed") };
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -433,7 +456,8 @@ mod tests {
         atlas.lay(device, queue, &mut encoder, pipelines);
         // Another view can lay a smaller batch into the same scratch buffer before submission.
         // Its upload must not replace the first batch's inputs before that batch has executed.
-        let held = atlas.hold(Raster { size: [9, 7], coverage: vec![255; 63], baseline: 5.0 });
+        let held =
+            atlas.hold(Raster { size: [9, 7], coverage: vec![255; 63], baseline: 5.0, line_box: [0.0, 0.0, 9.0, 7.0] });
         assert!(matches!(held, Held::Placed(..)), "a second batch");
         atlas.lay(device, queue, &mut encoder, pipelines);
         let [l, t, r, b] = glyphs.rect;
@@ -480,9 +504,14 @@ mod tests {
             fn rasterize(&self, run: &TextRun) -> crate::Result<Raster> {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 match &*run.text {
-                    "" => Ok(Raster { size: [0, 0], coverage: Vec::new(), baseline: 0.0 }),
+                    "" => Ok(Raster { size: [0, 0], coverage: Vec::new(), baseline: 0.0, line_box: [0.0; 4] }),
                     "bad" => Err(crate::Error::Unsupported("no font".into())),
-                    _ => Ok(Raster { size: [4, 4], coverage: vec![255; 16], baseline: 3.0 }),
+                    _ => Ok(Raster {
+                        size: [4, 4],
+                        coverage: vec![255; 16],
+                        baseline: 3.0,
+                        line_box: [0.0, 0.0, 4.0, 4.0],
+                    }),
                 }
             }
         }

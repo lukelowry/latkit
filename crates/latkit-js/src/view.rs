@@ -18,11 +18,12 @@ pub struct View {
 
 #[wasm_bindgen]
 impl View {
-    /// Replaces the scene with `scene` (JSON). An invalid scene changes nothing.
+    /// Replaces the scene with `scene` (JSON). A scene that can't be read changes nothing.
     #[wasm_bindgen(js_name = setScene)]
     pub fn set_scene(&self, scene: &str) -> Result<(), Error> {
         let scene = json("scene", scene)?;
-        Ok(self.view.with(|v| v.set_scene(scene))?)
+        self.view.with(|v| v.set_scene(scene));
+        Ok(())
     }
 
     /// Replaces the view's sources with `sources`.
@@ -159,10 +160,18 @@ impl View {
         Ok(())
     }
 
-    /// The row the user points at, as a JSON hit or `null`.
+    /// The hovered row, as JSON or `null`.
     #[wasm_bindgen(getter)]
     pub fn hovered(&self) -> String {
         self.view.read(|v| to_json(&v.hovered()))
+    }
+
+    /// Hovers `row` (JSON, or `null` to clear it).
+    #[wasm_bindgen(js_name = setHovered)]
+    pub fn set_hovered(&self, row: &str) -> Result<(), Error> {
+        let row: Option<latkit::Row> = json("row", row)?;
+        self.view.with(|v| v.set_hovered(row));
+        Ok(())
     }
 
     /// The pending work the last frame drew placeholders for, as JSON.
