@@ -397,8 +397,10 @@ pub struct Stats {
 /// The work a frame was still waiting on, by kind. Empty when the frame was complete.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Waiting {
-    /// Pipelines the view uses are still compiling. Until its draw pipelines finish, the view
-    /// draws nothing new.
+    /// Pipelines the view's frames draw with are still compiling: those of its marks and text,
+    /// transitions while rows ease, the glow while a row is lit, and layers where depth varies.
+    /// Until its draw pipelines finish, the view draws nothing new. The pipelines that answer the
+    /// pointer, picks, and queries draw nothing, so they don't count.
     pub compiling: bool,
     /// Pages its marks draw are still uploading, or tables are not yet built from them.
     pub data: bool,

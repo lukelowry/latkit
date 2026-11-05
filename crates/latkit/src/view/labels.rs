@@ -30,7 +30,7 @@ use web_time::Instant;
 use super::View;
 use super::passes::{dispatch, offset};
 use super::sync::Source;
-use super::variants::MarkVariants;
+use super::variants::{MarkVariants, Stage};
 use crate::Name;
 use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
@@ -344,7 +344,7 @@ impl View {
     /// waits while its last readback is in flight, and while a fit is about to move the camera.
     /// Both wait until the text pipelines have compiled.
     pub(super) fn place_labels(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, eye: &wgsl::Eye) {
-        if !self.texts() {
+        if !self.can_use(Stage::Text) {
             return;
         }
         let labeled: Vec<(usize, Slots)> =

@@ -349,13 +349,25 @@ pub fn landed(gpu: &Gpu) -> impl Future<Output = ()> + 'static {
 /// Waits until `gpu` has finished its submitted work, mapped every readback, and compiled every
 /// requested pipeline. A frame stepped afterwards draws all the results.
 pub async fn done(gpu: &Gpu) {
+    settled(gpu, true).await;
+}
+
+/// Waits until `gpu` has finished its submitted work and mapped every readback, as after a frame.
+/// Pipelines may still compile: a view waiting for one wakes when it lands.
+pub async fn finished(gpu: &Gpu) {
+    settled(gpu, false).await;
+}
+
+/// Waits until `gpu` has finished its submitted work and mapped every readback, and if `compiled`,
+/// compiled every requested pipeline.
+async fn settled(gpu: &Gpu, compiled: bool) {
     let (submitted, finished) = crate::Pending::new();
     gpu.queue().on_submitted_work_done(move || finished.resolve(Ok(())));
     let _ = submitted.await;
     loop {
         let under_way = {
             let inner = gpu.0.lock();
-            inner.readbacks.mapping() + inner.pipelines.compiling()
+            inner.readbacks.mapping() + if compiled { inner.pipelines.compiling() } else { 0 }
         };
         if under_way == 0 {
             return;

@@ -2,12 +2,13 @@
  * The stage a run happens on, and the single way anything in a run is measured.
  *
  * The stage steps every frame itself, 1/60 s apart on its own clock. Each frame waits for the GPU
- * (its work done, its readbacks back, and the requested pipelines compiled), never for time. So a
- * run draws the same frames however fast the device is, and its work counts repeat.
+ * to finish it and its readbacks, never for time. A view waiting for a pipeline sleeps until it
+ * lands. So a run draws the same frames however fast the device is, and its work counts repeat.
  *
  * A phase is an action, timed from its start until everything settles: no view wants a frame,
- * every view is complete, and no tile is loading. Work in progress that wakes no frame is awaited
- * until it finishes. A steady phase acts before each of a set number of frames, so each action
+ * every view is complete, and no tile is loading. That is what a viewer waits for. Work in progress
+ * that wakes no frame is awaited until it finishes. Compiles nothing waits for, such as the
+ * pipelines that answer picks, finish after the time stops, so the next phase starts with none. A steady phase acts before each of a set number of frames, so each action
  * shows in its own frame, and its CPU and GPU times are per frame. A lost device fails the phase at
  * once, and every wait has a deadline that cancels the work it waits on.
  */
@@ -84,7 +85,7 @@ export class Stage {
   constructor(gpu: Gpu, canvases: readonly HTMLCanvasElement[], size: number) {
     [this.gpu, this.canvases, this.size] = [gpu, canvases, size];
     // Step from the start, so no animation frame draws while the views load either.
-    gpu.step(this.#now);
+    void gpu.step(this.#now);
   }
 
   get view(): View {
@@ -248,6 +249,7 @@ export class Stage {
     const begun = performance.now();
     await drive(drawn);
     const ms = performance.now() - begun;
+    await this.gpu.done({ signal: AbortSignal.timeout(DEADLINE) });
     const after = this.gpu.work;
     const work = Object.fromEntries(
       Object.entries(after).map(([k, v]) => [k, v - before[k as keyof Work]]),
@@ -269,8 +271,7 @@ export class Stage {
   async #frame(drawn: Drawn, measuring: boolean): Promise<void> {
     if (this.gpu.lost) throw new Error('the GPU device was lost');
     const before = this.views.map((v) => v.stats.frames);
-    this.gpu.step((this.#now += FRAME));
-    await this.gpu.done({ signal: AbortSignal.timeout(DEADLINE) });
+    await this.gpu.step((this.#now += FRAME), { signal: AbortSignal.timeout(DEADLINE) });
     let [drew, cpu, gpu] = [false, 0, 0];
     this.views.forEach((view, i) => {
       const stats = view.stats;
@@ -289,7 +290,6 @@ export class Stage {
    * tile is loading. Work in progress that wakes no frame, such as a layout or a fetch, is awaited
    * until it finishes. `measuring` is true for a once phase, whose every frame is measured. */
   async #settle(drawn: Drawn, measuring: boolean): Promise<void> {
-    await this.gpu.done({ signal: AbortSignal.timeout(DEADLINE) });
     for (let frames = 0; frames < MOST;) {
       if (this.gpu.lost) throw new Error('the GPU device was lost');
       if (this.views.some((v) => v.wantsFrame)) {

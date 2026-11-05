@@ -155,12 +155,13 @@ export class Gpu extends Handle {
 
   /**
    * Draws one frame now, at `now` milliseconds on the `requestAnimationFrame` clock. It runs the
-   * frame listeners, then draws every canvas that needs a frame. After the first call the GPU
-   * stops requesting animation frames, so a test or benchmark that steps every frame draws the
-   * same frames on any device.
+   * frame listeners, then draws every canvas that needs a frame. Resolves once the GPU has finished
+   * the frame and its readbacks have arrived. Pipelines may still compile: a view waiting for one
+   * wakes when it lands. After the first call the GPU stops requesting animation frames, so a test
+   * or benchmark that steps every frame draws the same frames on any device.
    */
-  step(now: number): void {
-    device(this).step(now);
+  async step(now: number, wait: Wait = {}): Promise<void> {
+    await waited<void>(device(this).step(now), due(wait), 'drawing a frame');
   }
 
   /**
