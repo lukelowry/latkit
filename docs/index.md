@@ -52,8 +52,8 @@ datasets and drawing need. `View.create()` and `Data.read()` call it for you.
 {doc}`examples/globe`
 : Routes along great circles on a globe, with comets flowing along them.
 
-{doc}`examples/diagram`
-: Blocks in nested groups, laid out and wired port to port.
+{doc}`examples/helios`
+: 480 buses in five concentric rings, with comets flowing along every branch.
 
 {doc}`examples/terrain`
 : 112,000 lit faces in three dimensions.

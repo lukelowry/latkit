@@ -15,7 +15,6 @@ use super::{Device, View};
 use crate::derive::Working;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
-use crate::scene::mark::MarkKind;
 use crate::{Camera, Name, Row, wire};
 
 /// A hit, with its depth (for dragging) and, for an edge, the nearer endpoint: 0 for the first,
@@ -43,17 +42,14 @@ pub(crate) struct Drew {
     projected: Projected,
 }
 
-/// One mark as its frame drew it: its dataset, table, and name, whether its rows are vertices,
-/// whether selection picks them, the rows its state held, its port names, and, for a line tracing a
-/// field, the field and its trace plan.
+/// One mark as its frame drew it: its dataset, table, and name, whether selection picks its rows,
+/// the rows its state held, and, for a line tracing a field, the field and its trace plan.
 struct Held {
     data: Name,
     table: Name,
     name: Option<Name>,
-    vertices: bool,
     selects: bool,
     holding: Option<Holding>,
-    ports: Vec<Name>,
     traced: Option<(Name, Plan)>,
 }
 
@@ -68,8 +64,8 @@ impl Drew {
     }
 
     /// The hit at held row `held` of mark `i` as the frame drew it: at screen `point` and `depth`,
-    /// `distance` 1/64 CSS pixels from where it was asked, on `part` (a port's number from 1, or a
-    /// segment's index along its path). `None` when the frame held no such row.
+    /// `distance` 1/64 CSS pixels from where it was asked, on `part` (a segment's index along its
+    /// path). `None` when the frame held no such row.
     pub(super) fn hit(
         &self,
         i: usize,
@@ -87,7 +83,6 @@ impl Drew {
             point,
             position: self.projected.position(self.projected.unproject(point.map(f64::from), f64::from(depth))),
             distance: distance as f32 / 64.0,
-            port: self.port(i, part),
             sample: self.sample(i, at, part),
         })
     }
@@ -95,15 +90,6 @@ impl Drew {
     /// Whether a box's selection picks mark `i`'s rows.
     pub(super) fn selects(&self, i: usize) -> bool {
         self.marks.get(i).is_some_and(|m| m.selects)
-    }
-
-    /// The name of port `number` of vertex mark `i`, numbered from 1. `None` for 0, the marker.
-    fn port(&self, i: usize, number: u32) -> Option<Name> {
-        let mark = self.marks.get(i)?;
-        if !mark.vertices || number == 0 {
-            return None;
-        }
-        mark.ports.get(number as usize - 1).cloned()
     }
 
     /// The sample that point `point` of row `row`'s traced path shows, on mark `i` tracing a field.
@@ -196,7 +182,6 @@ impl View {
             .iter()
             .map(|shown| {
                 let style = shown.mark.style();
-                let ports = shown.compiled.as_ref().map(|c| c.drawing.ports.iter().map(|(name, ..)| name.clone()));
                 let traced = match &shown.mark {
                     crate::Mark::Lines(lines) => shown.tables.plan().map(|plan| (lines.traced(), plan.clone())),
                     _ => None,
@@ -205,10 +190,8 @@ impl View {
                     data: style.data.clone(),
                     table: style.table.clone(),
                     name: style.name.clone(),
-                    vertices: shown.kind() == MarkKind::Vertices,
                     selects: style.interaction.select,
                     holding: shown.holding.clone(),
-                    ports: ports.map(Iterator::collect).unwrap_or_default(),
                     traced,
                 }
             })

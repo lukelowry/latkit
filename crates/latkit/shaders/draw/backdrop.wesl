@@ -1,4 +1,4 @@
-// The backdrop under every mark: a plane's or diagram's grid, or the earth's ground and graticule,
+// The backdrop under every mark: a plane's grid, or the earth's ground and graticule,
 // lit by daylight, with the atmosphere around the globe. Lines are one pixel wide and antialiased
 // per axis. Each axis spaces its lines by the finest step of 1, 2, and 5 times a power of ten (30°
 // and 90° past 10° on the earth) at least the theme's grid spacing apart. The next coarser step
@@ -6,7 +6,7 @@
 // distance from where the camera looks. The round globe writes its depth slightly below the ground,
 // so marks behind it are hidden and marks on it still draw.
 
-import package::lib::types::{SPACE_EARTH, SPACE_PLANE, SPACE_DIAGRAM, GRID_OFF, GRID_DOTS};
+import package::lib::types::{SPACE_EARTH, SPACE_PLANE, GRID_OFF, GRID_DOTS};
 import package::lib::bind::{frame, eye};
 import package::lib::color::output;
 import package::lib::project::{PI, NEAR_Z, FAR_Z, globe_center};
@@ -196,7 +196,7 @@ fn fragment(v: Varyings) -> Out {
     let g = o + d * max(t, 0.0);
     var color = frame.background;
     var depth = FAR_Z;
-    if frame.space == SPACE_PLANE || frame.space == SPACE_DIAGRAM {
+    if frame.space == SPACE_PLANE {
         color = plane(g, d, t > 0.0);
     } else if frame.space == SPACE_EARTH {
         let ground = earth(o, d, g, t > 0.0);

@@ -214,7 +214,7 @@ fn lines(
     Some(lines)
 }
 
-/// Calls `f` with the 2D context that rasterizes and measures text, created on first use.
+/// Calls `f` with the 2D context that rasterizes text, created on first use.
 fn with_context<R>(f: impl FnOnce(&OffscreenCanvas, &OffscreenCanvasRenderingContext2d) -> Option<R>) -> Option<R> {
     CANVAS.with(|cell| {
         let mut cell = cell.borrow_mut();
@@ -257,11 +257,6 @@ impl Layout {
 }
 
 impl Host for Browser {
-    fn measure(&self, run: &TextRun) -> crate::Result<[f32; 2]> {
-        with_context(|_, context| Some(Layout::of(context, run)?.size().map(|v| v as f32)))
-            .ok_or_else(|| Error::Unsupported("browser text measurement failed".into()))
-    }
-
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         let Some(run) = JOBS.with(|jobs| jobs.borrow().clone()) else { return Pending::ready(Ok(job.run())) };
         let (pending, resolver) = Pending::new();

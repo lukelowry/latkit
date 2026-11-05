@@ -2,8 +2,7 @@
 //! fit. Where labels would overlap, the label of the row drawn on top shows. An empty text gives no
 //! label. Only labels that show near the view have their text rasterized, so a dense view settles.
 //! A conditional text labels only the rows it names, a number label writes its value, and a label
-//! keeps showing while its mark gains texts. A diagram's labels scale with the sheet and fade out
-//! once too small to read.
+//! keeps showing while its mark gains texts.
 
 #![cfg(feature = "gpu")]
 
@@ -12,10 +11,10 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{SETTLE, SIZE, at, camera, diagram, errors, frame, gpu, haloless, plain_theme, plane, step};
+use common::{SETTLE, SIZE, at, camera, errors, frame, gpu, haloless, plain_theme, plane, step};
 use latkit::Ids;
 use latkit::host::{Host, Raster, TextRun};
-use latkit::{Camera, Color, Data, Expr, Label, Marker, Scene, Table, Vertices, View, field, when};
+use latkit::{Color, Data, Expr, Label, Scene, Table, Vertices, View, field, when};
 
 /// A host that rasterizes text as a solid box, 0.6 × size wide per character and `size` tall.
 struct Boxes;
@@ -252,54 +251,6 @@ fn a_one_row_label_edit_evaluates_one_page() {
     let work = gpu.work() - before;
     assert!(work.evaluated <= 4096, "only one page evaluates: {}", work.evaluated);
     assert_eq!(errors(&mut view), Vec::new());
-}
-
-/// A block in a diagram, 60 by 20 units, labeled in red at size 10, seen at `zoom`.
-fn diagram_block(gpu: &latkit::Gpu, zoom: f64) -> Vec<[u8; 4]> {
-    gpu.set_host(Boxes);
-    let data = Data::new("d");
-    data.apply(
-        Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["abcdef"]),
-    )
-    .expect("valid");
-    let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
-    let scene = Scene::new(diagram()).theme(haloless()).draw(
-        Vertices::of("d", "V")
-            .position(field("x"), field("y"))
-            .size(60.0, 20.0)
-            .marker(Marker::block())
-            .color(Color::rgb(0.0, 1.0, 0.0))
-            .pick(false)
-            .label(label),
-    );
-    let mut view = View::new(gpu, scene);
-    view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
-    view.set_sources([&data]).expect("a source");
-    let pixels = frame(gpu, &mut view);
-    assert_eq!(errors(&mut view), Vec::new());
-    pixels
-}
-
-#[test]
-fn diagram_labels_scale_with_the_sheet() {
-    let Some(gpu) = gpu() else { return };
-    let c = SIZE / 2;
-    let red = |p: [u8; 4]| p[0] > 200 && p[1] < 60;
-    // At zoom 0 the label is 36 by 10 pixels. At zoom 1 it is twice that, still inside its block.
-    let near = diagram_block(&gpu, 0.0);
-    assert!(red(at(&near, c + 15, c)) && !red(at(&near, c + 21, c)), "36 wide at zoom 0");
-    let closer = diagram_block(&gpu, 1.0);
-    assert!(red(at(&closer, c + 33, c)) && !red(at(&closer, c + 39, c)), "72 wide at zoom 1");
-}
-
-#[test]
-fn diagram_labels_fade_once_too_small_to_read() {
-    let Some(gpu) = gpu() else { return };
-    let c = SIZE / 2;
-    // At zoom −2 the text is 2.5 pixels tall, too small to read, so it hides and the block shows.
-    let far = diagram_block(&gpu, -2.0);
-    let middle = at(&far, c, c);
-    assert!(middle[1] > 120 && middle[0] < 60, "only the block: {middle:?}");
 }
 
 #[test]

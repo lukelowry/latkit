@@ -1,9 +1,9 @@
-//! Places of vertex rows without positions, outside diagrams.
+//! Places of vertex rows without positions.
 //!
 //! On a plane or the earth, the scene's layout places the vertex rows that have no position. Rows
-//! with positions are pinned, and edges are the layout's links, so an unpositioned row ends up
-//! among its neighbors. Gaps are in the space's units. As on a diagram's sheet, places persist by
-//! row. The layout (a host job) places only rows without a place, until `arrange` lays out every
+//! with positions are pinned, and edges and nets are the layout's links, so an unpositioned row
+//! ends up among its neighbors. Gaps are in position units. Places persist by row: adding a row
+//! moves nothing else. The layout (a host job) places only rows without a place, until `arrange` lays out every
 //! unpositioned row again. The result is a table beside each vertex table that holds its rows'
 //! positions, given or laid out. The vertex marks read it.
 
@@ -151,17 +151,8 @@ impl Places {
                     (wanted(i) && rows.insert(key.clone(), keys[i].clone()).is_none()).then_some(key)
                 })
                 .collect();
-            let (sizes, groups, pads) =
-                (vec![[0.0; 2]; keys.len()], vec![None; keys.len()], vec![[0.0; 4]; keys.len()]);
             let links = links(&vertex_marks, &edge_marks);
-            let placement = Placement {
-                sizes: &sizes,
-                pinned: &pinned,
-                groups: &groups,
-                pads: &pads,
-                links: &links,
-                keys: &job_keys,
-            };
+            let placement = Placement { pinned: &pinned, links: &links, keys: &job_keys };
             let pending = jobs.spawn(Job::layout(&input.scene.layout, &placement));
             self.placing.start(inputs, pending, Placing { generation: self.generation, rows });
         } else if arranging && !self.placing.busy() {
@@ -205,14 +196,7 @@ mod tests {
         let (host, counters, errors) = (Failing::default(), Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let mut places = Places::default();
         let frame = |places: &mut Places| {
-            let input = Input {
-                scene: &scene,
-                scene_version: 1,
-                data: std::slice::from_ref(&data),
-                host: Some(&host),
-                dragging: false,
-                paged: None,
-            };
+            let input = Input { scene: &scene, scene_version: 1, data: std::slice::from_ref(&data), paged: None };
             places.update(&input, &mut Jobs::new(Some(&host), Waker::noop(), &counters, &errors, u32::MAX));
         };
         for _ in 0..5 {

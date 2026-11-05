@@ -7,11 +7,10 @@
 //! them like data. Values the GPU computes (normals, segment counts, the texts labels need) use the
 //! same stamps and are read back.
 //!
-//! In a diagram, the sheet derives places, sizes, group boxes, and wires. Outside diagrams, the
-//! derivations are lanes of edges that share both endpoints, stars of nets, and, when the scene has
-//! a layout, places of vertex rows without positions. In every space they also derive shapes of
-//! geometry fields (every area's triangles), text matches for `contains`, the pieces of given tile
-//! sets the camera needs, and what each paged table draws.
+//! The derivations are lanes of edges that share both endpoints, stars of nets, and, when the scene
+//! has a layout, places of vertex rows without positions. They also derive shapes of geometry
+//! fields (every area's triangles), text matches for `contains`, the pieces of given tile sets the
+//! camera needs, and what each paged table draws.
 
 pub(crate) mod graph;
 mod lanes;
@@ -24,7 +23,7 @@ pub(crate) mod sight;
 mod stars;
 pub(crate) mod tiled;
 
-pub(crate) use lanes::{spread, words as lane_words};
+pub(crate) use lanes::words as lane_words;
 
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -36,9 +35,8 @@ use crate::data::{Column, Field, Keyed, Name, Op, Page, Patch, Snapshot, Table, 
 use crate::gpu::readback::Readback;
 use crate::gpu::work::{Count, Counters};
 use crate::host::{Host, Job, Key, Request};
-use crate::sheet::Sheet;
 use crate::tiles::TileSets;
-use crate::{Pending, Result, Scene, Space};
+use crate::{Pending, Result, Scene};
 use places::Places;
 
 /// Hashes `inputs` into a stamp. Never 0, which means no value has been made yet.
@@ -250,12 +248,6 @@ impl<'a> Jobs<'a> {
         Jobs { fetch: fetch.or(self.fetch), ..self }
     }
 
-    /// Spends `cost` microseconds of the budget even when it does not fit, for work the frame
-    /// cannot defer. The budget stops at zero.
-    pub(crate) fn spend(&mut self, cost: u64) {
-        self.left = self.left.saturating_sub(cost.min(u64::from(u32::MAX)) as u32);
-    }
-
     /// Runs `job` on the host, off the frame. Without a host, runs it immediately.
     pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         self.counters.add(Count::Jobs, 1);
@@ -281,17 +273,13 @@ impl<'a> Jobs<'a> {
     }
 }
 
-/// The inputs every derivation reads: the scene, its data, the host (which measures text), whether
-/// rows are being dragged, and what each paged table draws. Jobs go through the frame's [`Jobs`].
+/// The inputs every derivation reads: the scene, its data, and what each paged table draws. Jobs go
+/// through the frame's [`Jobs`], which hold the host.
 pub(crate) struct Input<'a> {
     pub(crate) scene: &'a Scene,
     /// Bumps whenever the scene changes.
     pub(crate) scene_version: u64,
     pub(crate) data: &'a [Snapshot],
-    pub(crate) host: Option<&'a dyn Host>,
-    /// Whether rows are being dragged. While true, work the drag causes runs on the frame
-    /// regardless of budget.
-    pub(crate) dragging: bool,
     /// Each paged table, by dataset and table. Row-local derivations work only on the pages and
     /// kept rows listed here.
     pub(crate) paged: Option<&'a Keyed<(Name, Name), Paged>>,
@@ -312,17 +300,17 @@ impl Input<'_> {
     }
 
     /// Hashes the inputs to the structure of the scene's marks: each drawn table's rows, and the
-    /// fields that set its places, sizes, groups, ports, wires, and nets, with a diagram's labels. Fields read only for
-    /// appearance, such as a streaming value, do not affect the hash.
+    /// fields that set its places, sizes, ends, and nets. Fields read only for appearance, such as a
+    /// streaming value, do not affect the hash.
     pub(crate) fn structure(&self, hasher: &mut impl Hasher) {
         self.reads(&mut |read| match read {
             Read::Rows { data, table, rows } => (data, table, rows.structure, rows.order).hash(hasher),
-            Read::Field { data, table, name, field, .. } => (data, table, name, field.map(Field::version)).hash(hasher),
+            Read::Field { data, table, name, field } => (data, table, name, field.map(Field::version)).hash(hasher),
         });
     }
 
     /// Calls `read` with each input to the structure of the scene's marks, in order: each drawn
-    /// table, then each field that sets its places, sizes, groups, ports, wires, and nets.
+    /// table, then each field that sets its places, sizes, ends, and nets.
     pub(crate) fn reads<'a>(&'a self, read: &mut impl FnMut(Read<'a>)) {
         for mark in &self.scene.marks {
             let style = mark.style();
@@ -333,26 +321,13 @@ impl Input<'_> {
                 crate::Mark::Vertices(v) => {
                     match &v.position {
                         Some([x, y]) => {
-                            self.read_expr(own, x, true, read);
-                            self.read_expr(own, y, true, read);
+                            self.read_expr(own, x, read);
+                            self.read_expr(own, y, read);
                         }
                         None => self.read_field(own, v.point_field(), read),
                     }
                     for size in v.size.iter().flatten().chain(&v.radius) {
-                        self.read_expr(own, &size.expr, true, read);
-                    }
-                    // A diagram sizes its blocks to their labels. Elsewhere a label's text places
-                    // nothing, so editing it lays nothing out again.
-                    if let Some(label) =
-                        style.label.as_ref().filter(|_| matches!(self.scene.space, crate::Space::Diagram(_)))
-                    {
-                        self.read_expr(own, &label.text, true, read);
-                    }
-                    for (reference, _) in &v.ports {
-                        self.read_field(own, reference, read);
-                    }
-                    for (members, reference) in &v.contains {
-                        self.read_field((&style.data, members), reference, read);
+                        self.read_expr(own, &size.expr, read);
                     }
                 }
                 crate::Mark::Edges(e) => {
@@ -368,28 +343,19 @@ impl Input<'_> {
         }
     }
 
-    /// Calls `read` with every field that `expr` reads, for a mark drawing `table`. When `own` is
-    /// set, a field of `table` itself is reported as `own`, since it sizes or places each row by
-    /// that row's value. The exception is when a domain fits `expr` to every row's values.
-    fn read_expr<'a>(
-        &'a self,
-        table: (&'a Name, &'a Name),
-        expr: &'a crate::Expr,
-        own: bool,
-        read: &mut impl FnMut(Read<'a>),
-    ) {
-        let own = own && !expr.fits();
+    /// Calls `read` with every field that `expr` reads, for a mark drawing `table`.
+    fn read_expr<'a>(&'a self, table: (&'a Name, &'a Name), expr: &'a crate::Expr, read: &mut impl FnMut(Read<'a>)) {
         expr.for_each_field(&mut |f| {
             let (data, read_from) = f.from.as_ref().map_or(table, |(d, t)| (d, t));
             let field = self.data(data).and_then(|d| d.table(read_from)).and_then(|t| t.field_named(&f.name));
-            read(Read::Field { data, table: read_from, name: f.name.as_str(), field, own: own && f.from.is_none() });
+            read(Read::Field { data, table: read_from, name: f.name.as_str(), field });
         });
     }
 
     /// Calls `read` with field `name` of `table`.
     fn read_field<'a>(&'a self, (data, table): (&'a Name, &'a Name), name: &'a str, read: &mut impl FnMut(Read<'a>)) {
         let field = self.data(data).and_then(|d| d.table(table)).and_then(|t| t.field_named(name));
-        read(Read::Field { data, table, name, field, own: false });
+        read(Read::Field { data, table, name, field });
     }
 }
 
@@ -397,9 +363,8 @@ impl Input<'_> {
 pub(crate) enum Read<'a> {
     /// A table a mark draws.
     Rows { data: &'a Name, table: &'a Name, rows: &'a Table },
-    /// A field, `None` where it is missing. `own` marks a field of a vertex mark's own table that
-    /// sizes or places each row by that row's value alone.
-    Field { data: &'a Name, table: &'a Name, name: &'a str, field: Option<&'a Field>, own: bool },
+    /// A field, `None` where it is missing.
+    Field { data: &'a Name, table: &'a Name, name: &'a str, field: Option<&'a Field> },
 }
 
 /// Derived tables, by the dataset and table each stands beside.
@@ -415,8 +380,8 @@ pub(crate) trait Derive {
     fn busy(&self) -> bool;
 
     /// Whether its tables are final, with no placeholder for pending work. Placeholders include
-    /// rows at their old places until a layout arrives, elbows until routes arrive, rows without
-    /// triangles until shapes arrive, and straight edges until lanes arrive.
+    /// rows at their old places until a layout arrives, rows without triangles until shapes arrive,
+    /// and straight edges until lanes arrive.
     fn complete(&self) -> bool {
         !self.busy()
     }
@@ -424,10 +389,10 @@ pub(crate) trait Derive {
     /// The tables it derives.
     fn tables(&self) -> &Tables;
 
-    /// Drops its derived tables, once the scene's space no longer needs them.
+    /// Drops its derived tables, once the scene no longer needs them.
     fn clear(&mut self);
 
-    /// Takes the errors since the last call, such as texts the host could not measure.
+    /// Takes the errors since the last call.
     fn take_errors(&mut self) -> Vec<crate::Error> {
         Vec::new()
     }
@@ -436,13 +401,11 @@ pub(crate) trait Derive {
 /// Every derivation of a view, updated in order each frame within one budget.
 #[derive(Default)]
 pub(crate) struct Derivations {
-    /// A diagram's sheet.
-    pub(crate) sheet: Sheet,
-    /// Outside diagrams, the lanes of edges that share both endpoints.
+    /// The lanes of edges that share both endpoints.
     lanes: lanes::Lanes,
-    /// Outside diagrams, when the scene has a layout, the places of vertex rows without positions.
+    /// When the scene has a layout, the places of vertex rows without positions.
     places: Places,
-    /// Outside diagrams, the stars of nets joining vertex rows.
+    /// The stars of nets joining vertex rows.
     stars: stars::Stars,
     shapes: shapes::Shapes,
     /// Whether each row's text contains a string a mark asks about.
@@ -453,17 +416,16 @@ pub(crate) struct Derivations {
     pub(crate) tiled: tiled::Tiled,
 }
 
-/// The derived tables beside one drawn table: the first found of the sheet's, places', stars', or
-/// lanes' tables, then the shapes' table, then the matches' table.
+/// The derived tables beside one drawn table: the first found of the places', stars', or lanes'
+/// tables, then the shapes' table, then the matches' table.
 pub(crate) type Beside<'a> = [Option<&'a Table>; 3];
 
 impl Derivations {
     /// Takes over `old`'s derivations that depend only on the data and the scene, as when the view
-    /// moves to a new device: the sheet, the places, lanes, and stars layouts gave, the shapes, and
-    /// the text matches. Rows keep their laid-out places, and an arrangement or job in progress
+    /// moves to a new device: the places, lanes, and stars layouts gave, the shapes, and the text
+    /// matches. Rows keep their laid-out places, and an arrangement or job in progress
     /// lands here. Tiles and paged tables belong to the old device, so they start again.
     pub(crate) fn carry(&mut self, old: &mut Derivations) {
-        std::mem::swap(&mut self.sheet, &mut old.sheet);
         std::mem::swap(&mut self.lanes, &mut old.lanes);
         std::mem::swap(&mut self.places, &mut old.places);
         std::mem::swap(&mut self.stars, &mut old.stars);
@@ -474,48 +436,38 @@ impl Derivations {
     /// Updates every derivation to `input`, spending what remains of `jobs`' frame budget after
     /// the tiles. Returns whether any table changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
-        let mut changed = if matches!(input.scene.space, Space::Diagram(_)) {
-            self.lanes.clear();
-            self.places.clear();
-            self.stars.clear();
-            self.sheet.update(input, jobs)
-        } else {
-            self.sheet.clear();
-            let placed = self.places.update(input, jobs);
-            self.lanes.update(input, jobs) | placed | self.stars.update(input, self.places.tables())
-        };
+        let placed = self.places.update(input, jobs);
+        let mut changed = self.lanes.update(input, jobs) | placed | self.stars.update(input, self.places.tables());
         changed |= self.shapes.update(input, &self.tiles, jobs);
         changed |= self.matches.update(input, jobs);
         changed
     }
 
-    /// Lays out the vertex `rows` names again: through the sheet in a diagram, else through the
-    /// places.
-    pub(crate) fn arrange(&mut self, diagram: bool, rows: crate::Arrange) {
-        if diagram { self.sheet.arrange(rows) } else { self.places.arrange(rows) }
+    /// Lays out the vertex `rows` names again.
+    pub(crate) fn arrange(&mut self, rows: crate::Arrange) {
+        self.places.arrange(rows);
     }
 
     /// Takes the result of the last `arrange` once it arrives: each row laid out and its position,
     /// in the space's coordinates.
     pub(crate) fn take_arranged(&mut self) -> Option<Vec<(crate::Row, [f64; 2])>> {
-        self.sheet.take_arranged().or_else(|| self.places.take_arranged())
+        self.places.take_arranged()
     }
 
-    /// Whether everything derived is final: no layout, route, lane, or shape job is pending, no
-    /// tile draws its ancestor as a placeholder, and no paged table draws its first sample.
+    /// Whether everything derived is final: no layout, lane, or shape job is pending, no tile draws
+    /// its ancestor as a placeholder, and no paged table draws its first sample.
     pub(crate) fn complete(&self) -> bool {
-        self.sheet.complete()
-            && self.lanes.complete()
+        self.lanes.complete()
             && self.places.complete()
             && self.shapes.complete()
             && self.tiles.complete()
             && self.tiled.complete()
     }
 
-    /// Whether a layout job is pending: a diagram's sheet, or the places of vertex rows without a
-    /// position. Rows stand at placeholder places until it lands, so a fit waits for it.
+    /// Whether a layout job is pending for the places of vertex rows without a position. Rows stand
+    /// at placeholder places until it lands, so a fit waits for it.
     pub(crate) fn placing(&self) -> bool {
-        self.sheet.placing() || self.places.busy()
+        self.places.busy()
     }
 
     /// Whether a triangulation job is pending. The rows it shapes draw nothing until it finishes.
@@ -525,8 +477,7 @@ impl Derivations {
 
     /// Takes the errors every derivation reported since the last call.
     pub(crate) fn take_errors(&mut self) -> Vec<crate::Error> {
-        let mut errors = self.sheet.take_errors();
-        errors.extend(self.places.take_errors());
+        let mut errors = self.places.take_errors();
         errors.extend(self.tiles.take_errors());
         errors
     }
@@ -534,7 +485,7 @@ impl Derivations {
     /// The derived tables beside table `table` of dataset `data`.
     pub(crate) fn beside(&self, data: &Name, table: &Name) -> Beside<'_> {
         let key = (data.clone(), table.clone());
-        let first = [self.sheet.tables(), self.places.tables(), self.stars.tables(), self.lanes.tables()]
+        let first = [self.places.tables(), self.stars.tables(), self.lanes.tables()]
             .into_iter()
             .find_map(|tables| tables.get(&key));
         [first, self.shapes.tables().get(&key), self.matches.tables().get(&key)]

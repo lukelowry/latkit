@@ -2,8 +2,8 @@
 #![cfg(feature = "gpu")]
 
 use latkit::{
-    Color, Colormap, Data, Diagram, Expr, Ids, Label, Plane, Plot, Scene, Source, Table, Tiles, Vertices, field,
-    from_json, when, zoom,
+    Color, Colormap, Data, Expr, Ids, Label, Plane, Plot, Scene, Source, Table, Tiles, Vertices, field, from_json,
+    when, zoom,
 };
 
 fn data() -> Source {
@@ -60,10 +60,7 @@ fn a_label_text_chooses_between_one_text_field_and_missing() {
     let number = when(field("x").gt(0.5)).then(field("name")).otherwise(1.0);
     assert!(!on_a_plane(number).is_empty(), "a value other than the field or missing");
     let zoomed = when(zoom().ge(3.0)).then(field("name")).otherwise(Expr::missing());
-    assert_eq!(on_a_plane(zoomed.clone()), "", "the zoom chooses on a plane");
-    let blocks = Vertices::of("grid", "Bus").position(field("x"), field("y")).label(Label::new(zoomed));
-    let in_a_diagram = failure(&Scene::new(Diagram::default()).draw(blocks), &[data()]);
-    assert!(in_a_diagram.contains("not the zoom"), "a diagram's text reads only data");
+    assert_eq!(on_a_plane(zoomed), "", "the zoom chooses");
 }
 
 #[test]
@@ -82,19 +79,15 @@ fn a_color_option_computes_a_color() {
 }
 
 #[test]
-fn diagrams_allow_positions_to_be_derived_by_layout() {
-    let scene = Scene::new(Diagram::default()).draw(Vertices::of("grid", "Bus")).layout(latkit::Layered::default());
+fn a_layout_places_rows_without_positions() {
+    let scene = Scene::new(Plane::default()).draw(Vertices::of("grid", "Bus")).layout(latkit::Layered::default());
     assert_eq!(failures(&scene, &[data()]), Vec::<String>::new());
 }
 
 #[test]
 fn options_a_scene_cannot_use_draw_as_if_unset() {
-    let block = Vertices::of("grid", "Bus").position(field("x"), field("y")).shadow(true);
-    assert!(
-        failure(&Scene::new(Plane::default()).draw(block.clone()), &[data()])
-            .starts_with("marks[0].shadow: only a diagram has")
-    );
-    assert_eq!(failures(&Scene::new(Diagram::default()).draw(block), &[data()]), Vec::<String>::new());
+    let laid = Scene::new(Plot::default()).layout(latkit::Stress::default());
+    assert!(failure(&laid, &[data()]).starts_with("layout: a plot cannot have a layout"));
     let bus = Vertices::of("grid", "Bus").position(field("x"), field("y"));
     let twins = Scene::new(Plane::default()).draw(bus.clone()).draw(bus.clone().radius(9.0));
     assert!(failure(&twins, &[data()]).starts_with("marks[1]: draws the same table as an earlier mark"));

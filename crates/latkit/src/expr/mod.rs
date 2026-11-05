@@ -185,16 +185,10 @@ pub fn zoom() -> Expr {
     node(Node::State(State::Zoom))
 }
 
-/// A size in position units (degrees on the earth), regardless of the space's unit. It scales with
-/// the zoom. [`Size::at_least`] and [`Size::at_most`] bound it in CSS pixels.
+/// A size in position units (degrees on the earth). It scales with the zoom. [`Size::at_least`]
+/// and [`Size::at_most`] bound it in CSS pixels.
 pub fn units(size: impl Into<Expr>) -> Size {
-    Size { expr: size.into(), unit: Some(Unit::Units), px: Size::ANY }
-}
-
-/// A size in CSS pixels, regardless of the space's unit. It keeps its size on screen as the view
-/// zooms. In a diagram, this keeps a stroke's width constant on screen.
-pub fn px(size: impl Into<Expr>) -> Size {
-    Size { expr: size.into(), unit: Some(Unit::Px), px: Size::ANY }
+    Size { expr: size.into(), units: true, px: Size::ANY }
 }
 
 /// A length given in meters, in degrees of arc: the earth's unit for positions, elevations, and
@@ -401,14 +395,6 @@ impl Expr {
         }
     }
 
-    /// Whether the expression has a fitted domain, which makes each row's value depend on every
-    /// row.
-    pub(crate) fn fits(&self) -> bool {
-        self.any(&|e| {
-            matches!(&*e.0, Node::Scale { domain: Domain::Fit, .. } | Node::Colormap { domain: Domain::Fit, .. })
-        })
-    }
-
     /// The field's name, when the expression is a plain field of the mark's own table.
     pub(crate) fn field_name(&self) -> Option<&Name> {
         match &*self.0 {
@@ -499,36 +485,20 @@ impl Then {
     }
 }
 
-/// A size. A bare value is in the space's unit: CSS pixels, or units in a diagram. [`px`] makes it
-/// CSS pixels, and [`units`] makes it position units, which scale with the zoom.
-/// [`Size::at_least`] and [`Size::at_most`] bound it in CSS pixels.
+/// A size. A bare value is in CSS pixels, and [`units`] makes it position units, which scale with
+/// the zoom. [`Size::at_least`] and [`Size::at_most`] bound it in CSS pixels.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Size {
     pub(crate) expr: Expr,
-    /// Its explicit unit. `None` means the space's unit.
-    pub(crate) unit: Option<Unit>,
+    /// Whether it is in position units rather than CSS pixels.
+    pub(crate) units: bool,
     /// The CSS pixel bounds it stays within at any zoom.
     pub(crate) px: [f32; 2],
-}
-
-/// An explicit unit for a length.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Unit {
-    /// CSS pixels, at any zoom.
-    Px,
-    /// Position units, which scale as the view zooms.
-    Units,
 }
 
 impl Size {
     /// No bounds: from 0 to infinitely many CSS pixels.
     pub(crate) const ANY: [f32; 2] = [0.0, f32::INFINITY];
-
-    /// Whether the size is in position units. `space_units` says whether the space's own unit is
-    /// position units, as a diagram's is.
-    pub(crate) fn in_units(&self, space_units: bool) -> bool {
-        self.unit.map_or(space_units, |unit| unit == Unit::Units)
-    }
 
     /// Sets a minimum size of `px` CSS pixels on screen, however far the view zooms out. For
     /// example, `units(field("r")).at_least(2.0)` scales with the map but never shrinks below 2
@@ -551,7 +521,7 @@ impl Size {
 
 impl<T: Into<Expr>> From<T> for Size {
     fn from(value: T) -> Size {
-        Size { expr: value.into(), unit: None, px: Size::ANY }
+        Size { expr: value.into(), units: false, px: Size::ANY }
     }
 }
 

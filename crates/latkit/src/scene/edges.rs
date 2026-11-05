@@ -6,8 +6,7 @@ use crate::{Error, Kind, Name, Result};
 
 mark!(
 /// Rows drawn as strokes between two vertices named by reference fields: branches, links, wires.
-/// In a diagram, a row without ends is a net. It joins every vertex port whose reference field
-/// names it.
+/// A row can instead stand as a pole on its own vertex, or join many vertices as a net.
 ///
 /// ```
 /// # use latkit::{field, Edges};
@@ -19,10 +18,9 @@ Edges("edges") + stroke {
     /// A path field whose points each row passes through between its ends.
     bends: Option<Name>,
     /// How each row runs between its ends. Defaults to geodesic on the earth and straight
-    /// elsewhere. `orthogonal` routes around blocks with rounded bends, in diagrams only.
+    /// elsewhere.
     route: Option<Route>,
-    /// Whether each row has an arrowhead at its second end. A net has one at each input it
-    /// reaches. Defaults to `false`.
+    /// Whether each row has an arrowhead at its second end. Defaults to `false`.
     arrows: bool,
     /// Draws each row as a pole from its own vertex down to the ground, on a plane or the earth.
     /// Poles take no `ends`, `bends`, or `joins`. Defaults to `false`.
@@ -48,8 +46,8 @@ impl Edges {
     }
 
     /// Draws each row as a net on a plane or the earth. The net joins the vertex rows of `table`
-    /// whose field `reference` names it, as a star from their center to each member. In a diagram,
-    /// nets join vertex ports.
+    /// whose field `reference` names it, as a star from their center to each member. Layouts link
+    /// each net's members.
     #[must_use]
     pub fn joins(mut self, table: impl Into<Name>, reference: impl Into<Name>) -> Edges {
         self.joins = Some((table.into(), reference.into()));
@@ -80,8 +78,7 @@ impl Edges {
         self
     }
 
-    /// Sets whether each row has an arrowhead at its second end. A net has one at each input it
-    /// reaches.
+    /// Sets whether each row has an arrowhead at its second end.
     #[must_use]
     pub fn arrows(mut self, on: bool) -> Edges {
         self.arrows = on;
@@ -114,8 +111,8 @@ impl Edges {
             c.end(to).map_err(|e| e.at("ends"))?;
         } else if self.bends.is_some() {
             return Err(Error::invalid("bends need ends").at("bends"));
-        } else if !context.diagram() {
-            return Err(Error::invalid("outside a diagram, edges need ends, poles, or joins").at("ends"));
+        } else {
+            return Err(Error::invalid("edges need ends, poles, or joins").at("ends"));
         }
         if let Some(bends) = &self.bends
             && !matches!(c.kind(bends), Some(Kind::Path))
@@ -123,9 +120,9 @@ impl Edges {
             return Err(Error::invalid("not a path field").at(bends).at("bends"));
         }
         let mut flags = if self.arrows { wgsl::ARROWS } else { 0 };
-        // Without a theme edge color, a row with ends outside a diagram whose color is missing
-        // blends the colors of its ends.
-        let blends = context.theme.edge.color.is_none() && !context.diagram() && self.ends.is_some();
+        // Without a theme edge color, a row with ends whose color is missing blends the colors of
+        // its ends.
+        let blends = context.theme.edge.color.is_none() && self.ends.is_some();
         if blends {
             flags |= wgsl::ENDS_COLOR;
         }
@@ -135,8 +132,7 @@ impl Edges {
             (Some(expr), _) => c.channel("color", expr, color)?,
             (None, Some(_)) => c.theme("color", wgsl::THEME_EDGE, color)?,
             (None, None) if blends => c.channel("color", &crate::Expr::missing(), color)?,
-            // A diagram's wires, and edges without ends to blend (nets and poles), take the text
-            // color.
+            // Edges without ends to blend (nets and poles) take the text color.
             (None, None) => {
                 c.theme(
                     "color",
@@ -156,12 +152,12 @@ impl Edges {
             flags: wgsl::EDGE_FLAGS,
             theme_width: wgsl::THEME_EDGE_WIDTH,
         };
-        self.stroke.compile(c, &words, context.diagram())?;
+        self.stroke.compile(c, &words)?;
         let mut drawing = Drawing::new(MarkKind::Edges);
         drawing.size_px = self.stroke.px();
         drawing.flags = flags;
-        if self.joins.is_some() || context.diagram() {
-            // A net's star and every wire in a diagram follow the route the view computes.
+        if self.joins.is_some() {
+            // A net's star follows the route the view computes.
             drawing.geometry = c.derived_path("route");
         } else if !self.poles {
             drawing.geometry = self.bends.as_ref().map_or(wgsl::NONE, |bends| c.path(bends));

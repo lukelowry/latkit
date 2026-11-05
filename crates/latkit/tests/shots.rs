@@ -176,9 +176,12 @@ fn timeouts_and_font_errors_return_the_view_without_a_partial_image() {
     assert!(!view.lent());
     gpu.set_host(BrokenText);
     let data = Data::new("labels");
-    data.apply(Table::new("Node", Ids::count(1)).field("name", vec!["Hello"])).unwrap();
-    let scene = Scene::new(latkit::Diagram::default())
-        .draw(Vertices::of("labels", "Node").label(latkit::Label::new(field("name"))));
+    data.apply(
+        Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["Hello"]),
+    )
+    .unwrap();
+    let scene = Scene::new(plane())
+        .draw(Vertices::of("labels", "Node").position(field("x"), field("y")).label(latkit::Label::new(field("name"))));
     view.set_scene(scene);
     view.set_sources([&data]).expect("a source");
     let error = pollster::block_on(Shot::new([128, 128]).image(&mut [&mut view])).unwrap_err();

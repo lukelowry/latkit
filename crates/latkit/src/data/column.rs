@@ -242,22 +242,6 @@ impl Column {
         Ok(Column { len, pages: pages.into(), like: self.like.clone(), fixed })
     }
 
-    /// The rows written since `before`, in order, where this column was written from `before` a
-    /// few writes back. `None` if the row count changed or a changed page no longer remembers
-    /// `before`. A row rewritten with its old value does not count.
-    pub(crate) fn rows_since(&self, before: &Column) -> Option<Vec<usize>> {
-        if self.len != before.len {
-            return None;
-        }
-        let mut rows = Vec::new();
-        for (p, (now, then)) in self.pages.iter().zip(before.pages.iter()).enumerate() {
-            if now.id != then.id {
-                rows.extend(now.rows_since(then.id)?.into_iter().map(|r| p * PAGE_ROWS + r as usize));
-            }
-        }
-        Some(rows)
-    }
-
     /// Whether the first `rows` rows are unchanged since `before`, which this column was written
     /// from a few writes back. That holds when every write since is at row `rows` or later, as with
     /// appends. Writes that a page no longer remembers count as changes.
@@ -298,40 +282,6 @@ impl Column {
             [page] => page.values.clone(),
             pages => Values::concat(&pages.iter().map(|p| &p.values).collect::<Vec<_>>()),
         }
-    }
-
-    /// The rows whose values differ from `before`'s, in order. When the pages remember the rows
-    /// written since, only those rows are compared. Otherwise every row of each changed page is
-    /// compared (see [`differing`](Column::differing)).
-    pub(crate) fn changed_since(&self, before: &Column) -> Vec<usize> {
-        let Some(written) = self.rows_since(before) else { return self.differing(before) };
-        written
-            .into_iter()
-            .filter(|&row| !self.holds(row, &before.pages[row / PAGE_ROWS].values, row % PAGE_ROWS))
-            .collect()
-    }
-
-    /// Whether row `row` equals row `at` of `values`, as stored (see [`Values::same_row`]).
-    pub(crate) fn holds(&self, row: usize, values: &Values, at: usize) -> bool {
-        self.pages[row / PAGE_ROWS].values.same_row(row % PAGE_ROWS, values, at)
-    }
-
-    /// The rows whose values differ from `before`'s, in order. Pages with the same id are skipped,
-    /// and the rest are compared row by row. Rows past the shorter column's end count as different.
-    pub(crate) fn differing(&self, before: &Column) -> Vec<usize> {
-        let mut rows = Vec::new();
-        for p in 0..self.pages.len().max(before.pages.len()) {
-            let (now, then) = (self.pages.get(p), before.pages.get(p));
-            if let (Some(a), Some(b)) = (now, then)
-                && a.id == b.id
-            {
-                continue;
-            }
-            let (a, b) = (now.map_or(&self.like, |a| &a.values), then.map_or(&before.like, |b| &b.values));
-            let (start, both) = (p * PAGE_ROWS, a.len().min(b.len()));
-            rows.extend((0..a.len().max(b.len())).filter(|&i| i >= both || !a.same_row(i, b, i)).map(|i| start + i));
-        }
-        rows
     }
 
     /// A column of rows `rows` of this one, in that order. Leading whole pages whose rows are
@@ -381,41 +331,24 @@ mod tests {
     }
 
     #[test]
-    fn differing_rows_are_found_in_the_pages_that_changed() {
-        let column = Column::new(&numbers(PAGE_ROWS * 2 + 10));
-        let source = Column::new(&Values::from(vec![-1.0_f64, (PAGE_ROWS + 4) as f64]));
-        // Row 3 of the second page changes. Its row 4 is rewritten with the value it already had.
-        let written = column.write(column.len(), &[(PAGE_ROWS + 3, 0), (PAGE_ROWS + 4, 1)], &source);
-        let written = written.expect("numbers");
-        assert_eq!(written.differing(&column), [PAGE_ROWS + 3]);
-        assert_eq!(column.differing(&column), Vec::<usize>::new(), "a column does not differ from itself");
-        let longer = column.write(column.len() + 2, &[], &source).expect("numbers");
-        assert_eq!(longer.differing(&column), [PAGE_ROWS * 2 + 10, PAGE_ROWS * 2 + 11], "added rows differ");
-    }
-
-    #[test]
     fn written_pages_remember_the_rows_written_since() {
         let column = Column::new(&numbers(PAGE_ROWS + 10));
         let source = Column::new(&Values::from(vec![-1.0_f64, -2.0]));
         let once = column.write(column.len(), &[(3, 0), (PAGE_ROWS + 4, 1)], &source).expect("numbers");
         let twice = once.write(once.len(), &[(5, 0)], &source).expect("numbers");
-        assert_eq!(twice.rows_since(&column), Some(vec![3, 5, PAGE_ROWS + 4]), "every write since, in order");
-        assert_eq!(twice.rows_since(&once), Some(vec![5]));
-        assert_eq!(twice.rows_since(&twice), Some(Vec::new()));
-        assert_eq!(column.rows_since(&twice), None, "an older column is not written from a newer one");
-        assert_eq!(Column::new(&numbers(PAGE_ROWS + 10)).rows_since(&column), None, "nor from another column");
-        let grown = column.write(column.len() + 2, &[], &source).expect("numbers");
-        assert_eq!(grown.rows_since(&column), None, "a changed row count lists no rows");
+        assert_eq!(twice.written_since(&column), vec![3, 5, PAGE_ROWS + 4], "every write since, in order");
+        assert_eq!(twice.written_since(&once), vec![5]);
+        assert_eq!(twice.written_since(&twice), Vec::<usize>::new());
         // A page remembers a few writes back. Beyond that it counts as entirely rewritten.
         let values = Column::new(&Values::from((0..=REMEMBERED).map(|k| -2.0 - f64::from(k)).collect::<Vec<_>>()));
         let mut near = once.clone();
         for k in 1..usize::from(REMEMBERED) {
             near = near.write(near.len(), &[(7, k)], &values).expect("numbers");
         }
-        assert_eq!(near.rows_since(&column), Some(vec![3, 7, PAGE_ROWS + 4]));
+        assert_eq!(near.written_since(&column), vec![3, 7, PAGE_ROWS + 4]);
         let far = near.write(near.len(), &[(7, 0)], &values).expect("numbers");
-        assert_eq!(far.rows_since(&column), None);
-        assert_eq!(far.rows_since(&near), Some(vec![7]));
+        assert_eq!(far.written_since(&column), (0..PAGE_ROWS).chain([PAGE_ROWS + 4]).collect::<Vec<_>>());
+        assert_eq!(far.written_since(&near), vec![7]);
     }
 
     #[test]
@@ -451,15 +384,9 @@ mod tests {
         // Row 4 holds 4.
         let source = Column::new(&Values::from(vec![-1.0_f64, 4.0]));
         let written = column.write(column.len(), &[(3, 0), (4, 1), (PAGE_ROWS + 4, 0)], &source).expect("numbers");
-        assert_eq!(written.rows_since(&column), Some(vec![3, PAGE_ROWS + 4]), "only the rows whose values changed");
-        assert_eq!(written.changed_since(&column), vec![3, PAGE_ROWS + 4]);
+        assert_eq!(written.written_since(&column), vec![3, PAGE_ROWS + 4], "only the rows whose values changed");
         let again = written.write(written.len(), &[(3, 0), (4, 1)], &source).expect("numbers");
         assert!(again.shares(&written), "pages rewritten with their own values keep their ids");
-        // Row 3 alternates between -1 and its first value, 3, until its page forgets.
-        let toggled = Column::new(&Values::from(vec![-1.0_f64, 3.0]));
-        let far = (0..=usize::from(REMEMBERED))
-            .fold(written, |c, k| c.write(c.len(), &[(3, k % 2)], &toggled).expect("numbers"));
-        assert_eq!(far.changed_since(&column), vec![3, PAGE_ROWS + 4], "compared once pages forget their writes");
     }
 
     #[test]

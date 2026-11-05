@@ -46,7 +46,6 @@ const ENTRIES: &[Entry] = &[
             ("custom", &["custom"]),
             ("custom_focus", &["custom", "focused"]),
             ("custom_opaque", &["custom", "opaque"]),
-            ("ports", &["ports"]),
             ("focus", &["focused"]),
             ("opaque", &["opaque"]),
         ],
@@ -54,14 +53,14 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "draw::strokes", variants: &[("main", &[]), ("focus", &["focused"]), ("opaque", &["opaque"])] },
     Entry { module: "draw::triangles", variants: &[("main", &[])] },
     Entry { module: "draw::areas", variants: &[("main", &[]), ("focus", &["focused"])] },
-    Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
+    Entry { module: "draw::glyphs", variants: &[("main", &[])] },
     Entry { module: "compute::texts", variants: &[("main", &[])] },
     Entry { module: "draw::overlay", variants: &[("main", &[])] },
     Entry { module: "compute::compose", variants: &[("main", &[])] },
     Entry { module: "compute::fields", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "atomic", "custom", "multisampled", "lists", "ports", "focused", "opaque"];
+const FEATURES: &[&str] = &["writes", "atomic", "custom", "multisampled", "lists", "focused", "opaque"];
 
 /// A placeholder custom marker function, appended to validate the custom variants.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";

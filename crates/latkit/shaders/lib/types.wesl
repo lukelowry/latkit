@@ -150,18 +150,16 @@ const NORMAL_WORDS: u32 = 3u;
 
 // Vertex state words. POSITION is four words: the high parts of x and y, then their low parts. HALF
 // is two words: the marker's half width and half height.
-const VERTEX_WORDS: u32 = 12u;
+const VERTEX_WORDS: u32 = 11u;
 const VERTEX_POSITION: u32 = 0u;
 const VERTEX_COLOR: u32 = 4u;
 const VERTEX_STATUS: u32 = 5u;
 const VERTEX_HALF: u32 = 6u;
 const VERTEX_ELEVATION: u32 = 8u;
-// How many groups contain a group row. Containers tint by it.
-const VERTEX_DEPTH: u32 = 9u;
 // The range of CSS pixels the marker's half size is clamped to, packed by `pack_range`. It is the
 // vertex mark's range, so edges ending at the vertex stop at the outline it draws.
-const VERTEX_RANGE: u32 = 10u;
-const VERTEX_FLAGS: u32 = 11u;
+const VERTEX_RANGE: u32 = 9u;
+const VERTEX_FLAGS: u32 = 10u;
 
 // Edge state words. Every kind's flags word is its last word. FROM and TO are the held rows of the
 // edge's two vertices, written by the end pass. TRAVEL is how far its comets have moved. No channel
@@ -175,22 +173,6 @@ const EDGE_FLOW: u32 = 4u;
 const EDGE_TRAVEL: u32 = 5u;
 const EDGE_FLAGS: u32 = 6u;
 
-// Words per port of a vertex mark, at `mark.port_info` in the program: its code, its shape, the
-// program column of its reference field, and its label's atlas rectangle as two corner words. A
-// code holds the side in bits 0-1, the port's index on that side in bits 2-9, the number of ports
-// on that side in bits 10-17, and the `PORT_OUTPUT` bit.
-const PORT_WORDS: u32 = 5u;
-const PORT_CODE: u32 = 0u;
-const PORT_SHAPE: u32 = 1u;
-const PORT_COLUMN: u32 = 2u;
-const PORT_UV: u32 = 3u;
-const PORT_OUTPUT: u32 = 0x40000u;
-const SIDE_LEFT: u32 = 0u;
-const SIDE_RIGHT: u32 = 1u;
-const SIDE_TOP: u32 = 2u;
-const SIDE_BOTTOM: u32 = 3u;
-// Height of a group's header band, in label sizes. The group's title sits in it.
-const HEADER_BAND: f32 = 1.8;
 // Largest arc a geodesic segment spans, in degrees.
 const GEODESIC_STEP: f32 = 2.0;
 // Most segments a path between two ends uses, along a great circle or bowed into a lane.
@@ -271,7 +253,7 @@ const LABEL_GUESS: f32 = 4.0;
 
 // Row state flags, in the last word of each row's kind words.
 const VISIBLE: u32 = 1u;
-// The row has a position, from its data or, in a diagram, from its sheet.
+// The row has a position, from its data or from the scene's layout.
 const PLACED: u32 = 2u;
 const DASH: u32 = 4u;
 // During a transition, a row that appears fades in, and one that disappears or left fades out.
@@ -314,10 +296,6 @@ const STATUS: u32 = 16u;
 const LABELED: u32 = 32u;
 const STEP_BEFORE: u32 = 64u;
 const STEP_AFTER: u32 = 128u;
-// A vertex mark whose blocks and groups drop shadows onto a diagram's sheet.
-const SHADOW: u32 = 256u;
-// A vertex mark whose rows contain other rows. Its rows draw as containers.
-const GROUP: u32 = 512u;
 
 // Focus bits per row. SELECTED and HOVERED mark the selected and hovered rows, and RELATED_SELECTED
 // and RELATED_HOVERED the rows one reference from them. Any of these makes a row lit, and the focus
@@ -382,7 +360,6 @@ const SPRITE_FILL: u32 = 3u;
 const SPACE_EARTH: u32 = 0u;
 const SPACE_PLANE: u32 = 1u;
 const SPACE_PLOT: u32 = 2u;
-const SPACE_DIAGRAM: u32 = 3u;
 
 // Built-in markers and shapes.
 const MARKER_SHAPE: u32 = 0u;
@@ -415,20 +392,13 @@ const THEME_TEXT: u32 = 7u;
 const THEME_MISSING: u32 = 8u;
 // A fully transparent color, which a missing status draws.
 const THEME_CLEAR: u32 = 9u;
-// A group container's fill color.
-const THEME_GROUP: u32 = 10u;
-// Diagram style. OUTLINE: the border color of blocks and groups, clear for none. CORNER, PORT_SIZE,
-// LIFT: the corner radius, port width, and how far a block's shadow falls, in length units.
-const THEME_OUTLINE: u32 = 11u;
-const THEME_CORNER: u32 = 12u;
-const THEME_PORT_SIZE: u32 = 13u;
-const THEME_LIFT: u32 = 14u;
+// The corner radius of block markers, in CSS pixels.
+const THEME_CORNER: u32 = 10u;
 const THEME_SLOTS: u32 = 16u;
 
-// The unit of comet spacing and length: the space's length unit, position units, or CSS pixels.
-const FLOW_LENGTHS: u32 = 0u;
+// The unit of comet spacing and length: CSS pixels or position units.
+const FLOW_PX: u32 = 0u;
 const FLOW_UNITS: u32 = 1u;
-const FLOW_PX: u32 = 2u;
 
 // Backdrop grids.
 const GRID_OFF: u32 = 0u;
@@ -499,11 +469,6 @@ struct Frame {
     shading: f32,
     arrow: f32,
     halo: f32,
-    // CSS pixels between a group's members and its outline. It is also the title's inset.
-    group_padding: f32,
-    // CSS pixels per length unit: per position unit in a diagram, 1 elsewhere. The theme lengths
-    // above are already in CSS pixels, except comet spacing and length.
-    unit: f32,
     zoom: f32,
     // A plane's grid: kind, pitch in position units, and the world distance from the center at
     // which it has faded out (0 for no fade). `graticule` is 1 if the earth draws a graticule.
@@ -525,8 +490,6 @@ struct Frame {
     sun: vec4f,
     // Color of the atmosphere around the globe. Clear when the earth has none.
     atmosphere: vec4f,
-    // Shadow color of a diagram's blocks and groups.
-    shadow: vec4f,
     theme: array<vec4u, 4>,
 }
 
@@ -623,28 +586,24 @@ struct Mark {
     focused: u32,
     focused_rows: u32,
     pieces: u32,
-    // Program columns, NONE when absent: the geometry a stroke's path follows (a route or
-    // bends), that geometry at the start of the transition, and each edge's lane among edges
-    // joining the same two vertices.
+    // Program columns, NONE when absent: the geometry a stroke's path follows (a net's star, bends,
+    // or a line's path), that geometry at the start of the transition, and each edge's lane among
+    // edges joining the same two vertices.
     geometry: u32,
     frozen_geometry: u32,
     lane: u32,
-    // Where the program lists the mark's ports (`PORT_WORDS` each), and how many each row has.
-    port_info: u32,
-    ports: u32,
     // `label`: the extra word holding the label's code or number, or NONE. The next three are
     // offsets in the labels buffer. `runs` is the run table: two corner words per code, both 0
     // until the text is set. `wanted` is a count followed by the codes to set, each once. `seen`
     // holds a bit per code the texts pass met: a set text shown in view, or an unset text it asked
-    // for. `number` says how a number label writes its number, NONE for a text label. The two sizes
-    // are in length units.
+    // for. `number` says how a number label writes its number, NONE for a text label. The size is
+    // in CSS pixels.
     label: u32,
     runs: u32,
     wanted: u32,
     seen: u32,
     number: u32,
     label_size: f32,
-    port_label_size: f32,
     // The range of CSS pixels the mark's size is clamped to at any zoom: a vertex's half size, or a
     // stroke's width.
     size_min: f32,

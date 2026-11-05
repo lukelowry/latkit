@@ -1,6 +1,5 @@
-//! Evaluates expressions on the CPU, for work that needs only data: a diagram's sheet
-//! (positions, sizes, and block label texts), layouts, row priorities, fitted domains of paged
-//! tables, and queries (filters, sort keys, and selections). The GPU evaluates the same expressions
+//! Evaluates expressions on the CPU, for work that needs only data: layouts, row priorities, fitted
+//! domains of paged tables, and queries (filters, sort keys, and selections). The GPU evaluates the same expressions
 //! for drawing. Here they read only fields, with sampled fields read at one axis coordinate.
 
 use std::cell::RefCell;
@@ -84,19 +83,6 @@ impl<'a> Rows<'a> {
         }
         out.extend((0..n).map(|row| make(self.eval(expr, row))));
         out
-    }
-
-    /// The text `expr` gives `row`: a text field's value, or the value a `when` picks. `None` where
-    /// it is missing.
-    pub(crate) fn text(&self, expr: &Expr, row: usize) -> Option<Arc<str>> {
-        match &*expr.0 {
-            Node::Field(f) => match self.value(f, row)? {
-                Value::Text(text) => Some(text),
-                _ => None,
-            },
-            Node::When(c, a, b) => self.text(if self.eval(c, row) > 0.5 { a } else { b }, row),
-            _ => None,
-        }
     }
 
     /// Field `f`'s value in `row`: from the table, or for a join, from the joined table's row with
@@ -246,14 +232,5 @@ mod tests {
         assert_eq!(rows.number(&scaled, 2), Some(1.0), "a fitted domain spans the values");
         let filled = field("w").fallback(5.0);
         assert_eq!((0..3).map(|r| rows.number(&filled, r)).collect::<Vec<_>>(), [Some(10.0), Some(5.0), Some(30.0)]);
-    }
-
-    #[test]
-    fn a_conditional_text_gives_its_field_or_nothing() {
-        let table = Table::new("T", Ids::count(2)).field("name", vec!["a", "b"]).field("on", vec![true, false]);
-        let rows = Rows::new(&table, &[]);
-        let text = when(field("on")).then(field("name")).otherwise(Expr::missing());
-        assert_eq!(rows.text(&text, 0).as_deref(), Some("a"));
-        assert_eq!(rows.text(&text, 1), None, "a missing text is no text");
     }
 }

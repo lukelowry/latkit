@@ -2,7 +2,7 @@
 
 import package::lib::bind::frame;
 import package::lib::mark::coverage;
-import package::lib::types::{FLOW_PX, FLOW_UNITS};
+import package::lib::types::FLOW_UNITS;
 
 struct Stroke {
     a: vec2f,
@@ -71,16 +71,13 @@ fn comet(d: vec3f, s: Stroke) -> f32 {
     if s.flow == 0.0 || frame.flow.a <= 0.0 {
         return 0.0;
     }
-    // The pixel's distance along the line in the comet unit, and CSS pixels per comet unit:
-    // position units (`FLOW_UNITS`), CSS pixels (`FLOW_PX`), or else the space's length unit.
-    var along = d.y / frame.unit;
-    var px = frame.unit;
+    // The pixel's distance along the line in the comet unit, and CSS pixels per comet unit: CSS
+    // pixels, or position units (`FLOW_UNITS`).
+    var along = d.y;
+    var px = 1.0;
     if frame.flow_unit == FLOW_UNITS {
         along = mix(s.along.x, s.along.y, d.z);
         px = length(s.b - s.a) / max(abs(s.along.y - s.along.x), 1e-12);
-    } else if frame.flow_unit == FLOW_PX {
-        along = d.y;
-        px = 1.0;
     }
     let spacing = max(frame.flow_spacing, 1e-6);
     // How far the pixel is ahead of the comet head behind it, in the direction comets run, and how

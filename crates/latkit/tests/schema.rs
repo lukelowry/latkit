@@ -106,8 +106,8 @@ fn every_input_has_a_schema_matching_its_json_form() {
     for name in inputs {
         assert!(schemas["$defs"][name].is_object(), "{name} has a schema");
     }
-    let diagram = &schemas["$defs"]["DiagramTheme"];
-    assert!(diagram.to_string().contains("groupPadding"), "options are in camelCase");
+    let theme = &schemas["$defs"]["Theme"];
+    assert!(theme.to_string().contains("gridSpacing"), "options are in camelCase");
     let names = &schemas["$defs"]["ColormapName"]["enum"];
     assert!(names.as_array().is_some_and(|n| n.iter().any(|n| n == "viridis")), "the schema lists the colormap names");
 }

@@ -1,4 +1,4 @@
-//! Stars of nets, outside diagrams.
+//! Stars of nets.
 //!
 //! Each row of an edge mark with `joins` is a net. Its members are the vertex rows whose reference
 //! field names it. The net draws as a star: a segment from the members' centroid to each member, at
@@ -10,9 +10,9 @@ use std::hash::Hash;
 
 use super::graph::{VertexMark, marks, position};
 use super::{Input, Tables, beside, kept, stamp_with};
+use crate::Mark;
 use crate::data::{Field, Name, UNWIRED, Values};
 use crate::expr::cpu::Rows;
-use crate::{Mark, Space};
 
 #[derive(Default)]
 pub(crate) struct Stars {
@@ -25,7 +25,7 @@ impl Stars {
     /// layout's `places` beside its table. Returns whether a table changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, places: &Tables) -> bool {
         let joining = input.scene.marks.iter().any(|m| matches!(m, Mark::Edges(e) if e.joins.is_some()));
-        if matches!(input.scene.space, Space::Diagram(_)) || !joining {
+        if !joining {
             let had = !self.tables.is_empty();
             self.clear();
             return had;

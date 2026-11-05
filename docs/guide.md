@@ -170,12 +170,11 @@ The [scene types](reference/types.md#scene) document every option and its defaul
 
 ### Spaces
 
-| Space       | Positions                                                             |
-| ----------- | --------------------------------------------------------------------- |
-| `'plane'`   | plane units with elevation; the camera turns and tilts                |
-| `'earth'`   | longitude and latitude in degrees, on a map or a globe                |
-| `'plot'`    | the axis coordinate across, values up                                 |
-| `'diagram'` | a flat sheet, y down, sizes in position units; ports, groups, layouts |
+| Space     | Positions                                              |
+| --------- | ------------------------------------------------------ |
+| `'plane'` | plane units with elevation; the camera turns and tilts |
+| `'earth'` | longitude and latitude in degrees, on a map or a globe |
+| `'plot'`  | the axis coordinate across, values up                  |
 
 Write a space as an object to give it options: `{ earth: { projection: 'globe' } }`,
 `{ plane: { grid: { lines: { pitch: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes.
@@ -196,15 +195,11 @@ Either way, every mark shows which of its rows are selected and hovered.
 | `areas`    | the area a polygon field covers                                          |
 | `faces`    | a triangle between three vertices                                        |
 
-`flow` animates comets along a stroke. In a diagram, vertices are blocks with `ports`, and each row
-is one block however many marks draw it. A vertices mark with `contains: [[table, reference], …]`
-draws each row as a group around the rows of those tables that reference it. An edges mark without
-`ends` draws each row as a net that joins the ports that reference it, and a net with one port
-draws a short stub.
+`flow` animates comets along a stroke. An edges mark with `joins: [table, reference]` draws each
+row as a net: a star from the center of the vertex rows whose `reference` names it out to each one.
 
 `label` shows a text field beside each row, inside a block, or along a stroke, when the row is
-visible and the text fits. In a diagram, a label wider than its block or group ends in "…". Labels
-never overlap. Where two would, the row drawn on top keeps its
+visible and the text fits. Labels never overlap. Where two would, the row drawn on top keeps its
 label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit.
 A row whose text is missing has no label, so a `when` that picks between the field and `null`
 labels only some rows, as in the scene above. A number label is written on the GPU each frame, so it
@@ -218,7 +213,7 @@ through a colormap or a conditional. `null` is a missing value, and an option th
 missing takes the theme's value.
 
 ```ts
-import { field, when, selected, zoom, units, px } from 'latkit';
+import { field, when, selected, zoom, units } from 'latkit';
 
 field('load').div(field('capacity')).clamp(0, 1); // arithmetic and comparisons
 field('vm').colormap('balance').domain(0.95, 1.05); // a color through a colormap
@@ -228,12 +223,11 @@ field('rating').fallback(100); // another value where one is missing
 when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10')); // colors
 when(zoom().ge(6)).then(field('name')).otherwise(null); // a label's text, from zoom 6 on
 units('$radius', { atLeast: 2 }); // a size in position units, kept within pixels
-px(3); // a size in CSS pixels, however the view zooms
 field('vm').from(weather.table('Station')); // read from another dataset, joined by id
 ```
 
-Sizes are in CSS pixels, or in position units in a diagram. Wrap a size in `px()` or `units()` to
-choose its unit. State expressions read the view: `selected()`, `hovered()`, `related()` (one
+Sizes are in CSS pixels. Wrap a size in `units()` to give it in position units, which scale with
+the zoom. State expressions read the view: `selected()`, `hovered()`, `related()` (one
 reference from a selected or hovered row), `pointer()`, `elapsed()`, and `zoom()`. `colormaps()`
 lists the colormap catalog with each map's colors, and `colormapCss(map)` returns a colormap as a
 CSS gradient, for legends drawn in HTML.
@@ -246,8 +240,8 @@ CSS gradient, for legends drawn in HTML.
   hovers. `gestures` binds each input to what it does, as in
   `{ gestures: { wheel: 'pan', 'control+wheel': 'zoom', 'shift+primary': 'box' } }`. `'inspect'`
   leaves the camera to your application, and `'none'` suits a still picture.
-- `layout` places vertex rows that have no position: `'stress'` or `'layered'`. A row keeps its
-  place once laid out.
+- `layout` places vertex rows that have no position among the rows they link to by edges or nets:
+  `'stress'` or `'layered'`. A row keeps its place once laid out.
 
 ## Views
 
@@ -293,8 +287,8 @@ edges. A globe zooms out until it spans a third of the view. After a fit of any 
 near the area the fit framed ([`View.camera`](reference/api.md#view)).
 
 A fit applies once the rows have their places, and until the first one applies the view shows only
-its background. A fit frames a diagram at most at its natural size and the earth at most at street
-scale, and one with nothing to frame waits for rows.
+its background. A fit frames the earth at most at street scale, and one with nothing to frame waits
+for rows.
 
 ### Events
 

@@ -13,7 +13,6 @@ mod layout;
 pub(crate) mod lines;
 pub(crate) mod mark;
 mod marker;
-mod port;
 mod space;
 #[cfg(test)]
 mod tests;
@@ -34,12 +33,11 @@ pub use layout::{Direction, Interpolation, Layered, Layout, Route, Stress};
 pub use lines::Lines;
 pub use mark::Mark;
 pub use marker::{Marker, Shape};
-pub use port::{Port, Side};
 pub(crate) use space::sun;
-pub use space::{Axis, Diagram, Earth, Grid, Plane, Plot, Projection, Space};
+pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space};
 pub use theme::{
-    AreaTheme, DiagramTheme, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, Length, LineTheme, PlotTheme, ShadowTheme,
-    TextTheme, Theme, VertexTheme,
+    AreaTheme, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, Length, LineTheme, PlotTheme, TextTheme, Theme,
+    VertexTheme,
 };
 pub use vertices::Vertices;
 
@@ -71,8 +69,8 @@ pub struct Scene {
     /// The marks, in drawing order: each draws over the marks before it.
     #[serde(default)]
     pub(crate) marks: Vec<Mark>,
-    /// How the view places vertex rows that have no position, such as a diagram's blocks or points
-    /// on a plane or the earth. Defaults to `none`.
+    /// How the view places vertex rows that have no position, on a plane or the earth. Defaults to
+    /// `none`.
     #[serde(default)]
     pub(crate) layout: Layout,
     /// Default colors and sizes, and the look of text, focus, and each space. Defaults to `dark`.
@@ -162,8 +160,7 @@ impl Scene {
         self
     }
 
-    /// Sets the layout that places vertex rows without a position, such as a diagram's blocks or
-    /// points on a plane or the earth.
+    /// Sets the layout that places vertex rows without a position, on a plane or the earth.
     #[must_use]
     pub fn layout(mut self, layout: impl Into<Layout>) -> Scene {
         self.layout = layout.into();
@@ -255,8 +252,7 @@ impl Scene {
     }
 
     /// Resets each option the scene can't use to its default, and returns why, each at its path: a
-    /// plot's layout, comet lengths in two units, options the space lacks, and legends without a
-    /// colormap to show.
+    /// plot's layout, comet lengths in two units, and legends without a colormap to show.
     pub(crate) fn sanitize(&mut self) -> Vec<Error> {
         let mut failures = Vec::new();
         if matches!(self.space, Space::Plot(_)) && self.layout != Layout::None {
@@ -270,11 +266,7 @@ impl Scene {
             let reason = "comet spacing and length must use the same unit, which each row's flow also uses";
             failures.push(Error::invalid(reason).at("length").at("flow").at("theme"));
         }
-        let diagram = matches!(self.space, Space::Diagram(_));
         for (i, mark) in self.marks.iter_mut().enumerate() {
-            for (option, reason) in mark.unplace(diagram) {
-                failures.push(Error::invalid(reason).at(option).at(i).at("marks"));
-            }
             let style = mark.style_mut();
             if style.legend.is_some() && style.color.as_ref().and_then(crate::Expr::colormap_of).is_none() {
                 style.legend = None;

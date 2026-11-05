@@ -6,8 +6,8 @@
 //! numbers segments, sorts rows by height, sums face normals when their corners moved, and measures
 //! extents when asked.
 //!
-//! The render pass draws the backdrop and a plot's grid lines, then every mark's primitive and ports
-//! in scene order with depth, then the labels and the rest of the overlay. A pending probe then
+//! The render pass draws the backdrop and a plot's grid lines, then every mark's primitive in scene
+//! order with depth, then the labels and the rest of the overlay. A pending probe then
 //! reads what the frame drew, through the same geometry.
 
 use std::ops::Range;
@@ -153,28 +153,6 @@ impl Marks<'_> {
             shown.record(pass, drawn, corners, self.lists);
         }
     }
-
-    /// Draws the ports of every row of mark `i`, if its rows have ports. Called after its rows, and
-    /// again after its lit rows, since ports sit on top of them.
-    fn ports(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        drawn: &mut Drawn,
-        inner: &mut Inner,
-        i: usize,
-        shown: &super::marks::Shown,
-    ) {
-        let ports = shown.port_count();
-        if ports == 0 || shown.compiled.is_none() || shown.kind() != MarkKind::Vertices {
-            return;
-        }
-        let group = &self.passes.iter().find(|(s, _)| *s == Shader::PointsPorts).expect("listed").1;
-        pass.set_bind_group(1, &self.groups.mark, &[offset(i)]);
-        let variant = Variant::draw(Shader::PointsPorts, self.format, self.samples);
-        pass.set_pipeline(&inner.pipelines.render(self.device, variant));
-        pass.set_bind_group(2, group, &[]);
-        drawn.draw(pass, 4, (shown.rows + shown.exits) * ports);
-    }
 }
 
 /// The marks each step of a frame's compute pass covers.
@@ -308,14 +286,13 @@ impl super::marks::Shown {
         }
     }
 
-    /// Instances that probes and measures cover: live rows and their ports, not exits.
+    /// Instances that probes and measures cover: live rows, not exits.
     pub(crate) fn live_instances(&self) -> u32 {
         if let Some(list) = &self.segments.list {
             return list.kept;
         }
         match self.compiled.as_ref().map(|_| self.kind().primitive()) {
             Some(Primitive::Strokes) => self.rows * self.segments_per_row(),
-            Some(Primitive::Points) => self.rows * (1 + self.port_count()),
             Some(_) => self.rows,
             None => 0,
         }
@@ -748,7 +725,6 @@ impl View {
             Shader::Backdrop,
             Shader::Points,
             Shader::PointsCustom,
-            Shader::PointsPorts,
             Shader::Strokes,
             Shader::Triangles,
             Shader::Areas,
@@ -760,7 +736,6 @@ impl View {
             Shader::PointsCustomOpaque,
             Shader::StrokesOpaque,
             Shader::Glyphs,
-            Shader::GlyphsPorts,
             Shader::Overlay,
         ] {
             passes.push((shader, resources.pass(device, inner, shader)));
@@ -814,22 +789,18 @@ impl View {
                 continue;
             }
             marks.draw(&mut pass, drawn, inner, i, shown, Draw::Rows);
-            marks.ports(&mut pass, drawn, inner, i, shown);
         }
         // Lit rows draw again, glowing, over every mark but labels, and where depth varies, over all
-        // but the opaque rows nearer than them. Only their own ports cover them. They draw once their
-        // pipelines have compiled.
+        // but the opaque rows nearer than them. They draw once their pipelines have compiled.
         for (i, shown) in self.marks.iter().enumerate() {
             if self.answers() && shown.drawable() && shown.lit.rows > 0 {
                 marks.draw(&mut pass, drawn, inner, i, shown, Draw::Lit);
-                marks.ports(&mut pass, drawn, inner, i, shown);
             }
         }
         if !texts {
             return;
         }
-        let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(group);
-        self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, glyphs);
+        self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, group(Shader::Glyphs));
         if clip.is_some() {
             pass.set_scissor_rect(0, 0, frame.size[0], frame.size[1]);
         }

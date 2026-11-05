@@ -88,23 +88,23 @@ export function polygons(n: number, sides = 32): Write {
   return (p) => p.set('Region', { count: n }, { rings, v });
 }
 
-/** `n` blocks in binary trees of 64. Each block's output is a net, and its two children's inputs
- * reference that net. */
-export function blocks(n: number): Write {
-  const input = new Array<number | null>(n);
-  const name = new Array<string>(n);
-  for (let i = 0; i < n; i++) {
+/** `n` named nodes without positions in binary trees of 64, each linked to its two children. */
+export function trees(n: number): Write {
+  const name = Array.from({ length: n }, (_, i) => `Node ${i}`);
+  const children = Array.from({ length: n }, (_, i) => i).filter((i) => i % 64 !== 0);
+  const [from, to] = [new Uint32Array(children.length), new Uint32Array(children.length)];
+  children.forEach((i, e) => {
     const k = i % 64;
-    input[i] = k === 0 ? null : i - k + ((k - 1) >> 1);
-    name[i] = `Block ${i}`;
-  }
+    from[e] = i - k + ((k - 1) >> 1);
+    to[e] = i;
+  });
   return (p) =>
     p
-      .set('Net', { count: n }, { k: new Float32Array(n) })
+      .set('Node', { count: n }, { name })
       .set(
-        'Block',
-        { count: n },
-        { name, in: reference('Net', input), out: reference('Net', { count: n }) },
+        'Link',
+        { count: children.length },
+        { from: reference('Node', from), to: reference('Node', to) },
       );
 }
 

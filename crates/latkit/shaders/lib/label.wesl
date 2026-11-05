@@ -1,16 +1,14 @@
 // Labels: where a labeled row's text is anchored, its size, the space it claims, and whether it can
 // show. Draws place every label from its anchor each frame, so labels track the camera and their
 // rows exactly. The label passes measure the same boxes to claim space and find the visible texts.
-// Text is a distance field set at `TEXT_BASE` and drawn at any size: in CSS pixels, or in a diagram
-// in length units. In a diagram, text scales with the sheet and fades out once too small to read.
-// A label is a row of runs: a text label's one text, or the characters a number label writes.
+// Text is a distance field set at `TEXT_BASE` and drawn at any size in CSS pixels. A label is a
+// row of runs: a text label's one text, or the characters a number label writes.
 
 import package::lib::types::{
-    NONE, POINTS, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, HEADER_BAND, SPACE_DIAGRAM,
-    LABEL_CELL, LABEL_MARGIN, LABEL_GUESS, NUMBER_CHARS, CHAR_POINT, CHAR_MINUS, CHAR_EXPONENT, CHAR_UNIT,
+    NONE, POINTS, MARKER_BLOCK, SIZED, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, LABEL_CELL, LABEL_MARGIN, LABEL_GUESS, NUMBER_CHARS, CHAR_POINT, CHAR_MINUS, CHAR_EXPONENT, CHAR_UNIT,
     FORMAT_AUTO, FORMAT_SCIENTIFIC, FORMAT_ENGINEERING, NUMBER_TRIM, NUMBER_UNIT,
 };
-import package::lib::bind::{frame, eye, mark};
+import package::lib::bind::{eye, mark};
 import package::lib::mark::PRIMITIVE;
 import package::lib::points::point;
 import package::lib::path::PATH;
@@ -26,14 +24,8 @@ struct Anchor {
     shown: bool,
 }
 
-// A size in length units, in CSS pixels at this frame's zoom.
-fn length_px(size: f32) -> f32 {
-    return size * frame.unit;
-}
-
 // The label anchor of drawn row `item`: centered on the row's center, except beside a point's
-// marker, inside a block or a sized marker, in a group's header band, and beside a trace's last
-// sample.
+// marker, inside a block or a sized marker, and beside a trace's last sample.
 fn anchor(item: u32) -> Anchor {
     var a = Anchor(vec2f(0.0), vec2f(0.5), vec2f(0.0), false);
     if PRIMITIVE != POINTS {
@@ -49,14 +41,8 @@ fn anchor(item: u32) -> Anchor {
     let p = point(held_row(item));
     let c = point_center(p);
     a.shown = c.shown;
-    let text = length_px(mark.label_size);
-    if (mark.flags & GROUP) != 0u {
-        // A group's title sits in its header band, inset from the left.
-        let header = text * HEADER_BAND;
-        a.at = c.at + vec2f(-p.half.x + frame.group_padding, -p.half.y + 0.5 * header);
-        a.align = vec2f(0.0, 0.5);
-        a.room = vec2f(2.0 * (p.half.x - frame.group_padding), header);
-    } else if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
+    let text = mark.label_size;
+    if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
         // A block, or a marker with a width and height, shows its label inside if it fits.
         a.at = c.at;
         a.room = vec2f(2.0 * p.half.x - text, 2.0 * p.half.y);
@@ -65,15 +51,6 @@ fn anchor(item: u32) -> Anchor {
         a.align = vec2f(0.0, 0.5);
     }
     return a;
-}
-
-// Opacity of text `px` CSS pixels tall. In a diagram, text fades out as the view zooms out.
-// Elsewhere text has a fixed, readable size, so it always shows.
-fn legibility(px: f32) -> f32 {
-    if frame.space != SPACE_DIAGRAM {
-        return 1.0;
-    }
-    return smoothstep(3.5, 6.0, px);
 }
 
 // A run of text placed on screen: the text's box and its quad, which extends over the distance
@@ -286,12 +263,11 @@ fn in_view(lo: vec2f, hi: vec2f) -> bool {
 // Labels beside their rows compete for space. Each label writes its claim key into the cells its
 // box covers, and each cell keeps the largest key. A label shows only if it keeps every cell it
 // covers, so where labels would overlap, the label of the row drawn on top shows. The claims depend
-// on this frame alone. A label inside its row (a block's label, or a group's title) or in a diagram
-// does not compete.
+// on this frame alone. A label inside its row, such as a block's label, does not compete.
 
 // Whether the label anchored at `a` competes for space with other labels.
 fn claims_room(a: Anchor) -> bool {
-    return a.room.x <= 0.0 && frame.space != SPACE_DIAGRAM;
+    return a.room.x <= 0.0;
 }
 
 // The claim key of drawn row `i`. Later marks, then later rows, draw on top, so their keys are

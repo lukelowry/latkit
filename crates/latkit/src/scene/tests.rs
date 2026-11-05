@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::{Color, Colormap, ColormapKind, Expr, field, px, units};
+use crate::{Color, Colormap, ColormapKind, Expr, field, units};
 
 fn scene(json: &str) -> Scene {
     serde_json::from_str(json).expect("a scene")
@@ -14,7 +14,7 @@ fn scenes_match_builders() {
     let json = r#"{
         "space": { "earth": { "projection": "globe" } },
         "marks": [
-            { "edges": ["grid", "Branch"], "ends": ["from", "to"], "width": { "px": 2 } },
+            { "edges": ["grid", "Branch"], "ends": ["from", "to"], "width": 2 },
             { "position": ["$lon", "$lat"], "vertices": ["grid", "Bus"], "radius": { "units": 3 },
                 "color": { "colormap": "balance", "value": "$vm", "domain": [0.95, 1.05] } }
         ],
@@ -25,7 +25,7 @@ fn scenes_match_builders() {
     let built = Scene::new(Earth::default().projection(Projection::Globe))
         .theme(Theme { vertex: VertexTheme { radius: 5.0, ..light.vertex }, ..light })
         .ease(Duration::ZERO)
-        .draw(Edges::of("grid", "Branch").ends("from", "to").width(px(2.0)))
+        .draw(Edges::of("grid", "Branch").ends("from", "to").width(2.0))
         .draw(
             Vertices::of("grid", "Bus")
                 .position(field("lon"), field("lat"))
@@ -238,15 +238,12 @@ fn presets_equal_their_values() {
     assert_eq!(serde_json::from_str::<Marker>(r#""block""#).expect("a marker"), Marker::block());
     let gauge = serde_json::from_str::<Marker>(r#"{ "gauge": { "fill": "$f" } }"#).expect("a marker");
     assert_eq!(gauge, Marker::Gauge { fill: field("f"), shape: Shape::Ellipse });
-    assert_eq!(serde_json::from_str::<Port>(r#""left""#).expect("a port"), Port::new(Side::Left));
-    let output = serde_json::from_str::<Port>(r#"{ "side": "right", "output": true }"#).expect("a port");
-    assert_eq!(output, Port::output(Side::Right));
     assert_eq!(serde_json::from_str::<Label>(r#""$name""#).expect("a label"), Label::new(field("name")));
     let label = serde_json::from_str::<Label>(r#"{ "text": "$name", "size": 10 }"#).expect("a label");
     assert_eq!(label, Label::new(field("name")).size(10.0));
-    let grid = r#"{ "diagram": { "grid": { "dots": { "pitch": 10, "snap": true } } } }"#;
+    let grid = r#"{ "plane": { "grid": { "dots": { "pitch": 10 } } } }"#;
     let space = serde_json::from_str::<Space>(grid).expect("a space");
-    assert_eq!(space, Space::Diagram(Diagram { grid: Grid::Dots { pitch: 10.0, snap: true } }));
+    assert_eq!(space, Space::Plane(Plane { grid: Grid::Dots { pitch: 10.0 } }));
     assert_eq!(serde_json::from_str::<Space>(r#""earth""#).expect("a space"), Space::Earth(Earth::default()));
 }
 

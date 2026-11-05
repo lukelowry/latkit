@@ -20,8 +20,7 @@ fn vector(v: DVec3) -> [f32; 4] {
 /// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, at axis
 /// coordinate `at` and `elapsed` seconds on the view's clock. `linear` says the target is sRGB and
 /// encodes color itself, so shaders write linear color. Pointer, probe, and focus words start
-/// empty. Theme lengths are in the space's unit, so in a diagram they scale with the zoom. The halo
-/// and the focus glow are in CSS pixels everywhere.
+/// empty. Theme lengths are in CSS pixels.
 pub(crate) fn frame(
     scene: &Scene,
     projected: &Projected,
@@ -34,15 +33,13 @@ pub(crate) fn frame(
     let (cx, cy) = (split(projected.center[0]), split(projected.center[1]));
     let grid = match &scene.space {
         Space::Plane(plane) => plane.grid,
-        Space::Diagram(diagram) => diagram.grid,
         Space::Earth(_) | Space::Plot(_) => Grid::Off,
     };
     let (grid_kind, grid_pitch) = match grid {
         Grid::Off => (wgsl::GRID_OFF, 1.0),
         Grid::Lines { pitch } => (wgsl::GRID_LINES, pitch),
-        Grid::Dots { pitch, .. } => (wgsl::GRID_DOTS, pitch),
+        Grid::Dots { pitch } => (wgsl::GRID_DOTS, pitch),
     };
-    let unit = if projected.space == wgsl::SPACE_DIAGRAM { projected.px_per_unit[0] as f32 } else { 1.0 };
     let graticule = matches!(&scene.space, Space::Earth(earth) if earth.graticule);
     // The sun's position at the earth's daylight instant, advanced by the shown axis coordinate.
     let (sun, atmosphere) = match &scene.space {
@@ -66,25 +63,22 @@ pub(crate) fn frame(
     frame.elapsed = elapsed as f32;
     frame.glow = theme.focus.glow;
     frame.dim = theme.focus.dim;
-    frame.dash = theme.dash * unit;
+    frame.dash = theme.dash;
     // Comet spacing and length keep their own unit. A stroke converts them to pixels as it draws.
     frame.flow_spacing = theme.flow.spacing.value();
     frame.flow_length = theme.flow.length.value();
-    frame.flow_width = theme.flow.width * unit;
+    frame.flow_width = theme.flow.width;
     frame.flow_unit = match theme.flow.spacing {
-        Length::Space(_) => wgsl::FLOW_LENGTHS,
-        Length::Units(_) => wgsl::FLOW_UNITS,
         Length::Px(_) => wgsl::FLOW_PX,
+        Length::Units(_) => wgsl::FLOW_UNITS,
     };
     frame.bow = theme.edge.bow;
     // Hover is tracked either way. The controls only decide whether it glows.
     let glows = scene.controls.hover;
     frame.grow = if glows { theme.focus.grow } else { 1.0 };
     frame.shading = theme.shading;
-    frame.arrow = theme.edge.arrow * unit;
+    frame.arrow = theme.edge.arrow;
     frame.halo = theme.text.halo;
-    frame.group_padding = theme.diagram.group_padding * unit;
-    frame.unit = unit;
     frame.zoom = projected.zoom as f32;
     frame.linear = u32::from(linear);
     frame.hover = if glows { theme.focus.hover.to_array() } else { [0.0; 4] };
@@ -101,7 +95,6 @@ pub(crate) fn frame(
     frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.earth.night.clamp(0.0, 1.0)]);
     frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
     frame.theme = theme_slots(theme);
-    frame.shadow = theme.diagram.shadow.color.to_array();
     frame
 }
 
@@ -142,11 +135,7 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_TEXT as usize] = theme.text.color.packed();
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
-    slots[wgsl::THEME_GROUP as usize] = theme.diagram.group.packed();
-    slots[wgsl::THEME_OUTLINE as usize] = theme.diagram.outline.map_or(0, Color::packed);
-    slots[wgsl::THEME_CORNER as usize] = theme.diagram.corner.to_bits();
-    slots[wgsl::THEME_PORT_SIZE as usize] = theme.diagram.port_size.to_bits();
-    slots[wgsl::THEME_LIFT as usize] = theme.diagram.shadow.lift.to_bits();
+    slots[wgsl::THEME_CORNER as usize] = theme.vertex.corner.to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
@@ -197,8 +186,6 @@ pub(crate) fn mark(
     mark.constants = shown.offsets.constants;
     mark.ends = shown.offsets.ends;
     mark.palette = shown.offsets.palette;
-    mark.port_info = shown.offsets.port_info;
-    mark.ports = shown.port_count();
     mark.mask = shown.dirty;
     mark.remap = shown.remap;
     mark.focused = shown.lit.at;
@@ -241,7 +228,6 @@ pub(crate) fn mark(
         if shown.transition.is_some() {
             mark.frozen_geometry = shown.tables.frozen().unwrap_or(wgsl::NONE);
         }
-        mark.port_label_size = drawing.port_label_size;
         [mark.size_min, mark.size_max] = drawing.size_px;
         if let Some(labeling) = &drawing.label {
             mark.label = labeling.extra;

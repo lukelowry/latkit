@@ -804,14 +804,8 @@ mod tests {
         let update = |shapes: &mut Shapes, data: &Snapshot, pages: Vec<u32>| {
             let mut paged = Keyed::default();
             paged.insert(("map".into(), "Zone".into()), Paged { order: order.clone(), pages, kept: Vec::new() });
-            let input = Input {
-                scene: &scene,
-                scene_version: 1,
-                data: std::slice::from_ref(data),
-                host: None,
-                dragging: false,
-                paged: Some(&paged),
-            };
+            let input =
+                Input { scene: &scene, scene_version: 1, data: std::slice::from_ref(data), paged: Some(&paged) };
             let mut jobs = Jobs::new(None, Waker::noop(), &counters, &errors, u32::MAX);
             shapes.update(&input, &TileSets::default(), &mut jobs);
         };
@@ -848,14 +842,7 @@ mod tests {
         // No frame budget: every shape is made in a job, which finishes by the next update.
         let update = |shapes: &mut Shapes, data: &Data| {
             let data = data.snapshot();
-            let input = Input {
-                scene: &scene,
-                scene_version: 1,
-                data: std::slice::from_ref(&data),
-                host: None,
-                dragging: false,
-                paged: None,
-            };
+            let input = Input { scene: &scene, scene_version: 1, data: std::slice::from_ref(&data), paged: None };
             let mut jobs = Jobs::new(None, Waker::noop(), &counters, &errors, 0);
             shapes.update(&input, &TileSets::default(), &mut jobs)
         };
@@ -894,14 +881,7 @@ mod tests {
         let (host, counters, errors) = (Failing::default(), Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let mut shapes = Shapes::default();
         for _ in 0..5 {
-            let input = Input {
-                scene: &scene,
-                scene_version: 1,
-                data: std::slice::from_ref(&data),
-                host: Some(&host),
-                dragging: false,
-                paged: None,
-            };
+            let input = Input { scene: &scene, scene_version: 1, data: std::slice::from_ref(&data), paged: None };
             // No frame budget: the rows are shaped in a job.
             shapes.update(
                 &input,

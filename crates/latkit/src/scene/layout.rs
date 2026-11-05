@@ -4,9 +4,8 @@ use serde::Deserialize;
 use super::form::{preset_schema, presets};
 
 /// How the view places vertex rows that have no position: a name, or
-/// `{ stress | layered: options }`. In a diagram it places blocks. On a plane or the earth it
-/// places points among the rows they link to. Gaps are in position units: diagram units, plane
-/// units, or degrees on the earth.
+/// `{ stress | layered: options }`. On a plane or the earth it places points among the rows they
+/// link to, by edges or nets. Gaps are in position units: plane units, or degrees on the earth.
 ///
 /// A placed row keeps its place. Rows added later are placed around the others, and
 /// [`View::arrange`](crate::View::arrange) lays out every row again.
@@ -45,8 +44,7 @@ impl Default for Stress {
     }
 }
 
-/// Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their
-/// outputs.
+/// Layered drawing: vertices in ranks, with edges pointing along `direction`.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Layered {
@@ -72,9 +70,6 @@ pub enum Route {
     Straight,
     /// Along the great circle, on the earth.
     Geodesic,
-    /// Horizontal and vertical runs around vertices that leave and enter at their sides, with
-    /// rounded bends. Diagrams only.
-    Orthogonal,
 }
 
 /// How a line runs between its samples.

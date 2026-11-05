@@ -1,28 +1,30 @@
-//! Overlap removal: pushes boxes apart until no two are within a clearance of each other.
+//! Overlap removal: pushes points apart until no two are within a clearance of each other along
+//! both axes.
 
 use rustc_hash::FxHashMap;
 
-/// Rounds of pairwise pushing before a sweep separates the overlaps that remain.
+/// Rounds of pairwise pushing before a sweep separates the points still too close.
 const ROUNDS: usize = 40;
 
-/// Each box's center once no two of `boxes` (center x, center y, half width, half height) are
-/// within `clearance` of each other. Pinned boxes never move, and two pinned boxes may still
-/// overlap.
+/// Each point once no two of `points` are within `clearance` of each other along both x and y.
+/// Pinned points never move, and two pinned points may still be close.
 ///
-/// First come rounds of pushing. A pair too close parts along the axis where it overlaps least.
-/// Each box moves half the overlap, or the free box moves all of it when the other is pinned. This
-/// moves boxes least, but a crowd can jam. If overlaps remain after `ROUNDS`, a sweep places the
-/// free boxes in order of x after the pinned ones. Each is pushed right past any placed box it
-/// overlaps. Pairs are found in a grid of cells as wide as the widest box, so each round and the
-/// sweep are linear in the number of boxes when their sizes are similar.
-pub(crate) fn separate(boxes: &[[f64; 4]], pinned: &[bool], clearance: f64) -> Vec<[f64; 2]> {
-    let mut centers: Vec<[f64; 2]> = boxes.iter().map(|b| [b[0], b[1]]).collect();
-    let half: Vec<[f64; 2]> = boxes.iter().map(|b| [b[2], b[3]].map(|h| h.max(0.0) + clearance / 2.0)).collect();
-    let grid = Grid { cell: 2.0 * half.iter().flatten().copied().fold(1e-9, f64::max) };
-    // Overlaps this small are rounding error.
-    let slack = grid.cell * 1e-9;
-    let overlap = |centers: &[[f64; 2]], i: usize, j: usize| {
-        let over = [0, 1].map(|k| half[i][k] + half[j][k] - (centers[j][k] - centers[i][k]).abs());
+/// First come rounds of pushing. A pair too close parts along the axis where it is closer to clear.
+/// Each point moves half the shortfall, or the free point moves all of it when the other is pinned.
+/// This moves points least, but a crowd can jam. If close pairs remain after `ROUNDS`, a sweep
+/// places the free points in order of x after the pinned ones. Each is pushed right past any placed
+/// point it is too close to. Pairs are found in a grid of cells `clearance` wide, so each round and
+/// the sweep are linear in the number of points.
+pub(crate) fn separate(points: &[[f64; 2]], pinned: &[bool], clearance: f64) -> Vec<[f64; 2]> {
+    let mut centers = points.to_vec();
+    if clearance <= 0.0 {
+        return centers;
+    }
+    let grid = Grid { cell: clearance };
+    // Shortfalls this small are rounding error.
+    let slack = clearance * 1e-9;
+    let short = |centers: &[[f64; 2]], i: usize, j: usize| {
+        let over = [0, 1].map(|k| clearance - (centers[j][k] - centers[i][k]).abs());
         (over[0] > slack && over[1] > slack).then_some(over)
     };
     let mut cells = FxHashMap::default();
@@ -34,9 +36,9 @@ pub(crate) fn separate(boxes: &[[f64; 4]], pinned: &[bool], clearance: f64) -> V
                 if j <= i || (pinned[i] && pinned[j]) {
                     continue;
                 }
-                let Some(over) = overlap(&centers, i, j) else { continue };
+                let Some(over) = short(&centers, i, j) else { continue };
                 let d = [0, 1].map(|k| centers[j][k] - centers[i][k]);
-                // Coincident boxes part along x or y, alternating with the parity of `i + j`.
+                // Coincident points part along x or y, alternating with the parity of `i + j`.
                 let k = if d == [0.0; 2] { (i + j) % 2 } else { usize::from(over[1] < over[0]) };
                 let sign = if d[k] == 0.0 { 1.0 } else { d[k].signum() };
                 let share = if pinned[i] {
@@ -59,10 +61,10 @@ pub(crate) fn separate(boxes: &[[f64; 4]], pinned: &[bool], clearance: f64) -> V
     crate::order::by_key(&mut order, |&a| crate::order::number(centers[a][0]));
     grid.fill(&mut cells, &centers, (0..centers.len()).filter(|&i| pinned[i]));
     for i in order {
-        // Push it right past the placed boxes it overlaps until it overlaps none.
+        // Push it right past the placed points it is too close to until it is clear of all.
         while let Some(x) = grid
             .near(&cells, centers[i])
-            .filter_map(|j| overlap(&centers, j, i).map(|_| centers[j][0] + half[j][0] + half[i][0]))
+            .filter_map(|j| short(&centers, j, i).map(|_| centers[j][0] + clearance))
             .reduce(f64::max)
         {
             centers[i][0] = x;
@@ -72,8 +74,8 @@ pub(crate) fn separate(boxes: &[[f64; 4]], pinned: &[bool], clearance: f64) -> V
     centers
 }
 
-/// A grid of square cells holding box centers, wide enough that overlapping boxes are in the same
-/// or neighboring cells.
+/// A grid of square cells holding points, as wide as the clearance, so points too close are in the
+/// same or neighboring cells.
 struct Grid {
     cell: f64,
 }
@@ -83,7 +85,7 @@ impl Grid {
         ((c[0] / self.cell).floor() as i64, (c[1] / self.cell).floor() as i64)
     }
 
-    /// Empties `cells`, then fills them with the boxes `which`.
+    /// Empties `cells`, then fills them with the points `which`.
     fn fill(
         &self,
         cells: &mut FxHashMap<(i64, i64), Vec<u32>>,
@@ -96,7 +98,7 @@ impl Grid {
         }
     }
 
-    /// The boxes in the 3 × 3 cells around `at`.
+    /// The points in the 3 × 3 cells around `at`.
     fn near<'a>(&self, cells: &'a FxHashMap<(i64, i64), Vec<u32>>, at: [f64; 2]) -> impl Iterator<Item = usize> + 'a {
         let (x, y) = self.key(at);
         [-1, 0, 1]
@@ -112,37 +114,31 @@ impl Grid {
 mod tests {
     use super::*;
 
-    fn clear(boxes: &[[f64; 4]], centers: &[[f64; 2]], clearance: f64) -> bool {
-        (0..boxes.len()).all(|i| {
-            (i + 1..boxes.len()).all(|j| {
-                (0..2).any(|k| {
-                    (centers[i][k] - centers[j][k]).abs() >= boxes[i][k + 2] + boxes[j][k + 2] + clearance - 1e-6
-                })
-            })
+    fn clear(centers: &[[f64; 2]], clearance: f64) -> bool {
+        (0..centers.len()).all(|i| {
+            (i + 1..centers.len()).all(|j| (0..2).any(|k| (centers[i][k] - centers[j][k]).abs() >= clearance - 1e-6))
         })
     }
 
     #[test]
-    fn a_pair_separates_along_its_smaller_overlap() {
-        // Each half grows by half the clearance: 12 and 12 overlap 15 apart by 9 across, 22 along.
-        let boxes = [[0.0, 0.0, 10.0, 10.0], [15.0, 2.0, 10.0, 10.0]];
-        let centers = separate(&boxes, &[false, false], 4.0);
-        assert_eq!(centers, vec![[-4.5, 0.0], [19.5, 2.0]]);
+    fn a_pair_separates_along_its_smaller_shortfall() {
+        // 4 apart across and 1 along, with a clearance of 10: across falls 6 short, along 9.
+        let centers = separate(&[[0.0, 0.0], [4.0, 1.0]], &[false, false], 10.0);
+        assert_eq!(centers, vec![[-3.0, 0.0], [7.0, 1.0]]);
     }
 
     #[test]
-    fn pinned_boxes_stay_put() {
-        let boxes = [[0.0, 0.0, 10.0, 10.0], [15.0, 0.0, 10.0, 10.0]];
-        let centers = separate(&boxes, &[true, false], 0.0);
-        assert_eq!(centers, vec![[0.0, 0.0], [20.0, 0.0]]);
+    fn pinned_points_stay_put() {
+        let centers = separate(&[[0.0, 0.0], [5.0, 0.0]], &[true, false], 10.0);
+        assert_eq!(centers, vec![[0.0, 0.0], [10.0, 0.0]]);
     }
 
     #[test]
-    fn a_crowd_at_one_point_spreads_until_none_overlap() {
-        let boxes: Vec<[f64; 4]> = (0..60).map(|i| [0.0, 0.0, 5.0 + f64::from(i % 3), 4.0]).collect();
+    fn a_crowd_at_one_point_spreads_until_all_are_clear() {
+        let points = vec![[0.0; 2]; 60];
         let pinned: Vec<bool> = (0..60).map(|i| i == 7).collect();
-        let centers = separate(&boxes, &pinned, 2.0);
-        assert!(clear(&boxes, &centers, 2.0), "{centers:?}");
-        assert_eq!(centers[7], [0.0, 0.0], "the pinned box stays put");
+        let centers = separate(&points, &pinned, 2.0);
+        assert!(clear(&centers, 2.0), "{centers:?}");
+        assert_eq!(centers[7], [0.0, 0.0], "the pinned point stays put");
     }
 }

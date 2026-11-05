@@ -1,45 +1,41 @@
-//! Stress majorization: places vertices at their graph distances, then separates their boxes.
+//! Stress majorization: places vertices at their graph distances, then separates them.
 //!
 //! Each vertex's terms are its neighbors, a gap away, and a few pivots at their graph distance, so
 //! a round costs O(vertices × pivots). Pinned vertices stay put and anchor the rest. Vertices start
 //! near the pinned vertices they connect to, or around their part's most linked vertex, and parts
-//! with no pinned vertex pack apart. Groups nest as [`nested`] lays them out: a group's members
-//! settle by stress among themselves, and the group among the vertices and groups beside it.
+//! with no pinned vertex pack apart.
 
 use std::collections::VecDeque;
 
-use super::levels::{Graph, Level, nested};
+use super::graph::Graph;
 use super::overlap::separate;
 use super::pack::pack;
 
-/// Jacobi iterations per level.
+/// Jacobi iterations.
 const ROUNDS: usize = 240;
 /// The most pivots stress measures graph distances from.
 const PIVOTS: usize = 32;
 /// The most graph distances it stores in all (pivots × vertices).
 const DISTANCES: usize = 8_000_000;
-/// The fraction of the gap that vertices' boxes keep clear of each other.
+/// The fraction of the gap that vertices keep clear of each other.
 const CLEARANCE: f64 = 0.25;
 
 /// Every vertex's center from a stress layout: neighbors `gap` apart, pinned vertices fixed, and
-/// boxes a quarter gap clear of each other. Link direction is ignored.
+/// vertices a quarter gap clear of each other. Link direction is ignored. `ROUNDS` Jacobi
+/// iterations, then overlap removal.
 pub(crate) fn stress(graph: &Graph<'_>, gap: f64) -> Vec<[f64; 2]> {
-    nested(graph, |level| place(level, gap))
-}
-
-/// One level's centers: `ROUNDS` Jacobi iterations, then overlap removal.
-fn place(level: &Level, gap: f64) -> Vec<[f64; 2]> {
-    let n = level.sizes.len();
+    let n = graph.len();
     if n == 0 {
         return Vec::new();
     }
-    let (offsets, targets) = neighbors(n, &level.links);
+    let pins = graph.pins();
+    let (offsets, targets) = neighbors(n, &graph.links());
     let terms = terms(n, gap, &offsets, &targets);
-    let mut position = start(level, gap, &offsets, &targets);
+    let mut position = start(&pins, gap, &offsets, &targets);
     let mut next = position.clone();
     for _ in 0..ROUNDS {
         for v in 0..n {
-            if let Some(pin) = level.pinned[v] {
+            if let Some(pin) = pins[v] {
                 next[v] = pin;
                 continue;
             }
@@ -66,10 +62,8 @@ fn place(level: &Level, gap: f64) -> Vec<[f64; 2]> {
         }
         std::mem::swap(&mut position, &mut next);
     }
-    let boxes: Vec<[f64; 4]> =
-        position.iter().zip(&level.sizes).map(|(p, s)| [p[0], p[1], s[0] / 2.0, s[1] / 2.0]).collect();
-    let pinned: Vec<bool> = level.pinned.iter().map(Option::is_some).collect();
-    separate(&boxes, &pinned, gap * CLEARANCE)
+    let pinned: Vec<bool> = pins.iter().map(Option::is_some).collect();
+    separate(&position, &pinned, gap * CLEARANCE)
 }
 
 /// Each vertex's terms as (other vertex, target distance, weight). Its neighbors are one `gap`
@@ -130,14 +124,14 @@ fn terms(n: usize, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<Vec<(u32, 
 /// golden-angle spiral around its nearest pinned vertex, a gap per hop away. A part with no pinned
 /// vertex starts on a spiral around its most linked vertex, and such parts pack in rows below the
 /// pinned vertices.
-fn start(level: &Level, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<[f64; 2]> {
-    let n = level.sizes.len();
+fn start(pins: &[Option<[f64; 2]>], gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<[f64; 2]> {
+    let n = pins.len();
     let mut start = vec![[0.0; 2]; n];
     let mut part = vec![u32::MAX; n];
     let mut parts: Vec<Vec<usize>> = Vec::new();
     let mut order: Vec<usize> = (0..n).collect();
     crate::order::by_key(&mut order, |&v| {
-        crate::order::pair(u32::from(level.pinned[v].is_none()), !(offsets[v + 1] - offsets[v]))
+        crate::order::pair(u32::from(pins[v].is_none()), !(offsets[v + 1] - offsets[v]))
     });
     for &root in &order {
         if part[root] != u32::MAX {
@@ -166,12 +160,12 @@ fn start(level: &Level, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<[f64;
         [radius * angle.cos(), radius * angle.sin()]
     };
     for (p, inside) in parts.iter().enumerate() {
-        let pins: Vec<[f64; 2]> = inside.iter().filter_map(|&v| level.pinned[v]).collect();
+        let anchors: Vec<[f64; 2]> = inside.iter().filter_map(|&v| pins[v]).collect();
         // Hops from the pinned vertices, or else from the part's first vertex, its most linked.
-        let sources: Vec<usize> = if pins.is_empty() {
+        let sources: Vec<usize> = if anchors.is_empty() {
             vec![inside[0]]
         } else {
-            inside.iter().copied().filter(|&v| level.pinned[v].is_some()).collect()
+            inside.iter().copied().filter(|&v| pins[v].is_some()).collect()
         };
         let mut hop = vec![u32::MAX; n];
         let mut from = vec![usize::MAX; n];
@@ -190,7 +184,7 @@ fn start(level: &Level, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<[f64;
                 }
             }
         }
-        if pins.is_empty() {
+        if anchors.is_empty() {
             let mut reach: f64 = 0.0;
             for &v in inside {
                 start[v] = spiral(v, hop[v]);
@@ -200,8 +194,8 @@ fn start(level: &Level, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<[f64;
             continue;
         }
         for &v in inside {
-            start[v] = level.pinned[v].unwrap_or_else(|| {
-                let anchor = level.pinned[from[v]].unwrap_or(pins[0]);
+            start[v] = pins[v].unwrap_or_else(|| {
+                let anchor = pins[from[v]].unwrap_or(anchors[0]);
                 let offset = spiral(v, hop[v]);
                 [anchor[0] + offset[0], anchor[1] + offset[1]]
             });
@@ -211,7 +205,7 @@ fn start(level: &Level, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<[f64;
         return start;
     }
     // Parts with no pinned vertex pack in rows below the pinned vertices.
-    let pinned: Vec<[f64; 2]> = level.pinned.iter().flatten().copied().collect();
+    let pinned: Vec<[f64; 2]> = pins.iter().flatten().copied().collect();
     let below = pinned.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
     let left = pinned.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
     let origin = if pinned.is_empty() { [0.0, 0.0] } else { [left, below - 2.0 * gap] };
@@ -269,22 +263,15 @@ mod tests {
         (a[0] - b[0]).hypot(a[1] - b[1])
     }
 
-    /// `sizes` laid out by stress with `links`, `pinned`, and `groups` (groups pad members by 5).
-    fn laid(
-        sizes: &[[f64; 2]],
-        links: &[[u32; 2]],
-        pinned: &[Option<[f64; 2]>],
-        groups: &[Option<u32>],
-        gap: f64,
-    ) -> Vec<[f64; 2]> {
-        let pads = vec![[5.0; 4]; sizes.len()];
-        stress(&Graph { sizes, links, pinned, groups, pads: &pads }, gap)
+    /// Points laid out by stress with `links` and `pinned`.
+    fn laid(links: &[[u32; 2]], pinned: &[Option<[f64; 2]>], gap: f64) -> Vec<[f64; 2]> {
+        stress(&Graph { pinned, links }, gap)
     }
 
     #[test]
     fn neighbors_settle_a_gap_apart_and_leaves_spread() {
         // A chain 0 → 1 → 2 and a branch 1 → 3.
-        let p = laid(&[[4.0, 4.0]; 4], &[[0, 1], [1, 2], [1, 3]], &[None; 4], &[None; 4], 40.0);
+        let p = laid(&[[0, 1], [1, 2], [1, 3]], &[None; 4], 40.0);
         for (a, b) in [(0, 1), (1, 2), (1, 3)] {
             assert!((apart(p[a], p[b]) - 40.0).abs() < 14.0, "{a}–{b}: {p:?}");
         }
@@ -292,33 +279,15 @@ mod tests {
     }
 
     #[test]
-    fn pins_stay_put_and_boxes_do_not_overlap() {
+    fn pins_stay_put_and_vertices_keep_clear() {
         let pinned = [Some([-100.0, 60.0]), None, None, None];
-        let p = laid(&[[60.0, 20.0]; 4], &[[0, 1], [1, 2], [1, 3]], &pinned, &[None; 4], 10.0);
+        let p = laid(&[[0, 1], [1, 2], [1, 3]], &pinned, 10.0);
         assert_eq!(p[0], [-100.0, 60.0]);
         for i in 0..4 {
             for j in i + 1..4 {
                 let (dx, dy) = ((p[i][0] - p[j][0]).abs(), (p[i][1] - p[j][1]).abs());
-                assert!(dx >= 60.0 || dy >= 20.0, "{i} and {j} overlap: {p:?}");
+                assert!(dx >= 2.5 - 1e-6 || dy >= 2.5 - 1e-6, "{i} and {j} are too close: {p:?}");
             }
         }
-    }
-
-    #[test]
-    fn group_boxes_do_not_overlap() {
-        // Groups 0 and 1 hold three linked vertices each, and link through their members.
-        let sizes =
-            [[0.0; 2], [0.0; 2], [20.0, 10.0], [20.0, 10.0], [20.0, 10.0], [20.0, 10.0], [20.0, 10.0], [20.0, 10.0]];
-        let groups = [None, None, Some(0), Some(0), Some(0), Some(1), Some(1), Some(1)];
-        let links = [[2, 3], [3, 4], [5, 6], [6, 7], [4, 5]];
-        let p = laid(&sizes, &links, &[None; 8], &groups, 40.0);
-        let frame = |members: &[usize]| {
-            let boxes = members.iter().map(|&m| super::super::levels::frame(p[m], sizes[m]));
-            let b = super::super::levels::bounds(boxes);
-            [b[0] - 5.0, b[1] - 5.0, b[2] + 5.0, b[3] + 5.0]
-        };
-        let (a, b) = (frame(&[2, 3, 4]), frame(&[5, 6, 7]));
-        let overlap = a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
-        assert!(!overlap, "the groups' boxes do not overlap: {a:?} {b:?}");
     }
 }

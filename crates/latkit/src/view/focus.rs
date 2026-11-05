@@ -36,8 +36,8 @@ const GAP: u32 = 16;
 /// A focus word's mark and held row.
 type At = (usize, u32);
 
-/// Where the pointer or keys hover: the row, its port, and the frame of the traced sample.
-pub(crate) type Spot = (Row, Option<Name>, Option<u64>);
+/// Where the pointer or keys hover: the row, and the frame of the traced sample.
+pub(crate) type Spot = (Row, Option<u64>);
 
 #[derive(Default)]
 pub(crate) struct Focus {

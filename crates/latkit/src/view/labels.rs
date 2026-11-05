@@ -35,7 +35,6 @@ use crate::Name;
 use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
 use crate::gpu::atlas::{self, Glyphs};
-use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::host::TextRun;
@@ -151,7 +150,7 @@ impl View {
     }
 
     /// The text run for code `code` of mark `i`'s label text, at the base size regardless of the
-    /// size it shows at, as a diagram's sheet measures it.
+    /// size it shows at.
     fn run_of(&self, i: usize, code: u32, inner: &mut Inner) -> Option<TextRun> {
         let setting = self.setting(i)?;
         let text = setting.text(code, inner)?;
@@ -295,10 +294,6 @@ impl View {
         if inner.atlas.evictions != self.labels.evictions {
             self.labels.evictions = inner.atlas.evictions;
             self.drop_evicted(inner);
-            // Repack port labels so they find their texts where the atlas now holds them.
-            for shown in self.marks.iter_mut().filter(|m| m.port_count() > 0) {
-                shown.packed = false;
-            }
         }
     }
 
@@ -431,8 +426,7 @@ impl View {
 }
 
 impl View {
-    /// Draws every labeled mark's labels, then every vertex mark's port labels. `glyphs` holds the
-    /// pass bind groups of their glyph shaders.
+    /// Draws every labeled mark's labels. `glyphs` is the pass bind group of the glyph shader.
     #[allow(clippy::too_many_arguments, reason = "the main pass's draw state")]
     pub(super) fn draw_labels(
         &self,
@@ -442,7 +436,7 @@ impl View {
         format: wgpu::TextureFormat,
         samples: u32,
         groups: &super::resources::Groups,
-        [labels_group, ports_group]: [&wgpu::BindGroup; 2],
+        glyphs: &wgpu::BindGroup,
     ) {
         let device = &self.gpu.0.device;
         for (i, slots) in self.labels.slots.iter().enumerate() {
@@ -455,20 +449,9 @@ impl View {
                 shown.compiled.as_ref().and_then(|c| c.drawing.label.as_ref()).is_some_and(|l| l.number.is_some());
             let per = if numbered { wgsl::NUMBER_CHARS } else { 1 };
             pass.set_pipeline(&inner.pipelines.render(device, MarkVariants::shown(shown).glyphs(format, samples)));
-            pass.set_bind_group(2, labels_group, &[]);
+            pass.set_bind_group(2, glyphs, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
             drawn.draw(pass, 4, shown.rows * per);
-        }
-        for (i, shown) in self.marks.iter().enumerate() {
-            let labeled =
-                shown.compiled.as_ref().is_some_and(|c| c.drawing.ports.iter().any(|(_, p, _)| p.label.is_some()));
-            if !labeled || !shown.drawable() || shown.rows == 0 {
-                continue;
-            }
-            pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::GlyphsPorts, format, samples)));
-            pass.set_bind_group(2, ports_group, &[]);
-            pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-            drawn.draw(pass, 4, shown.rows * shown.port_count());
         }
     }
 }

@@ -239,7 +239,7 @@ const RENAMED = { 'View::events': 'view.on' };
  * Rewrites a code span from Rust's documentation with npm's names. An event becomes the event npm
  * emits (`Event::Connect` becomes a `'connect'` event). A lowercase member becomes an instance
  * member in camelCase (`View::complete` becomes `view.complete`), and any other member stays on its
- * type (`Space::Diagram` becomes `Space.Diagram`). A call drops its parentheses (`hovered()`
+ * type (`Space::Plane` becomes `Space.Plane`). A call drops its parentheses (`hovered()`
  * becomes `hovered`).
  */
 function named(code) {

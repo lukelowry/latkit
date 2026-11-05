@@ -3,14 +3,13 @@
 //! The controls' `gestures` say what each input does: a drag with each button and modifier keys,
 //! the wheel, and two fingers that pinch, twist, or slide. A press decides once the pointer moves a
 //! few pixels. A box, to select or to zoom, starts whatever lies under the press. A turn or tilt
-//! turns a map or plane, and pans where the camera cannot turn. Otherwise, on a port or an edge's
-//! end the press connects when any input connects, on a row of a draggable mark it drags the row,
+//! turns a map or plane, and pans where the camera cannot turn. Otherwise, on an edge's end the
+//! press connects when any input connects, on a row of a draggable mark it drags the row,
 //! and elsewhere it does its input's action. A press that does not move clicks. With Shift,
 //! Control, or Meta it toggles its row in the selection. With cycling on, clicking again where
 //! nothing moved selects the next row under the point. A secondary press opens a menu when it does
 //! not move, as does a touch or pen held still. A middle press only drags, and never clicks. Keys
-//! step. A diagram never turns, and its drags snap to its grid when the grid snaps. Every camera
-//! move is about the point under the pointer and goes through the rig, which lets a released drag
+//! step. Every camera move is about the point under the pointer and goes through the rig, which lets a released drag
 //! coast and keeps the camera within its zoom and pan limits.
 //!
 //! The point under a press comes from the latest probe if it was taken where the press is,
@@ -35,7 +34,7 @@ use super::marks::Shown;
 use super::probe::{Answer, Probed, near};
 use crate::scene::mark::MarkKind;
 use crate::scene::{Action, Control, Gestures as Inputs};
-use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space, Value};
+use crate::{Camera, Pending, Row, Rows, Scene, Space, Value};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
@@ -530,10 +529,10 @@ impl View {
         }
     }
 
-    /// Hovers `hit`, reporting a change when the row, its port, or the traced sample differs. A
+    /// Hovers `hit`, reporting a change when the row or the traced sample differs. A
     /// row the application hovered stays until the pointer or keys hover a row, or leave one.
     fn hover(&mut self, hit: Option<Hit>, trigger: Trigger) {
-        let spot = hit.as_ref().map(|h| (h.row.clone(), h.port.clone(), h.sample.map(|s| s.frame)));
+        let spot = hit.as_ref().map(|h| (h.row.clone(), h.sample.map(|s| s.frame)));
         if spot == self.focus.spot {
             return;
         }
@@ -592,7 +591,7 @@ impl View {
             && let Some((from, edge, anchor)) =
                 answer.hit.as_ref().and_then(|probed| self.connect_from(probed, action == Action::Connect))
         {
-            let locating = anchor.is_none().then(|| self.screen_of(&from.row, None));
+            let locating = anchor.is_none().then(|| self.screen_of(&from.row));
             self.gestures.now = Gesture::Connect { pointer, from, edge, anchor, locating, to };
             return;
         }
@@ -697,8 +696,7 @@ impl View {
     }
 
     /// Reports where the dragged row goes. With the pointer at `trigger`, the hit point moves with
-    /// it from the press, at the depth where the drag started, snapped to a diagram's grid dots
-    /// when the grid snaps. A cancel writes back what the row's position fields held, missing
+    /// it from the press, at the depth where the drag started. A cancel writes back what the row's position fields held, missing
     /// values included, however the camera has moved since. It reports the row where those
     /// fields placed it, or where it was drawn when they held nothing.
     fn drag(&mut self, phase: Phase, trigger: Trigger) {
@@ -712,15 +710,7 @@ impl View {
             _ => {
                 let view = self.projected();
                 let at = [trigger.point[0] + grab[0], trigger.point[1] + grab[1]];
-                let mut position = view.position(view.unproject(at.map(f64::from), f64::from(probed.depth)));
-                if let Space::Diagram(diagram) = &self.scene.space
-                    && let Grid::Dots { pitch, snap: true } = diagram.grid
-                    && pitch > 0.0
-                {
-                    for v in &mut position[..2] {
-                        *v = (*v / pitch).round() * pitch;
-                    }
-                }
+                let position = view.position(view.unproject(at.map(f64::from), f64::from(probed.depth)));
                 (position, Some([Some(position[0]), Some(position[1])]))
             }
         };
@@ -786,7 +776,7 @@ impl View {
         matches!(self.scene.space, Space::Plot(_))
     }
 
-    /// Whether any input connects, so a press on a port or an edge's end connects too.
+    /// Whether any input connects, so a press on an edge's end connects too.
     fn connects(&self) -> bool {
         self.scene.controls.gestures.any(Action::Connect)
     }
@@ -796,9 +786,9 @@ impl View {
         matches!(self.gestures.now, Gesture::Drag { .. })
     }
 
-    /// Whether the camera can turn: a map camera, never in a diagram.
+    /// Whether the camera can turn: a map camera.
     fn turns(&self) -> bool {
-        matches!(self.camera, Camera::Map { .. }) && !matches!(self.scene.space, Space::Diagram(_))
+        matches!(self.camera, Camera::Map { .. })
     }
 
     /// Whether clicking a row of mark `mark` selects it.
@@ -806,22 +796,20 @@ impl View {
         self.scene.marks.get(mark).is_some_and(|m| m.style().interaction.select)
     }
 
-    /// Where a connection starts from what a press hit: at a port, at a vertex when the press's
-    /// input `connects`, or, for an edge with ends, at the end that stays (the end pressed nearer
+    /// Where a connection starts from what a press hit: at a vertex when the press's input
+    /// `connects`, or, for an edge with ends, at the end that stays (the end pressed nearer
     /// detaches). Also returns the edge, and the start's screen point when known.
     fn connect_from(&self, probed: &Probed, connects: bool) -> Option<(End, Option<Row>, Option<[f32; 2]>)> {
         let hit = &probed.hit;
         let shown = self.marks.get(hit.index)?;
         match shown.kind() {
-            MarkKind::Vertices if hit.port.is_some() || connects => {
-                Some((End { row: hit.row.clone(), port: hit.port.clone() }, None, Some(hit.point)))
-            }
+            MarkKind::Vertices if connects => Some((End { row: hit.row.clone() }, None, Some(hit.point))),
             MarkKind::Edges => {
                 let crate::Mark::Edges(edges) = &shown.mark else { return None };
                 let (first, second) = edges.ends.as_ref()?;
                 let stays = if probed.end == 0 { second } else { first };
                 let row = self.referenced(&hit.row, stays)?;
-                Some((End { row, port: None }, Some(hit.row.clone()), None))
+                Some((End { row }, Some(hit.row.clone()), None))
             }
             _ => None,
         }
@@ -862,7 +850,7 @@ impl View {
                 let vertex = |hit: &&Hit| {
                     self.marks.get(hit.index).is_some_and(|m| m.kind() == MarkKind::Vertices) && hit.row != from.row
                 };
-                let to = hits.iter().find(vertex).map(|hit| End { row: hit.row.clone(), port: hit.port.clone() });
+                let to = hits.iter().find(vertex).map(|hit| End { row: hit.row.clone() });
                 Event::Connect { from, to, edge, trigger }
             }
             Awaited::Cycle { after, trigger } => {

@@ -15,12 +15,12 @@
     },
     "vertex": {
       "color": "rgba(31, 111, 235, 1)",
-      "radius": 4.0
+      "radius": 4.0,
+      "corner": 6.0
     },
     "edge": {
       "color": null,
       "width": 1.5,
-      "spacing": 4.0,
       "bow": 0.11999999731779099,
       "arrow": 7.0
     },
@@ -43,18 +43,6 @@
       "spacing": 64.0,
       "length": 24.0,
       "width": 4.0
-    },
-    "diagram": {
-      "group": "rgba(232, 236, 240, 1)",
-      "outline": "rgba(0, 0, 0, 0.14)",
-      "corner": 6.0,
-      "portSize": 7.0,
-      "bend": 6.0,
-      "groupPadding": 16.0,
-      "shadow": {
-        "color": "rgba(0, 0, 0, 0.22)",
-        "lift": 3.0
-      }
     },
     "earth": {
       "ground": "rgba(232, 236, 240, 1)",
@@ -81,12 +69,12 @@
     },
     "vertex": {
       "color": "rgba(124, 196, 255, 1)",
-      "radius": 4.0
+      "radius": 4.0,
+      "corner": 6.0
     },
     "edge": {
       "color": null,
       "width": 1.5,
-      "spacing": 4.0,
       "bow": 0.11999999731779099,
       "arrow": 7.0
     },
@@ -109,18 +97,6 @@
       "spacing": 64.0,
       "length": 24.0,
       "width": 4.0
-    },
-    "diagram": {
-      "group": "rgba(24, 33, 43, 1)",
-      "outline": "rgba(255, 255, 255, 0.12)",
-      "corner": 6.0,
-      "portSize": 7.0,
-      "bend": 6.0,
-      "groupPadding": 16.0,
-      "shadow": {
-        "color": "rgba(0, 0, 0, 0.45)",
-        "lift": 3.0
-      }
     },
     "earth": {
       "ground": "rgba(24, 33, 43, 1)",

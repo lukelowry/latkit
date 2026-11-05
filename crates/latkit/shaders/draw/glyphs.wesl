@@ -1,23 +1,17 @@
 // Glyphs: every labeled row's text, placed from its anchor each frame. A label shows when its text
-// is set, its row shows, and it fits its anchor's `room`. It fades with its row's tile and, in a
-// diagram, once too small to read. A label beside its row also shows only if it kept its claim on
-// every cell it covers this frame (`compute/texts.wesl`), so labels never overlap. Nothing depends
-// on an earlier frame. A halo of the background color keeps text readable over anything below it.
-// The ports variant draws each port's label beside it, inside its marker. Text is a distance field,
-// so edges stay crisp at any size, and the halo is a wider threshold of the same field.
+// is set, its row shows, and it fits its anchor's `room`. It fades with its row's tile. A label
+// beside its row also shows only if it kept its claim on every cell it covers this frame
+// (`compute/texts.wesl`), so labels never overlap. Nothing depends on an earlier frame. A halo of
+// the background color keeps text readable over anything below it. Text is a distance field, so
+// edges stay crisp at any size, and the halo is a wider threshold of the same field.
 
-import package::lib::types::{
-    NONE, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD,
-    SPACE_DIAGRAM, THEME_TEXT, NUMBER_CHARS,
-};
-import package::lib::bind::{frame, eye, mark, word, program, ramp};
+import package::lib::types::{NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS};
+import package::lib::bind::{frame, eye, mark, word, ramp};
 import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
-import package::lib::points::{shown_point, port_at, port_inward};
-import package::lib::marker::theme_port_size;
 import package::lib::label::{
-    anchor, length_px, legibility, text_at, fits, Text, label_chars, char_at, run_size, label_box, claims_room,
-    claim_key, cells_of, cell, Cells,
+    anchor, text_at, fits, Text, label_chars, char_at, run_size, label_box, claims_room, claim_key, cells_of, cell,
+    Cells,
 };
 import package::lib::project::{culled, to_clip};
 import package::lib::color::output;
@@ -47,15 +41,12 @@ struct Varyings {
     @location(2) @interpolate(flat) scale: f32,
 }
 
-// Corner `corner` of text `t`, drawn in `color`.
+// Corner `corner` of text `t`, drawn in `color`. Text has a fixed size, so snapping to whole target
+// pixels keeps it crisp.
 fn quad(t: Text, corner: u32, color: vec4f) -> Varyings {
     var out: Varyings;
     let q = vec2f(f32(corner & 1u), f32(corner >> 1u));
-    // Outside a diagram, text has a fixed size. Snapping to whole target pixels keeps it crisp.
-    var p = mix(t.quad_lo, t.quad_hi, q);
-    if frame.space != SPACE_DIAGRAM {
-        p = round(p * eye.pixel_ratio) / eye.pixel_ratio;
-    }
+    let p = round(mix(t.quad_lo, t.quad_hi, q) * eye.pixel_ratio) / eye.pixel_ratio;
     out.clip = to_clip(p, vec4f(0.0, 0.0, 0.0, 1.0));
     out.uv = mix(t.uv_lo, t.uv_hi, q);
     out.color = color;
@@ -70,7 +61,6 @@ fn unshown() -> Varyings {
 }
 
 // Each instance draws one run of a row's label: the row's text, or one character of its number.
-@if(!ports)
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
     let per = select(NUMBER_CHARS, 1u, mark.number == NONE);
@@ -94,7 +84,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
         return unshown();
     }
     // The label's size, and where this run starts in it.
-    let size = length_px(mark.label_size);
+    let size = mark.label_size;
     var extent = vec2f(0.0);
     var before = 0.0;
     for (var j = 0u; j < chars.count; j++) {
@@ -110,9 +100,9 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let a = anchor(item);
     let whole = label_box(a, extent);
     // A label shows while its row shows, it fits, and it kept its claimed cells. Its opacity
-    // follows its legibility at this size and its row's tile fade.
+    // follows its row's tile fade.
     let room = fits(extent, a.room) && (!claims_room(a) || keeps(cells_of(whole), claim_key(item)));
-    let alpha = f32(a.shown && room) * legibility(size) * drawn.presence;
+    let alpha = f32(a.shown && room) * drawn.presence;
     if !(alpha > 0.0) {
         return unshown();
     }
@@ -126,59 +116,6 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
 fn run(code: u32) -> vec2u {
     let at = mark.runs + 2u * code;
     return vec2u(labels[at], labels[at + 1u]);
-}
-
-// A port's label: beside the port, inside its marker, aligned away from the port's side. It shows
-// while legible and while it fits its side's share of the marker, clear of the opposite ports.
-@if(ports)
-@vertex
-fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
-    let n = max(mark.ports, 1u);
-    let item = instance / n;
-    let k = instance % n;
-    if item >= mark.rows {
-        return unshown();
-    }
-    let info = mark.port_info + k * PORT_WORDS;
-    let uv0 = program[info + PORT_UV];
-    let uv1 = program[info + PORT_UV + 1u];
-    if uv0 == 0u && uv1 == 0u {
-        return unshown();
-    }
-    let p = shown_point(item);
-    let port = port_at(p, k);
-    let code = program[info + PORT_CODE];
-    let inward = port_inward(code);
-    let gap = 0.5 * theme_port_size();
-    let at = port.center + inward * (port.half + gap);
-    var align = vec2f(0.5);
-    var room = vec2f(2.0 * p.half.x, p.half.y);
-    switch code & 3u {
-        case SIDE_LEFT: {
-            align = vec2f(0.0, 0.5);
-            room = vec2f(p.half.x - port.half - gap, 2.0 * p.half.y);
-        }
-        case SIDE_RIGHT: {
-            align = vec2f(1.0, 0.5);
-            room = vec2f(p.half.x - port.half - gap, 2.0 * p.half.y);
-        }
-        case SIDE_TOP: {
-            align = vec2f(0.5, 0.0);
-            room = vec2f(2.0 * p.half.x / f32(((code >> 10u) & 255u) + 1u), p.half.y);
-        }
-        default: {
-            align = vec2f(0.5, 1.0);
-            room = vec2f(2.0 * p.half.x / f32(((code >> 10u) & 255u) + 1u), p.half.y);
-        }
-    }
-    let size = length_px(mark.port_label_size);
-    let t = text_at(uv0, uv1, size, at, align);
-    let alpha = f32(p.shown && fits(t.hi - t.lo, room)) * legibility(size) * p.color.a;
-    if !(alpha > 0.0) {
-        return unshown();
-    }
-    let text = unpack4x8unorm(frame.theme[THEME_TEXT / 4u][THEME_TEXT % 4u]);
-    return quad(t, corner, vec4f(text.rgb, text.a * alpha));
 }
 
 // The distance field at `uv`, in texels from the text's edge, positive inside.

@@ -23,7 +23,7 @@ import package::lib::types::{
 import package::lib::bind::{frame, eye, mark, word};
 import package::lib::state::row_at;
 import package::lib::project::{to_screen, clip_of};
-import package::lib::points::{point, port_at};
+import package::lib::points::point;
 import package::lib::path::{segment, segment_screen, stroke_style, stroke_instances, path_count};
 import package::lib::triangles::{triangle_corner, triangle_item, triangle_instances};
 import package::lib::marker::outline_distance;
@@ -58,10 +58,10 @@ fn unreached() -> Reach {
     return Reach(1e30, 0.0, vec2f(0.0), NONE, 0u, 0.0);
 }
 
-// An instance as the frame drew it, on screen, with depth as z: a point's center (and for a port,
-// the port's center as `b`), a segment's ends, or a triangle's corners with whether each is shown,
-// ahead of the globe's horizon, and in front of the eye. `item` is its drawn row and `row` that
-// row's held row. `part` is a port's number from 1, or a segment's index along its path.
+// An instance as the frame drew it, on screen, with depth as z: a point's center, a segment's ends,
+// or a triangle's corners with whether each is shown, ahead of the globe's horizon, and in front of
+// the eye. `item` is its drawn row and `row` that row's held row. `part` is a segment's index
+// along its path.
 struct Seen {
     item: u32,
     row: u32,
@@ -77,7 +77,7 @@ struct Seen {
     corners: vec3<bool>,
     ahead: vec3<bool>,
     front: vec3<bool>,
-    // A point's half size, a port's radius as x, a stroke's width as x.
+    // A point's half size, or a stroke's width as x.
     half: vec2f,
     // The depth a point's marker draws at.
     drawn: f32,
@@ -101,11 +101,10 @@ fn answers(item: u32, row: u32, leaving: bool) -> bool {
     return item < mark.rows && !leaving && (word(row_at(row) + mark.stride - 1u) & FADE_OUT) == 0u;
 }
 
-// The marker drawn at position `instance`, or for an instance past the rows, one of their ports.
+// The marker drawn at position `instance`.
 fn seen_point(instance: u32) -> Seen {
     var s: Seen;
-    let port = select(0u, instance - mark.rows, instance >= mark.rows);
-    s.item = select(drawn_instance(instance), port / max(mark.ports, 1u), instance >= mark.rows);
+    s.item = drawn_instance(instance);
     let d = drawn_row(s.item);
     s.row = d.row;
     let pt = point(s.row);
@@ -115,13 +114,6 @@ fn seen_point(instance: u32) -> Seen {
     s.drawn = pt.drawn_z;
     s.front = vec3<bool>(pt.clip.w > 0.0);
     s.half = max(pt.half, vec2f(0.5));
-    if instance >= mark.rows {
-        let k = port % max(mark.ports, 1u);
-        let at = port_at(pt, k);
-        s.part = k + 1u;
-        s.b = vec3f(at.center, s.a.z);
-        s.half = vec2f(at.half, 0.0);
-    }
     return s;
 }
 
@@ -189,9 +181,6 @@ fn reach(s: Seen, p: vec2f) -> Reach {
     }
     switch PRIMITIVE {
         case POINTS: {
-            if s.part > 0u {
-                return Reach(max(length(p - s.b.xy) - s.half.x, 0.0), s.a.z, s.b.xy, s.row, s.part, s.drawn);
-            }
             let d = outline_distance((p - s.a.xy) * vec2f(1.0, -1.0), s.half);
             return Reach(max(d, 0.0), s.a.z, s.a.xy, s.row, 0u, s.drawn);
         }
@@ -239,7 +228,7 @@ fn boxed(s: Seen) -> bool {
     }
     switch PRIMITIVE {
         case POINTS: {
-            return s.part == 0u && s.shown && s.front.x && in_box(s.a.xy);
+            return s.shown && s.front.x && in_box(s.a.xy);
         }
         case STROKES: {
             if !s.shown {
@@ -284,13 +273,13 @@ fn under() -> f32 {
     return nearest;
 }
 
-// Instances of the mark's primitive: rows and their ports, a stroke's segments, or triangles.
+// Instances of the mark's primitive: rows, a stroke's segments, or triangles.
 fn instances() -> u32 {
     if PRIMITIVE == STROKES {
         return stroke_instances();
     }
     if PRIMITIVE == POINTS {
-        return mark.rows * (1u + mark.ports);
+        return mark.rows;
     }
     return triangle_instances();
 }
