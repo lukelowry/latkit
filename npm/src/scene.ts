@@ -10,7 +10,6 @@ import type {
   ExprNode,
   FieldNode,
   Marker,
-  Px,
   ScaleNode,
   State,
   Units,
@@ -262,17 +261,6 @@ export const pointer = (): Expr => state('pointer');
 export const elapsed = (): Expr => state('elapsed');
 /** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
 export const zoom = (): Expr => state('zoom');
-
-/**
- * A size in CSS pixels in any space, so it stays the same on screen as the view zooms. `px(1)`
- * keeps a diagram's stroke 1 pixel wide at any zoom. Given a number, the result also works as a
- * theme length.
- */
-export function px(size: number): { px: number };
-export function px(size: ExprInput): Px;
-export function px(size: ExprInput): Px {
-  return { px: nodeOf(size) };
-}
 
 /**
  * A size in position units (degrees on the earth) in any space, so it scales as the view zooms.

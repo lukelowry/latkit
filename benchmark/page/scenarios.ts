@@ -117,21 +117,14 @@ const plot: Scene = {
   marks: [{ lines: ['t', 'Signal'], trace: 'v' }],
 };
 
-const sheet: Scene = {
-  space: 'diagram',
+/** Dataset `d`'s nodes, which have no position, laid out in ranks along their links. */
+const laidOut: Scene = {
+  space: 'plane',
   ease: 0,
   layout: { layered: { direction: 'right' } },
   marks: [
-    { edges: ['d', 'Net'], route: 'orthogonal' },
-    {
-      vertices: ['d', 'Block'],
-      marker: 'block',
-      label: { text: '$name' },
-      ports: [
-        ['in', 'left'],
-        ['out', { side: 'right', output: true }],
-      ],
-    },
+    { edges: ['d', 'Link'], ends: ['from', 'to'] },
+    { vertices: ['d', 'Node'], label: { text: '$name' } },
   ],
 };
 
@@ -351,18 +344,17 @@ const narrow = (order: Order = { time: 0, bytes: 0 }): Phase => ({
   },
 });
 
-/** Renames a block every frame, which resizes it and routes its tree again, to measure an edit at
- * any size. */
+/** Renames a node every frame, to measure an edit at any size. */
 const edit = (): Phase => ({
   name: 'edit',
   order: { time: 0, bytes: 0 },
   run: (s) =>
     s.steady(FRAMES, (i) =>
-      s.apply('d', (p) => p.set('Block', [1 + (i % 63)], { name: [`Renamed block ${i}`] })),
+      s.apply('d', (p) => p.set('Node', [1 + (i % 63)], { name: [`Renamed node ${i}`] })),
     ),
 });
 
-/** Lays every block out again. */
+/** Lays every node out again. */
 const arrange = (): Phase => ({
   name: 'arrange',
   order: { time: 1 },
@@ -533,11 +525,11 @@ export const scenarios: Record<string, Scenario> = {
     }),
     phases: [pan(), zoom()],
   },
-  diagram: {
-    about: 'blocks with ports in trees of 64, laid out in layers, wires routed around them',
-    unit: 'blocks',
+  layout: {
+    about: 'nodes without positions in trees of 64 on a plane, laid out in ranks in a job',
+    unit: 'nodes',
     sizes: [1e2, 1e3, 1e4],
-    build: (n) => ({ scene: sheet, data: { d: make.blocks(n) } }),
+    build: (n) => ({ scene: laidOut, data: { d: make.trees(n) } }),
     phases: [pan(), edit(), arrange()],
   },
   traces: {

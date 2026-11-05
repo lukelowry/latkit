@@ -1,10 +1,9 @@
 // Strokes: one instanced quad per segment of every row's path, for edges and lines alike. A quad
 // covers the stroke, or its comets where they are wider, any arrowhead, and one pixel of
-// antialiased edge. The last segment of each part of a path draws the arrowhead. In a diagram, a
-// zero-length segment is a junction, drawn as a dot. The focus variant redraws the lit rows'
-// segments over everything, with quads enlarged for their glow.
+// antialiased edge. The last segment of each part of a path draws the arrowhead. The focus variant
+// redraws the lit rows' segments over everything, with quads enlarged for their glow.
 
-import package::lib::types::{ARROWS, PATH_TRACE, SPACE_DIAGRAM};
+import package::lib::types::{ARROWS, PATH_TRACE};
 import package::lib::path::PATH;
 import package::lib::bind::{frame, mark, eye};
 import package::lib::project::{to_clip, nearer, culled};
@@ -66,11 +65,10 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let cb = on.cb;
     let a = on.a;
     let b = on.b;
-    let junction = frame.space == SPACE_DIAGRAM && length(b - a) < 1e-3;
-    let width = select(style.width, 3.0 * style.width, junction);
+    let width = style.width;
     let dir = normalize(b - a + vec2f(1e-6, 0.0));
     let normal = vec2f(-dir.y, dir.x);
-    let arrow = (mark.flags & ARROWS) != 0u && !junction && ends_part(s);
+    let arrow = (mark.flags & ARROWS) != 0u && ends_part(s);
     let head = select(0.0, frame.arrow + width, arrow);
     let comets = select(0.0, 0.5 * frame.flow_width, style.flow != 0.0 && frame.flow.a > 0.0);
     let reach = max(0.5 * width, comets) + head + select(0.0, frame.glow, LIT_DRAW) + fringe();
@@ -101,7 +99,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     out.style = vec4f(width, phase, style.flow);
     out.comet = vec3f(along, style.travel);
-    out.arrow = u32(arrow) | (u32(style.dash && !junction) << 1u);
+    out.arrow = u32(arrow) | (u32(style.dash) << 1u);
     out.focus = focus_of(s.row);
     return out;
 }

@@ -468,13 +468,10 @@ impl View {
             self.rig.bounds = None;
             self.rig.hold();
         }
-        if matches!(scene.space, Space::Diagram(_)) {
-            self.rig.orbit = 0.0;
-        }
         self.scene = scene;
         self.scene_version += 1;
-        // Request the new scene's pipelines again. They compile while its data syncs and its sheet
-        // is arranged. Pipelines shared with the old scene are already compiled.
+        // Request the new scene's pipelines again. They compile while its data syncs and its layout
+        // places its rows. Pipelines shared with the old scene are already compiled.
         self.asked.clear();
         self.compiling = None;
         self.answering = None;
@@ -757,8 +754,8 @@ impl View {
         view.ground(point.map(f64::from)).map(|w| view.position(w))
     }
 
-    /// Runs the scene's layout again on the vertex `rows` names: a diagram's blocks, or the points
-    /// on a plane or the earth, without a position or all of them. Without this call, laid-out
+    /// Runs the scene's layout again on the vertex `rows` names: the points on a plane or the
+    /// earth without a position, or all of them. Without this call, laid-out
     /// positions persist and rows added later are placed around them.
     ///
     /// Once the layout finishes, resolves to one patch per dataset. Each patch writes the laid-out
@@ -768,7 +765,7 @@ impl View {
     pub fn arrange(&mut self, rows: Arrange) -> Pending<Vec<Patch>> {
         let (pending, resolver) = Pending::new();
         self.arranging.push(resolver);
-        self.derived.arrange(matches!(self.scene.space, Space::Diagram(_)), rows);
+        self.derived.arrange(rows);
         self.wake();
         pending
     }
@@ -802,11 +799,9 @@ impl View {
         self.rig.orbit
     }
 
-    /// Turns the camera about its center at `degrees_per_second`. Zero stops it. A diagram never
-    /// turns.
+    /// Turns the camera about its center at `degrees_per_second`. Zero stops it.
     pub fn set_orbit(&mut self, degrees_per_second: f64) {
-        let turns = degrees_per_second.is_finite() && !matches!(self.scene.space, Space::Diagram(_));
-        self.rig.orbit = if turns { degrees_per_second } else { 0.0 };
+        self.rig.orbit = if degrees_per_second.is_finite() { degrees_per_second } else { 0.0 };
         self.wake();
     }
 
@@ -886,8 +881,8 @@ impl View {
     /// Whether the last frame drew everything the data, scene, and camera describe, with no
     /// placeholder for pending work. A frame is incomplete while a pipeline it draws with compiles,
     /// a changed page waits to upload, a tile shows its ancestor, a large table shows an even
-    /// sample of its rows, a row keeps its old position until a layout arrives, a wire shows an
-    /// elbow until its route arrives, an area shows its previous triangles, a label shows its
+    /// sample of its rows, a row keeps its old position until a layout arrives, an area shows its
+    /// previous triangles, a label shows its
     /// estimated size, or a fit is due. Shots and videos wait until it is true.
     /// [`waiting`](View::waiting) lists what is pending.
     pub fn complete(&self) -> bool {

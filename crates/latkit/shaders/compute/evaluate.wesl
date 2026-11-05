@@ -263,8 +263,7 @@ fn store_flag(row: u32, w: u32, bit: u32, on: bool) {
     store(row, w, select(stored & ~bit, stored | bit, on) & ~(ENTERING | FADE_IN | FADE_OUT));
 }
 
-// Stores a position (from data, or in a diagram from its sheet) as the high and low parts of x and
-// y, and sets `PLACED`. A missing x or y clears `PLACED` instead.
+// Stores a position (from data, or from the scene's layout) as the high and low parts of x and y, and sets `PLACED`. A missing x or y clears `PLACED` instead.
 fn position(row: u32, w: u32, x: vec2u, y: vec2u) {
     let flags = w + VERTEX_FLAGS - VERTEX_POSITION;
     if missing_bits(x.x) || missing_bits(y.x) {

@@ -5,7 +5,7 @@
 
 import package::lib::types::{
     NONE, PAGE_BITS, PAGE_MASK, END_WORDS, END_STATE, END_STRIDE, END_NORMALS, VERTEX_POSITION, VERTEX_COLOR,
-    VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_DEPTH, VERTEX_RANGE, VERTEX_FLAGS, EDGE_FROM, EDGE_TO,
+    VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_RANGE, VERTEX_FLAGS, EDGE_FROM, EDGE_TO,
     EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_TRAVEL, EDGE_FLAGS, FACE_A, FACE_B, FACE_C, FACE_COLOR, FACE_FLAGS,
     LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_TRAVEL, LINE_FLAGS, AREA_COLOR, AREA_FLAGS, MARK_EDGES, MARK_LINES,
     NORMAL_WORDS,
@@ -19,7 +19,6 @@ struct Vertex {
     status: u32,
     half: vec2f,
     elevation: f32,
-    depth: f32,
     // The range of CSS pixels its marker's half size is clamped to.
     range: vec2f,
     flags: u32,
@@ -96,7 +95,6 @@ fn vertex_at(at: u32) -> Vertex {
         word(at + VERTEX_STATUS),
         vec2f(float_at(at + VERTEX_HALF), float_at(at + VERTEX_HALF + 1u)),
         float_at(at + VERTEX_ELEVATION),
-        float_at(at + VERTEX_DEPTH),
         unpack_range(word(at + VERTEX_RANGE)),
         word(at + VERTEX_FLAGS),
     );

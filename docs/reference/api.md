@@ -995,20 +995,6 @@ A conditional's next condition. `then` gives its value.
 **`then`**`(value:` [`ExprInput`](#exprinput)`):` [`Then`](#then) [¶](#next-then){.headerlink}
 : Sets the value where this condition holds.
 
-(px-function)=
-
-### `px()`
-
-{.signature}
-`function px(size: number): { px: number }`
-
-{.signature}
-`function px(size:` [`ExprInput`](#exprinput)`):` [`Px`](#px)
-
-A size in CSS pixels in any space, so it stays the same on screen as the view zooms. `px(1)`
-keeps a diagram's stroke 1 pixel wide at any zoom. Given a number, the result also works as a
-theme length.
-
 (units-function)=
 
 ### `units()`
@@ -1218,8 +1204,7 @@ const view = await View.create(canvas, {
 
 {#view-orbit .member}
 **`orbit`**`: number` [¶](#view-orbit){.headerlink}
-: Degrees per second the camera turns about its center on a map or plane. 0 stops it. A diagram
-  never turns.
+: Degrees per second the camera turns about its center on a map or plane. 0 stops it.
 
 {#view-selection .member}
 **`selection`**`: readonly` [`Rows`](#rows)`[]` [¶](#view-selection){.headerlink}
@@ -1305,8 +1290,8 @@ const view = await View.create(canvas, {
   applies once the rows have their places (their data streamed, any layout placed them, and they
   eased there), a frame or two later when the GPU must measure the extent. With nothing drawn to
   frame, it frames the rows that arrive later. Until a view's first fit applies, it shows only
-  its background. A fit frames a diagram at most at its natural size and the earth at most at
-  zoom 16, which is also where it frames a single point. Resolves to the camera it framed, or to
+  its background. A fit frames the earth at most at zoom 16, which is also where it frames a
+  single point. Resolves to the camera it framed, or to
   `null` when a camera move or another fit replaces it.
 
 {#view-fly .member}
@@ -1328,13 +1313,9 @@ const view = await View.create(canvas, {
   looks past the ground.
 
 {#view-screenof .member}
-**`screenOf`**`(row:` [`Row`](#row)`, options?: { port?: string } &` [`Wait`](#wait)`): Promise<`[`Point`](#point) `| null>` [¶](#view-screenof){.headerlink}
-: Resolves to where `row`, or its port, is on screen once a frame draws the view, or to `null`
-  when no mark draws it in view. A diagram's vertices and ports resolve at once.
-
-  {#view-screenof-port .member}
-  **`port`**`?: string` [¶](#view-screenof-port){.headerlink}
-  : A port of the row, by the reference field naming its net. Only a diagram has ports.
+**`screenOf`**`(row:` [`Row`](#row)`, options?:` [`Wait`](#wait)`): Promise<`[`Point`](#point) `| null>` [¶](#view-screenof){.headerlink}
+: Resolves to where `row` is on screen once a frame draws the view, or to `null` when no mark
+  draws it in view.
 
 {#view-pick .member}
 **`pick`**`(point:` [`Point`](#point)`, options?: { radius?: number } &` [`Wait`](#wait)`): Promise<`[`Hit`](#hit)`[]>` [¶](#view-pick){.headerlink}

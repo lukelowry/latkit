@@ -60,9 +60,8 @@ impl Glyphs {
     }
 }
 
-/// The run the atlas rasterizes for `text` shown at `size`, wrapping at `max_width`, both in length
-/// units. The run is set at the base size, with `max_width` scaled to match. A sheet measures the
-/// same run it draws.
+/// The run the atlas rasterizes for `text` shown at `size`, wrapping at `max_width`, both in CSS
+/// pixels. The run is set at the base size, with `max_width` scaled to match.
 pub(crate) fn run(text: Arc<str>, font: Arc<str>, size: f32, max_width: Option<f32>) -> TextRun {
     let wrap = max_width.map(|w| (w * TEXT_BASE / size.max(1e-3)).round().max(1.0) as u32);
     TextRun { text, font, size_px: TEXT_BASE as u32, max_width: wrap }

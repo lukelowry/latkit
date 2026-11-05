@@ -1,6 +1,6 @@
-//! Layouts position the diagram vertices whose data has no position. Layered places them in ranks
-//! along a direction, with nets running from their outputs. Stress places them at graph distances
-//! and separates overlapping boxes. On a plane, a layout places points among their neighbors.
+//! Layouts position the vertices whose data has no position, among the vertices they link to by
+//! edges or nets. Layered places them in ranks along a direction. Stress places them at graph
+//! distances.
 //!
 //! Vertices with positions stay put, and computed positions stay fixed. Rows added later are
 //! placed around the rest until the view arranges every row again, which resolves to a patch that
@@ -10,10 +10,8 @@
 
 mod common;
 
-use common::{Threads, answer, diagram, errors, frame, gpu, plain_theme, settle};
-use latkit::{
-    Camera, Data, Edges, Ids, Layered, Layout, Patch, Port, Row, Scene, Side, Stress, Table, Vertices, View, field,
-};
+use common::{Threads, answer, errors, frame, gpu, plain_theme, plane, settle};
+use latkit::{Camera, Data, Edges, Ids, Layered, Layout, Patch, Row, Scene, Stress, Table, Vertices, View, field};
 
 /// A chain 1 → 2 → 3 and a branch 2 → 4, with node 1 at `pin` if given.
 fn graph(pin: Option<[f64; 2]>) -> Data {
@@ -34,7 +32,7 @@ fn graph(pin: Option<[f64; 2]>) -> Data {
 }
 
 fn scene(layout: impl Into<Layout>) -> Scene {
-    Scene::new(diagram())
+    Scene::new(plane())
         .theme(plain_theme())
         .layout(layout)
         .draw(Edges::of("graph", "Link").ends("from", "to"))
@@ -49,16 +47,16 @@ fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
     view
 }
 
-/// The positions of nodes 1 to `count`, in units with y down, from where the view draws them.
+/// The positions of nodes 1 to `count`, in plane units with y up, from where the view draws them.
 fn located(gpu: &latkit::Gpu, view: &mut View, count: u64) -> Vec<[f64; 2]> {
     let projected = |p: [f32; 2]| {
         // A quarter pixel per unit, relative to the view's center.
         let c = f64::from(common::SIZE) / 2.0;
-        [(f64::from(p[0]) - c) * 4.0, (f64::from(p[1]) - c) * 4.0]
+        [(f64::from(p[0]) - c) * 4.0, (c - f64::from(p[1])) * 4.0]
     };
     (1..=count)
         .map(|id| {
-            let pending = view.screen_of(&Row::new("graph", "Node", id), None);
+            let pending = view.screen_of(&Row::new("graph", "Node", id));
             answer(gpu, view, pending).map_or([f64::NAN; 2], projected)
         })
         .collect()
@@ -97,46 +95,43 @@ fn layered_ranks_follow_the_direction() {
         return;
     }
     assert!(p.iter().all(|v| v[0].is_finite()), "every node placed and drawn: {p:?}");
-    // Markers of radius 4 are 8 units across. Ranks, and rows within a rank, are their gaps apart
-    // edge to edge.
-    let size = 8.0;
+    // Ranks are a rank gap apart, and rows within a rank a gap apart, center to center.
     let rank_gap = Layered::default().rank_gap;
-    assert!((p[1][0] - p[0][0] - rank_gap - size).abs() < 1.0, "a rank apart: {p:?}");
-    assert!((p[2][0] - p[1][0] - rank_gap - size).abs() < 1.0, "a rank apart: {p:?}");
+    assert!((p[1][0] - p[0][0] - rank_gap).abs() < 1.0, "a rank apart: {p:?}");
+    assert!((p[2][0] - p[1][0] - rank_gap).abs() < 1.0, "a rank apart: {p:?}");
     assert!((p[2][0] - p[3][0]).abs() < 1.0, "3 and 4 share a rank: {p:?}");
-    assert!(((p[2][1] - p[3][1]).abs() - Layered::default().gap - size).abs() < 1.0, "a gap apart: {p:?}");
+    assert!(((p[2][1] - p[3][1]).abs() - Layered::default().gap).abs() < 1.0, "a gap apart: {p:?}");
 }
 
 #[test]
-fn nets_run_from_their_outputs() {
-    // Nodes 1 and 2 drive net 1 from their outputs, node 3 reads it, and node 4 drives node 1.
+fn stress_places_the_members_of_a_net_together() {
+    // Nodes 1 to 3 belong to net 1 and nodes 4 to 6 to net 2. No edge links them.
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(
         Patch::new()
             .set(
-                Table::new("Node", vec![1_u64, 2, 3, 4])
-                    .field("x", vec![None::<f64>; 4])
-                    .field("y", vec![None::<f64>; 4])
-                    .reference("out", "Net", vec![Some(1_u64), Some(1), None, Some(2)])
-                    .reference("in", "Net", vec![Some(2_u64), None, Some(1), None]),
+                Table::new("Node", vec![1_u64, 2, 3, 4, 5, 6])
+                    .field("x", vec![None::<f64>; 6])
+                    .field("y", vec![None::<f64>; 6])
+                    .reference("net", "Net", vec![1_u64, 1, 1, 2, 2, 2]),
             )
             .set(Table::new("Net", vec![1_u64, 2])),
     )
     .expect("valid");
-    let scene = Scene::new(diagram()).layout(Layered::default()).draw(Edges::of("graph", "Net")).draw(
-        Vertices::of("graph", "Node")
-            .position(field("x"), field("y"))
-            .radius(4.0)
-            .port("in", Side::Left)
-            .port("out", Port::output(Side::Right)),
-    );
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .layout(Stress::default())
+        .draw(Edges::of("graph", "Net").joins("Node", "net"))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0));
     let mut view = view(&gpu, scene, &data);
-    let p = located(&gpu, &mut view, 4);
-    let gap = Layered::default().rank_gap;
-    assert!(p[0][0] - p[3][0] > gap, "1 a rank after 4, which drives it: {p:?}");
-    assert!((p[1][0] - p[3][0]).abs() < 1.0, "2 drives the net 3 reads, so it shares 4's rank: {p:?}");
-    assert!(p[2][0] - p[0][0] > gap, "3 ranks after both drivers: {p:?}");
+    let p = located(&gpu, &mut view, 6);
+    let gap = Stress::default().gap;
+    // Each net links its first member to the others, so they settle a gap from it.
+    for (first, member) in [(0, 1), (0, 2), (3, 4), (3, 5)] {
+        let d = apart(p[first], p[member]);
+        assert!((d - gap).abs() < 0.35 * gap, "{first}–{member} {d} apart: {p:?}");
+    }
     assert_eq!(errors(&mut view), Vec::new());
 }
 
@@ -153,27 +148,6 @@ fn stress_puts_neighbors_a_gap_apart() {
         assert!((d - gap).abs() < 0.35 * gap, "{a}–{b} {d} apart: {p:?}");
     }
     assert!(apart(p[2], p[3]) > 1.4 * gap, "leaves spread: {p:?}");
-}
-
-#[test]
-fn stress_separates_overlapping_boxes() {
-    let Some(gpu) = gpu() else { return };
-    let scene = Scene::new(diagram())
-        .theme(plain_theme())
-        .layout(Stress::default())
-        .draw(Edges::of("graph", "Link").ends("from", "to"))
-        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).size(60.0, 20.0));
-    let mut view = view(&gpu, scene, &graph(None));
-    let p = located(&gpu, &mut view, 4);
-    // Stress puts neighbors 40 units apart. Their 60 by 20 boxes separate, keeping a quarter of the
-    // gap clear.
-    for i in 0..4 {
-        for j in i + 1..4 {
-            let (dx, dy) = ((p[i][0] - p[j][0]).abs(), (p[i][1] - p[j][1]).abs());
-            assert!(dx >= 64.0 || dy >= 24.0, "{i} and {j} overlap: {p:?}");
-        }
-    }
-    assert_eq!(errors(&mut view), Vec::new());
 }
 
 #[test]
@@ -251,8 +225,7 @@ fn a_plane_places_points_without_positions_by_its_layout() {
     };
     let mut view = view(&gpu, scene(Stress { gap: 40.0 }.into()), &graph(Some([-100.0, 60.0])));
     let p = located(&gpu, &mut view, 4);
-    // Y points up on the plane, so on screen node 1 is 60 units above the center.
-    assert!(apart(p[0], [-100.0, -60.0]) < 1.0, "node 1 at its data position: {p:?}");
+    assert!(apart(p[0], [-100.0, 60.0]) < 1.0, "node 1 at its data position: {p:?}");
     assert!(p.iter().all(|v| v[0].is_finite()), "every node placed: {p:?}");
     assert!((apart(p[0], p[1]) - 40.0).abs() < 15.0, "node 2 a gap from node 1: {p:?}");
     // Without a layout, rows without positions are not drawn.
@@ -296,7 +269,7 @@ fn a_fit_on_a_plane_frames_the_places_its_layout_gives() {
     settle(&gpu, &mut view);
     let size = common::SIZE as f32;
     for id in [0_u64, 500, 1000, 1500] {
-        let pending = view.screen_of(&Row::new("graph", "Node", id), None);
+        let pending = view.screen_of(&Row::new("graph", "Node", id));
         let p = answer(&gpu, &mut view, pending).expect("on screen");
         assert!(p.iter().all(|v| (0.0..=size).contains(v)), "node {id} in view: {p:?}");
     }

@@ -109,7 +109,7 @@ fn an_option_that_does_not_fit_draws_as_if_unset_until_its_data_arrives() {
 }
 
 #[test]
-fn a_stroke_in_pixels_keeps_its_width_as_a_diagram_zooms() {
+fn a_stroke_in_units_scales_with_the_zoom_and_one_in_pixels_does_not() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(
@@ -123,7 +123,7 @@ fn a_stroke_in_pixels_keeps_its_width_as_a_diagram_zooms() {
     )
     .expect("valid");
     let thickness = |width: latkit::Size| {
-        let scene = Scene::new(common::diagram())
+        let scene = Scene::new(common::plane())
             .theme(green_edges())
             .draw(Edges::of("graph", "Link").ends("from", "to").width(width))
             .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).size(8.0, 8.0));
@@ -133,7 +133,7 @@ fn a_stroke_in_pixels_keeps_its_width_as_a_diagram_zooms() {
         let pixels = frame(&gpu, &mut view);
         (0..SIZE).filter(|&y| at(&pixels, SIZE / 2, y)[1] > 128).count()
     };
-    let (px, units) = (thickness(latkit::px(2.0)), thickness(2.0.into()));
+    let (px, units) = (thickness(2.0.into()), thickness(latkit::units(2.0)));
     assert!((1..=3).contains(&px), "a 2 px width stays 2 pixels at zoom 1: {px}");
     assert!((4..=5).contains(&units), "a 2-unit width is 4 pixels at zoom 1: {units}");
 }
@@ -1030,7 +1030,7 @@ fn comets(gpu: &latkit::Gpu, units: bool, speed: Option<f64>) -> View {
 }
 
 fn comets_scene(units: bool, speed: Option<f64>) -> Scene {
-    let length = |v| if units { latkit::Length::Units(v) } else { latkit::Length::Space(v) };
+    let length = |v| if units { latkit::Length::Units(v) } else { latkit::Length::Px(v) };
     let flow =
         latkit::FlowTheme { color: Color::rgb(1.0, 0.0, 0.0), spacing: length(30.0), length: length(8.0), width: 8.0 };
     let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25));
@@ -1106,8 +1106,8 @@ fn comets_follow_their_rows_when_rows_move_without_easing() {
         .expect("valid");
     let flow = latkit::FlowTheme {
         color: Color::rgb(1.0, 0.0, 0.0),
-        spacing: latkit::Length::Space(30.0),
-        length: latkit::Length::Space(8.0),
+        spacing: latkit::Length::Px(30.0),
+        length: latkit::Length::Px(8.0),
         width: 8.0,
     };
     let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25)).flow(field("speed"));
@@ -1538,7 +1538,7 @@ fn poles_stand_from_each_vertex_down_to_the_ground() {
 }
 
 #[test]
-fn nets_outside_a_diagram_join_their_members_as_stars() {
+fn nets_join_their_members_as_stars() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("d");
     data.apply(

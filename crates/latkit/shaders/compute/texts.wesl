@@ -1,7 +1,7 @@
 // The labels that show, and the texts they need. `claim` writes each labeled row's key into the
 // grid cells its label covers. Each cell keeps the largest key. `texts` then asks the host to set
 // the text of each label that is not crowded out, when the atlas lacks the text and the label's
-// anchor is near the view (and, in a diagram, its text is large enough to read). It also marks a
+// anchor is near the view. It also marks a
 // set text in view as seen, so the atlas keeps it. Rows whose tile is leaving claim nothing.
 // `draw/glyphs.wesl` decides from the same claims whether each label shows. Each pipeline is made
 // for one primitive and compiles only that primitive's anchors.
@@ -11,8 +11,8 @@ import package::lib::bind::{eye, mark, word};
 import package::lib::state::{row_at, extra_at};
 import package::lib::read::missing_bits;
 import package::lib::label::{
-    Anchor, Chars, anchor, label_chars, char_at, run_size, length_px, legibility, in_view, claims_room, claim_key,
-    claimed, cells_of, cell, Cells,
+    Anchor, Chars, anchor, label_chars, char_at, run_size, in_view, claims_room, claim_key, claimed, cells_of, cell,
+    Cells,
 };
 import package::lib::drawn::drawn_row;
 
@@ -50,7 +50,7 @@ fn labeled(i: u32) -> Labeled {
     }
     l.chars = label_chars(bits);
     l.ready = true;
-    let size = length_px(mark.label_size);
+    let size = mark.label_size;
     for (var k = 0u; k < l.chars.count; k++) {
         let corners = run(char_at(l.chars, k));
         l.ready = l.ready && any(corners != vec2u(0u));
@@ -102,7 +102,7 @@ fn claim(@builtin(global_invocation_id) id: vec3u) {
     if !l.shows || !claims_room(l.a) {
         return;
     }
-    let c = cells_of(claimed(l.a, l.ready, l.extent, length_px(mark.label_size)));
+    let c = cells_of(claimed(l.a, l.ready, l.extent, mark.label_size));
     let key = claim_key(i);
     for (var y = c.first.y; y <= c.last.y; y++) {
         for (var x = c.first.x; x <= c.last.x; x++) {
@@ -121,15 +121,14 @@ fn texts(@builtin(global_invocation_id) id: vec3u) {
     if !l.shows {
         return;
     }
-    let size = length_px(mark.label_size);
-    let t = claimed(l.a, l.ready, l.extent, size);
+    let t = claimed(l.a, l.ready, l.extent, mark.label_size);
     let kept = !claims_room(l.a) || keeps(cells_of(t), claim_key(i));
     if !l.ready {
-        // The atlas lacks some of its texts. Ask for them if the label could show soon: legible and
-        // near the view, and keeping its room unless its texts are a number's characters, which
-        // every row shares.
+        // The atlas lacks some of its texts. Ask for them if the label could show soon: near the
+        // view, and keeping its room unless its texts are a number's characters, which every row
+        // shares.
         let near = 0.25 * eye.size;
-        if (kept || mark.number != NONE) && legibility(size) > 0.0 && in_view(l.a.at - near, l.a.at + near) {
+        if (kept || mark.number != NONE) && in_view(l.a.at - near, l.a.at + near) {
             for (var k = 0u; k < l.chars.count; k++) {
                 let code = char_at(l.chars, k);
                 if all(run(code) == vec2u(0u)) {

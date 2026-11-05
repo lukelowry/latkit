@@ -51,7 +51,7 @@ pub enum Event {
         hit: Hit,
         /// The row's new position in the space's coordinates. It is the hit point moved with the
         /// pointer since the press, at the depth where the drag started, so a vertex keeps its
-        /// offset from the pointer. Snapped to a diagram's grid dots when the grid snaps.
+        /// offset from the pointer.
         position: [f64; 3],
         /// The patch that moves the row there, by writing its mark's position fields or point
         /// geometry. `None` when its position is not a pair of fields.
@@ -61,7 +61,7 @@ pub enum Event {
         trigger: Trigger,
     },
     /// A connection was drawn where an input in [`Controls::gestures`](crate::Controls) connects:
-    /// from a port, from a vertex with that input, or by dragging an edge's end off it.
+    /// from a vertex with that input, or by dragging an edge's end off it.
     Connect {
         /// The end it was drawn from. For a dragged edge end, the edge's other end.
         from: End,
@@ -258,14 +258,11 @@ impl Extend<Event> for Events {
     }
 }
 
-/// A vertex a connection ends at, and the port the connection meets, if any.
+/// A vertex a connection ends at.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct End {
     /// The vertex.
     pub row: Row,
-    /// The port, by the reference field naming its net.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<Name>,
 }
 
 /// A row under a point, as the frame drew it.
@@ -280,16 +277,13 @@ pub struct Hit {
     /// The index of the mark in the scene the frame drew.
     #[serde(skip)]
     pub(crate) index: usize,
-    /// The row's point nearest the probe, in CSS pixels from the top left: a vertex's or port's
-    /// middle, or the nearest point of a stroke or triangle.
+    /// The row's point nearest the probe, in CSS pixels from the top left: a vertex's middle, or
+    /// the nearest point of a stroke or triangle.
     pub point: [f32; 2],
     /// That point in the space's coordinates: x, y, and elevation.
     pub position: [f64; 3],
     /// CSS pixels from the probe to the row.
     pub distance: f32,
-    /// The port hit, if the hit is on a vertex's port.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<Name>,
     /// The sample hit, if the hit is on a line tracing a sampled field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sample>,
@@ -408,7 +402,7 @@ pub struct Waiting {
     pub compiling: bool,
     /// Pages its marks draw are still uploading, or tables are not yet built from them.
     pub data: bool,
-    /// Layouts, routes, lanes, shapes, tiles, or pyramids in progress.
+    /// Layouts, lanes, shapes, tiles, or pyramids in progress.
     pub derived: bool,
     /// The label texts in view being read back, or texts requested and not yet set.
     pub labels: bool,
@@ -460,7 +454,7 @@ impl schemars::JsonSchema for Waiting {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
+            "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
             "type": "array",
             "items": { "enum": ["compiling", "data", "derived", "labels", "fit", "marks"] },
         })
@@ -484,7 +478,6 @@ mod tests {
             point: [0.0; 2],
             position: [0.0; 3],
             distance: 0.0,
-            port: None,
             sample: None,
         };
         Event::Click { hit, trigger: Trigger::default() }

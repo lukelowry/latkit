@@ -70,8 +70,8 @@ pub struct Controls {
 pub enum Action {
     /// Moves the camera with the pointer.
     Pan,
-    /// Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, in
-    /// a diagram or on a plot, it pans instead.
+    /// Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, on
+    /// a plot, it pans instead.
     Turn,
     /// Tilts a map or plane about the point pressed, keeping its bearing. Where the camera cannot
     /// turn, it pans instead.
@@ -85,9 +85,9 @@ pub enum Action {
     /// On a plot, moves the axis coordinate shown with the pointer, reported as
     /// [`Event::At`](crate::Event), and a click there moves it too. Elsewhere it pans.
     Scrub,
-    /// Draws a connection from the vertex or port pressed, or drags an edge's end off its vertex,
-    /// reported as [`Event::Connect`](crate::Event). Once any input connects, a drag from a port or
-    /// an edge's end connects whatever its input. Elsewhere it pans.
+    /// Draws a connection from the vertex pressed, or drags an edge's end off its vertex, reported
+    /// as [`Event::Connect`](crate::Event). Once any input connects, a drag from an edge's end
+    /// connects whatever its input. Elsewhere it pans.
     Connect,
     /// Nothing.
     None,

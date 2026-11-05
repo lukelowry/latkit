@@ -1,7 +1,7 @@
 //! Fits: moving the camera to frame what is drawn.
 //!
-//! A box fits at once, as does anything whose extent the CPU already knows. A diagram's sheet has
-//! every box and wire, and tiles have the bounds of every row they draw. Anything else is measured
+//! A box fits at once, as does anything whose extent the CPU already knows: tiles have the bounds of
+//! every row they draw. Anything else is measured
 //! on the GPU, read back, and framed a frame or two later. A plot without a value range measures
 //! its traces whenever they or the camera change. It grows its range with headroom so the axes
 //! stay still.
@@ -126,8 +126,8 @@ impl View {
     /// A reveal asked for while another fit is due follows that fit instead. It applies once
     /// positions settle: data has streamed, shapes are triangulated, any layout has placed the
     /// rows, and vertices have eased to their places. With nothing drawn to frame, it frames the
-    /// rows that arrive later. A fit frames a diagram at most at its natural size (zoom 0) and the
-    /// earth at most at zoom 16, which is also where it frames a single point. Until the first fit
+    /// rows that arrive later. A fit frames the earth at most at zoom 16, which is also where it
+    /// frames a single point. Until the first fit
     /// applies, frames show only the background. [`framed`](View::framed) says when it applies.
     pub fn fit(&mut self, fit: Fit) {
         if matches!(fit, Fit::Reveal(_)) && self.fitting.asked().is_some_and(|f| !matches!(f, Fit::Reveal(_))) {
@@ -318,19 +318,10 @@ impl View {
         self.frame_fit(lo, hi, margin, fit);
     }
 
-    /// The box `fit` frames, if known without measuring, as `[min x, min y, max x, max y]`. In a
-    /// diagram whose sheet is placed, it is the sheet's extent or the union of the fitted rows'
-    /// boxes. Otherwise, for `Fit::All` once every mark is `ready` and only tiled tables are
-    /// measured, it is their bounds.
+    /// The box `fit` frames, if known without measuring, as `[min x, min y, max x, max y]`: for
+    /// `Fit::All` once every mark is `ready` and only tiled tables are measured, their bounds.
     fn known(&self, fit: &Fit, ready: bool) -> Option<[f64; 4]> {
         let union = |a: [f64; 4], b: [f64; 4]| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])];
-        let sheet = &self.derived.sheet;
-        if matches!(self.scene.space, Space::Diagram(_)) && !sheet.placing() {
-            return match fit {
-                Fit::All => sheet.extent(),
-                _ => self.focus.fitting.iter().map(|row| sheet.bounds(row)).reduce(|a, b| Some(union(a?, b?)))?,
-            };
-        }
         let measured = || self.marks.iter().filter(|m| m.measured());
         let gpu = measured().any(|m| m.drawable() && self.tiled_bounds(m).is_none());
         if !ready || gpu || !matches!(fit, Fit::All) {

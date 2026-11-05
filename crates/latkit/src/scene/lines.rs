@@ -124,7 +124,7 @@ impl Lines {
             flags: wgsl::LINE_FLAGS,
             theme_width: wgsl::THEME_LINE_WIDTH,
         };
-        self.stroke.compile(c, &words, context.diagram())?;
+        self.stroke.compile(c, &words)?;
         Ok(drawing)
     }
 }

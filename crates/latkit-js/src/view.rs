@@ -218,12 +218,12 @@ impl View {
         Ok(task(async move { Ok(JsValue::from_str(&to_json(&pending.await?))) }))
     }
 
-    /// The screen point of `row` (JSON), or of its port `port`, as `[x, y]` in CSS pixels, or `null`
-    /// if no mark draws it in view.
+    /// The screen point of `row` (JSON), as `[x, y]` in CSS pixels, or `null` if no mark draws it
+    /// in view.
     #[wasm_bindgen(js_name = screenOf)]
-    pub fn screen_of(&self, row: &str, port: Option<String>) -> Result<Task, Error> {
+    pub fn screen_of(&self, row: &str) -> Result<Task, Error> {
         let row: latkit::Row = json("row", row)?;
-        let pending = self.view.with(move |v| v.screen_of(&row, port.as_deref()));
+        let pending = self.view.with(move |v| v.screen_of(&row));
         Ok(task(async move {
             let point = pending.await?;
             Ok(point.map_or(JsValue::NULL, |p| js_sys::Array::of2(&p[0].into(), &p[1].into()).into()))

@@ -438,7 +438,7 @@ impl View {
         self.derived.tiles.choose(self.planning.plans(), &mut self.choices);
         let paged = self.paged();
         let mut derived = std::mem::take(&mut self.derived);
-        let input = derive::Input { paged: Some(&paged), ..self.derive_input(host.as_deref()) };
+        let input = derive::Input { paged: Some(&paged), ..self.derive_input() };
         if derived.update(&input, &mut jobs) {
             self.changed = true;
         }
@@ -460,20 +460,13 @@ impl View {
         let errors = self.job_errors.clone();
         let jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, 0);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
-        tiles.update(&self.derive_input(host.as_deref()), &asked, &mut inner.tiles, &jobs);
+        tiles.update(&self.derive_input(), &asked, &mut inner.tiles, &jobs);
         self.derived.tiles = tiles;
     }
 
     /// The input derivations read this frame.
-    fn derive_input<'a>(&'a self, host: Option<&'a dyn crate::host::Host>) -> derive::Input<'a> {
-        derive::Input {
-            scene: &self.scene,
-            scene_version: self.scene_version,
-            data: &self.snapshots,
-            host,
-            dragging: self.dragging(),
-            paged: None,
-        }
+    fn derive_input(&self) -> derive::Input<'_> {
+        derive::Input { scene: &self.scene, scene_version: self.scene_version, data: &self.snapshots, paged: None }
     }
 
     /// Lays out the lists buffer: the marks' segment lists, and in `layered` frames their draw

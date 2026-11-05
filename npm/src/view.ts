@@ -275,8 +275,7 @@ export class View extends Handle {
   }
 
   /**
-   * Degrees per second the camera turns about its center on a map or plane. 0 stops it. A diagram
-   * never turns.
+   * Degrees per second the camera turns about its center on a map or plane. 0 stops it.
    */
   get orbit(): number {
     return view(this).orbit;
@@ -363,8 +362,8 @@ export class View extends Handle {
    * applies once the rows have their places (their data streamed, any layout placed them, and they
    * eased there), a frame or two later when the GPU must measure the extent. With nothing drawn to
    * frame, it frames the rows that arrive later. Until a view's first fit applies, it shows only
-   * its background. A fit frames a diagram at most at its natural size and the earth at most at
-   * zoom 16, which is also where it frames a single point. Resolves to the camera it framed, or to
+   * its background. A fit frames the earth at most at zoom 16, which is also where it frames a
+   * single point. Resolves to the camera it framed, or to
    * `null` when a camera move or another fit replaces it.
    */
   fit(fit: Fit = 'all', wait: Wait = {}): Promise<Camera | null> {
@@ -405,17 +404,11 @@ export class View extends Handle {
   }
 
   /**
-   * Resolves to where `row`, or its port, is on screen once a frame draws the view, or to `null`
-   * when no mark draws it in view. A diagram's vertices and ports resolve at once.
+   * Resolves to where `row` is on screen once a frame draws the view, or to `null` when no mark
+   * draws it in view.
    */
-  screenOf(
-    row: Row,
-    options: {
-      /** A port of the row, by the reference field naming its net. Only a diagram has ports. */
-      port?: string;
-    } & Wait = {},
-  ): Promise<Point | null> {
-    const located = view(this).screenOf(JSON.stringify(row), options.port);
+  screenOf(row: Row, options: Wait = {}): Promise<Point | null> {
+    const located = view(this).screenOf(JSON.stringify(row));
     return waited<Point | null>(located, due(options), 'locating a row');
   }
 

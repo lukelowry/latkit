@@ -141,15 +141,15 @@ impl Stroke {
         self.width.as_ref().map_or(crate::Size::ANY, |size| size.px)
     }
 
-    /// Compiles the dash, flow, and width channels. A width is in the space's unit unless it names
-    /// its own unit. The theme's width is always in the space's unit.
-    pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords, diagram: bool) -> Result<()> {
+    /// Compiles the dash, flow, and width channels. A width is in CSS pixels unless given in
+    /// position units. The theme's width is in CSS pixels.
+    pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords) -> Result<()> {
         c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH, unset: false })?;
         c.channel("flow", &self.flow, Store::Number { word: words.flow, fallback: None })?;
         let width = |units| Store::Size { word: words.width, units, fallback: Some(words.theme_width) };
         match &self.width {
-            Some(size) => c.channel("width", &size.expr, width(size.in_units(diagram))),
-            None => c.theme("width", words.theme_width, width(diagram)),
+            Some(size) => c.channel("width", &size.expr, width(size.units)),
+            None => c.theme("width", words.theme_width, width(false)),
         }
     }
 }
@@ -343,8 +343,7 @@ pub(crate) struct Markers {
 }
 
 /// How a compiled mark's labels draw: the extra word where the label words start, the program
-/// column of the text, and the font size and wrap width in length units (CSS pixels, or units in a
-/// diagram).
+/// column of the text, and the font size and wrap width in CSS pixels.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Labeling {
     pub(crate) extra: u32,
@@ -366,14 +365,7 @@ pub(crate) struct Context<'a> {
 }
 
 impl Context<'_> {
-    /// Whether the space is a diagram, where every length is in units and the sheet positions
-    /// vertices and routes wires.
-    pub(crate) fn diagram(&self) -> bool {
-        matches!(self.space, Space::Diagram(_))
-    }
-
-    /// Whether the scene's layout places vertex rows without a position on a plane or the earth
-    /// (diagrams are not counted).
+    /// Whether the scene's layout places vertex rows without a position on a plane or the earth.
     pub(crate) fn placed(&self) -> bool {
         matches!(self.space, Space::Plane(_) | Space::Earth(_)) && !matches!(self.layout, super::Layout::None)
     }
@@ -393,16 +385,11 @@ pub(crate) struct Drawing {
     /// The program column a line traces, or `NONE`.
     pub(crate) trace: u32,
     /// Program columns, `NONE` when absent. `geometry` holds the points a stroke's path runs
-    /// through (a diagram route, bends, or a line's path) or an area's triangles. `lane` holds each
+    /// through (a net's star, bends, or a line's path) or an area's triangles. `lane` holds each
     /// row's lane among edges joining the same two vertices.
     pub(crate) geometry: u32,
     pub(crate) lane: u32,
     pub(crate) label: Option<Labeling>,
-    /// A vertex mark's ports: the reference field naming each port's nets, the port, and the
-    /// program column that reads the field.
-    pub(crate) ports: Vec<(Name, super::Port, u32)>,
-    /// The font size of a vertex mark's port labels, in length units.
-    pub(crate) port_label_size: f32,
     /// CSS pixel bounds on the mark's size: a vertex's half-size, or a stroke's width.
     pub(crate) size_px: [f32; 2],
 }
@@ -420,8 +407,6 @@ impl Drawing {
             geometry: wgsl::NONE,
             lane: wgsl::NONE,
             label: None,
-            ports: Vec::new(),
-            port_label_size: 0.0,
             size_px: crate::Size::ANY,
         }
     }
@@ -490,67 +475,18 @@ impl Mark {
     }
 
     /// The path a stroke mark's rows follow, or where a triangle's corners come from: one of the
-    /// `PATH_` codes its pipelines are built for. A net's star and every wire in a diagram follow
-    /// the route the view computes. On a plot a line traces its samples, and elsewhere it
+    /// `PATH_` codes its pipelines are built for. A net's star follows the route the view
+    /// computes. On a plot a line traces its samples, and elsewhere it
     /// follows its path field. Faces take their corners from the vertices they join, and vertices
     /// have no path, so both read `PATH_ENDS`.
     pub(crate) fn path(&self, space: &Space) -> u32 {
         match self {
             Mark::Edges(e) if e.poles => wgsl::PATH_POLES,
             Mark::Edges(e) if e.joins.is_some() => wgsl::PATH_GEOMETRY,
-            Mark::Edges(_) if matches!(space, Space::Diagram(_)) => wgsl::PATH_GEOMETRY,
             Mark::Lines(_) if matches!(space, Space::Plot(_)) => wgsl::PATH_TRACE,
             Mark::Lines(_) | Mark::Areas(_) => wgsl::PATH_GEOMETRY,
             Mark::Vertices(_) | Mark::Edges(_) | Mark::Faces(_) => wgsl::PATH_ENDS,
         }
-    }
-
-    /// Resets each option of this mark that its space lacks, and returns each with the reason.
-    /// Outside a diagram: ports, groups, orthogonal routes, and shadows. In a diagram: elevation,
-    /// poles, and joins.
-    pub(crate) fn unplace(&mut self, diagram: bool) -> Vec<(&'static str, &'static str)> {
-        const ONLY: &str = "only a diagram has ports, groups, orthogonal routes, and shadows";
-        let mut reset = Vec::new();
-        match self {
-            Mark::Vertices(v) if diagram => {
-                if v.elevation != Expr::from(0.0) {
-                    v.elevation = 0.0.into();
-                    reset.push(("elevation", "a diagram is flat, so vertices cannot have elevation"));
-                }
-            }
-            Mark::Vertices(v) => {
-                if !v.ports.is_empty() {
-                    v.ports.clear();
-                    reset.push(("ports", ONLY));
-                }
-                if !v.contains.is_empty() {
-                    v.contains.clear();
-                    reset.push(("contains", ONLY));
-                }
-                if v.shadow {
-                    v.shadow = false;
-                    reset.push(("shadow", ONLY));
-                }
-            }
-            Mark::Edges(e) if diagram => {
-                if e.poles {
-                    e.poles = false;
-                    reset.push(("poles", "a diagram is flat, so it cannot have poles"));
-                }
-                if e.joins.is_some() {
-                    e.joins = None;
-                    reset.push(("joins", "in a diagram, nets join vertex ports instead"));
-                }
-            }
-            Mark::Edges(e) => {
-                if e.route == Some(super::Route::Orthogonal) {
-                    e.route = None;
-                    reset.push(("route", ONLY));
-                }
-            }
-            Mark::Faces(_) | Mark::Lines(_) | Mark::Areas(_) => {}
-        }
-        reset
     }
 
     /// Calls `f` with every expression in the mark's options.
@@ -624,28 +560,15 @@ impl Mark {
             compiler.check_data("priority", priority)?;
         }
         if let Some(label) = &style.label {
-            // A diagram's sheet writes the text each block shows, cut to fit.
-            let shown = match self {
-                Mark::Vertices(_) if context.diagram() => Some(crate::sheet::shown_label(style.name.as_ref())),
-                _ => None,
-            };
-            compiler.within("label", |c| compile_label(label, shown, c, context, &mut drawing))?;
+            compiler.within("label", |c| compile_label(label, c, context, &mut drawing))?;
         }
         Ok(drawing)
     }
 }
 
-/// Compiles `label`'s text or number and color into extra words after the mark's own. In a diagram
-/// a text reads only data, since the sheet sizes blocks around it, and a vertex mark shows the text
-/// the sheet cut to fit, from derived field `shown`. A number is written on the GPU. A text or
-/// number that does not fit the data shows no label.
-fn compile_label(
-    label: &Label,
-    shown: Option<Name>,
-    c: &mut Compiler<'_>,
-    context: Context<'_>,
-    drawing: &mut Drawing,
-) -> Result<()> {
+/// Compiles `label`'s text or number and color into extra words after the mark's own. A number is
+/// written on the GPU. A text or number that does not fit the data shows no label.
+fn compile_label(label: &Label, c: &mut Compiler<'_>, context: Context<'_>, drawing: &mut Drawing) -> Result<()> {
     let theme = context.theme;
     let extra = drawing.extras;
     let word = |k: u32| drawing.kind.stride() + extra + k;
@@ -666,16 +589,7 @@ fn compile_label(
             c.number("text", &label.text, code)?;
             return Ok(wgsl::NONE);
         }
-        if context.diagram() {
-            c.check_structure("text", [&label.text])?;
-        }
-        match shown {
-            Some(shown) => {
-                c.text_of("text", &label.text)?;
-                c.derived_text("text", shown, code)
-            }
-            None => c.text("text", &label.text, code),
-        }
+        c.text("text", &label.text, code)
     };
     let Some(column) = c.option(text) else { return Ok(()) };
     let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
@@ -817,8 +731,8 @@ macro_rules! mark {
     };
     (@form $key:literal + stroke { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
         $crate::scene::mark::mark!(@struct $key { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {
-            /// Each row's width in CSS pixels, or units in a diagram, unless given with `px` or
-            /// `units`. Defaults to the theme's width.
+            /// Each row's width in CSS pixels, unless given in `units`. Defaults to the theme's
+            /// width.
             width: Option<$crate::Size>,
             /// Whether each row is dashed, using the theme's `dash` period. Defaults to `false`.
             #[serde(default = "crate::scene::mark::no")]
@@ -1004,8 +918,7 @@ macro_rules! style_methods {
 macro_rules! stroke_methods {
     ($mark:ty) => {
         impl $mark {
-            /// Sets each row's width in CSS pixels, or units in a diagram, unless given with
-            /// [`px`](crate::px) or [`units`](crate::units).
+            /// Sets each row's width in CSS pixels, unless given in [`units`](crate::units).
             #[must_use]
             pub fn width(mut self, width: impl Into<$crate::Size>) -> Self {
                 self.stroke.width = Some(width.into());

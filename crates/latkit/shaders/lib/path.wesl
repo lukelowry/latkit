@@ -1,7 +1,7 @@
 // Paths: the segments a stroke draws, for any mark kind. A row's path runs between an edge's ends
 // (straight, through the bends of a geometry column, or along a great circle on the earth, bowed
 // into its lane), through a line's samples across the axis, or through a geometry column's points
-// (a route computed for a diagram's sheet, or a path field). Draws, probes, bounds, and labels all
+// (a net's star, or a path field). Draws, probes, bounds, and labels all
 // read segments through `segment_ends` and `segment_screen`. A pipeline's `PATH` selects one kind
 // of path, so each pipeline compiles only that kind.
 

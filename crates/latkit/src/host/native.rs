@@ -108,13 +108,6 @@ impl Host for Native {
         })
     }
 
-    fn measure(&self, run: &TextRun) -> Result<[f32; 2]> {
-        self.with_text(|text| {
-            let (_, bounds, ..) = text.layout(run)?;
-            Ok([(bounds[2] - bounds[0]) as f32, (bounds[3] - bounds[1]) as f32])
-        })
-    }
-
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         self.work(move || Ok(job.run()))
     }
@@ -345,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn shaped_text_measures_wraps_and_reuses_the_glyph_cache() {
+    fn shaped_text_wraps_and_reuses_the_glyph_cache() {
         let host = Native::from_fonts([font_bytes()]).unwrap();
         let mut run = TextRun {
             text: "Hello world office".into(),
@@ -356,7 +349,6 @@ mod tests {
         let raster = host.rasterize(&run).unwrap();
         assert!(raster.coverage.iter().any(|&alpha| alpha > 0));
         assert!(raster.coverage.contains(&0));
-        assert_eq!(host.measure(&run).unwrap(), raster.size.map(|n| n as f32));
         assert_eq!(host.rasterize(&run).unwrap(), raster);
         assert!(raster.baseline > 0.0 && raster.baseline < raster.size[1] as f32);
         run.max_width = Some(130);

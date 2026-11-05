@@ -22,7 +22,6 @@ use std::sync::Arc;
 pub use browser::Browser;
 pub use job::Job;
 pub(crate) use job::Placement;
-pub(crate) use job::Wiring;
 pub(crate) use job::{Key, Shaping, shapes_answer};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use native::Native;
@@ -62,12 +61,6 @@ pub trait Host: Send + Sync + 'static {
     /// Rasterizes `run` to a coverage mask. Errors if its font is unavailable or rasterization
     /// fails.
     fn rasterize(&self, run: &TextRun) -> Result<Raster>;
-
-    /// The width and height of `run` once rasterized, in pixels. The default implementation
-    /// rasterizes it.
-    fn measure(&self, run: &TextRun) -> Result<[f32; 2]> {
-        self.rasterize(run).map(|raster| raster.size.map(|v| v as f32))
-    }
 
     /// Runs `job` in the background, resolving to the result of [`Job::run`]. The default
     /// implementation runs it immediately on the calling thread.

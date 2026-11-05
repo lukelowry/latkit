@@ -177,8 +177,7 @@ pub(super) struct Asking {
 }
 
 /// The pipelines nearly every scene draws with, which the GPU compiles ahead for later views:
-/// channels, edges, lines along paths, vertices and their labels, and the backdrop, ports, and
-/// overlay.
+/// channels, edges, lines along paths, vertices and their labels, and the backdrop and overlay.
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub(crate) fn common(format: wgpu::TextureFormat, samples: u32) -> Vec<Asked> {
     let draw = |shader| Asked::Shader(Variant::draw(shader, format, samples));
@@ -194,7 +193,7 @@ pub(crate) fn common(format: wgpu::TextureFormat, samples: u32) -> Vec<Asked> {
         }
     }
     needs.extend(SCAN.map(Asked::Shader));
-    needs.extend([draw(Shader::PointsPorts), draw(Shader::Overlay), draw(Shader::GlyphsPorts)]);
+    needs.push(draw(Shader::Overlay));
     let vertices = marks[2];
     needs.push(Asked::Shader(vertices.glyphs(format, samples)));
     needs.extend(vertices.label_passes().map(Asked::Shader));
@@ -329,10 +328,7 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.text.push(draw(Shader::Overlay));
     }
     // The distance fields of text a frame sets are built before the frame draws.
-    let labeled = any(&|m| {
-        m.style().label.is_some()
-            || matches!(m, Mark::Vertices(v) if v.ports.iter().any(|(_, port)| port.label.is_some()))
-    });
+    let labeled = any(&|m| m.style().label.is_some());
     if written || labeled {
         stages.text.extend(FIELDS.map(Asked::Shader));
     }
@@ -382,17 +378,8 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
         stages.text.push(Asked::Shader(variants.glyphs(format, samples)));
         stages.text.extend(variants.label_passes().map(Asked::Shader));
     }
-    match mark {
-        Mark::Faces(_) => stages.draw.push(Asked::Shader(NORMALS)),
-        Mark::Vertices(vertices) => {
-            if !vertices.ports.is_empty() {
-                stages.draw.push(Asked::Shader(Variant::draw(Shader::PointsPorts, format, samples)));
-            }
-            if vertices.ports.iter().any(|(_, port)| port.label.is_some()) {
-                stages.text.push(Asked::Shader(Variant::draw(Shader::GlyphsPorts, format, samples)));
-            }
-        }
-        Mark::Edges(_) | Mark::Lines(_) | Mark::Areas(_) => {}
+    if matches!(mark, Mark::Faces(_)) {
+        stages.draw.push(Asked::Shader(NORMALS));
     }
 }
 
@@ -429,8 +416,6 @@ mod tests {
             .draw(Edges::of("g", "V").poles())
             .draw(Lines::of("g", "L"));
         assert_eq!(sorting(raised), [true, true, false], "vertices and poles stand at heights, lines lie flat");
-        let diagram = Scene::new(crate::Diagram::default()).draw(Vertices::of("g", "V").elevation(crate::field("z")));
-        assert_eq!(sorting(diagram), [false; 3], "a diagram is flat");
     }
 
     #[test]

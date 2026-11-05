@@ -9,7 +9,7 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use latkit::host::{Host, Job, Raster, TextRun};
-use latkit::{Camera, Color, Diagram, Frame, Gpu, Grid, Pending, Plane, Theme, View};
+use latkit::{Camera, Color, Frame, Gpu, Grid, Pending, Plane, Theme, View};
 
 /// Seconds each frame advances the test clock, so frames run at display rate regardless of draw
 /// speed.
@@ -188,11 +188,6 @@ pub fn haloless() -> Theme {
 
 pub fn plane() -> Plane {
     Plane { grid: Grid::Off }
-}
-
-/// A diagram without a grid. Y points down, and at zoom 0 one unit is one pixel.
-pub fn diagram() -> Diagram {
-    Diagram { grid: Grid::Off }
 }
 
 pub fn camera() -> Camera {

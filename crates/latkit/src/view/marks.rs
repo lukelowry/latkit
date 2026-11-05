@@ -9,11 +9,11 @@ use super::transition::{Begin, Transition};
 use super::words::{Kept, Words};
 use crate::data::{Table, Version};
 use crate::expr::compile::{Deps, Reads};
+use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
-use crate::gpu::{Inner, atlas};
 use crate::scene::compile::{self, Compiled};
 use crate::scene::mark::{Context, Key, MarkKind, Primitive};
-use crate::{Error, Mark, Shape, Snapshot};
+use crate::{Error, Mark, Snapshot};
 
 /// Where each part of a mark's region lies in the program buffer, as absolute word offsets.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -24,7 +24,6 @@ pub(crate) struct Offsets {
     pub(crate) constants: u32,
     pub(crate) ends: u32,
     pub(crate) palette: u32,
-    pub(crate) port_info: u32,
     pub(crate) blends: u32,
     /// The runs of held rows it draws. `NONE` without a drawing, when the held rows are the table's
     /// rows.
@@ -50,7 +49,6 @@ impl Default for Offsets {
             constants: 0,
             ends: 0,
             palette: 0,
-            port_info: wgsl::NONE,
             blends: 0,
             runs: wgsl::NONE,
             pages: [wgsl::NONE; 5],
@@ -131,8 +129,6 @@ pub(crate) struct Shown {
     pub(crate) histories: Vec<(u32, Version)>,
     /// The end table of each endpoint reference: where the vertex rows it references are held.
     pub(crate) ends: Vec<End>,
-    /// A vertex mark's port words, `PORT_WORDS` per port, including the atlas corners of its label.
-    pub(crate) ports: Vec<u32>,
     /// The mark's region of the program buffer, `[start, capacity]` in words. `offsets` locates its
     /// parts, `packed` is false until the region holds the current words, and `written` holds the
     /// words last written there.
@@ -205,7 +201,6 @@ impl Shown {
             constants: Vec::new(),
             histories: Vec::new(),
             ends: Vec::new(),
-            ports: Vec::new(),
             region: None,
             offsets: Offsets::default(),
             packed: false,
@@ -435,11 +430,6 @@ impl Shown {
         if self.transition.is_some() { (true, self.version) } else { (false, self.place_version) }
     }
 
-    /// Ports each row has.
-    pub(crate) fn port_count(&self) -> u32 {
-        self.compiled.as_ref().map_or(0, |c| c.drawing.ports.len() as u32)
-    }
-
     /// Fitted domains the program reduces.
     pub(crate) fn reductions(&self) -> u32 {
         self.compiled.as_ref().map_or(0, |c| c.program.domains.len() as u32)
@@ -577,26 +567,8 @@ impl Shown {
         }
     }
 
-    /// Writes its port words: each port's code (`codes`, among the ports of its table), shape,
-    /// reference column, and the atlas corners of its label. The host sets each label in `font` the
-    /// first time.
-    pub(crate) fn write_ports(&mut self, font: &Arc<str>, codes: &[u32], gpu: &mut Inner) {
-        self.ports.clear();
-        let Some(compiled) = &self.compiled else { return };
-        let ports = &compiled.drawing.ports;
-        let host = gpu.host.clone();
-        for ((_, port, column), &code) in ports.iter().zip(codes) {
-            let corners = port.label.as_deref().and_then(|label| {
-                let run = atlas::run(label.into(), font.clone(), compiled.drawing.port_label_size, None);
-                gpu.atlas.text(host.as_deref(), &run)
-            });
-            let [uv0, uv1] = corners.map_or([0, 0], |glyphs| glyphs.corners());
-            self.ports.extend([code, shape_code(port.shape), *column, uv0, uv1]);
-        }
-    }
-
     /// Words the mark's program region needs: column descriptors and tables, ranges, code,
-    /// constants, end tables, the marker palette, ports, runs, page tables, and blends.
+    /// constants, end tables, the marker palette, runs, page tables, and blends.
     pub(crate) fn packed_len(&self) -> u32 {
         let Some(compiled) = &self.compiled else { return 0 };
         (self.tables.len()
@@ -605,7 +577,6 @@ impl Shown {
             + self.constants.len()
             + super::ends::words(&self.ends)
             + compiled.drawing.markers.palette.len()
-            + self.ports.len()
             + self.drawing().map_or(0, |d| 1 + (d.runs.len() + 1) * wgsl::RUN_WORDS as usize)
             + self.words.len()) as u32
             + self.stride()
@@ -663,8 +634,6 @@ impl Shown {
         super::ends::pack(&self.ends, &compiled.program.ends, ends, out);
         let palette = at(out);
         out.extend(&compiled.drawing.markers.palette);
-        let port_info = if self.ports.is_empty() { wgsl::NONE } else { at(out) };
-        out.extend(&self.ports);
         let blends = at(out);
         out.extend(self.blends());
         let runs = if self.drawing().is_some() { at(out) } else { wgsl::NONE };
@@ -674,7 +643,7 @@ impl Shown {
             pages[kept as usize] = at(out);
             out.extend(blocks);
         }
-        self.offsets = Offsets { columns, ranges, code, constants, ends, palette, port_info, blends, runs, pages };
+        self.offsets = Offsets { columns, ranges, code, constants, ends, palette, blends, runs, pages };
     }
 }
 
@@ -727,13 +696,4 @@ pub(crate) fn page_rows(live: u32, held: u32, paged: bool) -> Vec<u32> {
             if paged && start < live { wgsl::PAGE_ROWS } else { held.min(start + wgsl::PAGE_ROWS) - start }
         })
         .collect()
-}
-
-fn shape_code(shape: Shape) -> u32 {
-    match shape {
-        Shape::Ellipse => wgsl::SHAPE_ELLIPSE,
-        Shape::Rectangle => wgsl::SHAPE_RECTANGLE,
-        Shape::Rounded => wgsl::SHAPE_ROUNDED,
-        Shape::Diamond => wgsl::SHAPE_DIAMOND,
-    }
 }

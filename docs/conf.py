@@ -31,10 +31,10 @@ NEUTRAL = {
 
 def palette(name):
     """Furo colors: the brand is the theme's vertex color, pages its background, and panels the
-    fill a diagram's groups take."""
+    earth's ground color."""
     theme, dark = THEMES[name], name == "dark"
     n = {role: pair[dark] for role, pair in NEUTRAL.items()}
-    brand, panel = theme["vertex"]["color"], theme["diagram"]["group"]
+    brand, panel = theme["vertex"]["color"], theme["earth"]["ground"]
     return {
         "color-brand-primary": brand,
         "color-brand-content": brand,

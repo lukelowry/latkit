@@ -4,12 +4,7 @@ use serde::{Deserialize, Deserializer};
 use super::form::{preset_schema, presets};
 use crate::Format;
 
-/// The coordinate space of a scene's positions: a name, or
-/// `{ plane | diagram | earth | plot: options }`.
-///
-/// The space sets the unit of lengths that do not name their own. In a diagram it is the diagram
-/// unit, one CSS pixel at zoom 0. Elsewhere it is the CSS pixel. Only a diagram has ports, groups,
-/// nets, and orthogonal routes.
+/// The coordinate space of a scene's positions: a name, or `{ plane | earth | plot: options }`.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = preset_schema::<Space>)]
@@ -20,13 +15,10 @@ pub enum Space {
     Plane(Plane),
     /// The data's axis horizontally and values vertically.
     Plot(Plot),
-    /// A flat sheet for diagrams: x right and y down, every length in units.
-    Diagram(Diagram),
 }
 
 presets!(Space {
     "plane" => Space::Plane(Plane::default()),
-    "diagram" => Space::Diagram(Diagram::default()),
     "earth" => Space::Earth(Earth::default()),
     "plot" => Space::Plot(Plot::default()),
 });
@@ -34,12 +26,6 @@ presets!(Space {
 impl Default for Space {
     fn default() -> Space {
         Space::Plane(Plane::default())
-    }
-}
-
-impl From<Diagram> for Space {
-    fn from(diagram: Diagram) -> Space {
-        Space::Diagram(diagram)
     }
 }
 
@@ -158,26 +144,7 @@ impl Default for Plane {
     }
 }
 
-/// A flat sheet for diagrams, seen from straight above. The camera pans and zooms but does not
-/// turn. Positions are in units with y down, and a unit is a CSS pixel at zoom 0. Sizes, padding,
-/// ports, strokes, text, and the theme's lengths are in units too. Sizes given with `px`, the text
-/// halo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole picture.
-/// Only a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout places its
-/// blocks.
-#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-pub struct Diagram {
-    /// The grid drawn under the marks. Defaults to dots 20 units apart.
-    pub grid: Grid,
-}
-
-impl Default for Diagram {
-    fn default() -> Diagram {
-        Diagram { grid: Grid::Dots { pitch: 20.0, snap: false } }
-    }
-}
-
-/// A plane's or a diagram's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`.
+/// A plane's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch } }`.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum Grid {
@@ -188,13 +155,10 @@ pub enum Grid {
         /// Units between lines.
         pitch: f64,
     },
-    /// Dots `pitch` units apart. With `snap`, drags in a diagram snap to them.
+    /// Dots `pitch` units apart.
     Dots {
         /// Units between dots.
         pitch: f64,
-        /// Whether drag positions snap to the dots, in a diagram. Defaults to `false`.
-        #[serde(default)]
-        snap: bool,
     },
 }
 

@@ -1,12 +1,11 @@
 //! Interaction events. A secondary click, or a touch held still, requests a menu of the rows under
-//! it. Dragging from a port connects to the vertex it is released over, and dragging an edge
-//! detaches its nearer end. A dragged row keeps its grab point under the pointer, and the drag's
+//! it. Dragging from a vertex with the connect input connects to the vertex it is released over,
+//! and dragging an edge detaches its nearer end. A dragged row keeps its grab point under the pointer, and the drag's
 //! patch moves it there. Scrubbing a plot moves the coordinate shown. A double click opens the row
 //! it hits, clicking again cycles through the rows under the point, and Delete reports the
 //! selection. Keys can step through rows too.
 //!
-//! Hover is reported whether or not it glows, and follows the frame. A lit row keeps its ports on
-//! top. Setters emit no events. A scene's first frame requests every pipeline its input can use.
+//! Hover is reported whether or not it glows, and follows the frame. Setters emit no events. A scene's first frame requests every pipeline its input can use.
 //! The wheel zooms as the controls say, and reduced motion applies every move at once. A flight
 //! takes the seconds it is given. A flat map keeps the camera over its one world, and a frame
 //! reports moving it there.
@@ -17,16 +16,15 @@ mod common;
 
 use std::time::Duration;
 
-use common::{SIZE, TICK, camera, diagram, frame, gpu, plain_theme, plane, step};
+use common::{SIZE, TICK, camera, frame, gpu, plain_theme, plane, step};
 use latkit::{
     Action, Button, Camera, Controls, Data, Device, Edges, End, Event, Gestures, Ids, Input, Key, Modifiers, Motion,
-    Patch, Phase, Row, Rows, Scene, Side, Table, Vertices, View, field,
+    Patch, Phase, Row, Rows, Scene, Table, Vertices, View, field,
 };
 
 const C: f32 = SIZE as f32 / 2.0;
 
-/// Three nodes and a link from node 1 to node 3. Each node has an empty `net` reference for its
-/// port.
+/// Three nodes and a link from node 1 to node 3, which stands above the other two.
 fn graph() -> Data {
     let data = Data::new("graph");
     data.apply(
@@ -34,10 +32,8 @@ fn graph() -> Data {
             .set(
                 Table::new("Node", vec![1_u64, 2, 3])
                     .field("x", vec![-40.0, 40.0, 0.0])
-                    .field("y", vec![0.0, 0.0, -40.0])
-                    .reference("net", "Net", vec![None::<u64>, None, None]),
+                    .field("y", vec![0.0, 0.0, 40.0]),
             )
-            .set(Table::new("Net", Ids::count(0)))
             .set(Table::new("Link", Ids::count(1)).reference("from", "Node", vec![1_u64]).reference(
                 "to",
                 "Node",
@@ -48,13 +44,13 @@ fn graph() -> Data {
     data
 }
 
-/// The graph in a diagram, with nodes 16 units across and a port on each node's right.
+/// The graph on a plane, with nodes 16 pixels across.
 fn scene(controls: Controls) -> Scene {
-    Scene::new(diagram())
+    Scene::new(plane())
         .theme(plain_theme())
         .controls(controls)
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0))
-        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).port("net", Side::Right))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0))
 }
 
 fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
@@ -108,6 +104,21 @@ fn up(point: [f32; 2]) -> Input {
     Input::Up { pointer: 1, point, modifiers: Modifiers::default() }
 }
 
+/// Alt held, which connects a primary drag in the `editing` controls.
+const ALT: Modifiers = Modifiers { alt: true, shift: false, control: false, meta: false };
+
+/// A drag with Alt held from `from` through `through` to a release at `to`.
+fn alt_drag(from: [f32; 2], through: &[[f32; 2]], to: [f32; 2]) -> Vec<Input> {
+    let moved = |point| Input::Move { pointer: 1, point, modifiers: ALT, device: Device::Mouse };
+    let mut inputs = vec![
+        moved(from),
+        Input::Down { pointer: 1, point: from, button: Button::Primary, modifiers: ALT, device: Device::Mouse },
+    ];
+    inputs.extend(through.iter().map(|&point| moved(point)));
+    inputs.extend([moved(to), Input::Up { pointer: 1, point: to, modifiers: ALT }]);
+    inputs
+}
+
 fn key(key: Key) -> Input {
     Input::Key { key, down: true, modifiers: Modifiers::default() }
 }
@@ -133,26 +144,18 @@ fn secondary_clicks_request_a_menu() {
 }
 
 #[test]
-fn dragging_from_a_port_connects() {
+fn dragging_from_a_vertex_with_the_connect_input_connects() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, editing());
-    // Node 1's port sits on its right side, 8 units from its center.
-    let port = [C - 32.0, C];
-    let target = [C + 40.0, C];
-    let inputs = [
-        moved(port),
-        down(port, Button::Primary),
-        moved([C - 20.0, C]),
-        moved([C + 20.0, C]),
-        moved(target),
-        up(target),
-    ];
+    let (node, target) = ([C - 40.0, C], [C + 40.0, C]);
+    let inputs = alt_drag(node, &[[C - 20.0, C], [C + 20.0, C]], target);
     let (from, to, edge) = after(&gpu, &mut view, &inputs, connected);
-    assert_eq!(from, End { row: Row::new("graph", "Node", 1_u64), port: Some("net".into()) });
+    assert_eq!(from, End { row: Row::new("graph", "Node", 1_u64) });
     assert_eq!(to.map(|t| t.row), Some(Row::new("graph", "Node", 2_u64)));
     assert_eq!(edge, None);
-    let located = pollster::block_on(view.screen_of(&from.row, Some("net"))).expect("an answer");
-    assert!(located.is_some_and(|[x, y]| (x - port[0]).hypot(y - port[1]) < 0.5), "the port at {located:?}");
+    let pending = view.screen_of(&from.row);
+    let located = common::answer(&gpu, &mut view, pending).expect("node 1 is in view");
+    assert!((located[0] - node[0]).hypot(located[1] - node[1]) < 0.5, "node 1 at {located:?}");
 }
 
 #[test]
@@ -160,14 +163,15 @@ fn a_dragged_row_keeps_its_grab_point_under_the_pointer_and_its_patch_moves_it()
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(Table::new("Node", vec![1_u64]).field("x", vec![-40.0]).field("y", vec![0.0])).expect("valid");
-    let scene = Scene::new(diagram())
+    let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).drag(true));
     let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
-    // Grabbed 5 units right of its center, then moved 30 right and 20 down (y points down).
+    // Grabbed 5 units right of its center, then moved 30 right and 20 down the screen, which on a
+    // plane is 20 units toward lesser y.
     let grab = [C - 35.0, C];
     let inputs = [moved(grab), down(grab, Button::Primary), moved([C - 25.0, C + 10.0]), moved([C - 5.0, C + 20.0])];
     let dragged = |e: &Event| match e {
@@ -175,7 +179,7 @@ fn a_dragged_row_keeps_its_grab_point_under_the_pointer_and_its_patch_moves_it()
         _ => None,
     };
     let (position, patch) = after(&gpu, &mut view, &inputs, dragged);
-    let off = (position[0] + 10.0).hypot(position[1] - 20.0);
+    let off = (position[0] + 10.0).hypot(position[1] + 20.0);
     assert!(off < 0.5, "the grab point stays under the pointer: {position:?}");
     data.apply(patch.expect("a patch of the position fields")).expect("valid");
     assert_eq!(data.snapshot().get("Node", 1_u64, "x", None), Some(latkit::Value::Number(position[0])));
@@ -196,23 +200,6 @@ fn scrubbing_a_plot_moves_the_coordinate_shown() {
 }
 
 #[test]
-fn a_lit_block_keeps_its_ports_on_top() {
-    let Some(gpu) = gpu() else { return };
-    let mut view = view(&gpu, Controls::default());
-    // Node 1's port is hollow, centered on its right edge 8 units from its center. One unit inside
-    // the block, the pixel within the port stays the same, lit or not.
-    let port = |pixels: &[[u8; 4]]| common::at(pixels, C as u32 - 33, C as u32);
-    let before = port(&step(&gpu, &mut view));
-    view.input(&moved([C - 40.0, C]), common::now());
-    let mut pixels = Vec::new();
-    for _ in 0..30 {
-        pixels = step(&gpu, &mut view);
-    }
-    assert_eq!(view.hovered().cloned(), Some(Row::new("graph", "Node", 1_u64)), "node 1 is lit");
-    assert!(common::close(port(&pixels), before), "the port is unchanged: lit {:?}, unlit {before:?}", port(&pixels));
-}
-
-#[test]
 fn the_first_frame_requests_every_pipeline_the_scene_can_use() {
     let Some(gpu) = gpu() else { return };
     // The first frame requests every pipeline the scene can use. A menu, a connection, a selection,
@@ -225,13 +212,8 @@ fn the_first_frame_requests_every_pipeline_the_scene_can_use() {
     let at = [C - 40.0, C];
     let menu = |e: &Event| matches!(e, Event::Menu { .. }).then_some(());
     after(&gpu, &mut view, &[moved(at), down(at, Button::Secondary), up(at)], menu);
-    let (port, target) = ([C - 32.0, C], [C + 40.0, C]);
-    after(
-        &gpu,
-        &mut view,
-        &[moved(port), down(port, Button::Primary), moved([C, C]), moved(target), up(target)],
-        connected,
-    );
+    let target = [C + 40.0, C];
+    after(&gpu, &mut view, &alt_drag(at, &[[C, C]], target), connected);
     let selected = |e: &Event| matches!(e, Event::Selection { .. }).then_some(());
     after(&gpu, &mut view, &[moved(at), down(at, Button::Primary), up(at)], selected);
     after(&gpu, &mut view, &[key(Key::Menu)], menu);
@@ -485,7 +467,7 @@ fn zooming_at_the_zoom_limit_moves_nothing() {
     let mut view = view(&gpu, Controls { motion: Motion::Reduced, ..Controls::default() });
     view.fit(latkit::Fit::All);
     frame(&gpu, &mut view);
-    let Camera::Map { zoom: framed, .. } = *view.camera() else { panic!("a diagram's camera") };
+    let Camera::Map { zoom: framed, .. } = *view.camera() else { panic!("a map camera") };
     // Just short of the deepest zoom the framed content allows, the wheel zooms toward a corner.
     let near = Camera::Map { center: [5.0, -3.0, 0.0], zoom: framed + 7.95, pitch: 0.0, bearing: 0.0 };
     view.set_camera(near);
@@ -506,7 +488,7 @@ fn view_off(gpu: &latkit::Gpu) -> View {
 }
 
 fn zoom(view: &View) -> f64 {
-    let Camera::Map { zoom, .. } = *view.camera() else { panic!("a diagram's camera") };
+    let Camera::Map { zoom, .. } = *view.camera() else { panic!("a map camera") };
     zoom
 }
 
@@ -611,17 +593,15 @@ fn a_cancelled_drag_restores_the_row_exactly_wherever_the_camera_went() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(Table::new("Node", vec![1_u64]).field("x", vec![3.0]).field("y", vec![7.0])).expect("valid");
-    // The node stands off the grid that drags snap to.
-    let snapping = latkit::Diagram { grid: latkit::Grid::Dots { pitch: 10.0, snap: true } };
-    let scene = Scene::new(snapping)
+    let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).drag(true));
     let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
-    // Dragged from its middle (y points down), as an editor would, applying each patch.
-    let inputs = [moved([C + 3.0, C + 7.0]), down([C + 3.0, C + 7.0], Button::Primary), moved([C + 30.0, C + 30.0])];
+    // Dragged from its middle (y points up), as an editor would, applying each patch.
+    let inputs = [moved([C + 3.0, C - 7.0]), down([C + 3.0, C - 7.0], Button::Primary), moved([C + 30.0, C + 30.0])];
     let started = |e: &Event| match e {
         Event::Drag { phase: Phase::Start, patch, .. } => Some(patch.clone()),
         _ => None,
@@ -637,7 +617,7 @@ fn a_cancelled_drag_restores_the_row_exactly_wherever_the_camera_went() {
             _ => None,
         })
         .expect("a cancel");
-    assert_eq!([position[0], position[1]], [3.0, 7.0], "where the row stood, unsnapped");
+    assert_eq!([position[0], position[1]], [3.0, 7.0], "where the row stood");
     data.apply(patch.expect("a patch")).expect("valid");
     let snapshot = data.snapshot();
     let got = |field: &str| snapshot.get("Node", 1_u64, field, None);
@@ -650,7 +630,7 @@ fn a_cancelled_drag_of_a_row_the_layout_placed_leaves_its_fields_empty() {
     let data = Data::new("graph");
     data.apply(Table::new("Node", vec![1_u64]).field("x", vec![None::<f64>]).field("y", vec![None::<f64>]))
         .expect("valid");
-    let scene = Scene::new(diagram())
+    let scene = Scene::new(plane())
         .theme(plain_theme())
         .layout(latkit::Stress::default())
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).drag(true));
@@ -658,7 +638,7 @@ fn a_cancelled_drag_of_a_row_the_layout_placed_leaves_its_fields_empty() {
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
-    let pending = view.screen_of(&Row::new("graph", "Node", 1_u64), None);
+    let pending = view.screen_of(&Row::new("graph", "Node", 1_u64));
     let at = common::answer(&gpu, &mut view, pending).expect("the layout placed the node");
     // Dragged, as an editor would, applying the start's patch, which writes x and y.
     let inputs = [moved(at), down(at, Button::Primary), moved([at[0] + 30.0, at[1] + 30.0])];

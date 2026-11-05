@@ -339,8 +339,8 @@ fn opaque(shader: Shader) -> bool {
 /// A render shader's depth state, with reversed depth. The backdrop writes the globe's depth, faces
 /// theirs, and the opaque variants that of the opaque pixels of points and strokes. The rows of
 /// points, strokes, and areas draw only in front of what is drawn, so where depth varies they skip
-/// the pixels the opaque variants drew, their own included. Lit rows and ports draw where nothing
-/// nearer was drawn, and the overlay and glyphs ignore depth.
+/// the pixels the opaque variants drew, their own included. Lit rows draw where nothing nearer was
+/// drawn, and the overlay and glyphs ignore depth.
 fn depth(shader: Shader) -> wgpu::DepthStencilState {
     let compare = match shader {
         Shader::Backdrop | Shader::Overlay | Shader::Glyphs => wgpu::CompareFunction::Always,
