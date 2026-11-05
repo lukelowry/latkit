@@ -14,6 +14,9 @@
 // sets a bit for every row with an instance in the query's box, whether or not something drawn
 // covers it. `locate` writes where one drawn row lies on screen. Every row an answer names is a
 // held row, which the view maps to a table row using its record of that frame.
+//
+// The keys step with the hover's steps, from the row they point at or the middle of the view, over
+// the rows the frame's `probe_` values allow.
 
 import package::lib::types::{
     NONE, FADE_OUT, POINTS, STROKES, MARK_EDGES, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH, PROBE_X, PROBE_Y,
@@ -300,6 +303,24 @@ fn append(r: Reach) {
     atomicStore(&probe[entry + 5u], bitcast<u32>(r.depth));
 }
 
+// Whether the hover's steps may find the row reached at `r`: not the row the frame passes over, in
+// its area and off its covers, and within 45° of its way from the probe unless that is zero.
+fn allowed(r: Reach) -> bool {
+    let p = r.point;
+    if (mark.index == frame.probe_skip.x && r.row == frame.probe_skip.y) || any(p < frame.probe_area.xy)
+        || any(p > frame.probe_area.zw) {
+        return false;
+    }
+    for (var k = 0u; k < min(frame.probe_covers, 4u); k++) {
+        let cover = frame.probe_cover[k];
+        if all(p >= cover.xy) && all(p <= cover.zw) {
+            return false;
+        }
+    }
+    let offset = p - frame.probe;
+    return all(frame.probe_way == vec2f(0.0)) || dot(offset, frame.probe_way) > length(offset) * 0.70710678;
+}
+
 // Writes where drawn row `item` lies on screen, and whether it shows there.
 fn locate(item: u32) {
     var center = Center(vec2f(0.0), false);
@@ -351,7 +372,7 @@ fn answer(@builtin(global_invocation_id) id: vec3u) {
     }
     let hits = s == STEP_HITS;
     let r = reach(drawn, select(frame.probe, frame.query.xy, hits));
-    if !(r.distance <= select(frame.probe_radius, frame.query.z, hits)) || !shown(r) {
+    if !(r.distance <= select(frame.probe_radius, frame.query.z, hits)) || !shown(r) || (!hits && !allowed(r)) {
         return;
     }
     let key = (min(u32(r.distance * 64.0), 0xffffffu) << 8u) | (255u - min(mark.index, 255u));

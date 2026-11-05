@@ -184,6 +184,9 @@ pub struct View {
     /// The same, while the text pipelines compile. Meanwhile frames draw without labels, glyphs,
     /// and the overlay.
     texting: Option<u64>,
+    /// The same, while depth varies and the pipelines that draw in layers compile. Meanwhile frames
+    /// draw every mark in order.
+    layering: Option<u64>,
     /// Callers waiting for the arrangement in progress.
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Callers waiting for a complete frame.
@@ -281,6 +284,7 @@ impl View {
             compiling: None,
             answering: None,
             texting: None,
+            layering: None,
             arranging: Vec::new(),
             completing: Vec::new(),
             reduced_motion: false,
@@ -476,12 +480,12 @@ impl View {
         self.compiling = None;
         self.answering = None;
         self.texting = None;
+        self.layering = None;
         // If the GPU's sample count is known, start compiling now. Otherwise the first frame asks.
         if let Some(samples) = gpu.samples() {
             self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
         }
         self.focus.dirty = true;
-        self.gestures.keys.stale();
         self.invalidate();
     }
 
@@ -613,9 +617,8 @@ impl View {
                 }
             }
         }
-        // Rows may have moved under the focus and the keyboard-stepped hover.
+        // Rows may have moved under the focus.
         self.focus.dirty = true;
-        self.gestures.keys.stale();
         self.fitting.plot_due = true;
     }
 
@@ -975,6 +978,8 @@ impl View {
         let draws = self.pipelines_ready(&mut inner, format, samples, input);
         let answers = self.answers_ready(&inner);
         let texts = self.texts_ready(&inner);
+        // Only a view whose depth varies draws in layers, so only it waits for them.
+        let layers = !self.deep() || self.layering_ready(&inner, format, samples);
         let landed = inner.pipelines.landed();
         let refused = if inner.pipelines.refusing() { self.refusal(&inner) } else { None };
         drop(inner);
@@ -995,7 +1000,9 @@ impl View {
         self.compiling = (!draws).then_some(landed);
         self.answering = (!answers).then_some(landed);
         self.texting = (!texts).then_some(landed);
-        let compiling = self.compiling.is_some() || self.answering.is_some() || self.texting.is_some();
+        self.layering = (!layers).then_some(landed);
+        let compiling =
+            self.compiling.is_some() || self.answering.is_some() || self.texting.is_some() || self.layering.is_some();
         if self.waiting.compiling != compiling {
             self.waiting.compiling = compiling;
             self.events.tell(Event::Waiting(self.waiting));
@@ -1044,6 +1051,7 @@ impl View {
             || (self.answers() && (self.probing.due() || self.queries.due()))
             || self.answering.is_some_and(|seen| landed() != seen)
             || self.texting.is_some_and(|seen| landed() != seen)
+            || self.layering.is_some_and(|seen| landed() != seen)
             || self.fading()
             // A mark evaluates once its columns are synced. Until then, the pages they wait for
             // wake the view.
@@ -1102,7 +1110,8 @@ impl View {
             compiling: self.asked.is_empty()
                 || self.compiling.is_some()
                 || self.answering.is_some()
-                || self.texting.is_some(),
+                || self.texting.is_some()
+                || self.layering.is_some(),
             data: !self.marks.iter().all(given)
                 || marks().any(|m| !m.tables.synced())
                 || self.staged.values().any(|s| !s.is_empty()),

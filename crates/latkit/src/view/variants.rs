@@ -165,8 +165,8 @@ impl<'a> MarkVariants<'a> {
 
 /// The pipelines a view requested for frames into one target, with or without input, by tier: draw,
 /// text, and answer (transitions, lit rows, probes, and queries). `layering` are those frames use
-/// where depth varies (the opaque draws and the passes sorting rows by height), requested with the
-/// answers (or with the draws for pictures), which frames use once they are ready.
+/// where depth varies: the opaque draws and the passes sorting rows by height. They are requested
+/// only once depth varies, and until they are ready frames draw every mark in order.
 pub(super) struct Asking {
     target: (wgpu::TextureFormat, u32),
     input: bool,
@@ -213,9 +213,9 @@ impl View {
         } else {
             let Stages { draw, text, changes, lit, layering, input: inputs } = stages(&self.scene, target.0, target.1);
             let (mut drawing, mut texts, mut answering) = if input {
-                (draw, text, [changes, lit, layering.clone(), inputs].concat())
+                (draw, text, [changes, lit, inputs].concat())
             } else {
-                ([draw, text, changes, lit, layering.clone()].concat(), Vec::new(), Vec::new())
+                ([draw, text, changes, lit].concat(), Vec::new(), Vec::new())
             };
             let mut layering = layering;
             // Several marks can need the same pipeline. Request each once.
@@ -229,6 +229,12 @@ impl View {
             self.asked.push(Asking { target, input, drawing, texts, answering, layering });
             self.asked.len() - 1
         };
+        // A flat view never draws in layers, so it compiles nothing for them. A picture waits for
+        // them as for its draws, a view taking input as for its answers.
+        if self.deep() {
+            let urgency = if input { Urgency::Answer } else { Urgency::Draw };
+            inner.pipelines.ask(device, &self.asked[at].layering, urgency, &self.waker);
+        }
         inner.pipelines.ask(device, &self.channels(), Urgency::Draw, &self.waker);
         at
     }
@@ -440,5 +446,26 @@ mod tests {
         assert!(matches!(&errors[0], crate::Error::Unsupported(m) if m.contains(&need.label())), "{errors:?}");
         assert_eq!(done.take(), Some(Err(errors[0].clone())), "and what waited for it to be done fails");
         assert_eq!(view.done().take(), Some(Err(errors[0].clone())));
+    }
+
+    #[test]
+    fn only_a_view_whose_depth_varies_asks_for_what_draws_in_layers() {
+        let gpu = match pollster::block_on(crate::Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let scene = Scene::new(Plane::default()).draw(Vertices::of("g", "V")).draw(Edges::of("g", "E").ends("a", "b"));
+        let mut view = View::new(&gpu, scene);
+        assert!(view.ready_for(format, 1.0, true));
+        let layering = view.asked[0].layering.clone();
+        assert!(!layering.is_empty(), "every mark has an opaque draw");
+        // Straight down at a plane, marks draw in order: nothing waits for the layered draws.
+        assert!(!gpu.0.lock().pipelines.ready(&layering), "a flat view asks for none of them");
+        assert!(!view.waiting().compiling);
+        view.set_camera(crate::Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 40.0, bearing: 0.0 });
+        assert!(view.ready_for(format, 1.0, true));
+        assert!(gpu.0.lock().pipelines.ready(&layering), "tilted, it asks for them");
     }
 }

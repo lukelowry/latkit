@@ -139,11 +139,6 @@ impl View {
         if !self.marks_show_at(point) {
             return Pending::ready(Ok(Vec::new()));
         }
-        self.hits(point, radius)
-    }
-
-    /// [`pick`](View::pick), wherever `point` lies, as the keys use to list the rows in view.
-    pub(super) fn hits(&mut self, point: [f32; 2], radius: f32) -> Pending<Vec<Hit>> {
         let (answer, reply) = Pending::new();
         self.queries.waiting.push_back(Ask::Hits { point, radius: radius.max(0.0), room: HITS, reply });
         self.wake();
@@ -168,12 +163,18 @@ impl View {
     /// The position of `row` among the rows mark `i` draws, if it draws it.
     pub(super) fn row_index(&self, i: usize, row: &Row) -> Option<u32> {
         let shown = self.marks.get(i)?;
+        shown.item_of(self.held_of(i, row)?).filter(|&item| item < shown.rows)
+    }
+
+    /// The held row of `row` in mark `i`, if the mark holds it.
+    pub(super) fn held_of(&self, i: usize, row: &Row) -> Option<u32> {
+        let shown = self.marks.get(i)?;
         let style = shown.mark.style();
         if style.data != row.data || style.table != row.table {
             return None;
         }
         let index = self.snapshot(&style.data)?.table(&style.table)?.row(row.id.as_ref())?;
-        shown.item_of(shown.held_row(index as u32)?).filter(|&item| item < shown.rows)
+        shown.held_row(index as u32)
     }
 
     /// Starts the next query this frame if none is in progress, skipping those nobody awaits.

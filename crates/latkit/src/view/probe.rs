@@ -107,20 +107,39 @@ impl Drew {
     }
 }
 
+/// What a probe asks: the row under the hover's point, or the row a keys' step finds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Probe {
+    Hover([f32; 2]),
+    Step(Step),
+}
+
+/// A keys' step: the row nearest `start` toward `way` within 45° (any way when zero), anywhere
+/// in view and off the corners' backdrops, passing over held row `skip[1]` of mark `skip[0]`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Step {
+    pub(crate) start: [f32; 2],
+    pub(crate) way: [f32; 2],
+    pub(crate) skip: [u32; 2],
+}
+
 #[derive(Default)]
 pub(crate) struct Probing {
     /// The next point to probe.
     pub(crate) wanted: Option<[f32; 2]>,
-    /// The probe being read back: the point it asked about, and what its frame drew.
-    reading: Working<([f32; 2], Drew), Readback>,
+    /// The keys' step to probe next, before any point.
+    pub(crate) step: Option<Step>,
+    /// The probe being read back: what it asked, and what its frame drew.
+    reading: Working<(Probe, Drew), Readback>,
     /// The latest answer and the point it was asked for.
     pub(crate) latest: Option<([f32; 2], Answer)>,
 }
 
 impl Probing {
-    /// Whether a point is waiting for a frame to probe it. Never while a probe is being read back.
+    /// Whether a point or a keys' step is waiting for a frame to probe it. Never while a probe is
+    /// being read back.
     pub(crate) fn due(&self) -> bool {
-        self.wanted.is_some() && !self.reading.busy()
+        (self.wanted.is_some() || self.step.is_some()) && !self.reading.busy()
     }
 
     pub(crate) fn hovered(&self) -> Option<&Probed> {
@@ -140,10 +159,10 @@ pub(crate) fn near(a: [f32; 2], b: [f32; 2], within: f32) -> bool {
 }
 
 impl View {
-    /// The point this frame probes, if it `answers` probes, a point is waiting, and no probe is in
-    /// flight. The point under a resting pointer is probed again whenever the frame changes under
-    /// it, so a moving frame runs one probe per readback and a still frame runs none.
-    pub(super) fn probe_point(&mut self, answers: bool) -> Option<[f32; 2]> {
+    /// What this frame probes, if it `answers` probes, a keys' step or a point is waiting, and no
+    /// probe is in flight. The point under a resting pointer is probed again whenever the frame
+    /// changes under it, so a moving frame runs one probe per readback and a still frame runs none.
+    pub(super) fn probe_point(&mut self, answers: bool) -> Option<Probe> {
         if (self.changed || self.easing())
             && matches!(self.gestures.now, Gesture::Idle)
             && self.gestures.keys.at.is_none()
@@ -154,13 +173,45 @@ impl View {
         if self.probing.reading.busy() || !answers {
             return None;
         }
+        let drawn = self.marks.iter().any(Shown::drawable);
+        if let Some(step) = self.probing.step.take() {
+            if drawn {
+                return Some(Probe::Step(step));
+            }
+            self.stepped(None);
+        }
         // Where nothing is drawn, nothing is under the point, so a press waiting on it goes ahead.
         let point = self.probing.wanted.take()?;
-        if !self.marks.iter().any(Shown::drawable) || !self.marks_show_at(point) {
+        if !drawn || !self.marks_show_at(point) {
             self.landed(point, Answer::default());
             return None;
         }
-        Some(point)
+        Some(Probe::Hover(point))
+    }
+
+    /// Writes what this frame probes into `frame`: the hover's point and radius, or a keys' step,
+    /// which reaches every row in view.
+    pub(super) fn probe_uniform(&self, frame: &mut wgsl::Frame, probe: &Probe) {
+        match probe {
+            Probe::Hover(point) => {
+                frame.probe = *point;
+                frame.probe_radius = self.probe_radius();
+            }
+            Probe::Step(step) => {
+                let [w, h] = self.size;
+                frame.probe = step.start;
+                // The step may start off screen, where the row it starts from now lies.
+                frame.probe_radius = (2.0 * w.hypot(h)) as f32;
+                frame.probe_way = step.way;
+                frame.probe_skip = step.skip;
+                frame.probe_area = self.drawn_area().unwrap_or([0.0, 0.0, w, h]).map(|v| v as f32);
+                frame.probe_covers = 0;
+                for (cover, backdrop) in frame.probe_cover.iter_mut().zip(self.guides.backdrops()) {
+                    *cover = backdrop.map(|v| v as f32);
+                    frame.probe_covers += 1;
+                }
+            }
+        }
     }
 
     /// The probe radius in CSS pixels: the scene's pick radius, plus 8 for touch.
@@ -169,10 +220,10 @@ impl View {
         self.scene.controls.pick_radius + if touch { 8.0 } else { 0.0 }
     }
 
-    /// Reads back the probe at `point`, stamped with the gesture session it was asked in.
-    pub(super) fn probing(&mut self, point: [f32; 2], readback: Readback) {
+    /// Reads back `probe`, stamped with the gesture session it was asked in.
+    pub(super) fn probing(&mut self, probe: Probe, readback: Readback) {
         let drew = self.drew();
-        self.probing.reading.start(self.gestures.session, readback, (point, drew));
+        self.probing.reading.start(self.gestures.session, readback, (probe, drew));
     }
 
     /// A record of what this frame drew, for decoding answers about it.
@@ -200,14 +251,16 @@ impl View {
     }
 
     /// Hands a finished probe's answer to hover and gestures, unless a cancel or the pointer leaving
-    /// started a new session since it was asked.
+    /// started a new session since it was asked. A keys' step goes to the keys, which a cancel
+    /// already stopped waiting for it.
     pub(super) fn settle_probe(&mut self) {
-        let Some((session, (point, drew), bytes)) = self.probing.reading.landed() else { return };
-        if session != self.gestures.session {
-            return;
-        }
+        let Some((session, (probe, drew), bytes)) = self.probing.reading.landed() else { return };
         let answer = bytes.map_or_else(|_| Answer::default(), |bytes| answer(&wire::words(&bytes), &drew));
-        self.landed(point, answer);
+        match probe {
+            Probe::Step(_) => self.stepped(answer.hit.map(|probed| probed.hit)),
+            Probe::Hover(point) if session == self.gestures.session => self.landed(point, answer),
+            Probe::Hover(_) => {}
+        }
     }
 
     /// The position gestures pivot on under screen point `point`: what the frame drew there, or

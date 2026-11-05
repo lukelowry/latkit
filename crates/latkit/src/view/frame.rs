@@ -147,9 +147,8 @@ impl View {
         uniform.pointer = self.pointer.map_or([-1e9, -1e9], |p| p.point);
         uniform.selecting = u32::from(self.focus.lighting);
         uniform.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
-        if let Some(point) = probe {
-            uniform.probe = point;
-            uniform.probe_radius = self.probe_radius();
+        if let Some(probe) = &probe {
+            self.probe_uniform(&mut uniform, probe);
         }
         if let Some((words, _)) = query {
             uniform.query = words;
@@ -168,9 +167,9 @@ impl View {
         self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
-        if let Some(point) = probe {
+        if let Some(probe) = probe {
             let readback = self.probe(encoder, &mut inner);
-            self.probing(point, readback);
+            self.probing(probe, readback);
         }
         self.run_query(encoder, &mut inner);
         if let Some(timer) = &mut self.timer {
