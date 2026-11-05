@@ -3308,20 +3308,20 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 4384,
-    "uploads": 11,
-    "written": 224684,
-    "evaluated": 298,
+    "uploaded": 2784,
+    "uploads": 7,
+    "written": 221548,
+    "evaluated": 198,
     "resolved": 98,
     "cleared": 1024,
     "packed": 0,
     "readbacks": 4,
-    "jobs": 1,
+    "jobs": 0,
     "texts": 36,
     "pipelines": 29,
     "late": 0,
     "destroyed": 288624,
-    "resident": 18944
+    "resident": 16896
    },
    "pan": {
     "uploaded": 0,
@@ -3337,7 +3337,7 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 373124,
-    "resident": 18944
+    "resident": 16896
    },
    "edit": {
     "uploaded": 16000,
@@ -3353,23 +3353,23 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 94840,
-    "resident": 39424
+    "resident": 37376
    },
    "arrange": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2112,
+    "written": 1056,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 1,
+    "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 39424
+    "resident": 37376
    }
   },
   "1000": {
@@ -3406,20 +3406,20 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 43872,
-    "uploads": 11,
-    "written": 108084,
-    "evaluated": 2984,
+    "uploaded": 27872,
+    "uploads": 7,
+    "written": 107060,
+    "evaluated": 1984,
     "resolved": 984,
     "cleared": 8192,
     "packed": 0,
     "readbacks": 4,
-    "jobs": 1,
+    "jobs": 0,
     "texts": 14,
     "pipelines": 29,
     "late": 0,
     "destroyed": 190728,
-    "resident": 151552
+    "resident": 135168
    },
    "pan": {
     "uploaded": 0,
@@ -3435,7 +3435,7 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 73428,
-    "resident": 151552
+    "resident": 135168
    },
    "edit": {
     "uploaded": 160000,
@@ -3451,7 +3451,105 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 8584,
-    "resident": 315392
+    "resident": 299008
+   },
+   "arrange": {
+    "uploaded": 0,
+    "uploads": 0,
+    "written": 1056,
+    "evaluated": 0,
+    "resolved": 0,
+    "cleared": 0,
+    "packed": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "destroyed": 0,
+    "resident": 299008
+   }
+  },
+  "10000": {
+   "init": {
+    "uploaded": 0,
+    "uploads": 0,
+    "written": 0,
+    "evaluated": 0,
+    "resolved": 0,
+    "cleared": 0,
+    "packed": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "destroyed": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "uploads": 0,
+    "written": 0,
+    "evaluated": 0,
+    "resolved": 0,
+    "cleared": 0,
+    "packed": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "destroyed": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 438744,
+    "uploads": 33,
+    "written": 87600,
+    "evaluated": 29843,
+    "resolved": 9843,
+    "cleared": 81920,
+    "packed": 0,
+    "readbacks": 4,
+    "jobs": 1,
+    "texts": 10,
+    "pipelines": 29,
+    "late": 0,
+    "destroyed": 179856,
+    "resident": 1515520
+   },
+   "pan": {
+    "uploaded": 0,
+    "uploads": 0,
+    "written": 332096,
+    "evaluated": 0,
+    "resolved": 0,
+    "cleared": 0,
+    "packed": 0,
+    "readbacks": 39,
+    "jobs": 0,
+    "texts": 38,
+    "pipelines": 0,
+    "late": 0,
+    "destroyed": 1214448,
+    "resident": 1515520
+   },
+   "edit": {
+    "uploaded": 655360,
+    "uploads": 40,
+    "written": 43616,
+    "evaluated": 163840,
+    "resolved": 0,
+    "cleared": 0,
+    "packed": 0,
+    "readbacks": 40,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "destroyed": 0,
+    "resident": 2170880
    },
    "arrange": {
     "uploaded": 0,
@@ -3467,7 +3565,7 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 315392
+    "resident": 2170880
    }
   }
  },

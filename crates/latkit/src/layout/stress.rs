@@ -11,8 +11,12 @@ use super::graph::Graph;
 use super::overlap::separate;
 use super::pack::pack;
 
-/// Jacobi iterations.
+/// The most Jacobi iterations.
 const ROUNDS: usize = 240;
+/// The fraction of the gap below which no vertex moving in a round counts as settled.
+const SETTLED: f64 = 1e-4;
+/// Estimated microseconds a round takes per term.
+const TERM: f64 = 0.004;
 /// The most pivots stress measures graph distances from.
 const PIVOTS: usize = 32;
 /// The most graph distances it stores in all (pivots × vertices).
@@ -21,8 +25,9 @@ const DISTANCES: usize = 8_000_000;
 const CLEARANCE: f64 = 0.25;
 
 /// Every vertex's center from a stress layout: neighbors `gap` apart, pinned vertices fixed, and
-/// vertices a quarter gap clear of each other. Link direction is ignored. `ROUNDS` Jacobi
-/// iterations, then overlap removal.
+/// vertices a quarter gap clear of each other. Link direction is ignored. Jacobi iterations run
+/// until no vertex moves more than `SETTLED` of the gap, at most `ROUNDS` of them, then overlap
+/// removal.
 pub(crate) fn stress(graph: &Graph<'_>, gap: f64) -> Vec<[f64; 2]> {
     let n = graph.len();
     if n == 0 {
@@ -34,6 +39,7 @@ pub(crate) fn stress(graph: &Graph<'_>, gap: f64) -> Vec<[f64; 2]> {
     let mut position = start(&pins, gap, &offsets, &targets);
     let mut next = position.clone();
     for _ in 0..ROUNDS {
+        let mut moved: f64 = 0.0;
         for v in 0..n {
             if let Some(pin) = pins[v] {
                 next[v] = pin;
@@ -59,11 +65,22 @@ pub(crate) fn stress(graph: &Graph<'_>, gap: f64) -> Vec<[f64; 2]> {
                 weights += weight;
             }
             next[v] = if weights > 0.0 { [sum[0] / weights, sum[1] / weights] } else { here };
+            moved = moved.max((next[v][0] - here[0]).abs().max((next[v][1] - here[1]).abs()));
         }
         std::mem::swap(&mut position, &mut next);
+        if moved < SETTLED * gap {
+            break;
+        }
     }
     let pinned: Vec<bool> = pins.iter().map(Option::is_some).collect();
     separate(&position, &pinned, gap * CLEARANCE)
+}
+
+/// Estimated microseconds a stress layout of `count` vertices and `links` links takes at most: each
+/// of `ROUNDS` rounds visits every vertex's neighbors and pivots.
+pub(crate) fn cost(count: usize, links: usize) -> u64 {
+    let terms = 2 * links + count * PIVOTS.min(count);
+    (terms as f64 * ROUNDS as f64 * TERM).ceil() as u64
 }
 
 /// Each vertex's terms as (other vertex, target distance, weight). Its neighbors are one `gap`

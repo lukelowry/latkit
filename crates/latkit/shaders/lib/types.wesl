@@ -56,6 +56,9 @@ const OP_ZOOM: u32 = 43u;
 // The value below the top, or the top where that value is missing. `a` is 1 for colors.
 const OP_FALLBACK: u32 = 44u;
 const OP_RELATED: u32 = 45u;
+// Stores the position in columns `b` and `c` at word `a`, only where the row has none yet: the
+// place the scene's layout gave a row its data does not position.
+const OP_FILL_POSITION: u32 = 46u;
 
 // Depth of the expression machine's value stack.
 const STACK: u32 = 16u;

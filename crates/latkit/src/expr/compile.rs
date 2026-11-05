@@ -296,8 +296,10 @@ impl<'a> Compiler<'a> {
         compiled
     }
 
-    /// Compiles a position channel. Plain number fields and point fields keep full precision.
-    pub(crate) fn position(&mut self, x: &Expr, y: &Expr, word: u32) -> Result<()> {
+    /// Compiles a position channel. Plain number fields and point fields keep full precision. With
+    /// `laid`, a row whose data gives no position takes the place the scene's layout gave it, read
+    /// from the derived fields `x` and `y` at full precision.
+    pub(crate) fn position(&mut self, x: &Expr, y: &Expr, word: u32, laid: bool) -> Result<()> {
         let start = self.begin();
         if let (Some(cx), Some(cy)) = (self.plain(x), self.plain(y)) {
             self.deps |= Deps::DATA;
@@ -307,18 +309,12 @@ impl<'a> Compiler<'a> {
             self.coordinate(y).map_err(|e| e.at("y"))?;
             self.op(wgsl::OP_STORE_POSITION, word, 0, 0, 2, 0)?;
         }
-        self.close("position", start);
-        Ok(())
-    }
-
-    /// Compiles a position channel that reads each row's position as the scene's layout derives it,
-    /// at full precision.
-    pub(crate) fn derived_position(&mut self, word: u32) -> Result<()> {
-        let start = self.begin();
-        let [x, y] =
-            ["x", "y"].map(|name| self.column(ColumnUse { low: true, ..ColumnUse::derived(name, Words::Values) }));
-        self.deps |= Deps::DATA;
-        self.op(wgsl::OP_POSITION, word, x, y, 0, 0)?;
+        if laid {
+            let [x, y] =
+                ["x", "y"].map(|name| self.column(ColumnUse { low: true, ..ColumnUse::derived(name, Words::Values) }));
+            self.deps |= Deps::DATA;
+            self.op(wgsl::OP_FILL_POSITION, word, x, y, 0, 0)?;
+        }
         self.close("position", start);
         Ok(())
     }

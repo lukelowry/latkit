@@ -248,6 +248,12 @@ impl<'a> Jobs<'a> {
         Jobs { fetch: fetch.or(self.fetch), ..self }
     }
 
+    /// Runs `job` on the frame when its estimated `cost` in microseconds fits the rest of the
+    /// frame's budget, spending it, and on the host otherwise.
+    pub(crate) fn run(&mut self, job: Job, cost: u64) -> Pending<Vec<u8>> {
+        if self.fits(cost) { Pending::ready(Ok(job.run())) } else { self.spawn(job) }
+    }
+
     /// Runs `job` on the host, off the frame. Without a host, runs it immediately.
     pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         self.counters.add(Count::Jobs, 1);
@@ -299,47 +305,25 @@ impl Input<'_> {
         self.data.iter().find(|d| d.name() == name)
     }
 
-    /// Hashes the inputs to the structure of the scene's marks: each drawn table's rows, and the
-    /// fields that set its places, sizes, ends, and nets. Fields read only for appearance, such as a
-    /// streaming value, do not affect the hash.
-    pub(crate) fn structure(&self, hasher: &mut impl Hasher) {
-        self.reads(&mut |read| match read {
-            Read::Rows { data, table, rows } => (data, table, rows.structure, rows.order).hash(hasher),
-            Read::Field { data, table, name, field } => (data, table, name, field.map(Field::version)).hash(hasher),
-        });
+    /// Calls `read` with each field that places the rows vertex mark `mark` draws: the fields its
+    /// position reads, or its point field.
+    pub(crate) fn positions<'a>(&'a self, mark: &'a crate::Vertices, read: &mut impl FnMut(Read<'a>)) {
+        let own = (&mark.style.data, &mark.style.table);
+        match &mark.position {
+            Some(xy) => xy.iter().for_each(|expr| self.read_expr(own, expr, read)),
+            None => self.read_field(own, mark.point_field(), read),
+        }
     }
 
-    /// Calls `read` with each input to the structure of the scene's marks, in order: each drawn
-    /// table, then each field that sets its places, sizes, ends, and nets.
-    pub(crate) fn reads<'a>(&'a self, read: &mut impl FnMut(Read<'a>)) {
-        for mark in &self.scene.marks {
-            let style = mark.style();
-            let Some(rows) = self.data(&style.data).and_then(|d| d.table(&style.table)) else { continue };
-            read(Read::Rows { data: &style.data, table: &style.table, rows });
-            let own = (&style.data, &style.table);
-            match mark {
-                crate::Mark::Vertices(v) => {
-                    match &v.position {
-                        Some([x, y]) => {
-                            self.read_expr(own, x, read);
-                            self.read_expr(own, y, read);
-                        }
-                        None => self.read_field(own, v.point_field(), read),
-                    }
-                    for size in v.size.iter().flatten().chain(&v.radius) {
-                        self.read_expr(own, &size.expr, read);
-                    }
-                }
-                crate::Mark::Edges(e) => {
-                    for name in e.ends.iter().flat_map(|(from, to)| [from, to]).chain(&e.bends) {
-                        self.read_field(own, name, read);
-                    }
-                    if let Some((members, reference)) = &e.joins {
-                        self.read_field((&style.data, members), reference, read);
-                    }
-                }
-                crate::Mark::Faces(_) | crate::Mark::Lines(_) | crate::Mark::Areas(_) => {}
-            }
+    /// Calls `read` with each field that joins the rows edge mark `mark` draws to vertices: its
+    /// ends, or the reference by which its members name each net.
+    pub(crate) fn links<'a>(&'a self, mark: &'a crate::Edges, read: &mut impl FnMut(Read<'a>)) {
+        let own = (&mark.style.data, &mark.style.table);
+        for name in mark.ends.iter().flat_map(|(from, to)| [from, to]) {
+            self.read_field(own, name, read);
+        }
+        if let Some((members, reference)) = &mark.joins {
+            self.read_field((&mark.style.data, members), reference, read);
         }
     }
 
@@ -348,23 +332,30 @@ impl Input<'_> {
         expr.for_each_field(&mut |f| {
             let (data, read_from) = f.from.as_ref().map_or(table, |(d, t)| (d, t));
             let field = self.data(data).and_then(|d| d.table(read_from)).and_then(|t| t.field_named(&f.name));
-            read(Read::Field { data, table: read_from, name: f.name.as_str(), field });
+            read(Read { data, table: read_from, name: f.name.as_str(), field });
         });
     }
 
     /// Calls `read` with field `name` of `table`.
     fn read_field<'a>(&'a self, (data, table): (&'a Name, &'a Name), name: &'a str, read: &mut impl FnMut(Read<'a>)) {
         let field = self.data(data).and_then(|d| d.table(table)).and_then(|t| t.field_named(name));
-        read(Read::Field { data, table, name, field });
+        read(Read { data, table, name, field });
     }
 }
 
-/// One input to the structure of the scene's marks.
-pub(crate) enum Read<'a> {
-    /// A table a mark draws.
-    Rows { data: &'a Name, table: &'a Name, rows: &'a Table },
-    /// A field, `None` where it is missing.
-    Field { data: &'a Name, table: &'a Name, name: &'a str, field: Option<&'a Field> },
+/// A field a derivation reads: where it is, and the field, `None` where it is missing.
+pub(crate) struct Read<'a> {
+    pub(crate) data: &'a Name,
+    pub(crate) table: &'a Name,
+    pub(crate) name: &'a str,
+    pub(crate) field: Option<&'a Field>,
+}
+
+impl Read<'_> {
+    /// Hashes where the field is and its version, so a stamp changes when the field does.
+    pub(crate) fn stamp(&self, hasher: &mut impl Hasher) {
+        (self.data, self.table, self.name, self.field.map(Field::version)).hash(hasher);
+    }
 }
 
 /// Derived tables, by the dataset and table each stands beside.
