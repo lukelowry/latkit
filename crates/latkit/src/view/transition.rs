@@ -24,6 +24,7 @@ use super::View;
 use super::clock::Clock;
 use super::drawing::{Drawing, Holds};
 use super::marks::{Holding, Shown};
+use super::variants::Stage;
 use super::words::Kept;
 use crate::data::{RowIds, Table};
 use crate::gpu::Inner;
@@ -263,15 +264,18 @@ impl View {
     /// Starts every transition beginning this frame, which this frame's compute pass freezes, and
     /// advances the running ones.
     pub(super) fn transitions(&mut self, inner: &mut Inner) {
-        // A drag moves rows at once.
-        let seconds = if self.dragging() { 0.0 } else { self.ease().as_secs_f64() };
+        // A drag moves rows at once. So does any change until the transition pipelines land, and
+        // comets on rows it moved start over.
+        let ready = self.can_use(Stage::Changes);
+        let seconds = if self.dragging() || !ready { 0.0 } else { self.ease().as_secs_f64() };
         let mut starting: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].begin.is_some()).collect();
         if seconds == 0.0 {
             // Without an ease, only a flowing mark whose rows moved begins one, for its comets.
             starting.retain(|&i| {
                 let shown = &mut self.marks[i];
-                let carries =
-                    shown.mark.flows() && shown.begin.as_ref().is_some_and(|b| b.sources.is_some() && !b.fades);
+                let carries = ready
+                    && shown.mark.flows()
+                    && shown.begin.as_ref().is_some_and(|b| b.sources.is_some() && !b.fades);
                 if !carries {
                     shown.begin = None;
                     shown.exits = 0;

@@ -1,8 +1,8 @@
 //! Pipelines, cached by [`Variant`].
 //!
 //! Every pipeline compiles through one queue per GPU ([`Pipelines::ask`]), most urgent first: draw
-//! pipelines, then text pipelines, then the pipelines that changes, lit rows, and input need. Last
-//! come pipelines warmed for future views, once the queue would otherwise sit idle.
+//! pipelines, then text pipelines, then the pipelines that changes, lit rows, layers, and input
+//! need. A GPU compiles only what its views ask for.
 //!
 //! In a browser, compiles run in the background and in parallel. Draw pipelines start at once,
 //! text pipelines as the browser's compile workers free up, and the rest a few at a time. Anything
@@ -31,13 +31,12 @@ use crate::view::DEPTH;
 
 /// How soon a requested pipeline is needed. Sooner compiles first. `Draw`: pipelines that frames
 /// draw with. `Text`: pipelines for the frames' text. `Answer`: pipelines that changes, lit rows,
-/// and input need. `Warm`: pipelines warmed for future views.
+/// layers, and input need.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum Urgency {
     Draw,
     Text,
     Answer,
-    Warm,
 }
 
 /// How many pipelines a browser compiles in parallel. Text pipelines start only while fewer than
@@ -296,12 +295,6 @@ pub(crate) struct Pipelines {
     /// Of the compiles in progress, how many are draw pipelines.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     drawing: Arc<AtomicU64>,
-    /// Whether any draw pipeline has started compiling, and whether warm pipelines may start.
-    drew: bool,
-    warming: bool,
-    /// Whether the pipelines for future views were queued.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    warmed: bool,
     /// The device's pipeline creation methods, replaced to compile in the background and keep what
     /// compiled. `None` for a device that is not a browser's.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
@@ -387,10 +380,6 @@ impl Pipelines {
             compiling: Arc::default(),
             #[cfg(all(feature = "web", target_arch = "wasm32"))]
             drawing: Arc::default(),
-            drew: false,
-            warming: false,
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
-            warmed: false,
             #[cfg(all(feature = "web", target_arch = "wasm32"))]
             compiled: compiled::Compiled::install(device),
             counters,
@@ -429,39 +418,24 @@ impl Pipelines {
             }
             self.queue.push((urgency, need.clone()));
         }
-        // Largest first, so the last one finishes soonest. Warm pipelines keep their listed order.
+        // Largest first, so the last one finishes soonest.
         crate::order::by_key(&mut self.queue, |(urgency, need)| {
-            let size = if *urgency == Urgency::Warm { 0 } else { !(need.size().min(u32::MAX as usize) as u32) };
-            crate::order::pair(*urgency as u32, size)
+            crate::order::pair(*urgency as u32, !(need.size().min(u32::MAX as usize) as u32))
         });
-    }
-
-    /// Queues `needs`, the pipelines future views will draw with, once per GPU. They compile after
-    /// the first scene's draw pipelines finish, so they never delay them. `waker` wakes as each
-    /// finishes, so anything waiting on the GPU's compiles sees it.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    pub(crate) fn warm(&mut self, device: &wgpu::Device, waker: &Waker, needs: impl FnOnce() -> Vec<Asked>) {
-        if !std::mem::replace(&mut self.warmed, true) {
-            self.queue(device, &needs(), Urgency::Warm, waker);
-        }
     }
 
     /// Starts queued compiles in order. Draw pipelines always start. Text pipelines start while
     /// fewer than `WORKERS` are compiling or no draw pipeline is. The rest start while fewer than
     /// half of `WORKERS` are compiling.
     pub(crate) fn pump(&mut self, device: &wgpu::Device) {
-        // Warm pipelines wait until the first scene's draw pipelines have finished.
-        self.warming |= self.drew && self.drawing() == 0;
         while let Some(&(urgency, _)) = self.queue.first()
             && match urgency {
                 Urgency::Draw => true,
                 Urgency::Text => self.drawing() == 0 || self.in_flight() < WORKERS,
                 Urgency::Answer => self.in_flight() < WORKERS / 2,
-                Urgency::Warm => self.warming && self.in_flight() < WORKERS / 2,
             }
         {
             let (urgency, need) = self.queue.remove(0);
-            self.drew |= urgency == Urgency::Draw;
             let ahead = self.asked[&need].clone();
             if !self.compile_ahead(device, &need, &ahead, urgency == Urgency::Draw) {
                 ahead.land(&self.landed);
@@ -497,6 +471,19 @@ impl Pipelines {
     /// them can be created without a compile.
     pub(crate) fn ready(&self, needs: &[Asked]) -> bool {
         needs.iter().all(|need| self.asked.get(need).is_some_and(|ahead| ahead.landed()))
+    }
+
+    /// Holds `need` back as if still compiling, until [`release`](Pipelines::release). Natively
+    /// every pipeline lands when asked for, so tests hold one to see what waits for it.
+    #[cfg(test)]
+    pub(crate) fn hold(&self, need: &Asked) {
+        self.asked[need].landed.store(false, Ordering::Release);
+    }
+
+    /// Lands `need`, held back by [`hold`](Pipelines::hold).
+    #[cfg(test)]
+    pub(crate) fn release(&self, need: &Asked) {
+        self.asked[need].land(&self.landed);
     }
 
     /// Refuses `need` with `message`, as a browser does with a pipeline it can't build.

@@ -305,18 +305,6 @@ impl Gpu {
         Ok(Gpu::create(Some(instance), Some(adapter), device, queue))
     }
 
-    /// Queues, once, the pipelines nearly every scene uses to draw into the page's canvases, so
-    /// views opened later find them compiled. In a browser this runs when the first view opens, and
-    /// these pipelines compile after that view's own draw pipelines. A GPU no view uses compiles
-    /// nothing.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    pub(crate) fn warm(&self) {
-        let pixel_ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32);
-        let samples = self.samples_for(pixel_ratio);
-        let waker = crate::web::waker(self);
-        self.0.lock().pipelines.warm(&self.0.device, &waker, || crate::view::common(FORMAT, samples));
-    }
-
     /// The multisample count of its frames, once set.
     pub(crate) fn samples(&self) -> Option<u32> {
         self.0.samples.get().copied()

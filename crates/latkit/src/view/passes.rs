@@ -14,7 +14,7 @@ use std::ops::Range;
 
 use super::resources::MARK_STRIDE;
 use super::sync::Source;
-use super::variants::{CARRY, Draw, EASE, EXPAND_RUNS, GATHER, MarkVariants, NORMALS, TRAVEL};
+use super::variants::{CARRY, Draw, EASE, EXPAND_RUNS, GATHER, MarkVariants, NORMALS, Stage, TRAVEL};
 use super::words::Kept;
 use super::{Frame, View};
 use crate::Space;
@@ -707,7 +707,7 @@ impl View {
     ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let texts = self.texts();
+        let texts = self.can_use(Stage::Text);
         if texts {
             let Inner { atlas, pipelines, .. } = &mut *inner;
             atlas.lay(device, &gpu.0.queue, encoder, pipelines);
@@ -776,7 +776,7 @@ impl View {
         // So the nearest opaque pixel shows whatever the order of the marks, a partly covered pixel
         // blends over what lies behind it, never over the background, and a nearer thin row blends
         // over the rows behind it.
-        let layered = self.layered(inner, frame.format, samples);
+        let layered = self.layered();
         if layered {
             for (i, shown) in self.marks.iter().enumerate() {
                 if shown.drawable() && shown.instances() > 0 {
@@ -793,7 +793,7 @@ impl View {
         // Lit rows draw again, glowing, over every mark but labels, and where depth varies, over all
         // but the opaque rows nearer than them. They draw once their pipelines have compiled.
         for (i, shown) in self.marks.iter().enumerate() {
-            if self.answers() && shown.drawable() && shown.lit.rows > 0 {
+            if self.can_use(Stage::Lit) && shown.drawable() && shown.lit.rows > 0 {
                 marks.draw(&mut pass, drawn, inner, i, shown, Draw::Lit);
             }
         }

@@ -98,10 +98,16 @@ impl Gpu {
         self.0.uploading() as f64
     }
 
-    /// Draws one frame immediately, with `now` as its timestamp in milliseconds. After the first
-    /// call, no animation frames are requested.
-    pub fn step(&self, now: f64) {
+    /// Draws one frame immediately, with `now` as its timestamp in milliseconds. Resolves once the
+    /// GPU has finished it and its readbacks have arrived. After the first call, no animation frames
+    /// are requested.
+    pub fn step(&self, now: f64) -> Task {
         latkit::web::step(&self.0, now);
+        let gpu = self.0.clone();
+        task(async move {
+            latkit::web::finished(&gpu).await;
+            Ok(JsValue::UNDEFINED)
+        })
     }
 
     /// Resolves once the GPU has finished its submitted work, every readback has arrived, and every

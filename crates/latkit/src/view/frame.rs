@@ -15,6 +15,7 @@ use super::marks::Holding;
 use super::resources::{MARK_STRIDE, Resources};
 use super::sync::{Inputs, Rebuilt, Rows, Source, Window};
 use super::transition::{bound, holds_alike, in_place, moved};
+use super::variants::Stage;
 use super::words::Kept;
 use super::{Camera, Event, Frame, View, timer, uniforms};
 use crate::data::Keyed;
@@ -133,9 +134,9 @@ impl View {
         let measure = self.measuring();
         // A picture takes no input. Other frames probe and answer queries once their pipelines
         // have compiled.
-        let answers = input && self.answers();
+        let answers = input && self.can_use(Stage::Input);
         let probe = self.probe_point(answers);
-        let layered = self.layered(&inner, frame.format, gpu.samples_for(frame.pixel_ratio));
+        let layered = self.layered();
         let query = self.lay_out_lists(answers, layered);
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
