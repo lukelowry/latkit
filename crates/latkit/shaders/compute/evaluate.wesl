@@ -21,7 +21,7 @@ import package::lib::types::{
     OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MIN, OP_MAX, OP_MOD, OP_POW,
     OP_LT, OP_LE, OP_GT, OP_GE, OP_EQ, OP_NE, OP_AND, OP_OR,
     OP_SELECT, OP_SCALE, OP_COLORMAP, OP_STORE, OP_STORE_COLOR, OP_STORE_FLAG, OP_STORE_POSITION,
-    OP_POSITION, OP_STORE_CODE, OP_REDUCE, OP_FALLBACK,
+    OP_POSITION, OP_FILL_POSITION, OP_STORE_CODE, OP_REDUCE, OP_FALLBACK,
 };
 import package::lib::bind::{frame, program, mark, pages, theme_word};
 import package::lib::state::{travel_words, pack_range, record_at};
@@ -345,6 +345,11 @@ fn run(row: u32, start: u32, end: u32) {
             }
             case OP_POSITION: {
                 position(row, a, column_value(b, row), column_value(c, row));
+            }
+            case OP_FILL_POSITION: {
+                if (load(row, a + VERTEX_FLAGS - VERTEX_POSITION) & PLACED) == 0u {
+                    position(row, a, column_value(b, row), column_value(c, row));
+                }
             }
             case OP_REDUCE: {
                 sp--;

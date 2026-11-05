@@ -149,25 +149,24 @@ impl Vertices {
         Ok(drawing)
     }
 
-    /// Compiles positions and sizes. Rows sit at their position, or where the scene's layout places
-    /// them from data only. Their size is their `size`, their radius, or the theme's radius.
+    /// Compiles positions and sizes. Rows sit at their position. With a layout, a row whose data
+    /// gives no position sits where the layout placed it, and the position reads only data, since
+    /// the layout pins rows by it. Their size is their `size`, their radius, or the theme's radius.
     /// Returns the flags: `SIZED` when rows have a width and a height.
     fn place(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<u32> {
-        let at = wgsl::VERTEX_POSITION;
-        if context.placed() {
+        let (at, laid) = (wgsl::VERTEX_POSITION, context.placed());
+        if laid {
             for expr in self.position.iter().flatten() {
                 c.check_data("position", expr)?;
             }
-            c.derived_position(at)
-        } else {
-            match &self.position {
-                Some([x, y]) => c.position(x, y, at),
-                None if c.kind(self.point_field()) == Some(Kind::Point) => {
-                    let field = self.point_field();
-                    c.position(&Expr::component(field, 0), &Expr::component(field, 1), at)
-                }
-                None => c.position(&Expr::missing(), &Expr::missing(), at),
+        }
+        match &self.position {
+            Some([x, y]) => c.position(x, y, at, laid),
+            None if c.kind(self.point_field()) == Some(Kind::Point) => {
+                let field = self.point_field();
+                c.position(&Expr::component(field, 0), &Expr::component(field, 1), at, laid)
             }
+            None => c.position(&Expr::missing(), &Expr::missing(), at, laid),
         }
         .map_err(|e| e.at("position"))?;
         let half =

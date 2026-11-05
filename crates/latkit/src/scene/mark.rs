@@ -475,10 +475,10 @@ impl Mark {
     }
 
     /// The path a stroke mark's rows follow, or where a triangle's corners come from: one of the
-    /// `PATH_` codes its pipelines are built for. A net's star follows the route the view
-    /// computes. On a plot a line traces its samples, and elsewhere it
-    /// follows its path field. Faces take their corners from the vertices they join, and vertices
-    /// have no path, so both read `PATH_ENDS`.
+    /// `PATH_` codes its pipelines are built for. A net follows the star the view derives from
+    /// its members. On a plot a line traces its samples, and elsewhere it follows its path field.
+    /// Faces take their corners from the vertices they join, and vertices have no path, so both
+    /// read `PATH_ENDS`.
     pub(crate) fn path(&self, space: &Space) -> u32 {
         match self {
             Mark::Edges(e) if e.poles => wgsl::PATH_POLES,

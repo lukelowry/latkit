@@ -215,6 +215,15 @@ impl Job {
         Job(out.0)
     }
 
+    /// Estimated microseconds `layout` takes to place `count` vertices with `links` links.
+    pub(crate) fn layout_cost(layout: &Layout, count: usize, links: usize) -> u64 {
+        match layout {
+            Layout::Stress(_) => crate::layout::stress::cost(count, links),
+            Layout::Layered(_) => crate::layout::layered::cost(count, links),
+            Layout::None => 0,
+        }
+    }
+
     /// A job computing `shaping` for every row of each geometry column in `parts`. Its result holds
     /// each part's shapes, read by [`shapes_answer`].
     pub(crate) fn shapes(shaping: Shaping, parts: &[Values]) -> Job {

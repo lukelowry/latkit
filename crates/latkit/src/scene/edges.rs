@@ -157,8 +157,8 @@ impl Edges {
         drawing.size_px = self.stroke.px();
         drawing.flags = flags;
         if self.joins.is_some() {
-            // A net's star follows the route the view computes.
-            drawing.geometry = c.derived_path("route");
+            // A net draws the star the view derives from its members.
+            drawing.geometry = c.derived_path("star");
         } else if !self.poles {
             drawing.geometry = self.bends.as_ref().map_or(wgsl::NONE, |bends| c.path(bends));
             drawing.lane = c.derived_bits("lane");

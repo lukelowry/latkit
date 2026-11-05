@@ -8,6 +8,14 @@ use crate::scene::{Direction, Layered};
 const ASPECT: f64 = 16.0 / 9.0;
 /// Crossing-reduction sweeps, alternately down and up the ranks.
 const SWEEPS: usize = 8;
+/// Estimated microseconds per vertex and link in each sweep, ranking and placing included.
+const STEP: f64 = 0.05;
+
+/// Estimated microseconds a layered layout of `count` vertices and `links` links takes: ranking,
+/// `SWEEPS` sweeps that sort each rank, and placing, each about linear in both.
+pub(crate) fn cost(count: usize, links: usize) -> u64 {
+    ((count + links) as f64 * SWEEPS as f64 * STEP).ceil() as u64
+}
 
 /// Every vertex's center from a layered layout. Pinned vertices stay put. The others go in ranks
 /// along `options.direction` (`Direction::Up` is toward +y), `options.gap` apart within a rank and

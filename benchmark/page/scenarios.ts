@@ -526,7 +526,7 @@ export const scenarios: Record<string, Scenario> = {
     phases: [pan(), zoom()],
   },
   layout: {
-    about: 'nodes without positions in trees of 64 on a plane, laid out in ranks in a job',
+    about: 'nodes without positions in trees of 64 on a plane, laid out in ranks on the frame or in a job',
     unit: 'nodes',
     sizes: [1e2, 1e3, 1e4],
     build: (n) => ({ scene: laidOut, data: { d: make.trees(n) } }),
