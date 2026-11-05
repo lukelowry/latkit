@@ -493,6 +493,14 @@ struct Frame {
     sun: vec4f,
     // Color of the atmosphere around the globe. Clear when the earth has none.
     atmosphere: vec4f,
+    // What the probe may find. A keys' step passes over the row the keys point at (held row y of
+    // mark x), keeps to an area (left, top, right, bottom) off `probe_covers` boxes, and for an
+    // arrow keeps within 45° of its way. The hover's allows every row.
+    probe_area: vec4f,
+    probe_cover: array<vec4f, 4>,
+    probe_way: vec2f,
+    probe_skip: vec2u,
+    probe_covers: u32,
     theme: array<vec4u, 4>,
 }
 

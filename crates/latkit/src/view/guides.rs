@@ -74,9 +74,12 @@ pub(crate) struct Guides {
 impl Guides {
     /// Whether `[x, y]`, in CSS pixels, lies on a corner's backdrop, over the marks.
     pub(crate) fn covers(&self, [x, y]: [f64; 2]) -> bool {
-        self.shown
-            .iter()
-            .any(|(guide, a)| matches!(guide, Guide::Backdrop) && x >= a[0] && x <= a[2] && y >= a[1] && y <= a[3])
+        self.backdrops().any(|a| x >= a[0] && x <= a[2] && y >= a[1] && y <= a[3])
+    }
+
+    /// The corners' backdrops, which cover the marks: at most one per corner.
+    pub(crate) fn backdrops(&self) -> impl Iterator<Item = Area> + '_ {
+        self.shown.iter().filter(|(guide, _)| matches!(guide, Guide::Backdrop)).map(|&(_, area)| area)
     }
 }
 

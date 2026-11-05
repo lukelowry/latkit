@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use common::{SIZE, TICK, camera, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Action, Button, Camera, Controls, Data, Device, Edges, End, Event, Gestures, Ids, Input, Key, Modifiers, Motion,
-    Patch, Phase, Row, Rows, Scene, Table, Vertices, View, field,
+    Action, Button, Camera, Controls, Data, Device, Edges, End, Event, Gestures, Ids, Input, Key, Lines, Modifiers,
+    Motion, Patch, Phase, Row, Rows, Scene, Table, Vertices, View, field,
 };
 
 const C: f32 = SIZE as f32 / 2.0;
@@ -334,6 +334,84 @@ fn the_keys_step_open_and_select() {
     assert_eq!(left, None);
     let back = Input::Key { key: Key::Tab, down: true, modifiers: Modifiers { shift: true, ..Modifiers::default() } };
     assert!(!view.input(&back, common::now()), "Shift+Tab leaves the view");
+}
+
+/// Nodes on a plane, seen from straight above with every move applied at once: 1 in the middle,
+/// 2 right of it, 3 left, 4 above, and 5 below and a little right.
+fn compass(gpu: &latkit::Gpu) -> View {
+    let data = Data::new("graph");
+    let (x, y) = (vec![0.0, 40.0, -40.0, 0.0, 10.0], vec![0.0, 0.0, 0.0, 40.0, -50.0]);
+    data.apply(Table::new("Node", vec![1_u64, 2, 3, 4, 5]).field("x", x).field("y", y)).expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .controls(Controls { motion: Motion::Reduced, ..Controls::default() })
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0));
+    let mut view = View::new(gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(gpu, &mut view);
+    view
+}
+
+#[test]
+fn arrows_step_to_the_nearest_row_their_way_from_where_it_lies_now() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = compass(&gpu);
+    let node = |id: u64| Row::new("graph", "Node", id);
+    let stepped = |e: &Event| match e {
+        Event::Hovered { hit: Some(hit), trigger } if trigger.device == Device::Keyboard => Some(hit.row.clone()),
+        _ => None,
+    };
+    let mut press = |k: Key| after(&gpu, &mut view, &[key(k)], stepped);
+    assert_eq!(press(Key::Tab), node(1), "Tab steps to the row nearest the middle");
+    assert_eq!(press(Key::Right), node(2));
+    assert_eq!(press(Key::Left), node(1), "the nearest that way, passing over the row stepped from");
+    assert_eq!(press(Key::Up), node(4));
+    assert_eq!(press(Key::Down), node(1));
+    assert_eq!(press(Key::Down), node(5), "any row within 45° of the way");
+    // Moved 20 pixels left, row 5 lies nearer row 1 than row 2. Stepping from where row 5 was
+    // would reach row 2.
+    view.set_camera(Camera::Map { center: [20.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    frame(&gpu, &mut view);
+    assert_eq!(after(&gpu, &mut view, &[key(Key::Up)], stepped), node(1), "steps start where the row lies now");
+    assert_eq!(after(&gpu, &mut view, &[key(Key::Down)], stepped), node(5));
+    // With no row that way, the arrow pans the camera instead and the keys keep their row.
+    let before = map(&view).0;
+    assert!(view.input(&key(Key::Right), common::now()), "the key is used");
+    for _ in 0..8 {
+        step(&gpu, &mut view);
+    }
+    assert_ne!(map(&view).0, before, "the camera pans");
+    assert_eq!(view.hovered(), Some(&node(5)));
+}
+
+#[test]
+fn a_step_passes_over_the_rest_of_the_row_it_starts_from() {
+    let Some(gpu) = gpu() else { return };
+    // A path right, up, and right again, with a node above its bend.
+    let data = Data::new("graph");
+    let path = vec![vec![[-30.0, 0.0], [-10.0, 0.0], [-10.0, 20.0], [30.0, 20.0]]];
+    data.apply(
+        Patch::new()
+            .set(Table::new("Path", vec![1_u64]).field("geometry", path))
+            .set(Table::new("Node", vec![9_u64]).field("x", vec![-10.0]).field("y", vec![45.0])),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Lines::of("graph", "Path").width(3.0).pick(true))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(&gpu, &mut view);
+    let stepped = |e: &Event| match e {
+        Event::Hovered { hit: Some(hit), trigger } if trigger.device == Device::Keyboard => Some(hit.row.clone()),
+        _ => None,
+    };
+    assert_eq!(after(&gpu, &mut view, &[key(Key::Tab)], stepped), Row::new("graph", "Path", 1_u64));
+    // Up from the path's corner, its own last stretch lies nearer than the node.
+    assert_eq!(after(&gpu, &mut view, &[key(Key::Up)], stepped), Row::new("graph", "Node", 9_u64));
 }
 
 #[test]

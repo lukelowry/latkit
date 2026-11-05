@@ -57,6 +57,9 @@ pub(crate) fn frame(
     frame.center_lo = [cx.1, cy.1];
     frame.pointer = [-1e9, -1e9];
     frame.probe = [-1e9, -1e9];
+    // The hover's probe may find any row.
+    frame.probe_area = [f32::MIN, f32::MIN, f32::MAX, f32::MAX];
+    frame.probe_skip = [wgsl::NONE; 2];
     frame.space = projected.space;
     frame.globe = projected.globe as f32;
     frame.mercator_y = projected.mercator_y as f32;
