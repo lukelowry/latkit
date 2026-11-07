@@ -55,7 +55,7 @@ pub(crate) fn marks<'a>(input: &super::Input<'a>) -> (Vec<VertexMark<'a>>, Vec<E
                     Some(_) => {}
                 }
             }
-            Mark::Faces(_) | Mark::Lines(_) | Mark::Areas(_) => {}
+            Mark::Lines(_) | Mark::Areas(_) => {}
         }
     }
     let mut first = 0;

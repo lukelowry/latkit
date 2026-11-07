@@ -1,7 +1,7 @@
 // Markers, drawn as signed distance fields in CSS pixels. A custom marker supplies `fn marker`.
 
 import package::lib::types::{
-    SELECTED, HOVERED, SHAPE_RECTANGLE, SHAPE_ROUNDED, SHAPE_DIAMOND, MARKER_GAUGE, MARKER_PIE, MARKER_BLOCK,
+    SELECTED, HOVERED, SHAPE_RECTANGLE, SHAPE_ROUNDED, SHAPE_DIAMOND, MARKER_BLOCK,
     THEME_CORNER,
 };
 import package::lib::bind::{frame, mark, program, theme_word};
@@ -74,7 +74,7 @@ fn gauge(p: vec2f, half: vec2f, color: vec4f, shape: u32, fill: f32) -> MarkerCo
 
 // A pie's slice colors are the mark's palette.
 fn slice_color(i: u32) -> vec4f {
-    return unpack4x8unorm(program[mark.palette + i]);
+    return unpack4x8unorm(program(mark.palette + i));
 }
 
 fn pie(p: vec2f, radius: f32, slices: array<f32, 8>, count: u32, hole: f32) -> MarkerColor {
@@ -92,14 +92,6 @@ fn pie(p: vec2f, radius: f32, slices: array<f32, 8>, count: u32, hole: f32) -> M
     }
     let d = length(p);
     return filled(color, max(d - radius, radius * hole - d));
-}
-
-fn builtin_marker(f: MarkerFragment) -> MarkerColor {
-    switch mark.marker {
-        case MARKER_GAUGE: { return gauge(f.p, f.half, f.color, mark.shape, f.input[0]); }
-        case MARKER_PIE: { return pie(f.p, min(f.half.x, f.half.y), f.input, mark.inputs, mark.hole); }
-        default: { return filled(f.color, outline_distance(f.p, f.half)); }
-    }
 }
 
 // A ring of the status color just outside the marker's outline.

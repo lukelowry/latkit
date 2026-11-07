@@ -1,6 +1,6 @@
 //! Probes: the nearest row and the nearest drawn depth under a point.
 //!
-//! A compute pass runs over what the frame drew, and its result is read back a frame or two later.
+//! Raster passes run over what the frame drew, and its result is read back a frame or two later.
 //! One probe is in flight at a time, and a newer point waits for it. The answer is decoded against
 //! the frame that drew it (its marks' held rows and its camera), regardless of changes since.
 
@@ -301,7 +301,7 @@ fn hit(word: &impl Fn(u32) -> u32, drew: &Drew) -> Option<Probed> {
     let depth = f32::from_bits(word(wgsl::PROBE_DEPTH));
     let point = [f32::from_bits(word(wgsl::PROBE_X)), f32::from_bits(word(wgsl::PROBE_Y))];
     let part = word(wgsl::PROBE_SEGMENT);
-    let hit = drew.hit(255 - (key & 255) as usize, word(wgsl::PROBE_ROW), point, depth, key >> 8, part)?;
+    let hit = drew.hit(word(wgsl::PROBE_MARK) as usize, word(wgsl::PROBE_ROW), point, depth, key, part)?;
     Some(Probed { hit, depth, end: part })
 }
 

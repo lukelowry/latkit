@@ -14,7 +14,7 @@ pub struct Gpu(pub(crate) latkit::Gpu);
 
 #[wasm_bindgen]
 impl Gpu {
-    /// Requests a WebGPU device.
+    /// Creates the shared WebGL2 device.
     pub async fn create() -> Result<Gpu, Error> {
         Ok(Gpu(latkit::Gpu::new().await?))
     }

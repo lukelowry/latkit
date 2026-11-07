@@ -12,7 +12,7 @@
 
 <p align="center">
   A GPU-accelerated visualization library for large networks, such as power grids:<br>
-  interactive views in the browser with WebGPU, and images and video from the command line.
+  interactive views in the browser with WebGL2, and images and video from the command line.
 </p>
 
 <p align="center">

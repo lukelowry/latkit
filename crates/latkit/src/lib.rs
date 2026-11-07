@@ -73,7 +73,7 @@ pub use {
     gpu::{Budget, DeviceEvents, Gpu, work::Work},
     panels::Panels,
     scene::{
-        Action, AreaTheme, Areas, Axis, Controls, Direction, Earth, EarthTheme, EdgeTheme, Edges, Faces, FlowTheme,
+        Action, AreaTheme, Areas, Axis, Controls, Direction, Earth, EarthTheme, EdgeTheme, Edges, FlowTheme,
         FocusTheme, Gestures, Grid, Interpolation, Label, Layered, Layout, Legend, Length, LineTheme, Lines, Mark,
         Marker, Motion, Place, Plane, Plot, PlotTheme, Projection, Route, Scene, Shape, Space, Stress, TextTheme,
         Theme, Title, VertexTheme, Vertices,

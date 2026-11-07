@@ -108,15 +108,6 @@ impl Column {
         empty.write(len, &[], &empty).expect("same storage")
     }
 
-    /// A column of `pages`, each given a new id. Every page but the last must hold [`PAGE_ROWS`]
-    /// values.
-    pub(crate) fn from_pages(pages: Vec<Values>, like: &Values) -> Column {
-        debug_assert!(pages.iter().rev().skip(1).all(|p| p.len() == PAGE_ROWS));
-        let len = pages.iter().map(Values::len).sum();
-        let fixed = pages.iter().any(Values::holds_any);
-        Column { len, pages: pages.into_iter().map(Page::new).collect(), like: like.slice(0..0), fixed }
-    }
-
     /// A column of existing `pages`, keeping their ids. Every page but the last must hold
     /// [`PAGE_ROWS`] values.
     pub(crate) fn of_pages(pages: Vec<Page>, like: &Values) -> Column {

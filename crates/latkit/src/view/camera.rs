@@ -466,9 +466,8 @@ fn wrap(lon: f64) -> f64 {
 pub(crate) struct Projected {
     pub(crate) clip_from_world: DMat4,
     pub(crate) world_from_clip: DMat4,
-    /// The camera's position, and the direction toward the key light.
+    /// The camera's position.
     pub(crate) eye: DVec3,
-    pub(crate) light: DVec3,
     pub(crate) center: [f64; 3],
     pub(crate) px_per_unit: [f64; 2],
     /// The camera's zoom: the web mercator level on the earth, log₂ pixels per unit elsewhere.
@@ -483,6 +482,14 @@ pub(crate) struct Projected {
 }
 
 impl Projected {
+    /// A conservative lane-density band on a flat plane. At zero tilt and ground-centered depth,
+    /// translation and rotation preserve screen distances, and a zoom octave changes them by two.
+    /// Other projections continue to plan against their exact camera.
+    pub(crate) fn lane_band(&self) -> Option<f32> {
+        (self.space == wgsl::SPACE_PLANE && self.parallax == 0.0 && self.center[2] == 0.0)
+            .then(|| (self.zoom as f32).ceil())
+    }
+
     /// How far the earth is morphed onto the globe: 1 for the globe projection, otherwise 0.
     pub(crate) fn globe_of(space: &Space) -> f64 {
         match space {
@@ -528,13 +535,11 @@ impl Projected {
         let clip_from_world = offset * projection * view;
         let world_from_view = view.inverse();
         let eye = world_from_view.transform_point3(DVec3::ZERO);
-        let light = world_from_view.transform_vector3(DVec3::new(-0.4, 0.8, 1.0)).normalize_or_zero();
         let mercator = if space_code == wgsl::SPACE_EARTH { mercator::y(center[1]) } else { 0.0 };
         Projected {
             clip_from_world,
             world_from_clip: clip_from_world.inverse(),
             eye,
-            light,
             center,
             px_per_unit,
             zoom: px_per_unit[0].max(1e-300).log2()
@@ -758,7 +763,7 @@ impl Projected {
     }
 }
 
-/// A right-handed perspective projection onto WebGPU's clip space, depth `0..=1` from `near` to
+/// A right-handed perspective projection onto wgpu's clip space, depth `0..=1` from `near` to
 /// `far`. Passing the far distance as `near` reverses depth.
 fn perspective(fov: f64, aspect: f64, near: f64, far: f64) -> DMat4 {
     let f = 1.0 / (0.5 * fov).tan();

@@ -27,9 +27,8 @@ What every part of the package shares.
 
 Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
 load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
-load rejects with an `io` error and can be retried. While the WebAssembly compiles, `load()`
-requests a GPU adapter so the browser starts its GPU process early. Then it requests the first
-device for [`Gpu.create()`](#gpu-create).
+load rejects with an `io` error and can be retried. After the WebAssembly loads, `load()` creates
+the first WebGL2 device for [`Gpu.create()`](#gpu-create).
 
 {#load-wasm .member}
 **`wasm`**`?: string | URL | WebAssembly.Module` [¶](#load-wasm){.headerlink}
@@ -1420,7 +1419,7 @@ and latitude; on a plot, the axis coordinate and the value.
 {.signature}
 `class Gpu extends` [`Handle`](#handle)
 
-A WebGPU device that views draw with. Views on one `Gpu` share its memory and draw together in
+A WebGL2 device that views draw with. Views on one `Gpu` share its memory and draw together in
 each animation frame, so linked views always show the same moment. Views use the first `Gpu`
 created unless given another, and [`View.create`](#view-create) creates one if none exists. When the device is
 lost, latkit requests a new one once the page is in the foreground, and moves the views, their
@@ -1441,7 +1440,7 @@ its views and frame listeners. Other GPUs and datasets stay usable.
 {#gpu-budget .member}
 **`budget`**`:` [`Budget`](#budget) [¶](#gpu-budget){.headerlink}
 : The GPU memory budget for data, shared by every view on this GPU. See [`Budget`](#budget). Defaults
-  to half the device's largest storage buffer, at most 1 GiB, with 32 MiB uploaded per frame.
+  to half the device's addressable word-texture capacity, at most 1 GiB, with 32 MiB uploaded per frame.
 
 {#gpu-work .member}
 `readonly` **`work`**`:` [`Work`](#work) [¶](#gpu-work){.headerlink}
@@ -1462,10 +1461,10 @@ its views and frame listeners. Other GPUs and datasets stay usable.
 
 {#gpu-create .member}
 `static` **`create`**`(wait?:` [`Wait`](#wait)`): Promise<Gpu>` [¶](#gpu-create){.headerlink}
-: Requests a WebGPU device. The first call takes the device [`load()`](#load) requested. Create one before
+: Requests a WebGL2 device. The first call takes the device [`load()`](#load) requested. Create one before
   any view to set its `budget` first, or create another for views that should not share memory
   with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
-  when the browser has no WebGPU device.
+  when the browser has no WebGL2 device.
 
 {#gpu-on .member}
 **`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}

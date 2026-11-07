@@ -24,7 +24,23 @@ pub(crate) struct Signal {
     lender: Mutex<Option<Waker>>,
 }
 
+/// Compilation can wake the host without marking the image as changed. The view decides
+/// whether the completed stage is needed for drawing or an outstanding input request.
+struct Compilation(Arc<Signal>);
+impl Wake for Compilation {
+    fn wake(self: Arc<Self>) {
+        self.0.ask();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.ask();
+    }
+}
+
 impl Signal {
+    pub(crate) fn compilation(self: &Arc<Self>) -> Waker {
+        Waker::from(Arc::new(Compilation(self.clone())))
+    }
+
     /// Whether work arrived since the frame began.
     pub(crate) fn landed(&self) -> bool {
         self.landed.load(Ordering::Acquire)

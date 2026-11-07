@@ -40,6 +40,17 @@ fn head_distance(p: vec2f, b: vec2f, dir: vec2f, width: f32) -> f32 {
 // from `a` to `b`).
 fn stroke_distance(p: vec2f, s: Stroke) -> vec3f {
     let ab = s.b - s.a;
+    if !s.arrow {
+        let squared = dot(ab, ab);
+        let projected = dot(p - s.a, ab);
+        let t = clamp(projected / max(squared, 1e-6), 0.0, 1.0);
+        let d = length(p - (s.a + ab * t)) - 0.5 * s.width;
+        // A solid stroke only needs distance. Avoid the second division and phase interpolation
+        // for every covered pixel when neither dashes nor comets consume them.
+        if !s.dash && s.flow == 0.0 { return vec3f(d, 0.0, 0.0); }
+        let along = clamp(projected / max(squared, 1e-12), 0.0, 1.0);
+        return vec3f(d, mix(s.phase.x, s.phase.y, along), along);
+    }
     let len = length(ab);
     let dir = ab / max(len, 1e-6);
     // An arrowhead's stroke stops where the head begins.
@@ -92,12 +103,20 @@ fn comet(d: vec3f, s: Stroke) -> f32 {
     return fade * fade * (1.0 - smoothstep(0.35 * reach, reach, distance));
 }
 
-// Stroke `s`'s color at pixel `p`, with comets over its line. Comets fade with the row's opacity.
-fn stroke(p: vec2f, s: Stroke) -> vec4f {
-    let d = stroke_distance(p, s);
+// Premultiplied stroke color. Drawing uses it directly; glow also reads its straight color.
+fn stroke_paint(d: vec3f, s: Stroke) -> vec4f {
     let line = s.color.a * covered(d, s);
+    if s.flow == 0.0 || frame.flow.a <= 0.0 {
+        return vec4f(s.color.rgb * line, line);
+    }
     let head = comet(d, s) * frame.flow.a * s.color.a;
     let alpha = head + line * (1.0 - head);
-    let color = (frame.flow.rgb * head + s.color.rgb * line * (1.0 - head)) / max(alpha, 1e-6);
+    let color = frame.flow.rgb * head + s.color.rgb * line * (1.0 - head);
     return vec4f(color, alpha);
+}
+
+// Preserve the straight-color path's attenuation at vanishing alpha without dividing each RGB
+// component and immediately multiplying it back for blending.
+fn painted(color: vec4f) -> vec4f {
+    return vec4f(color.rgb * min(color.a * 1e6, 1.0), color.a);
 }

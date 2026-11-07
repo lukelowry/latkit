@@ -15,9 +15,8 @@ let first: Promise<bindings.Gpu> | undefined;
 /**
  * Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
  * load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
- * load rejects with an `io` error and can be retried. While the WebAssembly compiles, `load()`
- * requests a GPU adapter so the browser starts its GPU process early. Then it requests the first
- * device for `Gpu.create()`.
+ * load rejects with an `io` error and can be retried. After the WebAssembly loads, `load()` creates
+ * the first WebGL2 device for `Gpu.create()`.
  */
 export function load(
   options: {
@@ -48,7 +47,6 @@ export function load(
     return loading;
   }
   configured = { wasm, worker };
-  startGpuProcess();
   loading = initialize(configured).catch((cause: unknown) => {
     configured = undefined;
     loading = undefined;
@@ -72,9 +70,8 @@ async function initialize(options: {
     bindings.setJobs(jobs(bindings.module() as WebAssembly.Module, worker));
   if (typeof VideoEncoder === 'function') bindings.setEncoder(encoder);
   loaded(bindings);
-  // Request the first device now, so drawing does not wait for it later. The device compiles
-  // nothing until a view is created.
-  if ((globalThis.navigator as { gpu?: unknown } | undefined)?.gpu) {
+  // Start the first device wherever a browser canvas is available, including workers.
+  if (typeof OffscreenCanvas === 'function' || typeof document !== 'undefined') {
     first = bindings.Gpu.create();
     first.catch(() => {});
   }
@@ -104,17 +101,4 @@ export function firstDevice(): Promise<bindings.Gpu> | undefined {
   const device = first;
   first = undefined;
   return device;
-}
-
-/**
- * Requests a high-performance GPU adapter, like latkit's own request, while the WebAssembly loads.
- * This starts the browser's GPU process early. Starting it takes most of a cold device's 280 ms, so
- * latkit's later request finds the process running.
- */
-function startGpuProcess(): void {
-  const gpu = (
-    globalThis.navigator as
-      { gpu?: { requestAdapter(options: object): Promise<unknown> } } | undefined
-  )?.gpu;
-  gpu?.requestAdapter({ powerPreference: 'high-performance' }).catch(() => {});
 }

@@ -16,7 +16,7 @@ Show the rendering and interaction features of latkit through working examples w
 
 ## Capabilities and Constraints
 
-Existing TypeScript and Vite examples use the public latkit WebGPU API. Preserve simulations, data, editing, playback, and export capabilities.
+Existing TypeScript and Vite examples use the public latkit API with WebGL2 rendering. Preserve simulations, data, editing, playback, and export capabilities.
 
 ## Brand Commitments
 

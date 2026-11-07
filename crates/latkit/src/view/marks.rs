@@ -30,7 +30,7 @@ pub(crate) struct Offsets {
     pub(crate) runs: u32,
     /// The page table of each kind of per-row words, indexed by `Kept`. `NONE` for a kind the mark
     /// does not keep.
-    pub(crate) pages: [u32; 5],
+    pub(crate) pages: [u32; 4],
 }
 
 impl Offsets {
@@ -51,7 +51,7 @@ impl Default for Offsets {
             palette: 0,
             blends: 0,
             runs: wgsl::NONE,
-            pages: [wgsl::NONE; 5],
+            pages: [wgsl::NONE; 4],
         }
     }
 }
@@ -137,7 +137,7 @@ pub(crate) struct Shown {
     pub(crate) packed: bool,
     pub(crate) written: Vec<u32>,
     /// A transition waiting to start. `transition` is the running one. `remap` is where its remap
-    /// words start in the frame it starts, which the compute pass freezes it from (`NONE` in other
+    /// words start in the frame it starts, which a raster pass freezes it from (`NONE` in other
     /// frames). `carry` is whether this frame froze rows at new places, so their comets follow
     /// them.
     pub(crate) begin: Option<Begin>,
@@ -161,6 +161,8 @@ pub(crate) struct Shown {
     /// moves no label.
     pub(crate) version: u64,
     pub(crate) place_version: u64,
+    /// Revision of existing vertices' source positions, excluding proven append-only changes.
+    pub(crate) shape: super::lists::Shape,
     /// The rows its focus draw lights.
     pub(crate) lit: super::focus::Lit,
     /// Why its options, or the whole mark when it is not compiled, do not fit the data, kept until
@@ -216,6 +218,7 @@ impl Shown {
             geodesic: false,
             version: 0,
             place_version: 0,
+            shape: super::lists::Shape::default(),
             lit: super::focus::Lit::default(),
             failures: Vec::new(),
             told: Vec::new(),
@@ -298,9 +301,15 @@ impl Shown {
         self.live() + self.exits
     }
 
-    /// Whether the mark draws faces, which need normals.
-    pub(crate) fn faces(&self) -> bool {
-        self.kind() == MarkKind::Faces
+    /// Rows with retained state in a page, excluding unused slot padding. Exits follow the
+    /// live slots, and sparse endpoint pages include their interior holes to keep addresses stable.
+    pub(crate) fn filled(&self, page: u32) -> u32 {
+        let start = page * wgsl::PAGE_ROWS;
+        if let Some(drawing) = self.drawing().filter(|d| start < d.live()) {
+            drawing.filled(page as usize)
+        } else {
+            self.held().saturating_sub(start).min(wgsl::PAGE_ROWS)
+        }
     }
 
     /// Whether the mark can evaluate and draw: it has a program, held rows with pages of words for
@@ -342,10 +351,20 @@ impl Shown {
         self.stride() + self.extras()
     }
 
-    /// Words per row for each kind of word page: state, focus, and normals (when faces are
-    /// `summing` normals at its rows). 0 for a kind the mark keeps none of.
-    pub(crate) fn kept_widths(&self, summing: bool) -> [(Kept, u32); 3] {
-        [(Kept::State, self.width()), (Kept::Focus, 1), (Kept::Normals, if summing { wgsl::NORMAL_WORDS } else { 0 })]
+    /// An endpoint's page table and row width, taken from the same packed descriptor that
+    /// resolves its rows. A region relocation therefore updates draw uniforms and tables together.
+    pub(crate) fn end_layout(&self, end: usize) -> [u32; 2] {
+        let Some([start, _]) = self.region.filter(|_| end < self.ends.len()) else {
+            return [wgsl::NONE, 0];
+        };
+        let at = (self.offsets.ends - start) as usize + end * wgsl::END_WORDS as usize;
+        [self.written[at + wgsl::END_STATE as usize], self.written[at + wgsl::END_STRIDE as usize]]
+    }
+
+    /// Words per row for state and focus pages. Focus begins on demand and keeps its pages
+    /// afterwards, so moving the pointer or clearing a selection does not churn allocations.
+    pub(crate) fn kept_widths(&self, focus: bool) -> [(Kept, u32); 2] {
+        [(Kept::State, self.width()), (Kept::Focus, u32::from(focus || self.words.pages(Kept::Focus).width > 0))]
     }
 
     /// What its channels and fitted domains read besides its own table's static fields. This picks
@@ -367,6 +386,11 @@ impl Shown {
         self.compiled.as_ref().map_or(wgsl::PATH_ENDS, |c| c.drawing.path)
     }
 
+    /// Traces measure along their screen axis; other dashed or flowing paths accumulate lengths.
+    pub(crate) fn measures_paths(&self) -> bool {
+        self.path() != wgsl::PATH_TRACE && self.mark.measures_paths()
+    }
+
     /// Whether a list numbers its instances: strokes whose rows have different segment counts
     /// (through a geometry column, along great circles, or bowed into lanes), and areas, whose rows
     /// have different triangle counts.
@@ -383,7 +407,7 @@ impl Shown {
     /// The GPU counts each edge's pieces. For great circles, the total is read back to size the
     /// segment list.
     pub(crate) fn curved(&self) -> bool {
-        self.path() == wgsl::PATH_ENDS && (self.geodesic || self.laned())
+        matches!(self.path(), wgsl::PATH_ENDS | wgsl::PATH_BENDS) && (self.geodesic || self.laned())
     }
 
     /// Whether its edges bow into lanes among the edges joining the same two vertices.
@@ -399,7 +423,10 @@ impl Shown {
         let Some(compiled) = &self.compiled else { return 1 };
         let points = self.tables.points(compiled.drawing.geometry) as usize;
         if self.kind().primitive() == Primitive::Triangles {
-            return (points / 3 + rows).max(1) as u32;
+            return (points / 3).max(1) as u32;
+        }
+        if self.path() == wgsl::PATH_GEOMETRY {
+            return points.max(1) as u32;
         }
         let pieces = if !self.curved() {
             0
@@ -638,7 +665,7 @@ impl Shown {
         out.extend(self.blends());
         let runs = if self.drawing().is_some() { at(out) } else { wgsl::NONE };
         out.extend(self.runs());
-        let mut pages = [wgsl::NONE; 5];
+        let mut pages = [wgsl::NONE; 4];
         for (kept, blocks) in self.words.tables() {
             pages[kept as usize] = at(out);
             out.extend(blocks);

@@ -86,6 +86,39 @@ fn marks_that_do_not_pick_show_the_selection() {
 }
 
 #[test]
+fn focus_pages_begin_with_an_interaction_and_reuse_their_storage() {
+    let Some(gpu) = gpu() else { return };
+    let data = grid();
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(
+        Vertices::of("grid", "Machine")
+            .position(field("x"), field("y"))
+            .radius(6.0)
+            .color(when(related()).then(RED).otherwise(Color::WHITE)),
+    );
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("source");
+    let initial = frame(&gpu, &mut view);
+    let before = gpu.resident();
+
+    view.set_hovered(Some(Row::new("grid", "Bus", 1_u64)));
+    let hovered = frame(&gpu, &mut view);
+    assert!(at(&hovered, C - 30, C)[1] < 60, "the first interaction evaluates its related channel");
+    assert!(gpu.resident() > before, "the first interaction allocates its pages");
+    let initialized = gpu.work();
+
+    view.set_hovered(None);
+    assert_eq!(frame(&gpu, &mut view), initial, "clearing focus restores the original pixels");
+    view.set_selection([Rows::new("grid", "Bus", [2_u64])]);
+    let selected = frame(&gpu, &mut view);
+    assert!(at(&selected, C + 30, C)[1] < 60, "selection reuses the focus pages");
+    view.set_selection([]);
+    assert_eq!(frame(&gpu, &mut view), initial, "clearing selection also restores the pixels");
+    assert_eq!((gpu.work() - initialized).cleared, 0, "later interactions reuse their storage");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
 fn a_hover_the_application_sets_outlasts_a_pointer_resting_on_a_row() {
     let Some(gpu) = gpu() else { return };
     let data = grid();

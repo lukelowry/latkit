@@ -1,3 +1,4 @@
+import package::lib::project::{geographic, globe_amount};
 // The backdrop under every mark: a plane's grid, or the earth's ground and graticule,
 // lit by daylight, with the atmosphere around the globe. Lines are one pixel wide and antialiased
 // per axis. Each axis spaces its lines by the finest step of 1, 2, and 5 times a power of ten (30°
@@ -121,9 +122,9 @@ fn map_degrees(w: vec3f) -> vec2f {
 
 // Longitude and latitude in degrees at world point `w` on the globe of `radius`.
 fn globe_degrees(w: vec3f, radius: f32) -> vec2f {
-    let lat0 = radians(frame.center_hi.y + frame.center_lo.y);
     let u = normalize(vec3f(w.xy, w.z + radius));
-    let v = vec3f(u.x, u.y * cos(lat0) + u.z * sin(lat0), -u.y * sin(lat0) + u.z * cos(lat0));
+    let v = vec3f(u.x, u.y * frame.latitude_cos + u.z * frame.latitude_sin,
+        -u.y * frame.latitude_sin + u.z * frame.latitude_cos);
     let lon = frame.center_hi.x + frame.center_lo.x + degrees(atan2(v.x, v.z));
     return vec2f(lon, degrees(asin(clamp(v.y, -1.0, 1.0))));
 }
@@ -147,9 +148,9 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     let off = length(to_center - d * along);
     let miss = off - radius;
     let round = saturate(-miss / max(fwidth(miss), 1e-9) + 0.5) * f32(along > 0.0);
-    let covered = mix(flat, round, frame.globe);
+    let covered = mix(flat, round, globe_amount());
     let hit = o + d * (along - sqrt(max(radius * radius - off * off, 0.0)));
-    let globe = frame.globe >= 0.5;
+    let globe = globe_amount() >= 0.5;
     var p: vec2f;
     var ground = frame.ground;
     if globe {
@@ -168,17 +169,17 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
         let fade = select(smoothstep(0.02, 0.15, abs(d.z)), smoothstep(0.0, 0.3, facing), globe);
         color = blend(color, frame.grid_color, grid(p, w, 1.0, 0.01, 90.0, true, false) * fade * covered);
     }
-    if frame.atmosphere.a > 0.0 && frame.globe > 0.0 {
+    if frame.atmosphere.a > 0.0 && globe_amount() > 0.0 {
         // A thin rim of atmosphere over the globe's edge, and a halo out to 1.045 globe radii. It
         // is lit where the sun is up over the ground nearest the view ray.
         let rim = pow(1.0 - saturate(facing), 6.0) * round;
         let halo = pow(1.0 - smoothstep(radius, radius * 1.045, off), 2.0) * (1.0 - round) * f32(along > 0.0);
         let below = daylight(globe_degrees(o + d * along, radius));
-        let air = (rim + halo) * frame.atmosphere.a * frame.globe * mix(0.2, 1.0, below);
+        let air = (rim + halo) * frame.atmosphere.a * globe_amount() * mix(0.2, 1.0, below);
         color = vec4f(mix(color.rgb, frame.atmosphere.rgb, saturate(air)), color.a);
     }
     var depth = FAR_Z;
-    if frame.globe >= 1.0 && round > 0.5 {
+    if globe_amount() >= 1.0 && round > 0.5 {
         let under = eye.clip_from_world * vec4f(hit - normalize(hit - center) * radius * GROUND_BIAS, 1.0);
         depth = clamp(under.z / under.w, FAR_Z, NEAR_Z);
     }
@@ -198,7 +199,7 @@ fn fragment(v: Varyings) -> Out {
     var depth = FAR_Z;
     if frame.space == SPACE_PLANE {
         color = plane(g, d, t > 0.0);
-    } else if frame.space == SPACE_EARTH {
+    } else if geographic() {
         let ground = earth(o, d, g, t > 0.0);
         color = ground.color;
         depth = ground.depth;

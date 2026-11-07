@@ -324,14 +324,11 @@ export interface Work {
   /** Rows whose channels the GPU evaluated. */
   evaluated: number;
   /**
-   * Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows that
-   * changed, plus every row of a page that references a vertex now resident elsewhere.
+   * Edge rows whose endpoints the GPU resolved to resident vertex rows. These are rows that changed,
+   * plus every row of a page that references a vertex now resident elsewhere.
    */
   resolved: number;
-  /**
-   * Bytes of per-row word pages the GPU cleared: pages read before anything writes them, and the
-   * normals that faces sum from scratch.
-   */
+  /** Bytes of per-row word pages the GPU cleared before reading their initial state. */
   cleared: number;
   /**
    * Rows packed into pages of a paged table's draw order. Each page is packed once, the first time a
@@ -351,13 +348,13 @@ export interface Work {
   /** Label texts the host was asked to rasterize. */
   texts: number;
   /**
-   * Pipelines compiled. In a browser, each compiles in the background when a view or shot requests
-   * it ahead of use. Natively, each compiles when first created.
+   * Pipelines compiled. In a browser, a view or shot queues each ahead of use; driver compilation
+   * can still block the browser thread. Natively, each compiles when first created.
    */
   pipelines: number;
   /**
-   * Pipelines not requested ahead of use, compiled when first used. In a browser they compile on the
-   * GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not request.
+   * Pipelines not requested ahead of use, compiled when first used and delaying that frame. Zero
+   * unless a scene uses a pipeline it did not request.
    */
   late: number;
   /**

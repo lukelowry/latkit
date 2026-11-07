@@ -7,7 +7,7 @@ mod common;
 
 use common::{SIZE, answer, camera, errors, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Axis, Button, Camera, Controls, Data, Device, Edges, Event, Faces, Ids, Input, Lines, Modifiers, Patch, Plot,
+    Areas, Axis, Button, Camera, Controls, Data, Device, Edges, Event, Ids, Input, Lines, Modifiers, Patch, Plot,
     Scene, Table, Vertices, View, field,
 };
 
@@ -56,6 +56,41 @@ fn picks_list_every_row_in_reach_nearest_first() {
     assert!(!ids.contains(&"Node3".to_owned()), "out of reach: {ids:?}");
     assert!(hits.windows(2).all(|w| w[0].distance <= w[1].distance), "nearest first");
     assert!((hits[0].position[0]).abs() < 1.0, "where it lies: {:?}", hits[0].position);
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn picks_grow_past_the_first_answer_and_clear_sparse_and_empty_results() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("points");
+    let count = 2053_usize;
+    data.apply(Table::new("Node", Ids::count(count as u32)).field("x", vec![0.0; count]).field("y", vec![0.0; count]))
+        .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("points", "Node").position(field("x"), field("y")).radius(4.0));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("source");
+    frame(&gpu, &mut view);
+    let center = [SIZE as f32 / 2.0; 2];
+    let pending = view.pick(center, 6.0);
+    let hits = answer(&gpu, &mut view, pending);
+    assert_eq!(hits.len(), count, "an answer larger than the first reservation is complete");
+    assert!(hits.iter().all(|hit| hit.distance == 0.0 && hit.point == center));
+    let ids: std::collections::HashSet<_> = hits.iter().map(|hit| hit.row.clone()).collect();
+    assert_eq!(ids.len(), count, "every hit names a distinct row");
+    let mut x = vec![1000.0; count];
+    for i in [0, 1024, count - 1] {
+        x[i] = 0.0;
+    }
+    data.apply(Table::new("Node", Ids::count(count as u32)).field("x", x)).expect("move");
+    frame(&gpu, &mut view);
+    let pending = view.pick(center, 6.0);
+    let hits = answer(&gpu, &mut view, pending);
+    assert_eq!(hits.len(), 3, "sparse ranks across the prefix scan");
+    let pending = view.pick([0.0, 0.0], 1.0);
+    assert!(answer(&gpu, &mut view, pending).is_empty(), "no stale hit survives an empty answer");
     assert_eq!(errors(&mut view), Vec::new());
 }
 
@@ -153,15 +188,14 @@ fn hidden_rows_have_no_screen_position() {
         .reference("from", "Node", vec![1_u64, 1])
         .reference("to", "Node", vec![3_u64, 2])
         .field("on", vec![false, true]);
-    let faces = Table::new("Face", vec![0_u64, 1])
-        .reference("a", "Node", vec![1_u64, 1])
-        .reference("b", "Node", vec![2_u64, 2])
-        .reference("c", "Node", vec![3_u64, 3])
+    let square = vec![vec![[-20.0, 0.0], [0.0, 0.0], [0.0, 20.0], [-20.0, 20.0], [-20.0, 0.0]]];
+    let areas = Table::new("Area", vec![0_u64, 1])
+        .field("geometry", vec![square.clone(), square])
         .field("on", vec![false, true]);
-    data.apply(Patch::new().replace(links).set(faces)).expect("valid");
+    data.apply(Patch::new().replace(links).set(areas)).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Faces::of("graph", "Face").corners("a", "b", "c").visible(field("on")))
+        .draw(Areas::of("graph", "Area").visible(field("on")))
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0).visible(field("on")))
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0));
     let mut view = View::new(&gpu, scene);
@@ -176,9 +210,9 @@ fn hidden_rows_have_no_screen_position() {
     let link = screen_of("Link", 1).expect("a shown edge");
     assert!((link[0] - (c + 5.0)).abs() < 1.0 && (link[1] - c).abs() < 1.0, "the edge's middle: {link:?}");
     assert_eq!(screen_of("Link", 0), None, "a hidden edge");
-    let face = screen_of("Face", 1).expect("a shown face");
-    assert!((face[0] - (c - 10.0)).abs() < 1.0 && (face[1] - (c - 10.0)).abs() < 1.0, "the centroid: {face:?}");
-    assert_eq!(screen_of("Face", 0), None, "a hidden face");
+    let area = screen_of("Area", 1).expect("a shown area");
+    assert!((area[0] - (c - 10.0)).abs() < 1.0 && (area[1] - (c - 10.0)).abs() < 1.0, "the interior anchor: {area:?}");
+    assert_eq!(screen_of("Area", 0), None, "a hidden area");
 }
 
 #[test]

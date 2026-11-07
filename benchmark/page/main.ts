@@ -121,19 +121,18 @@ async function canvases(n: number): Promise<HTMLCanvasElement[]> {
   return made;
 }
 
-/** Describes the adapter, requested with the options latkit uses, and the Chrome version. */
+/** Describes the browser's high-performance renderer without requiring WebGPU. */
 async function machine(): Promise<string> {
-  interface Adapter {
-    info?: { vendor?: string; architecture?: string; description?: string };
-  }
-  interface Options {
-    powerPreference: 'high-performance';
-  }
-  const gpu = (navigator as { gpu?: { requestAdapter(o: Options): Promise<Adapter | null> } }).gpu;
-  const info = (await gpu?.requestAdapter({ powerPreference: 'high-performance' }))?.info;
+  const gl = new OffscreenCanvas(1, 1).getContext('webgl2', {
+    powerPreference: 'high-performance',
+  });
+  const debug = gl?.getExtension('WEBGL_debug_renderer_info');
+  const renderer = gl
+    ? String(gl.getParameter(debug?.UNMASKED_RENDERER_WEBGL ?? gl.RENDERER))
+    : 'unknown renderer';
+  gl?.getExtension('WEBGL_lose_context')?.loseContext();
   const chrome = /Chrome\/(\d+)/.exec(navigator.userAgent)?.[1];
-  const adapter = [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(' ');
-  return `${adapter || 'unknown adapter'} · Chrome ${chrome}`;
+  return `${renderer} · Chrome ${chrome}`;
 }
 
 declare global {

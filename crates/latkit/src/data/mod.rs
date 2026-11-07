@@ -51,7 +51,7 @@ pub(crate) use {
     json::geojson,
     name::{PageId, Version},
     patch::Op,
-    samples::{AxisPage, FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, Run, Samples, bucket_frames, detail, sides},
+    samples::{FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, Run, Samples, bucket_frames, detail, sides},
     table::{Reference, UNWIRED},
 };
 

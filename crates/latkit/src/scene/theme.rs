@@ -33,8 +33,6 @@ pub struct Theme {
     pub contrast: f32,
     /// The dash period: one dash and one gap of equal length.
     pub dash: f32,
-    /// How much faces darken as they turn away from the camera, from 0 to 1.
-    pub shading: f32,
     /// How labels, axis ticks, and titles look.
     pub text: TextTheme,
     /// Defaults for vertices.
@@ -274,7 +272,6 @@ impl Theme {
             missing: hex("#6b7480"),
             contrast: 1.0,
             dash: 8.0,
-            shading: 0.6,
             text: TextTheme {
                 color: hex("#a8b2c2"),
                 font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),

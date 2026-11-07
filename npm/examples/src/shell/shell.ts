@@ -102,7 +102,7 @@ export function start(pages: readonly Entry[]): void {
         'p',
         {},
         unsupported
-          ? 'WebGPU is unavailable. Open these examples in a browser with WebGPU enabled.'
+          ? 'WebGL2 is unavailable. Enable hardware acceleration or use a browser that supports WebGL2.'
           : `Could not run this example. ${String(error)}`,
       ),
     );

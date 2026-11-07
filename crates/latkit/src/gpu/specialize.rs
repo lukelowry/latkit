@@ -37,8 +37,63 @@ pub(crate) fn specialize<'a>(
             None => out.push_str(piece),
         }
     }
+    portable(&out)
+}
+
+/// Lowers the four-byte normalized packing operations, absent from GLSL ES 3.00, to exact
+/// integer arithmetic. Applied to built-in and application marker source alike, on every
+/// backend. Identifiers are matched as tokens, so unpacking and longer names never collide.
+pub(crate) fn portable(source: &str) -> String {
+    const PACK: &str = "pack4x8unorm";
+    const UNPACK: &str = "unpack4x8unorm";
+    let mut out = String::with_capacity(source.len());
+    let mut packed = false;
+    let mut unpacked = false;
+    let mut rest = source;
+    while let Some(at) = rest.find(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let end = rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest.len());
+        let token = &rest[..end];
+        let called = rest[end..].trim_start().starts_with('(');
+        if called && matches!(token, PACK | UNPACK) {
+            out.push_str("latkit_");
+            packed |= token == PACK;
+            unpacked |= token == UNPACK;
+        }
+        out.push_str(token);
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    if packed && !source.contains("fn latkit_pack4x8unorm") {
+        out.push_str("\nfn latkit_pack4x8unorm(color: vec4f) -> u32 {\n    let bytes = vec4u(round(clamp(color, vec4f(0.0), vec4f(1.0)) * 255.0));\n    return bytes.x | (bytes.y << 8u) | (bytes.z << 16u) | (bytes.w << 24u);\n}\n");
+    }
+    if unpacked && !source.contains("fn latkit_unpack4x8unorm") {
+        out.push_str("\nfn latkit_unpack4x8unorm(color: u32) -> vec4f {\n    return vec4f(vec4u(color, color >> 8u, color >> 16u, color >> 24u) & vec4u(255u)) / 255.0;\n}\n");
+    }
     out
 }
 
 /// The separator between a linked shader's top-level declarations.
 pub(crate) const SEPARATOR: &str = "\n\n";
+
+/// Replaces the two evaluator functions with a program's straight-line code. This operates on
+/// linked, validated WGSL declarations, before creating a module on either backend.
+pub(crate) fn evaluator(source: &str, kernel: &str) -> String {
+    let mut out = String::with_capacity(source.len() + kernel.len());
+    for piece in source.split(SEPARATOR) {
+        if piece.starts_with("fn run(") || piece.starts_with("fn channels(") || piece.starts_with("const ROW_WORDS:") {
+            continue;
+        }
+        if piece.starts_with("fn load_words(") && kernel.contains("fn load_words(") {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(SEPARATOR);
+        }
+        out.push_str(piece);
+    }
+    out.push_str(SEPARATOR);
+    out.push_str(kernel);
+    out
+}

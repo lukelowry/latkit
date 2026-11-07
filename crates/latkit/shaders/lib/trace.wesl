@@ -1,86 +1,36 @@
-// Traces: a line drawn through a sampled field across the axis, as runs of entries from left to
-// right. Each run reads one level: frames, or buckets of frames. The line passes through each
-// frame, and through each bucket's least and greatest values. Between runs that do not meet, a
-// point is left out, which breaks the line.
-//
-// The traced column's table, with positions in it relative to its start:
-// - Header (`HEADER` words): the run count, the row page count, the level count, and the total
-//   point count.
-// - Per run (`TRACE_RUN_WORDS`): its level's index, its first entry, its entry count, and its first
-//   point.
-// - Per level (`LEVEL_WORDS`): the level, its axis page count, where its axis pages are listed, and
-//   where its row pages' lists start.
-// - Per level and row page, four words: the count and list position of its pages of frames (or of
-//   least values), then the same for its pages of greatest values.
-// - The lists: axis pages as (offset in `pages`, first entry), and value pages as (offset in
-//   `pages`, first entry, words per entry).
+// Visible trace points are planned once on the CPU. Each row block holds a ring of aligned records:
+// coordinate high/low, absolute value address, and rows in that value's page. A missing address
+// breaks the line. Drawing, picking, and bounds all read this same plan.
+import package::lib::types::{NONE, MISSING};
+import package::lib::bind::{program_words, mark, word};
+import package::lib::words::word_quad;
+import package::lib::read::page_of;
 
-import package::lib::types::{NONE, MISSING, COLUMN_TABLE};
-import package::lib::bind::{program, mark, word};
-import package::lib::read::{column_word, page_of, last_at_most};
-
-const HEADER: u32 = 4u;
-const TRACE_RUN_WORDS: u32 = 4u;
-const LEVEL_WORDS: u32 = 4u;
-
-fn trace_table() -> u32 {
-    return column_word(mark.trace, COLUMN_TABLE);
-}
-
-// A run of the trace: its level's index, its first entry, its entry count, and its first point.
-struct TraceRun {
-    slot: u32,
-    first: u32,
-    entries: u32,
-    point: u32,
-}
-
-// The run point `k` lies in: the last starting at or before it.
-fn trace_run(k: u32) -> TraceRun {
-    let t = trace_table();
-    let r = last_at_most(t + HEADER, max(program[t], 1u), TRACE_RUN_WORDS, 3u, k);
-    return TraceRun(program[r], program[r + 1u], program[r + 2u], program[r + 3u]);
-}
-
-// Where level `slot`'s words start.
-fn trace_level_at(slot: u32) -> u32 {
-    let t = trace_table();
-    return t + HEADER + TRACE_RUN_WORDS * program[t] + LEVEL_WORDS * slot;
-}
-
-// The level at level index `slot`.
-fn trace_level(slot: u32) -> u32 {
-    return program[trace_level_at(slot)];
-}
-
-// Where entry `entry` of level `slot` draws along the axis, as (high, low): a frame at its
-// coordinate, a bucket at its middle.
-fn trace_axis(slot: u32, entry: u32) -> vec2f {
-    let l = trace_level_at(slot);
-    let e = last_at_most(trace_table() + program[l + 2u], max(program[l + 1u], 1u), 2u, 1u, entry);
-    let w = program[e] + (entry - program[e + 1u]) * 2u;
-    return vec2f(bitcast<f32>(word(w)), bitcast<f32>(word(w + 1u)));
-}
-
-// The bits of `row`'s value of entry `entry` of level `slot`: a frame's, or a bucket's least
-// (`side` 0) or greatest (1).
-fn trace_entry(row: u32, slot: u32, entry: u32, side: u32) -> u32 {
-    let t = trace_table();
+// The row block's records, point count, and row within each value page.
+fn trace_cursor(row: u32) -> vec3u {
     let at = page_of(row);
-    let block = at.x;
-    if block >= program[t + 1u] {
-        return MISSING;
+    return vec3u(mark.trace + 4u * at.x * mark.trace_capacity, select(0u, mark.trace_points, at.x < mark.trace_rows), at.y);
+}
+
+// Coordinate high/low and value bits; a missing value represents a hidden point.
+fn trace_read(base: vec3u, point: u32) -> vec3u {
+    if point >= base.y {
+        return vec3u(0u, 0u, MISSING);
     }
-    let lists = t + program[trace_level_at(slot) + 3u] + 4u * block + 2u * side;
-    let count = program[lists];
-    if count == 0u {
-        return MISSING;
+    let slot = (mark.trace_head + point) & (mark.trace_capacity - 1u);
+    let cursor = word_quad(program_words, base.x + 4u * slot);
+    if cursor.z == NONE || base.z >= cursor.w {
+        return vec3u(0u, 0u, MISSING);
     }
-    let e = last_at_most(t + program[lists + 1u], count, 3u, 1u, entry);
-    let local = at.y;
-    let per = program[e + 2u];
-    if program[e] == NONE || local >= per || entry < program[e + 1u] {
-        return MISSING;
-    }
-    return word(program[e] + (entry - program[e + 1u]) * per + local);
+    return vec3u(cursor.xy, word(cursor.z + base.z));
+}
+
+fn trace_sample(row: u32, point: u32) -> vec3u {
+    return trace_read(trace_cursor(row), point);
+}
+
+// Adjacent segment endpoints share the descriptor and header lookup.
+fn trace_pair(row: u32, point: u32) -> array<vec3u, 2> {
+    let base = trace_cursor(row);
+    return array<vec3u, 2>(trace_read(base, point), trace_read(base, point + 1u));
 }

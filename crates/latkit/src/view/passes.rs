@@ -1,9 +1,9 @@
 //! A frame's GPU passes.
 //!
-//! The compute pass freezes the rows' current state for transitions starting this frame, expands
+//! Raster passes freeze the rows' current state for transitions starting this frame, expands
 //! paged marks' drawn rows from their runs, evaluates dirty channels over the changed row blocks
 //! (reducing fitted domains first), resolves endpoints, eases marks in transition, moves comets,
-//! numbers segments, sorts rows by height, sums face normals when their corners moved, and measures
+//! number segments, sort rows by height, and measure
 //! extents when asked.
 //!
 //! The render pass draws the backdrop and a plot's grid lines, then every mark's primitive in scene
@@ -14,24 +14,32 @@ use std::ops::Range;
 
 use super::resources::MARK_STRIDE;
 use super::sync::Source;
-use super::variants::{CARRY, Draw, EASE, EXPAND_RUNS, GATHER, MarkVariants, NORMALS, Stage, TRAVEL};
-use super::words::Kept;
+use super::variants::{Draw, MarkVariants, Stage};
 use super::{Frame, View};
-use crate::Space;
 use crate::data::Field;
 use crate::derive::stamp_of;
 use crate::expr::compile::{Deps, Reads};
 use crate::expr::cpu::Rows;
 use crate::gpu::Inner;
-use crate::gpu::pipelines::{Asked, Variant};
+use crate::gpu::pipelines::{Asked, Projection, Variant};
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
-use crate::gpu::work::Count;
 use crate::scene::mark::{MarkKind, Primitive};
 
-const WORKGROUP: u32 = 256;
-/// The most workgroups per dispatch dimension that every device supports.
-const MAX_GROUPS: u32 = 65_535;
+/// Draw shaders sharing the view resources. Bind groups are cached by resource generation.
+const DRAW_SHADERS: [Shader; 11] = [
+    Shader::Backdrop,
+    Shader::Points,
+    Shader::PointsCustom,
+    Shader::Strokes,
+    Shader::StrokesFocus,
+    Shader::Areas,
+    Shader::PointsFocus,
+    Shader::PointsCustomFocus,
+    Shader::AreasFocus,
+    Shader::Glyphs,
+    Shader::Overlay,
+];
 
 /// The scissor rectangle `[x, y, width, height]`, in target pixels, covering `area`.
 fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
@@ -108,16 +116,41 @@ impl Drawn {
 
 /// State that every mark's draw in the main pass shares: the device and target, the bind groups,
 /// the lists buffer, and the plot area that lines clip to.
+#[derive(Clone, Copy)]
 struct Marks<'a> {
+    space: &'a crate::Space,
     device: &'a wgpu::Device,
     format: wgpu::TextureFormat,
     samples: u32,
     groups: &'a super::resources::Groups,
     passes: &'a [(Shader, wgpu::BindGroup)],
-    lists: &'a wgpu::Buffer,
 }
 
 impl Marks<'_> {
+    fn backdrop(&self, pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, inner: &mut Inner) {
+        let variant = Variant::draw(Shader::Backdrop, self.format, self.samples).projection(Projection::of(self.space));
+        let group = &self.passes.iter().find(|(shader, _)| *shader == Shader::Backdrop).expect("listed").1;
+        pass.set_bind_group(0, &self.groups.view, &[]);
+        pass.set_bind_group(1, &self.groups.mark, &[0]);
+        pass.set_bind_group(2, group, &[]);
+        pass.set_pipeline(&inner.pipelines.render(self.device, variant));
+        drawn.draw(pass, 3, 1);
+    }
+
+    fn opaque(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        marks: &[super::marks::Shown],
+    ) {
+        for (i, shown) in marks.iter().enumerate() {
+            if shown.drawable() && shown.instances() > 0 {
+                self.draw(pass, drawn, inner, i, shown, Draw::Opaque);
+            }
+        }
+    }
+
     /// Draws mark `i`: every instance, only the rows its focus lights, glowing, or every
     /// instance's opaque pixels.
     fn draw(
@@ -132,14 +165,13 @@ impl Marks<'_> {
         if shown.compiled.is_none() {
             return;
         }
-        let variants = MarkVariants::shown(shown);
-        let (Some(shader), Some(asked)) = (variants.shader(draw), variants.draw(draw, self.format, self.samples))
-        else {
-            return;
-        };
+        let variants = MarkVariants::shown(shown, self.space);
+        let shader = variants.shader(draw);
+        let asked = variants.draw(draw, self.format, self.samples);
         let pipeline = match asked {
             Asked::Shader(variant) => Some(inner.pipelines.render(self.device, variant)),
             Asked::Custom(source, variant) => inner.pipelines.custom(self.device, &source, variant),
+            Asked::Kernel(source, variant) => Some(inner.pipelines.kernel(self.device, &source, variant)),
         };
         let Some(pipeline) = pipeline else { return };
         let corners = shown.kind().primitive().corners();
@@ -150,12 +182,12 @@ impl Marks<'_> {
         if draw == Draw::Lit {
             drawn.draw(pass, corners, shown.lit.rows * shown.lit.pieces);
         } else {
-            shown.record(pass, drawn, corners, self.lists);
+            shown.record(pass, drawn, corners);
         }
     }
 }
 
-/// The marks each step of a frame's compute pass covers.
+/// The marks each step of a frame's raster preparation covers.
 struct Work {
     /// Marks whose transitions start this frame, freezing their rows' current state.
     frozen: Vec<usize>,
@@ -165,7 +197,6 @@ struct Work {
     /// Marks whose ease pass writes their shown state from their frozen and settled words.
     eased: Vec<usize>,
     segments: Vec<usize>,
-    faces: Vec<usize>,
     measured: Vec<usize>,
     /// Marks whose comets carry their travel over to rows a transition moved. `travelled` lists
     /// marks whose comets move this frame.
@@ -175,18 +206,6 @@ struct Work {
     expanded: Vec<usize>,
     /// Marks whose height orders sort.
     ordered: Vec<usize>,
-}
-
-/// Dispatches one workgroup per `WORKGROUP` items, if there are any. Past one dimension's limit, it
-/// dispatches rows of `DISPATCH_ROWS` items along the second dimension, as `item` in
-/// `lib/types.wesl` expects.
-pub(super) fn dispatch(pass: &mut wgpu::ComputePass<'_>, items: u32) {
-    let groups = items.div_ceil(WORKGROUP);
-    if groups > MAX_GROUPS {
-        pass.dispatch_workgroups(wgsl::DISPATCH_ROWS / WORKGROUP, items.div_ceil(wgsl::DISPATCH_ROWS), 1);
-    } else if groups > 0 {
-        pass.dispatch_workgroups(groups, 1, 1);
-    }
 }
 
 /// The row blocks `shown` evaluates: those its dirty channels cover, and those whose state words
@@ -206,15 +225,6 @@ fn listed(shown: &super::marks::Shown) -> Vec<u32> {
         }
     }
     blocks
-}
-
-/// Dispatches over `blocks` listed row blocks of a mark with `rows` held rows: x spans one block's
-/// rows, and y the blocks.
-pub(super) fn dispatch_blocks(pass: &mut wgpu::ComputePass<'_>, rows: u32, blocks: u32) {
-    let wide = rows.min(wgsl::PAGE_ROWS).div_ceil(WORKGROUP);
-    if wide > 0 && blocks > 0 {
-        pass.dispatch_workgroups(wide, blocks, 1);
-    }
 }
 
 /// Mark `index`'s dynamic offset in the marks' uniforms.
@@ -298,72 +308,29 @@ impl super::marks::Shown {
         }
     }
 
-    /// Records the draw of its instances, indirect from its segment list when it has one.
-    pub(super) fn record(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        drawn: &mut Drawn,
-        corners: u32,
-        lists: &wgpu::Buffer,
-    ) {
-        match &self.segments.list {
-            Some(list) => {
-                pass.draw_indirect(lists, u64::from(list.header + wgsl::LIST_DRAW) * 4);
-                drawn.count(list.kept);
-            }
-            None => drawn.draw(pass, corners, self.instances()),
+    /// A current count trims draws and queries recorded after list preparation. Earlier
+    /// reservations keep their capacity because preparation can invalidate the previous count.
+    pub(super) fn counted_instances(&self, capacity: u32) -> u32 {
+        let segments = &self.segments;
+        if segments.list.is_some() && segments.built != 0 && segments.found.stamp() == segments.built {
+            capacity.min(segments.found.value)
+        } else if segments.list.is_some() && !self.curved() {
+            capacity.min(self.segment_capacity())
+        } else {
+            capacity
         }
+    }
+
+    /// Records a bounded instance draw. Listed shaders reject the unused tail before geometry reads.
+    pub(super) fn record(&self, pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, corners: u32) {
+        drawn.draw(pass, corners, self.counted_instances(self.instances()));
     }
 }
 
 impl View {
-    /// Evaluates the dirty channels of marks `work` over their dirty row blocks, first reducing the
-    /// fitted domains that changed. Channels write a mark's state, or its settled words while it
-    /// eases. `state` is the expression machine's pass group.
-    fn evaluate(
-        &mut self,
-        pass: &mut wgpu::ComputePass<'_>,
-        inner: &mut Inner,
-        group: &wgpu::BindGroup,
-        state: &wgpu::BindGroup,
-        work: &[usize],
-    ) {
-        if work.is_empty() {
-            return;
-        }
-        let device = &self.gpu.0.device;
-        let step = super::resources::step;
-        for &i in work {
-            let shown = &mut self.marks[i];
-            let into = state;
-            pass.set_pipeline(&inner.pipelines.compute(device, Variant::channels(shown.reads())));
-            pass.set_bind_group(1, group, &[offset(i)]);
-            let rows = shown.live();
-            // A changed domain dirties every block, so the reductions run over the listed blocks. A
-            // paged table whose domains read only its data fits them on the CPU, over every row.
-            if shown.reduce && rows > 0 && !shown.fits_data() {
-                debug_assert_eq!(shown.blocks, super::marks::Blocks::All, "a changed domain dirties every block");
-                pass.set_bind_group(2, into, &[step(wgsl::STEP_REDUCE)]);
-                dispatch_blocks(pass, rows, shown.block_count);
-            }
-            pass.set_bind_group(2, into, &[step(wgsl::STEP_CHANNELS)]);
-            dispatch_blocks(pass, rows, shown.block_count);
-            let blocks = shown.blocks.of(rows);
-            let evaluated = blocks.iter().map(|&b| u64::from((rows - b * wgsl::PAGE_ROWS).min(wgsl::PAGE_ROWS)));
-            self.gpu.0.counters.add(Count::Evaluated, evaluated.sum());
-            shown.dirty = 0;
-            shown.blocks = super::marks::Blocks::default();
-            shown.reduce = false;
-            shown.fresh.clear();
-        }
-        pass.set_bind_group(2, state, &[step(wgsl::STEP_CHANNELS)]);
-    }
-
-    /// Records the frame's compute pass: freezes starting transitions, evaluates dirty channels,
-    /// and sums face normals when their inputs changed. With `measure`, it also measures the
-    /// extents of every measured mark and returns their readback. With `travel`, comets move by the
-    /// frame's step.
-    pub(super) fn compute(
+    /// Records row preparation: transition snapshots, changed channels, endpoint resolution,
+    /// segment lists, and height order. Extents and their readback are included when requested.
+    pub(super) fn prepare_rows(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
@@ -378,107 +345,63 @@ impl View {
             resolved,
             eased,
             segments,
-            faces,
             measured,
             carried,
             travelled,
             expanded,
             ordered,
         } = self.work(measure, travel);
-        let all = [
-            &frozen, &work, &resolved, &eased, &segments, &faces, &measured, &carried, &travelled, &expanded, &ordered,
-        ];
+        let all = [&frozen, &work, &resolved, &eased, &segments, &measured, &carried, &travelled, &expanded, &ordered];
         if all.iter().all(|marks| marks.is_empty()) {
             return None;
         }
-        self.start_domains(encoder, &work);
-        let resources = self.resources.as_mut().expect("created before passes");
-        let extent_bytes = self.marks.len() as u64 * u64::from(wgsl::EXTENT_WORDS) * 4;
-        if !measured.is_empty() {
-            encoder.clear_buffer(resources.extents(), 0, Some(extent_bytes));
-        }
+        self.start_domains(&work);
         inner.arena.written();
-        if !faces.is_empty() {
-            // Faces sum their normals from zero into the pages of the vertex marks they attach to.
-            let words = u64::from(wgsl::PAGE_ROWS * wgsl::NORMAL_WORDS) * 4;
-            for shown in &self.marks {
-                for &block in shown.words.pages(Kept::Normals).blocks.iter() {
-                    gpu.0.queue.clear_buffer(encoder, inner.arena.buffer(), u64::from(block) * 4, words);
-                }
-            }
-        }
+        self.state_rows(encoder, inner, "freeze", &frozen);
+        self.state_rows(encoder, inner, "carry", &carried);
+        self.state_rows(encoder, inner, "evaluate", &work);
+        self.state_rows(encoder, inner, "ends", &resolved);
+        self.state_rows(encoder, inner, "ease", &eased);
+        self.state_rows(encoder, inner, "travel", &travelled);
+        self.record_lists(encoder, inner, &expanded, &segments, &ordered);
+        let resources = self.resources.as_mut().expect("frame resources");
+        let extent_words = self.marks.len() as u32 * wgsl::EXTENT_WORDS;
         let groups = resources.groups(&gpu.0, inner);
-        let freeze_group = (!frozen.is_empty()).then(|| resources.pass(device, inner, Shader::Freeze));
-        let evaluate_group = resources.pass(device, inner, Shader::Evaluate);
-        let normals_group = (!faces.is_empty()).then(|| resources.pass(device, inner, Shader::Normals));
-        let bounds_group = (!measured.is_empty()).then(|| resources.pass(device, inner, Shader::Bounds));
-        let listing = !segments.is_empty() || !expanded.is_empty() || !ordered.is_empty();
-        let lists_group = listing.then(|| resources.pass(device, inner, Shader::Lists));
-        let headers = segments.iter().map(|&i| {
-            let list = self.marks[i].segments.list.expect("listed");
-            (list, self.marks[i].kind().primitive().corners())
-        });
-        let orders = ordered.iter().map(|&i| (self.marks[i].height_order.list.expect("ordered"), 0));
-        for (list, corners) in headers.chain(orders) {
-            let words = list.header_words(corners);
-            gpu.0.queue.write_buffer(resources.lists(), u64::from(list.header) * 4, bytemuck::cast_slice(&words));
-        }
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("latkit compute"),
-                timestamp_writes: None,
-            });
-            pass.set_bind_group(0, &groups.view, &[]);
-            let held = super::marks::Shown::held;
-            // Starting transitions freeze their rows' state as the frame began, before any pass
-            // writes it, and after packing placed their page tables.
-            if let Some(group) = &freeze_group {
-                pass.set_bind_group(2, group, &[]);
-                self.over_marks(&mut pass, inner, &groups.mark, GATHER, &frozen, held);
-            }
-            // Each drawn row's word first, exits included: every later pass reads it.
-            if let Some(group) = &lists_group {
-                pass.set_bind_group(2, group, &[super::resources::step(wgsl::STEP_SEGMENTS)]);
-                self.over_marks(&mut pass, inner, &groups.mark, EXPAND_RUNS, &expanded, |s| s.rows + s.exits);
-            }
-            pass.set_bind_group(2, &evaluate_group, &[super::resources::step(wgsl::STEP_CHANNELS)]);
-            self.over_marks(&mut pass, inner, &groups.mark, CARRY, &carried, held);
-            self.evaluate(&mut pass, inner, &groups.mark, &evaluate_group, &work);
-            // Before anything that reads where rows' endpoints are held.
-            self.resolve_ends(&mut pass, inner, &groups.mark, &evaluate_group, &resolved);
-            // After evaluating, so marks ease toward this frame's values.
-            self.over_marks(&mut pass, inner, &groups.mark, EASE, &eased, held);
-            // After evaluating, so comets travel at this frame's flow.
-            self.over_marks(&mut pass, inner, &groups.mark, TRAVEL, &travelled, held);
-            if let Some(group) = &lists_group {
-                pass.set_bind_group(2, group, &[super::resources::step(wgsl::STEP_SEGMENTS)]);
-                self.count_segments(&mut pass, inner, &groups.mark, &segments);
-                // After every pass that writes where rows stand and their segments.
-                self.sort_height_orders(&mut pass, inner, &groups.mark, group, &ordered);
-            }
-            if let Some(group) = &normals_group {
-                pass.set_bind_group(2, group, &[]);
-                self.over_marks(&mut pass, inner, &groups.mark, NORMALS, &faces, |s| s.rows);
-            }
-            if let Some(group) = &bounds_group {
-                pass.set_bind_group(2, group, &[]);
-                for &i in &measured {
-                    let Some(bounds) = MarkVariants::shown(&self.marks[i]).bounds() else { continue };
-                    pass.set_pipeline(&inner.pipelines.compute(device, bounds));
-                    pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-                    dispatch(&mut pass, self.marks[i].live_instances());
-                }
+        if !measured.is_empty() {
+            use crate::gpu::raster::{At, Raster};
+            let mut raster = Raster { device, queue: &gpu.0.queue, pipelines: &mut inner.pipelines, encoder };
+            raster.fill(inner.arena.words(), At::new(resources.extents(), 0), extent_words, 0);
+            for &i in &measured {
+                let shown = &self.marks[i];
+                let Some(variant) = MarkVariants::shown(shown, &self.scene.space).bounds() else { continue };
+                let input = crate::gpu::listing::Inputs {
+                    pages: inner.arena.words(),
+                    lists: resources.lists(),
+                    view: &groups.view,
+                    mark: &groups.mark,
+                    offset: offset(i),
+                    path: shown.path(),
+                    projection: Projection::of(&self.scene.space),
+                    measured: shown.measures_paths(),
+                };
+                inner.bounds.record(
+                    &mut raster,
+                    &input,
+                    variant,
+                    shown.live_instances(),
+                    At::new(resources.extents(), i as u32 * wgsl::EXTENT_WORDS),
+                );
             }
         }
-        let resources = self.resources.as_ref().expect("created before passes");
+        let resources = self.resources.as_ref().expect("frame resources");
         (!measured.is_empty()).then(|| {
-            Readback::new(&inner.readbacks, device, encoder, resources.extents(), 0, extent_bytes, &self.waker)
+            Readback::words(&inner.readbacks, device, encoder, resources.extents(), 0, extent_words, &self.waker)
         })
     }
 
     /// Prepares the fitted domains that marks `work` reduce. Domains computed on the CPU over a
     /// paged table's rows are written. The rest are cleared for the GPU to fit.
-    fn start_domains(&mut self, encoder: &mut wgpu::CommandEncoder, work: &[usize]) {
+    fn start_domains(&mut self, work: &[usize]) {
         let mut fitted: Vec<(usize, Vec<u32>)> = Vec::new();
         for &i in work {
             if self.marks[i].reduce && self.marks[i].fits_data() {
@@ -491,16 +414,14 @@ impl View {
             if !shown.reduce {
                 continue;
             }
-            let at = u64::from(shown.domains) * 8;
-            match fitted.iter().find(|(m, _)| *m == i) {
-                Some((_, words)) => self.gpu.0.queue.write_buffer(resources.domains(), at, bytemuck::cast_slice(words)),
-                None => encoder.clear_buffer(resources.domains(), at, Some(u64::from(shown.reductions()) * 8)),
+            if let Some((_, words)) = fitted.iter().find(|(m, _)| *m == i) {
+                resources.domains().write_padded(&self.gpu.0.queue, shown.domains * 2, words);
             }
         }
     }
 
-    /// Chooses the marks each compute step covers this frame: freezing, evaluation, endpoint
-    /// resolution, easing, segment counting, face normals, measuring, comet carry, run expansion,
+    /// Chooses the marks each raster step covers this frame: freezing, evaluation, endpoint
+    /// resolution, easing, segment counting, measuring, comet carry, run expansion,
     /// height order sorting, and with `travel`, comet travel.
     fn work(&mut self, measure: bool, travel: bool) -> Work {
         let frozen = (0..self.marks.len()).filter(|&i| self.marks[i].remap != wgsl::NONE).collect();
@@ -536,11 +457,6 @@ impl View {
             }
         }
         let segments = self.segments_due();
-        let faces = if self.normals_due() {
-            (0..self.marks.len()).filter(|&i| self.marks[i].drawable() && self.marks[i].faces()).collect()
-        } else {
-            Vec::new()
-        };
         let measured = (0..self.marks.len())
             .filter(|&i| measure && self.marks[i].drawable() && self.marks[i].measured())
             .collect();
@@ -550,19 +466,7 @@ impl View {
         let expanded = self.drawn_rows_due();
         // After the versions above move and the segment lists are stamped.
         let ordered = self.height_orders_due();
-        Work {
-            frozen,
-            evaluated: work,
-            resolved,
-            eased,
-            segments,
-            faces,
-            measured,
-            carried,
-            travelled,
-            expanded,
-            ordered,
-        }
+        Work { frozen, evaluated: work, resolved, eased, segments, measured, carried, travelled, expanded, ordered }
     }
 
     /// Writes the blocks buffer, which each mark's uniform points into. For each mark, it lists the
@@ -584,47 +488,6 @@ impl View {
         let gpu = self.gpu.clone();
         let resources = self.resources.as_mut().expect("created before passes");
         resources.write_blocks(&gpu.0.device, &gpu.0.queue, &words);
-    }
-
-    /// Runs `variant` over each of `marks`, one invocation per item `items` counts for the mark.
-    fn over_marks(
-        &self,
-        pass: &mut wgpu::ComputePass<'_>,
-        inner: &mut Inner,
-        mark: &wgpu::BindGroup,
-        variant: Variant,
-        marks: &[usize],
-        items: impl Fn(&super::marks::Shown) -> u32,
-    ) {
-        if marks.is_empty() {
-            return;
-        }
-        pass.set_pipeline(&inner.pipelines.compute(&self.gpu.0.device, variant));
-        for &i in marks {
-            pass.set_bind_group(1, mark, &[offset(i)]);
-            dispatch(pass, items(&self.marks[i]));
-        }
-    }
-
-    /// Records the count, scan, and write steps of each of `marks`' segment lists.
-    fn count_segments(
-        &self,
-        pass: &mut wgpu::ComputePass<'_>,
-        inner: &mut Inner,
-        mark: &wgpu::BindGroup,
-        marks: &[usize],
-    ) {
-        let device = &self.gpu.0.device;
-        for &i in marks {
-            let items = self.marks[i].rows + self.marks[i].exits;
-            let [count, write] = MarkVariants::shown(&self.marks[i]).segments();
-            pass.set_bind_group(1, mark, &[offset(i)]);
-            pass.set_pipeline(&inner.pipelines.compute(device, count));
-            dispatch(pass, items);
-            super::lists::scan(pass, &mut inner.pipelines, device, items);
-            pass.set_pipeline(&inner.pipelines.compute(device, write));
-            dispatch(pass, items);
-        }
     }
 
     /// The words of mark `i`'s fitted domains, as `lib/reduce.wesl` keeps them, each computed on
@@ -666,31 +529,6 @@ impl View {
         }
     }
 
-    /// Whether face normals need summing again: a face or vertex mark wrote its state since the
-    /// last sum, or the globe turned.
-    fn normals_due(&mut self) -> bool {
-        let faces = self.marks.iter().any(|m| m.drawable() && m.faces());
-        if !faces {
-            return false;
-        }
-        let versions: Vec<u64> = self
-            .marks
-            .iter()
-            .filter(|m| matches!(m.kind(), MarkKind::Vertices | MarkKind::Faces))
-            .map(|m| m.version + u64::from(m.dirty != 0))
-            .collect();
-        let turned = match (&self.scene.space, self.camera) {
-            (Space::Earth(_), crate::Camera::Map { center, .. }) => Some([center[0].to_bits(), center[1].to_bits()]),
-            _ => None,
-        };
-        let stamp = stamp_of((versions, turned, self.marks.len()));
-        if !self.normals.due(stamp) {
-            return false;
-        }
-        self.normals.mark(stamp);
-        true
-    }
-
     /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark
     /// in scene order, and the lit rows. Once the text pipelines are ready, it also builds the
     /// distance fields of text set this frame, and draws the labels and the overlay's
@@ -719,42 +557,37 @@ impl View {
         let resources = self.resources.as_mut().expect("created before passes");
         let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
         let groups = resources.groups(&gpu.0, inner);
-        let lists = resources.lists().clone();
         let mut passes: Vec<(Shader, wgpu::BindGroup)> = Vec::new();
-        for shader in [
-            Shader::Backdrop,
-            Shader::Points,
-            Shader::PointsCustom,
-            Shader::Strokes,
-            Shader::Triangles,
-            Shader::Areas,
-            Shader::PointsFocus,
-            Shader::PointsCustomFocus,
-            Shader::StrokesFocus,
-            Shader::AreasFocus,
-            Shader::PointsOpaque,
-            Shader::PointsCustomOpaque,
-            Shader::StrokesOpaque,
-            Shader::Glyphs,
-            Shader::Overlay,
-        ] {
+        for shader in DRAW_SHADERS {
             passes.push((shader, resources.pass(device, inner, shader)));
         }
+        let pick_targets = (probing && samples > 1).then(|| resources.pick_targets(device));
         let group = |shader: Shader| &passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         let (view, resolve) = match &color {
             Some(color) => (color, Some(frame.target)),
             None => (frame.target, None),
         };
+        let marks =
+            Marks { space: &self.scene.space, device, format: frame.format, samples, groups: &groups, passes: &passes };
+        if let Some((pick_color, pick_depth)) = &pick_targets {
+            let mut pass = main_pass(encoder, pick_color, None, pick_depth, [0.0; 4], true);
+            if !self.unplaced() {
+                let marks = Marks { samples: 1, ..marks };
+                marks.backdrop(&mut pass, drawn, inner);
+                if let Some([x, y, w, h]) = clip {
+                    pass.set_scissor_rect(x, y, w, h);
+                }
+                if self.layered() {
+                    marks.opaque(&mut pass, drawn, inner, &self.marks);
+                }
+            }
+        }
         let mut pass = main_pass(encoder, view, resolve, &depth, background, probing);
         // Until a fit places the camera, frames show only the background.
         if self.unplaced() {
             return;
         }
-        pass.set_bind_group(0, &groups.view, &[]);
-        pass.set_bind_group(1, &groups.mark, &[0]);
-        pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Backdrop, frame.format, samples)));
-        pass.set_bind_group(2, group(Shader::Backdrop), &[]);
-        drawn.draw(&mut pass, 3, 1);
+        marks.backdrop(&mut pass, drawn, inner);
         let overlay = |pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, inner: &mut Inner, sprites: Range<u32>| {
             pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Overlay, frame.format, samples)));
             pass.set_bind_group(2, group(Shader::Overlay), &[]);
@@ -763,13 +596,13 @@ impl View {
         if texts && under > 0 {
             overlay(&mut pass, drawn, inner, 0..under);
         }
-        let marks = Marks { device, format: frame.format, samples, groups: &groups, passes: &passes, lists: &lists };
+
         // Marks and their labels draw only where no guide on a side takes room.
         if let Some([x, y, w, h]) = clip {
             pass.set_scissor_rect(x, y, w, h);
         }
         // Where depth varies, opaque pixels draw first and keep their depth: those of points and
-        // strokes, and faces and areas whole. Every other pixel then blends over them in mark order,
+        // strokes, and areas whole. Every other pixel then blends over them in mark order,
         // only in front of what is drawn: antialiased edges, marks too thin to cover a pixel, and
         // translucent rows, such as those a selection dims. Within a mark whose rows stand at
         // different heights, they blend lowest first, which is farthest first where they overlap.
@@ -778,11 +611,7 @@ impl View {
         // over the rows behind it.
         let layered = self.layered();
         if layered {
-            for (i, shown) in self.marks.iter().enumerate() {
-                if shown.drawable() && shown.instances() > 0 {
-                    marks.draw(&mut pass, drawn, inner, i, shown, Draw::Opaque);
-                }
-            }
+            marks.opaque(&mut pass, drawn, inner, &self.marks);
         }
         for (i, shown) in self.marks.iter().enumerate() {
             if !shown.drawable() || shown.instances() == 0 || (layered && shown.kind().opaque_whole()) {
@@ -809,56 +638,83 @@ impl View {
         }
     }
 
-    /// Records the probe pass: finds the drawn row nearest the probe point and the nearest depth
-    /// drawn there, and returns their readback.
+    /// Reduce candidate priorities on the GPU, then describe the selected row and depth.
     pub(super) fn probe(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> Readback {
-        let probed: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].probed()).collect();
-        // Any drawn mark's probe program can read the depth under the probe. The first one does.
-        let under: Vec<usize> = self.marks.iter().position(super::marks::Shown::drawable).into_iter().collect();
-        let mut reset = [0_u32; wgsl::PROBE_WORDS as usize];
-        reset[wgsl::PROBE_KEY as usize] = wgsl::NONE;
-        let probe = self.resources.as_ref().expect("created before passes").probe();
-        self.gpu.0.queue.write_buffer(probe, 0, bytemuck::cast_slice(&reset));
-        // Each step runs over every mark before the next: the nearest key, then its topmost
-        // instance, then where that lies.
-        let steps = [wgsl::STEP_NEAREST, wgsl::STEP_TOPMOST, wgsl::STEP_DESCRIBE].map(|step| (step, &probed[..]));
-        self.probe_pass(encoder, inner, "latkit probe", &[&steps[..], &[(wgsl::STEP_UNDER, &under[..])]].concat());
-        let resources = self.resources.as_ref().expect("created before passes");
-        let (device, bytes) = (&self.gpu.0.device, u64::from(wgsl::PROBE_WORDS) * 4);
-        Readback::new(&inner.readbacks, device, encoder, resources.probe(), 0, bytes, &self.waker)
+        let gpu = self.gpu.clone();
+        let device = &gpu.0.device;
+        let resources = self.resources.as_mut().expect("created before probes");
+        let groups = resources.groups(&gpu.0, inner);
+        let input = |i: usize| crate::gpu::probing::ProbeInputs {
+            geometry: crate::gpu::listing::Inputs {
+                pages: inner.arena.words(),
+                lists: resources.lists(),
+                view: &groups.view,
+                mark: &groups.mark,
+                offset: offset(i),
+                path: self.marks[i].path(),
+                projection: Projection::of(&self.scene.space),
+                measured: self.marks[i].measures_paths(),
+            },
+            depth: resources.pick_depth(),
+            output: resources.probe(),
+            variant: MarkVariants::shown(&self.marks[i], &self.scene.space).probe(Shader::Probe),
+        };
+        let mut raster =
+            crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines: &mut inner.pipelines, encoder };
+        inner.probing.begin(&mut raster, self.marks.len() as u32);
+        for (i, shown) in self.marks.iter().enumerate().filter(|(_, m)| m.probed()) {
+            inner.probing.nearest(&mut raster, &input(i), shown.counted_instances(shown.live_instances()), i as u32);
+        }
+        if let Some(i) = self.marks.iter().position(super::marks::Shown::drawable) {
+            inner.probing.finish(&mut raster, &input(i), self.marks.len() as u32);
+        } else {
+            let mut reset = [0_u32; wgsl::PROBE_WORDS as usize];
+            reset[wgsl::PROBE_KEY as usize] = wgsl::NONE;
+            resources.probe().write(&gpu.0.queue, 0, &reset);
+        }
+        Readback::words(&inner.readbacks, device, encoder, resources.probe(), 0, wgsl::PROBE_WORDS, &self.waker)
     }
 
-    /// Records a compute pass named `label` that runs each of `steps` of the probe program in turn:
-    /// a `STEP_` code, over each of the marks listed with it.
     pub(super) fn probe_pass(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
-        label: &str,
-        steps: &[(u32, &[usize])],
+        kind: super::query::Kind,
+        marks: &[(usize, u32, u32)],
     ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let resources = self.resources.as_mut().expect("created before passes");
-        let shader = crate::gpu::pipelines::probe(resources.samples());
+        let resources = self.resources.as_mut().expect("created before queries");
+        if resources.samples() > 1 {
+            resources.pick_targets(device);
+        }
         let groups = resources.groups(&gpu.0, inner);
-        let group = resources.pass(device, inner, shader);
-        let mut pass =
-            encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(label), timestamp_writes: None });
-        pass.set_bind_group(0, &groups.view, &[]);
-        for &(step, marks) in steps {
-            pass.set_bind_group(2, &group, &[super::resources::step(step)]);
-            for &i in marks {
-                let shown = &self.marks[i];
-                pass.set_pipeline(&inner.pipelines.compute(device, MarkVariants::shown(shown).probe(shader)));
-                pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-                // A step that reads one result runs once. The rest run over every instance probes
-                // cover.
-                if matches!(step, wgsl::STEP_DESCRIBE | wgsl::STEP_LOCATE | wgsl::STEP_UNDER) {
-                    pass.dispatch_workgroups(1, 1, 1);
-                } else {
-                    dispatch(&mut pass, shown.live_instances());
+        let mut raster =
+            crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines: &mut inner.pipelines, encoder };
+        for &(i, room, at) in marks {
+            let shown = &self.marks[i];
+            let input = crate::gpu::probing::ProbeInputs {
+                geometry: crate::gpu::listing::Inputs {
+                    pages: inner.arena.words(),
+                    lists: resources.lists(),
+                    view: &groups.view,
+                    mark: &groups.mark,
+                    offset: offset(i),
+                    path: shown.path(),
+                    projection: Projection::of(&self.scene.space),
+                    measured: shown.measures_paths(),
+                },
+                depth: resources.pick_depth(),
+                output: resources.probe(),
+                variant: MarkVariants::shown(shown, &self.scene.space).probe(Shader::Probe),
+            };
+            let instances = shown.counted_instances(shown.live_instances());
+            match kind {
+                super::query::Kind::Hits => inner.probing.hits(&mut raster, &input, instances, room, at),
+                super::query::Kind::Boxed => {
+                    inner.probing.boxed(&mut raster, &input, instances, shown.live(), at);
                 }
+                super::query::Kind::Locate => inner.probing.locate(&mut raster, &input),
             }
         }
     }

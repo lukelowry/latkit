@@ -7,7 +7,8 @@ import package::lib::types::{
     NONE, MISSING, COLUMN_WORDS, COLUMN_FLAGS, COLUMN_ROWS, COLUMN_TABLE, COLUMN_LOW, COLUMN_JOIN, COLUMN_T,
     SAMPLED, STEP, PAGE_BITS, PAGE_MASK, POINT_BITS, POINT_MASK, PATH_PAGE_WORDS,
 };
-import package::lib::bind::{program, mark, word};
+import package::lib::bind::{program, program_words, pages, mark, word};
+import package::lib::words::word_quad;
 
 // Whether a pipeline's marks read fields of other tables through a join, and fields sampled over
 // the axis. Both are set when the pipeline is created, so a scene that uses neither compiles
@@ -25,7 +26,7 @@ fn missing_bits(bits: u32) -> bool {
 }
 
 fn column_word(column: u32, word: u32) -> u32 {
-    return program[mark.columns + column * COLUMN_WORDS + word];
+    return program(mark.columns + column * COLUMN_WORDS + word);
 }
 
 // Binary search over `count` items of `stride` words at `at` in `program`. Returns where the last
@@ -35,7 +36,7 @@ fn last_at_most(at: u32, count: u32, stride: u32, key: u32, value: u32) -> u32 {
     var hi = count;
     while hi - lo > 1u {
         let mid = (lo + hi) / 2u;
-        if program[at + mid * stride + key] <= value {
+        if program(at + mid * stride + key) <= value {
             lo = mid;
         } else {
             hi = mid;
@@ -62,12 +63,12 @@ fn static_value(column: u32, row: u32) -> vec2u {
     let page = at.x;
     let local = at.y;
     let table = column_word(column, COLUMN_TABLE);
-    let hi = page_word(program[table + page], local, MISSING);
+    let hi = page_word(program(table + page), local, MISSING);
     let low = column_word(column, COLUMN_LOW);
     if low == NONE {
         return vec2u(hi, 0u);
     }
-    return vec2u(hi, page_word(program[low + page], local, 0u));
+    return vec2u(hi, page_word(program(low + page), local, 0u));
 }
 
 // A sampled column's value at the shown coordinate, as bits. Each page of rows has a six-word
@@ -77,15 +78,15 @@ fn sample_value(column: u32, row: u32) -> u32 {
     let at = page_of(row);
     let cursor = column_word(column, COLUMN_TABLE) + at.x * 6u;
     let local = at.y;
-    if local >= program[cursor + 4u] {
+    if local >= program(cursor + 4u) {
         return MISSING;
     }
-    let a = page_word(program[cursor], program[cursor + 1u] + local, MISSING);
+    let a = page_word(program(cursor), program(cursor + 1u) + local, MISSING);
     let flags = column_word(column, COLUMN_FLAGS);
-    if (flags & STEP) != 0u || program[cursor + 2u] == NONE || local >= program[cursor + 5u] {
+    if (flags & STEP) != 0u || program(cursor + 2u) == NONE || local >= program(cursor + 5u) {
         return a;
     }
-    let b = page_word(program[cursor + 2u], program[cursor + 3u] + local, MISSING);
+    let b = page_word(program(cursor + 2u), program(cursor + 3u) + local, MISSING);
     if missing_bits(a) || missing_bits(b) {
         return a;
     }
@@ -100,15 +101,14 @@ fn bits_value(column: u32, row: u32) -> u32 {
     }
     let table = column_word(column, COLUMN_TABLE);
     let at = page_of(row);
-    return page_word(program[table + at.x], at.y, NONE);
+    return page_word(program(table + at.x), at.y, NONE);
 }
 
 // The row a column reads for `row`: through its join when it reads another table.
 fn joined_row(column: u32, row: u32) -> u32 {
+    if !JOINED { return row; }
     let join = column_word(column, COLUMN_JOIN);
-    if !JOINED || join == NONE {
-        return row;
-    }
+    if join == NONE { return row; }
     return bits_value(join, row);
 }
 
@@ -118,8 +118,10 @@ fn column_value(column: u32, row: u32) -> vec2u {
     if r == NONE || r >= column_word(column, COLUMN_ROWS) {
         return vec2u(MISSING, 0u);
     }
-    if TIMED && (column_word(column, COLUMN_FLAGS) & SAMPLED) != 0u {
-        return vec2u(sample_value(column, r), 0u);
+    if TIMED {
+        if (column_word(column, COLUMN_FLAGS) & SAMPLED) != 0u {
+            return vec2u(sample_value(column, r), 0u);
+        }
     }
     return static_value(column, r);
 }
@@ -142,18 +144,29 @@ fn points_of(column: u32, row: u32) -> Points {
     let table = column_word(column, COLUMN_TABLE);
     let at = page_of(row);
     let page = table + PATH_PAGE_WORDS * at.x;
-    let rows = program[page];
-    if rows == NONE || at.y >= program[page + 3u] {
+    let descriptor = word_quad(program_words, page);
+    let rows = descriptor.x;
+    if rows == NONE || at.y >= descriptor.w {
         return Points(0u, 0u, 0u);
     }
-    let entry = word(rows + 2u * at.y);
-    let listed = table + program[page + 1u] + (entry >> POINT_BITS);
-    return Points(listed, entry & POINT_MASK, word(rows + 2u * at.y + 1u));
+    let pair = word_quad(pages, rows + 2u * at.y);
+    let entry = select(pair.xy, pair.zw, (at.y & 1u) != 0u);
+    let listed = table + descriptor.y + (entry.x >> POINT_BITS);
+    return Points(listed, entry.x & POINT_MASK, entry.y);
+}
+
+// Address of point `k`. A geometry list can retain it until its pinned pages change.
+fn point_address(points: Points, k: u32) -> u32 {
+    let i = points.first + k;
+    return program(points.blocks + (i >> POINT_BITS)) + 2u * (i & POINT_MASK);
+}
+
+fn point_at(at: u32) -> vec2u {
+    let pair = word_quad(pages, at);
+    return select(pair.xy, pair.zw, (at & 2u) != 0u);
 }
 
 // Point `k` of a row's points, as x and y bits.
 fn point_bits(points: Points, k: u32) -> vec2u {
-    let i = points.first + k;
-    let at = program[points.blocks + (i >> POINT_BITS)] + 2u * (i & POINT_MASK);
-    return vec2u(word(at), word(at + 1u));
+    return point_at(point_address(points, k));
 }

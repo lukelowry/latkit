@@ -1,6 +1,6 @@
 // Labels: where a labeled row's text is anchored, its size, the space it claims, and whether it can
-// show. Draws place every label from its anchor each frame, so labels track the camera and their
-// rows exactly. The label passes measure the same boxes to claim space and find the visible texts.
+// show. Preparation retains each label's screen box until its placement inputs change. Claims,
+// text requests, and glyphs use that same box, so labels track the camera and their rows exactly.
 // Text is a distance field set at `TEXT_BASE` and drawn at any size in CSS pixels. A label is a
 // row of runs: a text label's one text, or the characters a number label writes.
 
@@ -270,12 +270,6 @@ fn claims_room(a: Anchor) -> bool {
     return a.room.x <= 0.0;
 }
 
-// The claim key of drawn row `i`. Later marks, then later rows, draw on top, so their keys are
-// larger. Never 0, which marks a cell no label claimed.
-fn claim_key(i: u32) -> u32 {
-    return (min(mark.index, 255u) << 24u) | min(i + 1u, 0xffffffu);
-}
-
 // The box a label claims: its runs' box (of size `extent`) once all are set (`ready`), else space
 // for a short text at its anchor.
 fn claimed(a: Anchor, ready: bool, extent: vec2f, size: f32) -> Text {
@@ -290,9 +284,13 @@ struct Cells {
     width: i32,
 }
 
+fn grid_size() -> vec2i {
+    return vec2i(ceil((eye.size + 2.0 * LABEL_MARGIN * eye.size) / LABEL_CELL));
+}
+
 fn cells_of(t: Text) -> Cells {
     let margin = LABEL_MARGIN * eye.size;
-    let size = vec2i(ceil((eye.size + 2.0 * margin) / LABEL_CELL));
+    let size = grid_size();
     let first = max(vec2i(floor((t.lo + margin) / LABEL_CELL)), vec2i(0));
     let last = min(vec2i(floor((t.hi + margin) / LABEL_CELL)), size - 1);
     return Cells(first, last, size.x);

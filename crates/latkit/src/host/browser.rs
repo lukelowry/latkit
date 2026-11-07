@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
 use super::queue::Queue;
 use super::{Encoder, Unit};
@@ -18,7 +18,7 @@ use crate::{Error, Pending};
 pub struct Browser;
 
 thread_local! {
-    static CANVAS: RefCell<Option<(OffscreenCanvas, OffscreenCanvasRenderingContext2d)>> = const { RefCell::new(None) };
+    static CANVAS: RefCell<Option<TextCanvas>> = const { RefCell::new(None) };
     static JOBS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
     static QUEUE: RefCell<Queue> = RefCell::new(Queue::default());
     static ENCODERS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
@@ -183,11 +183,7 @@ pub(super) fn fonts() -> u64 {
 
 /// Breaks `text` into lines, each with its width: at each newline, then at spaces so no line is
 /// wider than `max_width`. A word wider than `max_width` gets a line of its own.
-fn lines(
-    context: &OffscreenCanvasRenderingContext2d,
-    text: &str,
-    max_width: Option<f64>,
-) -> Option<Vec<(String, f64)>> {
+fn lines(context: &TextCanvas, text: &str, max_width: Option<f64>) -> Option<Vec<(String, f64)>> {
     let width = |s: &str| context.measure_text(s).ok().map(|m| m.width());
     let mut lines: Vec<(String, f64)> = Vec::new();
     for paragraph in text.split('\n').map(|p| p.strip_suffix('\r').unwrap_or(p)) {
@@ -214,21 +210,108 @@ fn lines(
     Some(lines)
 }
 
-/// Calls `f` with the 2D context that rasterizes text, created on first use.
-fn with_context<R>(f: impl FnOnce(&OffscreenCanvas, &OffscreenCanvasRenderingContext2d) -> Option<R>) -> Option<R> {
+/// Both browser canvas surfaces provide the same text operations. Keep layout and coverage
+/// extraction shared, including on browsers with WebGL2 but no `OffscreenCanvas` or offscreen 2D.
+enum TextCanvas {
+    Offscreen(OffscreenCanvas, OffscreenCanvasRenderingContext2d),
+    Element(HtmlCanvasElement, CanvasRenderingContext2d),
+}
+
+impl TextCanvas {
+    fn new() -> Option<Self> {
+        // Each run is read back after drawing, so ask for a canvas suited to readback.
+        let options = js_sys::Object::new();
+        js_sys::Reflect::set(&options, &"willReadFrequently".into(), &true.into()).ok()?;
+        let offscreen = || {
+            let canvas = OffscreenCanvas::new(256, 64).ok()?;
+            let context = canvas.get_context_with_context_options("2d", &options).ok()??.dyn_into().ok()?;
+            Some(Self::Offscreen(canvas, context))
+        };
+        offscreen().or_else(|| {
+            let canvas: HtmlCanvasElement =
+                web_sys::window()?.document()?.create_element("canvas").ok()?.dyn_into().ok()?;
+            canvas.set_width(256);
+            canvas.set_height(64);
+            let context = canvas.get_context_with_context_options("2d", &options).ok()??.dyn_into().ok()?;
+            Some(Self::Element(canvas, context))
+        })
+    }
+
+    fn ensure_size(&self, size: [u32; 2]) {
+        let grow = |width: u32, height: u32| {
+            (width < size[0] || height < size[1])
+                .then(|| [width.max(size[0].next_power_of_two()), height.max(size[1].next_power_of_two())])
+        };
+        match self {
+            Self::Offscreen(canvas, _) => {
+                if let Some([width, height]) = grow(canvas.width(), canvas.height()) {
+                    canvas.set_width(width);
+                    canvas.set_height(height);
+                }
+            }
+            Self::Element(canvas, _) => {
+                if let Some([width, height]) = grow(canvas.width(), canvas.height()) {
+                    canvas.set_width(width);
+                    canvas.set_height(height);
+                }
+            }
+        }
+    }
+
+    fn set_font(&self, font: &str) {
+        match self {
+            Self::Offscreen(_, context) => context.set_font(font),
+            Self::Element(_, context) => context.set_font(font),
+        }
+    }
+
+    fn measure_text(&self, text: &str) -> Result<web_sys::TextMetrics, JsValue> {
+        match self {
+            Self::Offscreen(_, context) => context.measure_text(text),
+            Self::Element(_, context) => context.measure_text(text),
+        }
+    }
+
+    fn clear(&self, size: [u32; 2]) {
+        let [width, height] = size.map(f64::from);
+        match self {
+            Self::Offscreen(_, context) => {
+                context.set_text_baseline("alphabetic");
+                context.set_fill_style_str("#fff");
+                context.clear_rect(0.0, 0.0, width, height);
+            }
+            Self::Element(_, context) => {
+                context.set_text_baseline("alphabetic");
+                context.set_fill_style_str("#fff");
+                context.clear_rect(0.0, 0.0, width, height);
+            }
+        }
+    }
+
+    fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue> {
+        match self {
+            Self::Offscreen(_, context) => context.fill_text(text, x, y),
+            Self::Element(_, context) => context.fill_text(text, x, y),
+        }
+    }
+
+    fn image_data(&self, size: [u32; 2]) -> Result<web_sys::ImageData, JsValue> {
+        let [width, height] = size.map(f64::from);
+        match self {
+            Self::Offscreen(_, context) => context.get_image_data(0.0, 0.0, width, height),
+            Self::Element(_, context) => context.get_image_data(0.0, 0.0, width, height),
+        }
+    }
+}
+
+/// Calls `f` with the text canvas, created on first use.
+fn with_context<R>(f: impl FnOnce(&TextCanvas) -> Option<R>) -> Option<R> {
     CANVAS.with(|cell| {
         let mut cell = cell.borrow_mut();
         if cell.is_none() {
-            let canvas = OffscreenCanvas::new(256, 64).ok()?;
-            // Each run is read back after drawing, so ask for a canvas suited to readback.
-            let options = js_sys::Object::new();
-            js_sys::Reflect::set(&options, &"willReadFrequently".into(), &true.into()).ok()?;
-            let context = canvas.get_context_with_context_options("2d", &options).ok()??;
-            let context = context.dyn_into::<OffscreenCanvasRenderingContext2d>().ok()?;
-            *cell = Some((canvas, context));
+            *cell = TextCanvas::new();
         }
-        let (canvas, context) = cell.as_ref()?;
-        f(canvas, context)
+        f(cell.as_ref()?)
     })
 }
 
@@ -241,7 +324,7 @@ struct Layout {
 
 impl Layout {
     /// Lays out `run` in `context`, setting the context's font to the run's.
-    fn of(context: &OffscreenCanvasRenderingContext2d, run: &TextRun) -> Option<Layout> {
+    fn of(context: &TextCanvas, run: &TextRun) -> Option<Layout> {
         context.set_font(&format!("{}px {}", run.size_px, run.font));
         let lines = lines(context, &run.text, run.max_width.map(f64::from))?;
         let metrics = context.measure_text(&run.text).ok()?;
@@ -275,22 +358,17 @@ impl Host for Browser {
     }
 
     fn rasterize(&self, run: &TextRun) -> crate::Result<Raster> {
-        with_context(|canvas, context| {
+        with_context(|context| {
             let layout = Layout::of(context, run)?;
             let size = layout.size().map(|v| v.ceil() as u32);
-            if canvas.width() < size[0] || canvas.height() < size[1] {
-                canvas.set_width(canvas.width().max(size[0].next_power_of_two()));
-                canvas.set_height(canvas.height().max(size[1].next_power_of_two()));
-            }
+            context.ensure_size(size);
             // Resizing the canvas resets the context's state, so set it again.
             context.set_font(&format!("{}px {}", run.size_px, run.font));
-            context.set_text_baseline("alphabetic");
-            context.set_fill_style_str("#fff");
-            context.clear_rect(0.0, 0.0, f64::from(size[0]), f64::from(size[1]));
+            context.clear(size);
             for (i, (line, _)) in layout.lines.iter().enumerate() {
                 context.fill_text(line, PAD, PAD + layout.ascent + layout.line_height * i as f64).ok()?;
             }
-            let rgba = context.get_image_data(0.0, 0.0, f64::from(size[0]), f64::from(size[1])).ok()?.data();
+            let rgba = context.image_data(size).ok()?.data();
             let coverage = rgba.0.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
             let [width, height] = layout.size().map(|side| side - 2.0 * PAD);
             let line_box = [PAD, PAD, PAD + width, PAD + height].map(|v| v as f32);

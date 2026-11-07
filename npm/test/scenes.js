@@ -83,11 +83,10 @@ export default [
     "space": { "plane": { "grid": { "lines": { "pitch": 1 } } } },
     "controls": { "gestures": { "secondary": "none", "shift+primary": "pan", "twist": "turn", "slide": "tilt" }, "pickRadius": 14 },
     "marks": [
-      { "faces": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false },
       { "edges": ["mesh", "Spring"], "ends": ["a", "b"], "color": "#ffffff14" },
       { "vertices": ["mesh", "Vertex"], "position": ["$x", "$y"], "elevation": "$z", "select": false, "drag": true }
     ],
-    "theme": { "shading": 0.7, "text": { "font": "monospace", "size": 12 }, "plot": { "playhead": "#ffe5d4" } }
+    "theme": { "text": { "font": "monospace", "size": 12 }, "plot": { "playhead": "#ffe5d4" } }
   },
   {
     "space": { "plot": { "x": { "label": "Time (s)" } } },

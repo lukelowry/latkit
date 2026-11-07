@@ -7,6 +7,9 @@ time to answer a pick or hover. `cargo xtask bench` runs every scenario at incre
 checks it against the committed baselines. `node benchmark/docs.ts` writes this table from those
 baselines.
 
+The committed measurements are the original renderer's comparison baseline. They have not been
+replaced with WebGL2 results; the migration must be measured against them before claiming parity.
+
 ```{csv-table}
 :file: _static/performance.csv
 :header-rows: 1
@@ -38,8 +41,10 @@ timings need a GPU.
 
 - The GPU computes how every row draws, so a frame's CPU time does not grow with the number of
   rows. Only the GPU's work grows.
-- Pipelines compile in the background, off the GPU's thread, before any frame needs them. The next
-  frame's pipelines compile first, then text, then the rest, a few at a time.
+- Pipelines are requested before use, with drawing first, then text, then input and other work.
+  The browser shares compiled stages and programs, and polls readiness through
+  [KHR_parallel_shader_compile](https://registry.khronos.org/webgl/extensions/KHR_parallel_shader_compile/)
+  when available. Without that extension, checking a program's link result can still block.
 - Each pipeline contains only the code its mark uses: the primitive it draws, and whether it reads
   joins, sampled fields, or view state.
 - A table too large to draw at once is split into pages. The view draws only the pages on screen,

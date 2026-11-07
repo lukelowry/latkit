@@ -67,6 +67,16 @@ pub(crate) struct Focus {
 }
 
 impl Focus {
+    /// Whether current input can produce focus bits, including a fit of particular rows.
+    pub(super) fn needs_pages(&self) -> bool {
+        !self.selection.is_empty() || self.hovered.is_some() || !self.fitting.is_empty()
+    }
+
+    /// Whether any shader can read a nonzero focus word, including fit and hidden hover.
+    pub(super) fn has_words(&self) -> bool {
+        !self.written.is_empty()
+    }
+
     /// Takes the lit rows laid out since last taken, for writing to the lit buffer.
     pub(crate) fn take_lit(&mut self) -> Option<Vec<u32>> {
         self.lit.take()
@@ -95,7 +105,7 @@ impl View {
     /// Writes changed focus words into `pages`, or every word when `fresh` (focus word pages new or
     /// moved). Channels reading focus evaluate again where words changed, and the lit rows of marks
     /// whose words changed are laid out again.
-    pub(super) fn write_focus(&mut self, queue: &Queue, pages: &wgpu::Buffer, fresh: bool) {
+    pub(super) fn write_focus(&mut self, queue: &Queue, pages: &crate::gpu::words::Words, fresh: bool) {
         if fresh {
             self.focus.written.clear();
             self.focus.dirty = true;
@@ -158,10 +168,11 @@ impl View {
                     continue;
                 }
                 let (first, last) = (run[start].0.1, run[end - 1].0.1);
+                let (first, last) = (first / 4 * 4, last | 3);
                 let bits: Vec<u32> =
                     (first..=last).map(|row| self.focus.written.get(&(mark, row)).copied().unwrap_or(0)).collect();
                 let at = block + (first & wgsl::PAGE_MASK);
-                queue.write_buffer(pages, u64::from(at) * 4, bytemuck::cast_slice(&bits));
+                pages.write(queue, at, &bits);
                 start = end;
             }
         }
@@ -295,7 +306,7 @@ impl View {
 
     /// Instances each lit row takes in mark `i`'s focus draw, for lit held rows `lit`. One for a
     /// point. For paths and areas, enough for the longest lit row's pieces (a shorter row's extra
-    /// instances draw nothing). None for faces.
+    /// instances draw nothing).
     fn pieces(&self, i: usize, lit: &[u32]) -> u32 {
         let shown = &self.marks[i];
         if shown.compiled.is_none() {
@@ -304,7 +315,9 @@ impl View {
         match shown.kind().primitive() {
             Primitive::Points => 1,
             Primitive::Strokes if !shown.listed() => shown.segments_per_row().max(1),
-            Primitive::Strokes if shown.path() == wgsl::PATH_ENDS => (self.longest(i, lit) + 1).max(wgsl::MAX_PIECES),
+            Primitive::Strokes if matches!(shown.path(), wgsl::PATH_ENDS | wgsl::PATH_BENDS) => {
+                (self.longest(i, lit) + 1).max(wgsl::MAX_PIECES)
+            }
             Primitive::Strokes => self.longest(i, lit).saturating_sub(1),
             Primitive::Triangles if shown.path() == wgsl::PATH_GEOMETRY => self.longest(i, lit).saturating_sub(1) / 3,
             Primitive::Triangles => 0,

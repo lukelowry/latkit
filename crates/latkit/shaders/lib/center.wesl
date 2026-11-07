@@ -1,12 +1,12 @@
 // Where a drawn row lies on screen: the point a screen query locates a row at, and the point its
 // label anchors to.
 
-import package::lib::types::{POINTS, STROKES, PATH_TRACE, PATH_GEOMETRY};
+import package::lib::types::{POINTS, STROKES, PATH_TRACE};
 import package::lib::mark::PRIMITIVE;
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::{point, Point};
 import package::lib::path::{PATH, path_segment, segment_screen, stroke_style, path_count};
-import package::lib::triangles::{triangle_corner, area_anchor, Corner};
+import package::lib::triangles::{area_anchor, Corner};
 import package::lib::drawn::held_row;
 
 // A row's center on screen in CSS pixels, and whether the row shows there.
@@ -28,7 +28,7 @@ fn corner_center(c: Corner) -> Center {
 }
 
 // Where drawn row `item` lies on screen: a point's center, the middle of a path's middle segment, a
-// trace's last sample, an area's label anchor (inside its largest polygon), or a face's centroid.
+// trace's last sample, or an area's label anchor (inside its largest polygon).
 // The row shows there when it is visible and that point is on screen.
 fn row_center(item: u32) -> Center {
     switch PRIMITIVE {
@@ -44,16 +44,7 @@ fn row_center(item: u32) -> Center {
             return Center(select(0.5 * (on.a + on.b), on.b, last), shown);
         }
         default: {
-            if PATH == PATH_GEOMETRY {
-                return corner_center(area_anchor(held_row(item)));
-            }
-            var center = Center(vec2f(0.0), true);
-            for (var k = 0u; k < 3u; k++) {
-                let c = corner_center(triangle_corner(item, k));
-                center.at += c.at / 3.0;
-                center.shown = center.shown && c.shown;
-            }
-            return center;
+            return corner_center(area_anchor(held_row(item)));
         }
     }
 }

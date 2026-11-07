@@ -52,9 +52,13 @@ pub(crate) fn frame(
     // A negative red in the selected color means each row keeps its own color.
     let selected = theme.focus.selected.map_or([-1.0, 0.0, 0.0, 0.9], Color::to_array);
     let mut frame: wgsl::Frame = bytemuck::Zeroable::zeroed();
-    frame.light = vector(projected.light);
     frame.center_hi = [cx.0, cy.0];
     frame.center_lo = [cx.1, cy.1];
+    // Match the shader's f32 center while evaluating this view-wide basis only once.
+    let (latitude_sin, latitude_cos) = (cy.0 + cy.1).to_radians().sin_cos();
+    frame.latitude_sin = latitude_sin;
+    frame.latitude_cos = latitude_cos;
+    frame.globe_radius = latitude_cos.recip();
     frame.pointer = [-1e9, -1e9];
     frame.probe = [-1e9, -1e9];
     // The hover's probe may find any row.
@@ -79,10 +83,10 @@ pub(crate) fn frame(
     // Hover is tracked either way. The controls only decide whether it glows.
     let glows = scene.controls.hover;
     frame.grow = if glows { theme.focus.grow } else { 1.0 };
-    frame.shading = theme.shading;
     frame.arrow = theme.edge.arrow;
     frame.halo = theme.text.halo;
     frame.zoom = projected.zoom as f32;
+    frame.lane_scale = projected.lane_band().map_or(0.0, |band| (band - frame.zoom).exp2());
     frame.linear = u32::from(linear);
     frame.hover = if glows { theme.focus.hover.to_array() } else { [0.0; 4] };
     frame.selected = selected;
@@ -142,12 +146,9 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
-/// Sets `mark`'s evaluation and easing fields: where the row-block lists of this frame's evaluation
-/// and end pass start, how each word blends, and while it eases, the page tables of its frozen and
+/// Sets `mark`'s easing fields: how each word blends, and while it eases, the page tables of its frozen and
 /// settled words and its progress on `clock`.
 fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
-    mark.block = shown.block;
-    mark.end_block = shown.end_block;
     mark.blends = shown.offsets.blends;
     mark.frozen = wgsl::NONE;
     mark.settled = wgsl::NONE;
@@ -181,24 +182,23 @@ pub(crate) fn mark(
     mark.extras = shown.extras();
     ease(&mut mark, shown, clock);
     mark.focus = shown.offsets.table(Kept::Focus);
-    mark.normals = shown.offsets.table(Kept::Normals);
     mark.domains = shown.domains;
     mark.columns = shown.offsets.columns;
     mark.ranges = shown.offsets.ranges;
     mark.code = shown.offsets.code;
     mark.constants = shown.offsets.constants;
     mark.ends = shown.offsets.ends;
+    [mark.from_state, mark.from_stride] = shown.end_layout(0);
+    [mark.to_state, mark.to_stride] = shown.end_layout(1);
     mark.palette = shown.offsets.palette;
     mark.mask = shown.dirty;
     mark.remap = shown.remap;
     mark.focused = shown.lit.at;
-    mark.focused_rows = shown.lit.rows;
     mark.pieces = shown.lit.pieces;
     mark.trace = wgsl::NONE;
     mark.per_row = 1;
     mark.list = shown.segments.list.map_or(wgsl::NONE, |list| list.header);
     mark.height_order = shown.height_order.list.map_or(wgsl::NONE, |list| list.header);
-    mark.query = shown.query;
     mark.geometry = wgsl::NONE;
     mark.frozen_geometry = wgsl::NONE;
     mark.lane = wgsl::NONE;
@@ -207,8 +207,8 @@ pub(crate) fn mark(
     [mark.size_min, mark.size_max] = crate::Size::ANY;
     if let Some(slots) = labels.slots(index) {
         mark.runs = slots.runs;
-        mark.wanted = slots.wanted;
-        mark.seen = slots.seen;
+        mark.label_metadata = slots.metadata;
+        mark.label_positions = slots.positions;
     }
     if let Some(compiled) = &shown.compiled {
         let program = &compiled.program;
@@ -218,7 +218,13 @@ pub(crate) fn mark(
         mark.reductions = program.domains.len() as u32;
         mark.units = program.units;
         mark.flags = drawing.flags;
-        mark.trace = drawing.trace;
+        if let Some([records, points, rows, capacity, head]) = shown.tables.trace_layout(shown.offsets.columns) {
+            mark.trace = records;
+            mark.trace_points = points;
+            mark.trace_rows = rows;
+            mark.trace_capacity = capacity;
+            mark.trace_head = head;
+        }
         let markers = &drawing.markers;
         mark.marker = markers.marker;
         mark.shape = markers.shape;

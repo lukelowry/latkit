@@ -266,6 +266,41 @@ fn dangling_references_resolve_once_the_row_exists() {
 }
 
 #[test]
+fn reference_retries_preserve_unchanged_pages_and_inverse_indices() {
+    use super::column::PAGE_ROWS;
+    use super::table::Field;
+    let data = Data::new("grid");
+    let mut targets = vec![1_u64; PAGE_ROWS + 1];
+    targets[PAGE_ROWS] = 9;
+    data.apply(
+        Patch::new()
+            .set(Table::new("Bus", vec![1_u64]))
+            .set(Table::new("Branch", Ids::count(targets.len() as u32)).reference("to", "Bus", targets)),
+    )
+    .unwrap();
+    let reference = |snapshot: &Snapshot| {
+        let Some(Field::Reference(r)) = snapshot.table("Branch").unwrap().field_named("to") else {
+            panic!("a reference");
+        };
+        r.clone()
+    };
+    let before = reference(&data.snapshot());
+    assert_eq!(before.inverse().of(0).len(), PAGE_ROWS);
+    data.apply(Table::new("Bus", vec![2_u64])).unwrap();
+    let retry = reference(&data.snapshot());
+    assert!(retry.rows.shares(&before.rows));
+    assert_eq!(retry.version, before.version);
+    assert!(std::sync::Arc::ptr_eq(&retry.inverse, &before.inverse));
+    data.apply(Table::new("Bus", vec![9_u64])).unwrap();
+    let connected = reference(&data.snapshot());
+    assert_eq!(connected.rows.pages()[0].id, before.rows.pages()[0].id);
+    assert_ne!(connected.rows.pages()[1].id, before.rows.pages()[1].id);
+    assert_ne!(connected.version, before.version);
+    assert_eq!(connected.inverse().of(2), &[PAGE_ROWS as u32]);
+    assert!(before.inverse().of(2).is_empty(), "the previous snapshot stays unchanged");
+}
+
+#[test]
 fn inverses_follow_every_change_and_snapshots_keep_theirs() {
     let inverse = |data: &Snapshot, target: usize| {
         let Some(super::table::Field::Reference(r)) = data.table("Branch").and_then(|t| t.field_named("from")) else {

@@ -840,7 +840,6 @@ const sections = {
         'Edges',
         'Lines',
         'Areas',
-        'Faces',
         'Marker',
         'Shape',
         'Bitmap',

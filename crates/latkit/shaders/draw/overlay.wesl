@@ -8,8 +8,9 @@ import package::lib::bind::{eye, ramp};
 import package::lib::mark::coverage;
 import package::lib::project::to_clip;
 import package::lib::color::output;
+import package::lib::words::word_quad;
 
-@group(2) @binding(7) var<storage, read> sprites: array<Sprite>;
+@group(2) @binding(7) var sprites: texture_2d_array<u32>;
 @group(2) @binding(8) var atlas: texture_2d<f32>;
 
 struct Varyings {
@@ -18,9 +19,18 @@ struct Varyings {
     @location(1) @interpolate(flat) sprite: u32,
 }
 
+fn sprite_at(i: u32) -> Sprite {
+    let at = i * 16u;
+    let ends = bitcast<vec4f>(word_quad(sprites, at));
+    let uv = bitcast<vec4f>(word_quad(sprites, at + 4u));
+    let color = bitcast<vec4f>(word_quad(sprites, at + 8u));
+    let style = word_quad(sprites, at + 12u);
+    return Sprite(ends.xy, ends.zw, uv, color, bitcast<f32>(style.x), style.y);
+}
+
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) sprite: u32) -> Varyings {
-    let s = sprites[sprite];
+    let s = sprite_at(sprite);
     let quad = vec2f(f32(corner & 1u), f32(corner >> 1u));
     var p = mix(s.a, s.b, quad);
     if s.kind == SPRITE_BOX {
@@ -38,7 +48,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) sprite: u
 
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    let s = sprites[v.sprite];
+    let s = sprite_at(v.sprite);
     var c = 0.0;
     var color = s.color;
     if s.kind == SPRITE_TEXT {

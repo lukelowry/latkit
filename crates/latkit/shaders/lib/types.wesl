@@ -1,5 +1,48 @@
 // Constants and structs shared with Rust. The build script mirrors each one in Rust.
 
+// RGBA32Uint word textures. Logical arena chunks are independent of physical layers. The
+// dimensions fit core WebGL2, hold 8 MiB per full layer, and address 2 GiB at its 256-layer limit.
+const WORD_WIDTH: u32 = 1024u;
+const WORD_HEIGHT: u32 = 512u;
+
+// Geometry specializes to its scene's projection. Shared expression kernels retain the view.
+const PROJECTION_PLANAR: u32 = 0u;
+const PROJECTION_MERCATOR: u32 = 1u;
+const PROJECTION_GLOBE: u32 = 2u;
+const PROJECTION_DYNAMIC: u32 = 3u;
+
+// A word raster pass. Source and destination offsets are words; count excludes padding. The
+// layer selects the physical output layer. Scalar `value` is operation-specific.
+struct WordStep {
+    source: u32,
+    other: u32,
+    destination: u32,
+    count: u32,
+    layer: u32,
+    value: u32,
+    size: vec2u,
+}
+
+// The pages one gather pass copies into a layer. Each is a source word, a destination word, and a
+// word count, all multiples of four, then an unused word.
+const GATHER_PAGES: u32 = 16u;
+
+struct Pages {
+    at: array<vec4u, GATHER_PAGES>,
+}
+
+const SCAN_BLOCK: u32 = 64u;
+const RADIX_BLOCK: u32 = 16u;
+const RADIX_BITS: u32 = 4u;
+const STATE_WORDS: u32 = 32u;
+
+struct StateStep {
+    first: u32,
+    rows: u32,
+    block: u32,
+    word: u32,
+}
+
 // Sentinel for no index, slot, or page.
 const NONE: u32 = 0xffffffffu;
 // A missing number, as NaN bits. Any NaN or infinity reads as missing.
@@ -86,9 +129,6 @@ const BITS: u32 = 4u;
 const PAGE_BITS: u32 = 12u;
 const PAGE_MASK: u32 = 4095u;
 const PAGE_ROWS: u32 = 4096u;
-// Items per step of a dispatch's second dimension: 256 workgroups of 256. Dispatches too large for
-// one dimension use it (see `item`).
-const DISPATCH_ROWS: u32 = 65536u;
 // Flag on a listed row block whose state words start over. Evaluation zeroes those rows' words
 // before any channel runs.
 const FRESH: u32 = 0x80000000u;
@@ -102,11 +142,6 @@ const DRAWN_ROW: u32 = 0x3fffffffu;
 const DRAWN_ENTERING: u32 = 0x40000000u;
 const DRAWN_LEAVING: u32 = 0x80000000u;
 
-// The item index of invocation `id`. A dispatch too large for one dimension adds `DISPATCH_ROWS`
-// items per step along the second.
-fn item(id: vec3u) -> u32 {
-    return id.y * DISPATCH_ROWS + id.x;
-}
 
 // How each word of a row eases during a transition. KEEP: no channel stores it, so it is left
 // unchanged. SNAP: shows the evaluated value at once. NUMBER, COLOR: mixed from the old value.
@@ -131,25 +166,21 @@ const POINT_MASK: u32 = 4095u;
 // 3: the page's row count.
 const PATH_PAGE_WORDS: u32 = 4u;
 
-// Words per end of an edge or face mark, at `mark.ends` in the program. An end's vertices are rows
+// Words per end of an edge mark, at `mark.ends` in the program. An end's vertices are rows
 // of the vertex mark that draws the end's table.
 // STATE, STRIDE: that vertex mark's state page table (NONE when no vertex mark draws the table) and
 //   its words per row.
 // SLOTS: the end table, which maps a place to a held row (see `held_of`). NONE unless the table is
 //   paged.
-// NORMALS: the page table of the face normals summed at its rows. NONE when no face sums them.
 // COLUMN: the program column of the reference field naming the end's rows; NONE when the end is the
 //   row's own vertex, as for a pole.
 // The end pass writes the held row of end `k` into the row's kind word `k`.
-const END_WORDS: u32 = 5u;
+const END_WORDS: u32 = 4u;
 const END_STATE: u32 = 0u;
 const END_STRIDE: u32 = 1u;
 const END_SLOTS: u32 = 2u;
-const END_NORMALS: u32 = 3u;
-const END_COLUMN: u32 = 4u;
+const END_COLUMN: u32 = 3u;
 
-// Words of the face normal sum at a vertex row: x, y, and z in fixed point.
-const NORMAL_WORDS: u32 = 3u;
 
 // Vertex state words. POSITION is four words: the high parts of x and y, then their low parts. HALF
 // is two words: the marker's half width and half height.
@@ -185,14 +216,6 @@ const BOW_PIECES: u32 = 16u;
 // Widest spread, in lanes, of a family of edges joining the same two vertices. Larger families pack
 // their lanes closer.
 const FAMILY_LANES: f32 = 8.0;
-
-// Face state words. A, B, and C are the held rows of the corner vertices, written by the end pass.
-const FACE_WORDS: u32 = 5u;
-const FACE_A: u32 = 0u;
-const FACE_B: u32 = 1u;
-const FACE_C: u32 = 2u;
-const FACE_COLOR: u32 = 3u;
-const FACE_FLAGS: u32 = 4u;
 
 // Line state words.
 const LINE_WORDS: u32 = 5u;
@@ -234,16 +257,6 @@ const NUMBER_UNIT: u32 = 128u;
 // `TEXT_SPREAD` texels past the text's edge.
 const TEXT_BASE: f32 = 32.0;
 const TEXT_SPREAD: f32 = 8.0;
-// Words per text run at the start of the fields buffer, for runs whose distance field the GPU
-// computes: where its coverage starts, the coverage's width and height, where its column minima
-// start, where its field starts, and the field's row pitch in words.
-const FIELD_COVERAGE: u32 = 0u;
-const FIELD_WIDTH: u32 = 1u;
-const FIELD_HEIGHT: u32 = 2u;
-const FIELD_COLUMNS: u32 = 3u;
-const FIELD_AT: u32 = 4u;
-const FIELD_ROW: u32 = 5u;
-const FIELD_WORDS: u32 = 6u;
 
 // Most text codes a mark asks the host to set per texts pass.
 const WANTED: u32 = 64u;
@@ -272,7 +285,6 @@ const OWN_HEIGHT: u32 = 128u;
 // Mark kinds.
 const MARK_VERTICES: u32 = 0u;
 const MARK_EDGES: u32 = 1u;
-const MARK_FACES: u32 = 2u;
 const MARK_LINES: u32 = 3u;
 const MARK_AREAS: u32 = 4u;
 
@@ -283,12 +295,14 @@ const TRIANGLES: u32 = 2u;
 
 // Path kinds, the source of a stroke's points. ENDS: two vertices, joined straight, along a great
 // circle, or through bends. TRACE: samples across the axis. GEOMETRY: a geometry column's points.
-// Faces use ENDS for their three vertices. Areas use GEOMETRY, three points per triangle.
+// Areas use GEOMETRY, three points per triangle.
 const PATH_ENDS: u32 = 0u;
 const PATH_TRACE: u32 = 1u;
 const PATH_GEOMETRY: u32 = 2u;
 // A pole, from each row's own vertex down to the ground below it.
 const PATH_POLES: u32 = 3u;
+// Endpoint paths that can also read a declared bends column.
+const PATH_BENDS: u32 = 4u;
 
 // Mark flags.
 const SIZED: u32 = 1u;
@@ -314,7 +328,7 @@ const LIT: u32 = 27u;
 // Words per mark in the extents buffer, as order-preserving bits (`ordered`): the complements of
 // the least x, y, and z, then the greatest x, y, and z, then the widest margin in CSS pixels that
 // markers keep at any zoom.
-const EXTENT_WORDS: u32 = 7u;
+const EXTENT_WORDS: u32 = 8u;
 
 // Probe buffer words. KEY: the least hit key (distance, then the mark drawn last). INSTANCE: the
 // hit instance plus one. DEPTH, X, Y: where the hit lies. UNDER: the nearest depth drawn around the
@@ -332,26 +346,11 @@ const PROBE_SEGMENT: u32 = 7u;
 const PROBE_LOCATE_X: u32 = 8u;
 const PROBE_LOCATE_Y: u32 = 9u;
 const PROBE_LOCATED: u32 = 10u;
+const PROBE_MARK: u32 = 11u;
 const PROBE_WORDS: u32 = 12u;
 
-// Probe program steps, chosen by its step uniform: the hover's three, the queries' three, then the
-// depth under the probe.
-const STEP_NEAREST: u32 = 0u;
-const STEP_TOPMOST: u32 = 1u;
-const STEP_DESCRIBE: u32 = 2u;
-const STEP_HITS: u32 = 3u;
-const STEP_BOXED: u32 = 4u;
-const STEP_LOCATE: u32 = 5u;
-const STEP_UNDER: u32 = 6u;
-const STEPS: u32 = 7u;
-
-// Steps of the expression machine's `evaluate`, chosen by its step uniform: run a mark's channels,
-// run the reductions that fit its domains, or resolve its rows' ends to held rows.
-const STEP_CHANNELS: u32 = 0u;
-const STEP_REDUCE: u32 = 1u;
-const STEP_ENDS: u32 = 2u;
 // Words per query hit: held row, distance in 1/64 CSS pixel, part, screen x and y, and depth.
-const HIT_WORDS: u32 = 6u;
+const HIT_WORDS: u32 = 8u;
 
 // Overlay sprites.
 const SPRITE_LINE: u32 = 0u;
@@ -408,32 +407,16 @@ const GRID_OFF: u32 = 0u;
 const GRID_LINES: u32 = 1u;
 const GRID_DOTS: u32 = 2u;
 
-// List header words. ITEMS: the item count. COUNTS, SUMS, ENTRIES: where the per-item counts, the
-// block sums, and the entries start. The scan turns the counts in place into each item's first
+// List header words. ITEMS: the item count. COUNTS and ENTRIES: where the per-item counts and
+// entries start. The scan turns the counts in place into each item's first
 // entry, followed by the total.
 const LIST_ITEMS: u32 = 0u;
 const LIST_COUNTS: u32 = 1u;
-const LIST_SUMS: u32 = 2u;
-const LIST_ENTRIES: u32 = 3u;
-// Indirect draw arguments: vertices, instances (the kept entries), first vertex, first instance.
-const LIST_DRAW: u32 = 4u;
-// Indirect dispatch arguments: workgroups over the kept entries, 1, 1.
-const LIST_DISPATCH: u32 = 8u;
+const LIST_ENTRIES: u32 = 2u;
 // How many entries the list keeps. Entries past it are counted but not written.
-const LIST_KEPT: u32 = 11u;
-const LIST_HEADER: u32 = 12u;
-// Counts per workgroup of the scan.
-const SCAN_WORKGROUP: u32 = 256u;
-
-// Steps of `compute/lists.wesl`, chosen by its step uniform: work on the mark's segment list, or
-// sort digit `k` of its height order's keys at step `STEP_DIGITS + k`.
-const STEP_SEGMENTS: u32 = 0u;
-const STEP_DIGITS: u32 = 1u;
-// A height order sorts 32-bit keys in `DIGITS` passes of 8-bit digits.
-const DIGITS: u32 = 4u;
-
-
-// Per-frame values every draw and dispatch reads.
+const LIST_KEPT: u32 = 3u;
+const LIST_HEADER: u32 = 4u;
+// Per-frame values every raster pass reads.
 struct Frame {
     center_hi: vec2f,
     center_lo: vec2f,
@@ -442,8 +425,6 @@ struct Frame {
     // radius (`hits`), or drawn row (`locate`).
     probe: vec2f,
     query: vec4f,
-    // Direction toward the key light that shades faces. It turns with the camera.
-    light: vec4f,
     space: u32,
     globe: f32,
     mercator_y: f32,
@@ -469,10 +450,12 @@ struct Frame {
     bow: f32,
     // Scale factor for a hovered vertex sized in CSS pixels.
     grow: f32,
-    shading: f32,
     arrow: f32,
     halo: f32,
     zoom: f32,
+    // A flat plane plans lanes at the upper zoom of an octave, then draws their exact density.
+    // Zero means the projection needs an exact camera plan.
+    lane_scale: f32,
     // A plane's grid: kind, pitch in position units, and the world distance from the center at
     // which it has faded out (0 for no fade). `graticule` is 1 if the earth draws a graticule.
     // `grid_spacing` is the least distance between lines in CSS pixels.
@@ -501,6 +484,11 @@ struct Frame {
     probe_way: vec2f,
     probe_skip: vec2u,
     probe_covers: u32,
+    // The camera latitude's basis and sphere radius, computed once per frame. These occupy
+    // the three padding words before the aligned theme array.
+    latitude_sin: f32,
+    latitude_cos: f32,
+    globe_radius: f32,
     theme: array<vec4u, 4>,
 }
 
@@ -552,10 +540,6 @@ struct Mark {
     motion: f32,
     // Where the program holds each row word's blend (`BLEND_*`), one word per row word.
     blends: u32,
-    // Where the blocks buffer lists the row blocks a dispatch covers: at `block` those its channels
-    // evaluate, and at `end_block` those whose ends the end pass resolves.
-    block: u32,
-    end_block: u32,
     // The page table of each row's focus word.
     focus: u32,
     domains: u32,
@@ -564,6 +548,12 @@ struct Mark {
     code: u32,
     constants: u32,
     ends: u32,
+    // Endpoint state page tables and record widths, shared by every segment of this mark.
+    // Keeping these descriptors here avoids reloading them for every quad corner.
+    from_state: u32,
+    from_stride: u32,
+    to_state: u32,
+    to_stride: u32,
     channels: u32,
     reductions: u32,
     mask: u32,
@@ -578,24 +568,25 @@ struct Mark {
     inputs: u32,
     input: u32,
     palette: u32,
-    // The program column a line traces, or NONE.
+    // Absolute trace-cursor address (or NONE), visible points, and resident row blocks.
     trace: u32,
+    trace_points: u32,
+    trace_rows: u32,
+    trace_capacity: u32,
+    trace_head: u32,
     // Segments per row when every row has the same count. NONE when the segment list numbers them.
     per_row: u32,
-    // Where the mark's segment list header starts in the lists buffer, and where the running
-    // query's results for the mark start in the probe buffer.
+    // Where the mark's segment list header starts in the lists buffer.
     list: u32,
-    query: u32,
     // Where the lists buffer holds the order the mark draws its instances in, lowest first: the
     // header of its digit counts, then the instance at each position. NONE when they draw in the
     // order they are numbered.
     height_order: u32,
     // Where the mark's remap words start, while `gather` freezes its transition.
     remap: u32,
-    // The rows the focus draw lights: where they start in the focused buffer, how many, and the
+    // The rows the focus draw lights: where they start in the focused buffer, and the
     // instances per row (one for a point, the most segments of any lit path).
     focused: u32,
-    focused_rows: u32,
     pieces: u32,
     // Program columns, NONE when absent: the geometry a stroke's path follows (a net's star, bends,
     // or a line's path), that geometry at the start of the transition, and each edge's lane among
@@ -604,24 +595,23 @@ struct Mark {
     frozen_geometry: u32,
     lane: u32,
     // `label`: the extra word holding the label's code or number, or NONE. The next three are
-    // offsets in the labels buffer. `runs` is the run table: two corner words per code, both 0
-    // until the text is set. `wanted` is a count followed by the codes to set, each once. `seen`
-    // holds a bit per code the texts pass met: a set text shown in view, or an unset text it asked
-    // for. `number` says how a number label writes its number, NONE for a text label. The size is
-    // in CSS pixels.
+    // offsets in the labels texture: four words per text run, per-row claim metadata, and
+    // per-row screen placement. `number` says how a number label writes its number, NONE for
+    // a text label. The size is in CSS pixels.
     label: u32,
     runs: u32,
-    wanted: u32,
-    seen: u32,
+    label_metadata: u32,
+    label_positions: u32,
     number: u32,
     label_size: f32,
     // The range of CSS pixels the mark's size is clamped to at any zoom: a vertex's half size, or a
     // stroke's width.
     size_min: f32,
     size_max: f32,
-    // A vertex mark's page table of the face normals summed at its rows. NONE when no face reads
-    // them.
-    normals: u32,
+    // Complete the final std140 uniform slot.
+    padding_a: u32,
+    padding_b: u32,
+    padding_c: u32,
 }
 
 // An overlay sprite in CSS pixels: a line, box, fill, or run of text, drawn over the marks.
@@ -639,15 +629,11 @@ struct Sprite {
 // One panel of a shot, composed into output bytes: RGBA rows for an image, or NV12 planes for a
 // video encoder. Sizes are in the shot's pixels.
 struct Compose {
-    // The panel's top-left position in the picture, and its size.
+    // The panel's top-left position in the picture.
     origin: vec2u,
-    size: vec2u,
-    // The picture's size.
-    picture: vec2u,
-    // Where NV12's interleaved chroma plane starts, in words.
-    chroma: u32,
     // Whether pixels keep their alpha, for an image of a transparent shot.
     alpha: u32,
+    padding: u32,
     // The color where no panel draws, as straight-alpha sRGB.
     background: vec4f,
 }

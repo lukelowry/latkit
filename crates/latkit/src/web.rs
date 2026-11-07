@@ -209,29 +209,37 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
         }
         return;
     }
+    let _ = gpu.device().poll(wgpu::PollType::Poll);
     let reduced = frames.borrow().reduced.as_ref().is_some_and(|(query, _)| query.matches());
     for view in &views {
         view.0.borrow_mut().view.set_reduced_motion(reduced);
     }
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
-    let shown: Vec<wgpu::SurfaceTexture> =
-        canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder, now / 1000.0)).collect();
-    // A frame in which no canvas drew submits nothing. Listeners alone still keep frames coming.
-    if !shown.is_empty() {
-        gpu.queue().submit([encoder.finish()]);
+    let shown: Vec<_> = canvases
+        .iter()
+        .filter_map(|c| c.borrow_mut().record(&mut encoder, now / 1000.0).map(|t| (c.clone(), t)))
+        .collect();
+    // The first presentation shares the rendering submission. Further canvases each submit
+    // their copy before the shared drawing buffer is reused; a sleeping frame submits nothing.
+    let mut recorded = Some(encoder);
+    for (canvas, texture) in shown {
+        let encoder = recorded.take().unwrap_or_else(|| {
+            gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit present") })
+        });
+        if let Err(error) = canvas.borrow().surface.present(&texture, encoder) {
+            gpu.raise(error);
+        }
     }
-    // Everything recorded is submitted, so the memory retired so far can go.
+    // Every recorded frame has been submitted before its retired resources are released.
     gpu.0.queue.retired().destroy();
-    for texture in shown {
-        gpu.queue().present(texture);
-    }
     for view in &views {
         view.dispatch();
     }
     for canvas in &canvases {
         canvas.borrow_mut().show_cursor();
     }
-    let again = !frames.borrow().listeners.is_empty() || canvases.iter().any(|c| c.borrow().wants_frame());
+    let mapping = gpu.0.lock().readbacks.mapping() > 0;
+    let again = mapping || !frames.borrow().listeners.is_empty() || canvases.iter().any(|c| c.borrow().wants_frame());
     if again {
         schedule(frames);
     } else if canvases.is_empty() && views.is_empty() {
@@ -336,12 +344,28 @@ pub fn step(gpu: &Gpu, now: f64) {
 pub fn landed(gpu: &Gpu) -> impl Future<Output = ()> + 'static {
     let frames = frames_of(gpu);
     let seen = frames.borrow().wakes;
+    let gpu = gpu.clone();
     std::future::poll_fn(move |context| {
-        let mut f = frames.borrow_mut();
-        if f.wakes != seen {
+        if frames.borrow().wakes != seen || gpu.lost() {
             return std::task::Poll::Ready(());
         }
-        f.landing.push(context.waker().clone());
+        // Explicitly stepped hosts have no animation frame to advance WebGL fences.
+        // Compilation advances independently through the device's task queue.
+        let _ = gpu.device().poll(wgpu::PollType::Poll);
+        if frames.borrow().wakes != seen {
+            return std::task::Poll::Ready(());
+        }
+        let pending = gpu.0.lock().readbacks.mapping();
+        let mut f = frames.borrow_mut();
+        if f.wakes != seen || gpu.lost() {
+            return std::task::Poll::Ready(());
+        }
+        if !f.landing.iter().any(|waker| waker.will_wake(context.waker())) {
+            f.landing.push(context.waker().clone());
+        }
+        if pending > 0 {
+            crate::time::wake_after(std::time::Duration::from_millis(1), context.waker().clone());
+        }
         std::task::Poll::Pending
     })
 }
@@ -363,16 +387,18 @@ pub async fn finished(gpu: &Gpu) {
 async fn settled(gpu: &Gpu, compiled: bool) {
     let (submitted, finished) = crate::Pending::new();
     gpu.queue().on_submitted_work_done(move || finished.resolve(Ok(())));
-    let _ = submitted.await;
+    let mut completed = false;
     loop {
+        let _ = gpu.device().poll(wgpu::PollType::Poll);
+        completed |= submitted.take().is_some();
         let under_way = {
             let inner = gpu.0.lock();
             inner.readbacks.mapping() + if compiled { inner.pipelines.compiling() } else { 0 }
         };
-        if under_way == 0 {
+        if completed && under_way == 0 || gpu.lost() {
             return;
         }
-        landed(gpu).await;
+        crate::time::next_task().await;
     }
 }
 
@@ -697,13 +723,13 @@ impl Painted {
     /// view lent to a shot, or whose pipelines still compile, keeps its panel's previous contents.
     /// While no view can draw, or the canvas has no box, the canvas keeps its current frame. Its
     /// views then derive, sync, and fit nothing.
-    fn record(&mut self, encoder: &mut wgpu::CommandEncoder, time: f64) -> Option<wgpu::SurfaceTexture> {
+    fn record(&mut self, encoder: &mut wgpu::CommandEncoder, time: f64) -> Option<wgpu::Texture> {
         let (size, ratio) = self.measure()?;
         let resized = size != self.surface.size();
         if self.views.is_empty() || !(resized || self.wants_frame()) {
             return None;
         }
-        let format = self.surface.config.format;
+        let format = FORMAT;
         let ready: Vec<bool> = self.views.iter().map(|v| !v.lent() && v.ready(format, ratio)).collect();
         if !ready.contains(&true) {
             return None;
@@ -718,8 +744,8 @@ impl Painted {
             }
         }
         self.rects = rects.iter().map(|r| css(*r, ratio)).collect();
-        let texture = self.surface.texture(size)?;
-        let target = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture = self.surface.texture(size);
+        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
         if direct {
             let mut held = self.views[0].0.borrow_mut();
             held.view.render(encoder, &Frame { target: &target, format, size, pixel_ratio: ratio, time });
@@ -751,7 +777,7 @@ impl Painted {
                 encoder.copy_texture_to_texture(
                     panel.as_image_copy(),
                     wgpu::TexelCopyTextureInfo {
-                        texture: &texture.texture,
+                        texture: &texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d { x: rect.origin[0], y: rect.origin[1], z: 0 },
                         aspect: wgpu::TextureAspect::All,
@@ -894,72 +920,64 @@ fn panel_texture(device: &wgpu::Device, format: wgpu::TextureFormat, size: [u32;
 /// surface is reconfigured whenever its size changes.
 struct Surface {
     gpu: Gpu,
-    raw: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
+    raw: wgpu::Texture,
+    sink: crate::gpu::browser::Sink,
 }
 
 impl Surface {
-    /// Creates the surface of `target` at `size` pixels. `gpu` must come from [`Gpu::new`].
-    fn new(gpu: &Gpu, target: wgpu::SurfaceTarget<'static>, size: [u32; 2]) -> Result<Surface> {
-        let (Some(instance), Some(adapter)) = (gpu.instance(), gpu.adapter()) else {
+    fn new(gpu: &Gpu, target: wgpu::SurfaceTarget<'static>, size: [u32; 2]) -> Result<Self> {
+        if gpu.0.browser.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
             return Err(Error::Unsupported("a canvas needs a Gpu created by Gpu::new".into()));
-        };
-        let raw =
-            instance.create_surface(target).map_err(|e| Error::Unsupported(format!("no WebGPU canvas: {e}").into()))?;
-        let capabilities = raw.get_capabilities(adapter);
-        let format = if capabilities.formats.contains(&FORMAT) {
-            FORMAT
-        } else {
-            capabilities
-                .formats
-                .first()
-                .copied()
-                .ok_or_else(|| Error::Unsupported("the canvas supports no texture format".into()))?
-        };
-        let alpha_mode = if capabilities.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
-            wgpu::CompositeAlphaMode::PreMultiplied
-        } else {
-            wgpu::CompositeAlphaMode::Auto
-        };
-        // Panels are drawn separately and copied in. A WebGPU canvas accepts copies, regardless of
-        // what wgpu reports.
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
-            format,
-            width: size[0].max(1),
-            height: size[1].max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
-            alpha_mode,
-            view_formats: Vec::new(),
-            color_space: wgpu::SurfaceColorSpace::Auto,
-        };
-        raw.configure(gpu.device(), &config);
-        Ok(Surface { gpu: gpu.clone(), raw, config })
+        }
+        let sink = crate::gpu::browser::Sink::new(target)?;
+        Ok(Self { gpu: gpu.clone(), raw: Self::make(gpu, size), sink })
     }
 
-    /// Width and height in pixels, as last configured.
+    fn make(gpu: &Gpu, size: [u32; 2]) -> wgpu::Texture {
+        gpu.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("latkit canvas"),
+            size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    }
+
     fn size(&self) -> [u32; 2] {
-        [self.config.width, self.config.height]
+        [self.raw.width(), self.raw.height()]
     }
 
-    /// The texture for a frame of `size` pixels, reconfiguring the surface first if its size
-    /// changed. `None` if the surface has no texture available. A later frame tries again.
-    fn texture(&mut self, size: [u32; 2]) -> Option<wgpu::SurfaceTexture> {
-        let size = size.map(|v| v.max(1));
+    fn texture(&mut self, size: [u32; 2]) -> wgpu::Texture {
+        let size = size.map(|n| n.max(1));
         if size != self.size() {
-            [self.config.width, self.config.height] = size;
-            self.raw.configure(self.gpu.device(), &self.config);
+            let texture = Self::make(&self.gpu, size);
+            self.gpu.0.queue.retired().retire(std::mem::replace(&mut self.raw, texture));
         }
-        match self.raw.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                Some(texture)
-            }
-            _ => {
-                self.raw.configure(self.gpu.device(), &self.config);
-                None
-            }
-        }
+        self.raw.clone()
+    }
+
+    fn present(&self, texture: &wgpu::Texture, encoder: wgpu::CommandEncoder) -> Result<()> {
+        self.gpu.queue().submit([encoder.finish()]);
+        self.gpu
+            .0
+            .browser
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .ok_or_else(|| Error::Unsupported("no WebGL2 context".into()))?
+            .present(texture, &self.sink)
+    }
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
+        self.gpu.0.queue.retired().retire(self.raw.clone());
     }
 }
 

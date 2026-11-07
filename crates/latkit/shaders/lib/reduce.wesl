@@ -1,5 +1,5 @@
-// Atomic reductions over `f32`. `ordered` maps an `f32` to `u32` bits that sort in the same
-// order, so `atomicMax` of `ordered(x)` keeps the greatest value, and `atomicMax` of `~ordered(x)`
+// Exact raster reductions over `f32`. `ordered` maps an `f32` to `u32` bits in the same order,
+// so the maximum of `ordered(x)` keeps the greatest value, and the maximum of `~ordered(x)`
 // keeps the least.
 
 fn ordered(x: f32) -> u32 {

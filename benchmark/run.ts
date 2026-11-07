@@ -55,7 +55,9 @@ const results = path.resolve(here, '../target/bench');
 /** Gives WebGPU timestamps, which measure each frame's GPU time, full precision. Chrome otherwise
  * rounds them to 100 µs. The page steps each frame as soon as the GPU finishes the last, so the
  * display's frame rate never affects a run. */
-const FLAGS = ['--enable-webgpu-developer-features'];
+const FLAGS = process.env.LATKIT_PACKAGE
+  ? ['--enable-webgpu-developer-features']
+  : ['--disable-webgpu'];
 /** The page size. It is the same on every machine so work counts compare, and small enough that
  * SwiftShader draws a frame quickly. */
 const PAGE = { viewport: { width: 800, height: 500 }, deviceScaleFactor: 2 };

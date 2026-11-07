@@ -507,7 +507,7 @@ fn decoded_tables(scene: &Scene, name: &Name) -> Vec<Decoded> {
             Mark::Areas(_) => Geometry::Polygons,
             Mark::Lines(_) => Geometry::Lines,
             Mark::Vertices(_) => Geometry::Points,
-            Mark::Edges(_) | Mark::Faces(_) => continue,
+            Mark::Edges(_) => continue,
         };
         let table = style.table.clone();
         let (layer, kind) = match table.split_once(':') {

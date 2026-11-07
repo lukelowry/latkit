@@ -582,10 +582,10 @@ How much GPU memory latkit uses.
 : GPU memory in bytes for the data all views of the [`Gpu`](#gpu) draw: its pages and each view's per-row
   state. A table too large for a view's share draws as a paged table, with only the pages the
   camera needs, so it always fits. Pages no view draws stay cached in the rest of the budget, and
-  the least recently drawn are evicted first. Defaults to half the device's largest storage
-  buffer, at most 1 GiB. The page pool grows as data needs it and never shrinks, so set the budget
-  before drawing data. A device without the memory to grow the pool further lowers the budget to
-  the pool's size.
+  the least recently drawn are evicted first. Defaults to half the device's addressable
+  word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never shrinks, so
+  set the budget before drawing data. A device without the memory to grow the pool further lowers
+  the budget to the pool's size.
 
 {#budget-uploadperframe .member}
 **`uploadPerFrame`**`: number` [¶](#budget-uploadperframe){.headerlink}
@@ -636,10 +636,6 @@ Lengths are in CSS pixels, except comet lengths given in position units.
 {#theme-dash .member}
 **`dash`**`?: number` [¶](#theme-dash){.headerlink}
 : The dash period: one dash and one gap of equal length.
-
-{#theme-shading .member}
-**`shading`**`?: number` [¶](#theme-shading){.headerlink}
-: How much faces darken as they turn away from the camera, from 0 to 1.
 
 {#theme-text .member}
 **`text`**`?:` [`TextTheme`](#texttheme) [¶](#theme-text){.headerlink}
@@ -902,7 +898,7 @@ The marks that draw a scene's tables.
 ### `Mark`
 
 {.signature}
-`type Mark =` [`Vertices`](#vertices) `|` [`Edges`](#edges) `|` [`Faces`](#faces) `|` [`Lines`](#lines) `|` [`Areas`](#areas)
+`type Mark =` [`Vertices`](#vertices) `|` [`Edges`](#edges) `|` [`Lines`](#lines) `|` [`Areas`](#areas)
 
 One table a scene draws. The mark's kind is the key that holds its table, next to its options:
 `{ vertices: [data, table], radius: 4 }`.
@@ -919,8 +915,7 @@ The options every mark has.
 {#markoptions-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#markoptions-color){.headerlink}
 : Each row's color: a CSS color, a value through a colormap, or a conditional that picks between
-  colors. Defaults to the theme's color for the mark. Faces default to a blend of their corners'
-  colors.
+  colors. Defaults to the theme's color for the mark.
 
 {#markoptions-visible .member}
 **`visible`**`?:` [`ExprInput`](#exprinput) [¶](#markoptions-visible){.headerlink}
@@ -937,9 +932,9 @@ The options every mark has.
 
 {#markoptions-pick .member}
 **`pick`**`?: boolean | null` [¶](#markoptions-pick){.headerlink}
-: Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, faces,
-  and plot traces, and off for geometry: areas, and lines along paths such as coasts, borders, and
-  roads. Either way, the mark shows which rows are selected and hovered.
+: Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, and plot
+  traces, and off for geometry: areas, and lines along paths such as coasts, borders, and roads.
+  Either way, the mark shows which rows are selected and hovered.
 
 {#markoptions-select .member}
 **`select`**`?: boolean` [¶](#markoptions-select){.headerlink}
@@ -1116,26 +1111,6 @@ areas, add a [`Lines`](#lines) mark of the same table. It draws their rings.
 **`geometry`**`?: string | null` [¶](#areas-geometry){.headerlink}
 : The polygon field each row fills. It holds one polygon's rings or several polygons. Defaults to
   the field named `geometry`.
-
-(faces)=
-
-### `Faces`
-
-{.signature}
-`interface Faces extends` [`MarkOptions`](#markoptions)
-
-Rows drawn as triangles between three vertices named by reference fields: meshes, surfaces, and
-fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from
-above shows its exact colors.
-
-{#faces-faces .member}
-**`faces`**`:` [`TableInput`](#tableinput) [¶](#faces-faces){.headerlink}
-: The dataset and table drawn, `[data, table]`.
-
-{#faces-corners .member}
-**`corners`**`?: [a: string, b: string, c: string] | null` [¶](#faces-corners){.headerlink}
-: The reference fields naming each row's three vertices. Required. Without a color, a face blends
-  the colors of its corners.
 
 (marker)=
 
@@ -2531,13 +2506,12 @@ between them.
 
 {#work-resolved .member}
 **`resolved`**`: number` [¶](#work-resolved){.headerlink}
-: Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows that
-  changed, plus every row of a page that references a vertex now resident elsewhere.
+: Edge rows whose endpoints the GPU resolved to resident vertex rows. These are rows that changed,
+  plus every row of a page that references a vertex now resident elsewhere.
 
 {#work-cleared .member}
 **`cleared`**`: number` [¶](#work-cleared){.headerlink}
-: Bytes of per-row word pages the GPU cleared: pages read before anything writes them, and the
-  normals that faces sum from scratch.
+: Bytes of per-row word pages the GPU cleared before reading their initial state.
 
 {#work-packed .member}
 **`packed`**`: number` [¶](#work-packed){.headerlink}
@@ -2560,13 +2534,13 @@ between them.
 
 {#work-pipelines .member}
 **`pipelines`**`: number` [¶](#work-pipelines){.headerlink}
-: Pipelines compiled. In a browser, each compiles in the background when a view or shot requests
-  it ahead of use. Natively, each compiles when first created.
+: Pipelines compiled. In a browser, a view or shot queues each ahead of use; driver compilation
+  can still block the browser thread. Natively, each compiles when first created.
 
 {#work-late .member}
 **`late`**`: number` [¶](#work-late){.headerlink}
-: Pipelines not requested ahead of use, compiled when first used. In a browser they compile on the
-  GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not request.
+: Pipelines not requested ahead of use, compiled when first used and delaying that frame. Zero
+  unless a scene uses a pipeline it did not request.
 
 {#work-destroyed .member}
 **`destroyed`**`: number` [¶](#work-destroyed){.headerlink}

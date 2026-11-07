@@ -10,6 +10,8 @@ use crate::{Error, Kind, Mark, Name, Result, Snapshot, Table};
 /// errors of options that did not fit, which store their unset values.
 pub(crate) struct Compiled {
     pub(crate) program: Arc<Program>,
+    #[cfg(feature = "gpu")]
+    pub(crate) kernel: Arc<str>,
     pub(crate) drawing: Drawing,
     pub(crate) schemas: Vec<(Name, u64)>,
     pub(crate) failures: Vec<Error>,
@@ -25,7 +27,12 @@ pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Re
     let Some(table) = data.table(&style.table) else { return Ok(None) };
     let fields = Schema { table, all };
     let mut compiler = Compiler::new(&fields);
-    let drawing = mark.compile(&mut compiler, context)?;
+    let mut drawing = mark.compile(&mut compiler, context)?;
+    // A row starts at an RGBA texel. Labels and custom marker inputs keep their
+    // existing offsets; only trailing padding changes. Geometry then reads whole
+    // vectors instead of fetching the same texel once for each scalar word.
+    let stride = mark.kind().stride();
+    drawing.extras = (stride + drawing.extras).next_multiple_of(4) - stride;
     let failures = std::mem::take(&mut compiler.failures);
     let program = compiler.finish();
     if program.channels.len() > 32 {
@@ -39,7 +46,14 @@ pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Re
             schemas.push((name, schema));
         }
     }
-    Ok(Some(Compiled { program: Arc::new(program), drawing, schemas, failures }))
+    Ok(Some(Compiled {
+        #[cfg(feature = "gpu")]
+        kernel: crate::gpu::kernel::source(&program, mark.kind().stride() + drawing.extras),
+        program: Arc::new(program),
+        drawing,
+        schemas,
+        failures,
+    }))
 }
 
 struct Schema<'a> {

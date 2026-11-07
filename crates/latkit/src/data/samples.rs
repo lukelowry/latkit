@@ -263,25 +263,6 @@ impl AxisPage {
     fn drawn(&self, index: u64) -> Option<f64> {
         Some(f64::midpoint(self.coordinate(index, 0)?, self.coordinate(index, 1)?))
     }
-
-    /// The page's size in GPU words: each entry's drawn coordinate as a high and a low `f32`.
-    pub(crate) fn words_len(&self) -> usize {
-        2 * (self.read(<[f64]>::len) / self.per as usize)
-    }
-
-    /// The page's GPU words from word `from` on, so a growing page uploads only its new tail.
-    pub(crate) fn words(&self, from: usize) -> Vec<u32> {
-        let per = self.per as usize;
-        self.read(|c| {
-            let drawn = |e: usize| if per == 1 { c[e] } else { f64::midpoint(c[per * e], c[per * e + 1]) };
-            (from / 2..c.len() / per).flat_map(|e| split(drawn(e))).collect()
-        })
-    }
-}
-
-fn split(x: f64) -> [u32; 2] {
-    let hi = x as f32;
-    [hi.to_bits(), ((x - f64::from(hi)) as f32).to_bits()]
 }
 
 /// The page of `log` containing entry `index`, if any.

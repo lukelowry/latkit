@@ -1,13 +1,15 @@
 // Selection and hover: one word of focus bits per held row, in pages listed by the page table at
 // `mark.focus`. Also how much of a row shows during a transition.
 
-import package::lib::types::{SELECTED, HOVERED, RELATED, RELATED_SELECTED, FADE_IN, FADE_OUT};
+import package::lib::types::{NONE, SELECTED, HOVERED, RELATED, RELATED_SELECTED, FADE_IN, FADE_OUT};
 import package::lib::bind::{frame, mark, word};
 import package::lib::state::record_at;
 
 // The focus bits of held row `row`. None for a row that left.
 fn focus_of(row: u32) -> u32 {
-    if row >= mark.held - mark.exits {
+    // A view with no focus words skips both the page-table and row fetch. The sentinel is
+    // based on all written bits, not on whether the controls draw a hover glow.
+    if mark.focus == NONE || row >= mark.held - mark.exits {
         return 0u;
     }
     return word(record_at(mark.focus, 1u, row));
@@ -46,7 +48,10 @@ fn growth(flags: u32) -> f32 {
 // A row's opacity: while the selection lights rows, rows neither selected nor one reference from a
 // selected row dim, and rows easing in or out fade.
 fn faded(row: u32, flags: u32) -> f32 {
+    if frame.selecting == 0u {
+        return presence(flags);
+    }
     let bright = (focus_of(row) & (SELECTED | RELATED_SELECTED)) != 0u;
-    let dim = select(1.0, frame.dim, frame.selecting != 0u && !bright);
+    let dim = select(frame.dim, 1.0, bright);
     return dim * presence(flags);
 }

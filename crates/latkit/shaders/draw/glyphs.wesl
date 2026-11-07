@@ -1,38 +1,25 @@
-// Glyphs: every labeled row's text, placed from its anchor each frame. A label shows when its text
+// Glyphs: every labeled row's text, placed from its prepared screen position. A label shows when its text
 // is set, its row shows, and it fits its anchor's `room`. It fades with its row's tile. A label
 // beside its row also shows only if it kept its claim on every cell it covers this frame
-// (`compute/texts.wesl`), so labels never overlap. Nothing depends on an earlier frame. A halo of
+// (`raster/claims.wesl`), so labels never overlap. Nothing depends on an earlier frame. A halo of
 // the background color keeps text readable over anything below it. Text is a distance field, so
 // edges stay crisp at any size, and the halo is a wider threshold of the same field.
 
-import package::lib::types::{NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS};
+import package::lib::types::{NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS, POINTS, SIZED, MARKER_BLOCK};
 import package::lib::bind::{frame, eye, mark, word, ramp};
 import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
 import package::lib::label::{
-    anchor, text_at, fits, Text, label_chars, char_at, run_size, label_box, claims_room, claim_key, cells_of, cell,
-    Cells,
+    text_at, Text, label_chars, char_at, run_size,
+    Cells, grid_size,
 };
 import package::lib::project::{culled, to_clip};
 import package::lib::color::output;
 import package::lib::drawn::drawn_row;
+import package::lib::labels::{labels, cells, run, keeps, claim_key};
+import package::lib::words::word_quad;
 
 @group(2) @binding(8) var atlas: texture_2d<f32>;
-@group(2) @binding(13) var<storage, read> labels: array<u32>;
-@group(2) @binding(14) var<storage, read> cells: array<u32>;
-
-// Whether claim `key` kept every cell of `c`.
-fn keeps(c: Cells, key: u32) -> bool {
-    for (var y = c.first.y; y <= c.last.y; y++) {
-        for (var x = c.first.x; x <= c.last.x; x++) {
-            if cells[cell(c, x, y)] != key {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
 struct Varyings {
     @builtin(position) clip: vec4f,
     @location(0) uv: vec2f,
@@ -64,10 +51,31 @@ fn unshown() -> Varyings {
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
     let per = select(NUMBER_CHARS, 1u, mark.number == NONE);
-    let item = instance / per;
+    var item = instance / per;
     let k = instance % per;
+    // A label that claims cells must own its first cell. Enumerating those cells bounds dense
+    // draws by the viewport while preserving each winner exactly once. Labels inside sized
+    // markers do not all claim space, so they continue to enumerate rows.
+    let grid = vec2u(grid_size());
+    let outside = mark.primitive != POINTS || ((mark.flags & SIZED) == 0u && mark.marker != MARKER_BLOCK);
+    let by_cell = outside && grid.x * grid.y < mark.rows;
+    var cell = vec2u(0u);
+    if by_cell {
+        cell = vec2u(item % grid.x, item / grid.x);
+        let owner = textureLoad(cells, vec2i(cell), 0).xy;
+        if owner.x != mark.index + 1u || owner.y == 0u { return unshown(); }
+        item = owner.y - 1u;
+    }
     if item >= mark.rows {
         return unshown();
+    }
+    let prepared = word_quad(labels, mark.label_metadata + item * 4u);
+    if (prepared.w & 8u) == 0u { return unshown(); }
+    if by_cell && prepared.x != (cell.x | (cell.y << 16u)) { return unshown(); }
+    if (prepared.w & 16u) != 0u {
+        let cells = Cells(vec2i(i32(prepared.x & 65535u), i32(prepared.x >> 16u)),
+            vec2i(i32(prepared.y & 65535u), i32(prepared.y >> 16u)), 0);
+        if !keeps(cells, claim_key(item)) { return unshown(); }
     }
     let drawn = drawn_row(item);
     let row = drawn.row;
@@ -85,37 +93,20 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     // The label's size, and where this run starts in it.
     let size = mark.label_size;
-    var extent = vec2f(0.0);
     var before = 0.0;
-    for (var j = 0u; j < chars.count; j++) {
+    for (var j = 0u; j < k; j++) {
         let corners = run(char_at(chars, j));
-        // Nothing to draw until every text is set.
-        if all(corners == vec2u(0u)) {
-            return unshown();
-        }
         let s = run_size(corners, size);
-        before += select(0.0, s.x, j < k);
-        extent = vec2f(extent.x + s.x, max(extent.y, s.y));
+        before += s.x;
     }
-    let a = anchor(item);
-    let whole = label_box(a, extent);
-    // A label shows while its row shows, it fits, and it kept its claimed cells. Its opacity
-    // follows its row's tile fade.
-    let room = fits(extent, a.room) && (!claims_room(a) || keeps(cells_of(whole), claim_key(item)));
-    let alpha = f32(a.shown && room) * drawn.presence;
+    let lo = bitcast<vec2f>(word_quad(labels, mark.label_positions + item * 4u).xy);
+    let alpha = drawn.presence;
     if !(alpha > 0.0) {
         return unshown();
     }
     let color = unpack4x8unorm(word(extra_at(row, mark.label + LABEL_COLOR)));
-    let t = text_at(own.x, own.y, size, whole.lo + vec2f(before, 0.0), vec2f(0.0));
+    let t = text_at(own.x, own.y, size, lo + vec2f(before, 0.0), vec2f(0.0));
     return quad(t, corner, vec4f(color.rgb, color.a * alpha));
-}
-
-// The run table entry of `code`: its atlas corners, both 0 until its text is set, and NONE when it
-// draws nothing.
-fn run(code: u32) -> vec2u {
-    let at = mark.runs + 2u * code;
-    return vec2u(labels[at], labels[at + 1u]);
 }
 
 // The distance field at `uv`, in texels from the text's edge, positive inside.

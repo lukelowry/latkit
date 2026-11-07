@@ -1,6 +1,6 @@
 # latkit
 
-Columnar data, queries, and scenes rendered with WebGPU, Vulkan, Metal, or DX12.
+Columnar data, queries, and scenes rendered with WebGL2 in browsers and Vulkan, Metal, DX12, or OpenGL natively.
 [Guides](https://latkit.readthedocs.io) | [Rust API](https://docs.rs/latkit)
 
 ```sh

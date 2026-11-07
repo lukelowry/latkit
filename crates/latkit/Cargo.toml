@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["visualization", "webgpu", "graph", "map", "plot"]
+keywords = ["visualization", "webgl", "graph", "map", "plot"]
 categories = ["visualization", "rendering", "graphics", "wasm"]
 include = ["LICENSE", "src/**", "tests/fixtures/**", "build/**", "build.rs", "shaders/**", "colormaps/catalog.txt", "colormaps/NOTICES.md", "THIRD_PARTY.md", "README.md"]
 
@@ -21,7 +21,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 default = ["gpu"]
 gpu = ["dep:wgpu", "dep:glam", "dep:web-time", "dep:wesl", "dep:naga"]
 native = ["gpu", "dep:cosmic-text", "dep:windows", "dep:windows-core"]
-web = ["gpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys"]
+web = ["gpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys", "dep:wgpu-types", "dep:raw-window-handle"]
 
 [dependencies]
 thiserror.workspace = true
@@ -40,6 +40,7 @@ image-webp.workspace = true
 jpeg-encoder.workspace = true
 png.workspace = true
 wgpu = { workspace = true, optional = true }
+naga = { workspace = true, optional = true }
 glam = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }
 
@@ -52,12 +53,17 @@ windows = { workspace = true, optional = true }
 windows-core = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["custom", "web"] }
+wgpu-types = { version = "30", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
     "AddEventListenerOptions",
     "CssStyleDeclaration",
+    "CanvasRenderingContext2d",
+    "Document",
     "DedicatedWorkerGlobalScope",
     "DomRect",
     "Element",
@@ -69,6 +75,9 @@ web-sys = { workspace = true, optional = true, features = [
     "ImageData",
     "KeyboardEvent",
     "MediaQueryList",
+    "MessageChannel",
+    "MessagePort",
+    "MessageEvent",
     "MouseEvent",
     "Navigator",
     "OffscreenCanvas",
@@ -83,11 +92,22 @@ web-sys = { workspace = true, optional = true, features = [
     "Window",
     "WorkerGlobalScope",
     "WorkerNavigator",
+    "WebGl2RenderingContext",
+    "WebGlBuffer",
+    "WebGlTexture",
+    "WebGlRenderbuffer",
+    "WebGlFramebuffer",
+    "WebGlSampler",
+    "WebGlSync",
+    "WebGlShader",
+    "WebGlProgram",
+    "WebGlUniformLocation",
+    "WebGlVertexArrayObject",
 ] }
 
 [build-dependencies]
 wesl = { workspace = true, optional = true }
-naga = { workspace = true, optional = true }
+naga = { workspace = true, optional = true, features = ["wgsl-out"] }
 
 [dev-dependencies]
 proptest.workspace = true

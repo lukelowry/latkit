@@ -1,7 +1,7 @@
 /// <reference lib="dom" preserve="true" />
 /// <reference lib="esnext.disposable" preserve="true" />
 /**
- * latkit: columnar data drawn with WebGPU.
+ * latkit: columnar data drawn with WebGL2.
  *
  * Scenes, expressions, patches, and the colormap catalog are plain data and need no WebAssembly.
  * Datasets, views, pictures, and `colormapCss` do, so call `await load()` first. Every `Handle`

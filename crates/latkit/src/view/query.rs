@@ -25,6 +25,14 @@ use crate::{Pending, Resolver, Row};
 /// runs again with space for them.
 const HITS: u32 = 1024;
 
+/// The raster operation answering a query.
+#[derive(Clone, Copy)]
+pub(super) enum Kind {
+    Hits,
+    Boxed,
+    Locate,
+}
+
 /// A query for the GPU.
 pub(crate) enum Ask {
     /// Every row within `radius` CSS pixels of `point`, keeping up to `room` hits of each mark.
@@ -58,12 +66,12 @@ impl Ask {
         }
     }
 
-    /// The probe program's step answering it.
-    fn step(&self) -> u32 {
+    /// The raster operation answering it.
+    fn kind(&self) -> Kind {
         match self {
-            Ask::Hits { .. } => wgsl::STEP_HITS,
-            Ask::Boxed { .. } => wgsl::STEP_BOXED,
-            Ask::Locate { .. } => wgsl::STEP_LOCATE,
+            Ask::Hits { .. } => Kind::Hits,
+            Ask::Boxed { .. } => Kind::Boxed,
+            Ask::Locate { .. } => Kind::Locate,
         }
     }
 
@@ -73,9 +81,9 @@ impl Ask {
         match self {
             Ask::Hits { room, .. } => {
                 let kept = instances.min(*room);
-                (kept, 2 + kept * wgsl::HIT_WORDS)
+                (kept, 4 + kept * wgsl::HIT_WORDS)
             }
-            Ask::Boxed { .. } => (rows, rows.div_ceil(32)),
+            Ask::Boxed { .. } => (rows, rows.div_ceil(32).next_multiple_of(4)),
             Ask::Locate { .. } => (0, 0),
         }
     }
@@ -219,26 +227,15 @@ impl View {
     pub(super) fn run_query(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
         let Some(Running { ask, found, words }) = self.queries.running.take() else { return };
         let gpu = self.gpu.clone();
-        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        let probe = self.resources.as_ref().expect("created before queries").probe().clone();
-        let start = u64::from(wgsl::PROBE_WORDS) * 4;
-        // Results start empty: for hits, a zero count and each mark's capacity; for a box, no rows.
-        match &ask {
-            Ask::Hits { .. } => {
-                for f in &found {
-                    queue.write_buffer(&probe, u64::from(f.at) * 4, bytemuck::cast_slice(&[0, f.room]));
-                }
-            }
-            Ask::Boxed { .. } if words > 0 => encoder.clear_buffer(&probe, start, Some(u64::from(words) * 4)),
-            Ask::Boxed { .. } | Ask::Locate { .. } => {}
-        }
-        let marks: Vec<usize> = found.iter().map(|f| f.mark).collect();
-        self.probe_pass(encoder, inner, "latkit query", &[(ask.step(), &marks)]);
-        let (at, bytes) = match &ask {
-            Ask::Locate { .. } => (u64::from(wgsl::PROBE_LOCATE_X) * 4, 16),
-            _ => (start, u64::from(words.max(1)) * 4),
+        let device = &gpu.0.device;
+        let marks: Vec<_> = found.iter().map(|f| (f.mark, f.room, f.at)).collect();
+        self.probe_pass(encoder, inner, ask.kind(), &marks);
+        let (at, count) = match &ask {
+            Ask::Locate { .. } => (wgsl::PROBE_LOCATE_X, 4),
+            _ => (wgsl::PROBE_WORDS, words.max(1)),
         };
-        let readback = Readback::new(&inner.readbacks, device, encoder, &probe, at, bytes, &self.waker);
+        let probe = self.resources.as_ref().expect("created before queries").probe();
+        let readback = Readback::words(&inner.readbacks, device, encoder, probe, at, count, &self.waker);
         let drew = self.drew();
         self.queries.reading.start(0, readback, Reading { ask, found, drew });
     }
@@ -304,7 +301,7 @@ fn hits(found: &[Found], words: &[u32], drew: &Drew) -> Vec<Hit> {
         .iter()
         .flat_map(|f| {
             let count = words_at(words, f.at, 1).first().map_or(0, |&n| n.min(f.room));
-            let entries = words_at(words, f.at + 2, count * wgsl::HIT_WORDS);
+            let entries = words_at(words, f.at + 4, count * wgsl::HIT_WORDS);
             entries.as_chunks().0.iter().map(move |entry| (f.mark, entry))
         })
         .collect();

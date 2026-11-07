@@ -1,5 +1,5 @@
 //! The WebAssembly binding behind the latkit npm package: data and views in the browser, over
-//! WebGPU.
+//! WebGL2.
 //!
 //! Values cross as bytes or JSON, in the forms `latkit` reads and writes. Patches cross as byte
 //! frames, which the package's TypeScript writes. Scenes, cameras, fits, queries, and rows go in as

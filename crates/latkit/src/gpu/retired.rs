@@ -61,7 +61,7 @@ pub(crate) struct Retired {
 impl Retired {
     pub(crate) fn new(counters: Arc<Counters>) -> Retired {
         #[cfg(all(feature = "web", target_arch = "wasm32"))]
-        #[allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the page's single thread")]
+        #[allow(clippy::arc_with_non_send_sync, reason = "WebGL objects stay on the page's single thread")]
         let gone = Arc::new(Mutex::new(Vec::new()));
         Retired {
             #[cfg(all(feature = "web", target_arch = "wasm32"))]

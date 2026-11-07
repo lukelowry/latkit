@@ -1,24 +1,21 @@
-// Triangles: a face row's corners at the vertices its references name, or an area's triangles. An
-// area's geometry column holds its label anchor, then three points per triangle, and the mark's
-// list numbers the triangles. Draws, probes, bounds, and labels read triangles through
-// `triangle_corner`. A pipeline's `PATH` selects the kind: `PATH_ENDS` for faces, `PATH_GEOMETRY`
-// for areas.
+// Area triangles. The geometry column holds a label anchor, then three points per triangle,
+// and the mark's list numbers them. Decode the row and its geometry once for all three corners.
 
-import package::lib::types::{NONE, VISIBLE, PLACED, ENDS_COLOR, PATH_GEOMETRY};
+import package::lib::types::{VISIBLE, MISSING, NONE};
 import package::lib::bind::mark;
-import package::lib::state::{row_at, face_at, area_at, end_vertex};
+import package::lib::state::{row_at, area_at, Area};
 import package::lib::project::{world, clip_of, shows};
 import package::lib::focus::faded;
-import package::lib::read::{points_of, point_bits, missing_bits};
-import package::lib::path::{PATH, Segment, segment, stroke_instances};
+import package::lib::read::{Points, points_of, point_bits, point_address, point_at, missing_bits};
+import package::lib::path::{Segment, segment, stroke_instances};
+import package::lib::lists::{list_words, list_entry};
+import package::lib::words::word_quad;
 import package::lib::drawn::drawn_row;
 
 struct Corner {
     world: vec3f,
     // Its position, in position units.
     position: vec3f,
-    // A face corner's vertex: a held row of the vertex mark its end attaches to. NONE for an area.
-    vertex: u32,
     color: vec4f,
     row: u32,
     // Whether it has a position, and whether it lies in front of the globe's horizon.
@@ -26,92 +23,96 @@ struct Corner {
     ahead: bool,
 }
 
-// Triangles across all drawn rows: one per face, or every area triangle the list numbers.
-fn triangle_instances() -> u32 {
-    if PATH == PATH_GEOMETRY {
-        return stroke_instances();
-    }
-    return mark.rows;
+// Triangles across all drawn area rows, in list order.
+fn triangle_instances() -> u32 { return stroke_instances(); }
+
+struct AreaSource {
+    row: u32,
+    state: Area,
+    points: Points,
+}
+
+fn area_source(row: u32) -> AreaSource {
+    return AreaSource(row, area_at(row_at(row)), points_of(mark.geometry, row));
+}
+
+// An invalid point stays missing, including when its row is hidden. Bounds use these source
+// coordinates directly, without projecting or decoding the row again for each corner.
+fn area_bits(source: AreaSource, point: u32) -> vec2u {
+    if (source.state.flags & VISIBLE) == 0u || point >= source.points.count { return vec2u(MISSING); }
+    return point_bits(source.points, point);
 }
 
 // Corner `corner` of triangle `instance`, faded while its tile fades in or out.
-fn triangle_corner(instance: u32, corner: u32) -> Corner {
-    if PATH == PATH_GEOMETRY {
-        let s = segment(instance);
-        var c = area_point(s, 1u + corner);
-        c.color.a *= s.presence;
-        return c;
-    }
-    let d = drawn_row(instance);
-    var c = face_corner(d.row, corner);
-    c.color.a *= d.presence;
+fn triangle_corner(s: Segment, source: AreaSource, corner: u32) -> Corner {
+    var c = area_point(source, 3u * s.index + 1u + corner);
+    c.color.a *= s.presence;
     return c;
 }
 
-// Whether triangle `instance` draws: every corner has a position, and at least one lies in front of
-// the globe's horizon. The globe's depth clips a triangle reaching past its edge.
-fn triangle_shown(instance: u32) -> bool {
-    var ahead = false;
-    for (var k = 0u; k < 3u; k++) {
-        let c = triangle_corner(instance, k);
-        if !c.shown {
-            return false;
+struct Triangle {
+    source: AreaSource,
+    corners: vec3u,
+    presence: f32,
+    valid: bool,
+}
+
+// Resolve addresses once. Ordinary triangles use the prepared list; focused triangles and
+// triangles crossing a geometry piece use the same page tables as bounds and labels.
+fn triangle_at(instance: u32) -> Triangle {
+    @if(!focused) {
+        let pair = word_quad(list_words, list_entry(mark.list, 2u * instance));
+        let entry = select(pair.xy, pair.zw, (instance & 1u) != 0u);
+        if entry.y != NONE {
+            let drawn = drawn_row(entry.x);
+            let source = AreaSource(drawn.row, area_at(row_at(drawn.row)), Points(0u, 0u, 0u));
+            return Triangle(source, entry.y + vec3u(0u, 2u, 4u), drawn.presence, true);
         }
-        ahead = ahead || c.ahead;
     }
-    return ahead;
+    let s = segment(instance);
+    let source = area_source(s.row);
+    let point = 3u * s.index + 1u;
+    if point + 2u >= source.points.count { return Triangle(source, vec3u(0u), s.presence, false); }
+    let corners = vec3u(point_address(source.points, point), point_address(source.points, point + 1u), point_address(source.points, point + 2u));
+    return Triangle(source, corners, s.presence, true);
 }
 
-// The drawn row triangle `instance` belongs to.
-fn triangle_item(instance: u32) -> u32 {
-    if PATH == PATH_GEOMETRY {
-        return segment(instance).item;
-    }
-    return instance;
-}
-
-fn face_corner(row: u32, corner: u32) -> Corner {
+// Triangulation supplies finite corners. A draw fetches only its own point unless it lies behind
+// the globe's horizon, where the other corners decide whether the triangle still reaches ahead.
+fn triangle_vertex(instance: u32, corner: u32) -> Corner {
+    let t = triangle_at(instance);
     var c: Corner;
-    c.row = row;
-    let f = face_at(row_at(row));
-    if any(f.corners == vec3u(NONE)) || (f.flags & VISIBLE) == 0u {
-        c.shown = false;
-        return c;
+    c.row = t.source.row;
+    if !t.valid || (t.source.state.flags & VISIBLE) == 0u { return c; }
+    c = area_position(t.source, bitcast<vec2f>(point_at(t.corners[corner])));
+    c.color.a *= t.presence;
+    if !c.ahead {
+        let a = bitcast<vec2f>(point_at(t.corners[(corner + 1u) % 3u]));
+        let b = bitcast<vec2f>(point_at(t.corners[(corner + 2u) % 3u]));
+        c.shown = shows(world(a, vec2f(0.0), 0.0)) || shows(world(b, vec2f(0.0), 0.0));
     }
-    c.vertex = f.corners[corner];
-    let v = end_vertex(corner, c.vertex);
-    c.world = world(v.hi, v.lo, v.elevation);
-    c.position = vec3f(v.hi + v.lo, v.elevation);
-    let color = select(unpack4x8unorm(f.color), unpack4x8unorm(v.color), (mark.flags & ENDS_COLOR) != 0u);
-    c.color = vec4f(color.rgb, color.a * faded(row, f.flags));
-    c.shown = (v.flags & PLACED) != 0u;
-    c.ahead = shows(c.world);
     return c;
 }
 
-// Point `offset` of triangle `t.index` of area row `t.row`. Offset 0 is the area's label anchor.
-// Offsets 1 to 3 are the triangle's corners.
-fn area_point(t: Segment, offset: u32) -> Corner {
+// Point zero is the area's label anchor; the remaining points are its triangles' corners.
+fn area_point(source: AreaSource, point: u32) -> Corner {
     var c: Corner;
-    c.row = t.row;
-    c.vertex = NONE;
-    let a = area_at(row_at(t.row));
-    let points = points_of(mark.geometry, t.row);
-    let k = select(3u * t.index + offset, 0u, offset == 0u);
-    if (a.flags & VISIBLE) == 0u || k >= points.count {
-        c.shown = false;
-        return c;
-    }
-    let w = point_bits(points, k);
+    c.row = source.row;
+    let w = area_bits(source, point);
     if missing_bits(w.x) || missing_bits(w.y) {
         c.shown = false;
         return c;
     }
-    let xy = vec2f(bitcast<f32>(w.x), bitcast<f32>(w.y));
+    return area_position(source, bitcast<vec2f>(w));
+}
+
+fn area_position(source: AreaSource, xy: vec2f) -> Corner {
+    var c: Corner;
+    c.row = source.row;
     c.position = vec3f(xy, 0.0);
     c.world = world(xy, vec2f(0.0), 0.0);
-    let color = unpack4x8unorm(a.color);
-    c.color = vec4f(color.rgb, color.a * faded(t.row, a.flags));
+    let color = unpack4x8unorm(source.state.color);
+    c.color = vec4f(color.rgb, color.a * faded(source.row, source.state.flags));
     c.shown = true;
     c.ahead = shows(c.world);
     return c;
@@ -119,7 +120,7 @@ fn area_point(t: Segment, offset: u32) -> Corner {
 
 // Area row `row`'s label anchor: inside its largest polygon, at the point farthest from its edges.
 fn area_anchor(row: u32) -> Corner {
-    return area_point(Segment(row, NONE, 0u, 0.0, 1.0, 1.0, false), 0u);
+    return area_point(area_source(row), 0u);
 }
 
 fn corner_clip(c: Corner) -> vec4f {

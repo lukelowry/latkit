@@ -24,6 +24,7 @@ mod program;
 mod query;
 mod resources;
 mod rig;
+mod state;
 mod sync;
 mod timer;
 mod transition;
@@ -56,7 +57,7 @@ use resources::Resources;
 use rig::Rig;
 use variants::{Stage, StageSet};
 
-use crate::derive::{Derivations, Derived};
+use crate::derive::Derivations;
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
 use crate::{Error, Gpu, Name, Patch, Pending, Result, Row, Rows, Scene, Snapshot, Source, Space};
@@ -156,6 +157,7 @@ pub struct View {
     /// clones of the waker.
     signal: Arc<wake::Signal>,
     waker: Waker,
+    compile_waker: Waker,
     resources: Option<Resources>,
     /// Each mark's word range in the program buffer.
     regions: Regions,
@@ -186,8 +188,6 @@ pub struct View {
     completing: Vec<crate::Resolver<()>>,
     /// Whether the platform requests reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
-    /// The stamp of the inputs the face normals were last summed from.
-    normals: Derived<()>,
     /// Measures the GPU time of frames, where the device supports it.
     timer: Option<timer::Timer>,
     focus: Focus,
@@ -263,6 +263,7 @@ impl View {
             effect_time: f64::NAN,
             events: Events::default(),
             waker: Waker::from(signal.clone()),
+            compile_waker: signal.compilation(),
             signal,
             resources: None,
             regions: Regions::default(),
@@ -279,7 +280,6 @@ impl View {
             arranging: Vec::new(),
             completing: Vec::new(),
             reduced_motion: false,
-            normals: Derived::default(),
             timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
             focus: Focus::default(),
             probing: Probing::default(),
@@ -1024,10 +1024,19 @@ impl View {
     /// in, or pending work arrived. While the view only waits, it needs no frame. The work it waits
     /// on wakes it.
     pub fn needs_render(&self) -> bool {
-        let landed = || self.gpu.0.lock().pipelines.landed();
+        let compiled = || {
+            self.compiling.is_some_and(|seen| {
+                let inner = self.gpu.0.lock();
+                inner.pipelines.landed() != seen
+                    && (self.unready.meets(self.used())
+                        || self.probing.due()
+                        || self.queries.due()
+                        || inner.pipelines.refusing())
+            })
+        };
         // While draw pipelines compile, the view draws nothing new. Each finished compile wakes it.
         if !self.can_use(Stage::Draw) {
-            return self.compiling.is_some_and(|seen| landed() != seen);
+            return compiled();
         }
         // Self-driven motion counts only while motion is enabled: under reduced motion, orbits,
         // comets, and `elapsed()` hold still.
@@ -1043,7 +1052,7 @@ impl View {
             // Probes and queries wait for their pipelines, and each finished compile wakes the
             // view while a stage it asked for compiles.
             || (self.can_use(Stage::Input) && (self.probing.due() || self.queries.due()))
-            || self.compiling.is_some_and(|seen| landed() != seen)
+            || compiled()
             || self.fading()
             // A mark evaluates once its columns are synced. Until then, the pages they wait for
             // wake the view.

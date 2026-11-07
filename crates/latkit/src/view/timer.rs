@@ -32,7 +32,10 @@ pub(crate) struct Timer {
 impl Timer {
     /// A timer, or `None` where the device lacks timestamp queries.
     pub(crate) fn new(device: &wgpu::Device, queue: &crate::gpu::work::Queue) -> Option<Timer> {
-        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+        if !device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+        {
             return None;
         }
         let slot = |_| Slot {
@@ -107,12 +110,10 @@ fn elapsed_ms(bytes: &[u8], period: f64) -> Option<f32> {
 
 /// Records an empty pass that writes timestamp `beginning` at its start, or `end` at its end.
 fn mark(set: &wgpu::QuerySet, encoder: &mut wgpu::CommandEncoder, beginning: Option<u32>, end: Option<u32>) {
-    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: Some("latkit timer"),
-        timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
-            query_set: set,
-            beginning_of_pass_write_index: beginning,
-            end_of_pass_write_index: end,
-        }),
-    });
+    if let Some(index) = beginning {
+        encoder.write_timestamp(set, index);
+    }
+    if let Some(index) = end {
+        encoder.write_timestamp(set, index);
+    }
 }

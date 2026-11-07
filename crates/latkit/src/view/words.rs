@@ -1,7 +1,7 @@
 //! A mark's per-row words, in pages of the arena. For each page of held rows, the mark has one
 //! arena block per kind of words, sized for the page's rows. A row's state is its kind words, then
-//! its extra words. Alongside the state are the row's focus word, the normals faces sum at a
-//! vertex, and while the mark eases, its frozen state (as shown when the transition began) and its
+//! its extra words. Alongside the state are the row's focus word and, while the mark eases,
+//! its frozen state (as shown when the transition began) and its
 //! settled state. A page keeps its blocks while the mark holds rows there, so rows keep their words
 //! as the camera moves, and adding held rows moves none. Every kind counts toward the GPU budget
 //! along with the data.
@@ -16,17 +16,16 @@ use crate::gpu::work::Queue;
 pub(crate) enum Kept {
     State,
     Focus,
-    Normals,
     Frozen,
     Settled,
 }
 
-const KINDS: [Kept; 5] = [Kept::State, Kept::Focus, Kept::Normals, Kept::Frozen, Kept::Settled];
+const KINDS: [Kept; 4] = [Kept::State, Kept::Focus, Kept::Frozen, Kept::Settled];
 
 impl Kept {
     /// Whether a new block of this kind is cleared on allocation, because something reads it before
     /// anything writes it. State and frozen words need no clearing, since evaluation and freezing
-    /// write them first, and normals are cleared before each sum.
+    /// write them first.
     fn cleared(self) -> bool {
         matches!(self, Kept::Focus | Kept::Settled)
     }

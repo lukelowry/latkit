@@ -1,22 +1,25 @@
-//! Lists on the GPU: each item counts its entries, a scan turns the counts into start offsets, and
-//! each item writes its entries there. The total goes into the list's header as indirect draw and
-//! dispatch arguments, so nothing waits on a readback for it.
+//! Lists on the GPU: each item counts its entries, a scan turns the counts into start offsets,
+//! and inverse lookup assigns each entry to its item. Draws reserve an upper bound and reject the
+//! unused tail before reading geometry, so they never wait for a count to reach the CPU.
 //!
 //! After the segment lists lie the drawn-row words of each mark drawing a paged table: the held
 //! row of each row drawn, expanded from the drawing's runs when they change, so every pass reads a
 //! drawn row in one word.
 //!
 //! Last come the height orders of marks whose rows stand at different heights, where depth varies.
-//! Each sorts its instances lowest first on the GPU (`compute/lists.wesl`), whenever the heights or
+//! Each sorts its instances lowest first on the GPU (`raster/order.wesl`), whenever the heights or
 //! the instances change. Height does not depend on the camera, so moving the camera sorts nothing.
 
 use super::View;
-use super::marks::Shown;
-use super::passes::{dispatch, offset};
-use super::resources::step;
-use super::variants::{DIGIT_PASSES, MarkVariants};
+use std::sync::Arc;
+
+use super::marks::{Holding, Shown};
+use super::passes::offset;
+use crate::data::{Field, RowIds, Version};
 use crate::derive::{Derived, stamp_of};
+use crate::expr::compile::{Deps, Program, Reads};
 use crate::gpu::Inner;
+use crate::gpu::pipelines::Projection;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
@@ -25,7 +28,8 @@ use crate::{Mark, Space};
 /// A listed mark's segment list (see `Shown::listed`), used when its rows have different numbers
 /// of segments, or for areas, of triangles: where it lies, a stamp of its last build's inputs (the
 /// list, the paths, and for great circles where the vertices are drawn), and its count. Each entry
-/// is a segment's row and how far along its path it starts. A curved mark's count is read back,
+/// is a segment's row and distance along its path, or an area's row and prepared corner address.
+/// A curved mark's count is read back,
 /// one readback at a time, and its list grows to fit what was found.
 #[derive(Default)]
 pub(crate) struct Segments {
@@ -34,7 +38,78 @@ pub(crate) struct Segments {
     pub(crate) found: Derived<u32>,
 }
 
-/// Words a segment list keeps per segment: its row, and its distance along.
+/// Source-position dependencies of a vertex mark. Appending vertices does not move existing
+/// endpoints. Reference columns independently invalidate edges newly connected to those vertices.
+#[derive(Default)]
+pub(crate) struct Shape {
+    seen: Option<(bool, u64)>,
+    version: Option<Version>,
+    inputs: Option<ShapeInputs>,
+}
+
+struct ShapeInputs {
+    program: Arc<Program>,
+    holding: Holding,
+    columns: u64,
+}
+
+impl ShapeInputs {
+    fn of(shown: &Shown) -> Option<Self> {
+        if shown.transition.is_some() || shown.begin.is_some() || shown.exits != 0 || !shown.drawable() {
+            return None;
+        }
+        let holding = shown.holding.as_ref()?;
+        if holding.drawing.is_some() {
+            return None;
+        }
+        let program = &shown.compiled.as_ref()?.program;
+        let mut columns = 0;
+        for channel in program.channels.iter().filter(|c| matches!(c.name.as_str(), "position" | "elevation")) {
+            // Joins, fitted domains, samples, transitions, and view expressions stay conservative.
+            if channel.reads.deps != Deps::default() && channel.reads.deps != Deps::DATA {
+                return None;
+            }
+            columns |= channel.reads.columns;
+        }
+        if program.columns.iter().enumerate().any(|(i, column)| {
+            columns & Reads::column(i) != 0 && (column.from.is_some() || column.derived || column.sampled)
+        }) {
+            return None;
+        }
+        Some(Self { program: program.clone(), holding: holding.clone(), columns })
+    }
+
+    /// The old vertices keep both their identities and every input that places them. Immutable
+    /// pages and their bounded write history prove this without comparing or evaluating values.
+    fn keeps(&self, before: &Self) -> bool {
+        let (old, new) = (&before.holding.table, &self.holding.table);
+        if !Arc::ptr_eq(&self.program, &before.program)
+            || self.holding.origin != before.holding.origin
+            || old.order != new.order
+            || new.len() < old.len()
+        {
+            return false;
+        }
+        let ids = match (&old.ids, &new.ids) {
+            (RowIds::Count(a), RowIds::Count(b)) => b >= a,
+            (RowIds::Listed(a), RowIds::Listed(b)) => b.kept_below(a, old.len()),
+            _ => false,
+        };
+        ids && self.program.columns.iter().enumerate().all(|(i, column)| {
+            if self.columns & Reads::column(i) == 0 {
+                return true;
+            }
+            match (old.field_named(&column.name), new.field_named(&column.name)) {
+                (Some(Field::Values(a, _)), Some(Field::Values(b, _))) => b.kept_below(a, old.len()),
+                // References and other field kinds can change their interpretation outside this
+                // table, so the general revision remains their dependency.
+                _ => false,
+            }
+        })
+    }
+}
+
+/// Words per instance: its row, and its path distance or prepared triangle address.
 const SEGMENT_WORDS: u32 = 2;
 
 /// Where a paged mark's drawn-row words lie in the lists buffer, `[start, room]` in words, and the
@@ -55,7 +130,7 @@ pub(crate) struct HeightOrder {
 }
 
 /// Words a height order keeps per instance: the instance and its key, on each of two sides.
-const ORDER_WORDS: u32 = 4;
+const ORDER_WORDS: u32 = 1;
 
 /// Where a list lies in the lists buffer, in words.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -66,27 +141,25 @@ pub(crate) struct List {
     /// The most entries it keeps, and words per entry.
     pub(crate) kept: u32,
     pub(crate) stride: u32,
-    sums: u32,
-    counts: u32,
+    pub(crate) counts: u32,
 }
 
 impl List {
     /// A list of `items` items keeping `kept` entries of `stride` words: its header and entries at
     /// `front`, its block sums and counts at `back`.
     pub(crate) fn at(front: u32, back: u32, items: u32, kept: u32, stride: u32) -> List {
-        let sums = back;
-        let counts = sums + items.div_ceil(wgsl::SCAN_WORKGROUP).max(1);
-        List { header: front, items, entries: front + wgsl::LIST_HEADER, kept, stride, sums, counts }
+        let counts = back;
+        List { header: front, items, entries: front + wgsl::LIST_HEADER, kept, stride, counts }
     }
 
     /// Words its header and entries take.
     pub(crate) fn front_words(kept: u32, stride: u32) -> u32 {
-        wgsl::LIST_HEADER + kept * stride
+        (wgsl::LIST_HEADER + kept * stride).next_multiple_of(4)
     }
 
     /// Words its sums and counts take.
     pub(crate) fn back_words(items: u32) -> u32 {
-        items.div_ceil(wgsl::SCAN_WORKGROUP).max(1) + items + 1
+        (items + 1).next_multiple_of(4)
     }
 
     /// Where the scan writes the list's total, before it is capped at `kept`.
@@ -94,25 +167,77 @@ impl List {
         self.counts + self.items
     }
 
-    /// The header's words, with draw arguments for `corners` vertices per instance.
-    pub(crate) fn header_words(&self, corners: u32) -> [u32; wgsl::LIST_HEADER as usize] {
-        let mut h = [0; wgsl::LIST_HEADER as usize];
-        h[wgsl::LIST_ITEMS as usize] = self.items;
-        h[wgsl::LIST_COUNTS as usize] = self.counts;
-        h[wgsl::LIST_SUMS as usize] = self.sums;
-        h[wgsl::LIST_ENTRIES as usize] = self.entries;
-        h[wgsl::LIST_DRAW as usize] = corners;
-        h[wgsl::LIST_DISPATCH as usize + 1] = 1;
-        h[wgsl::LIST_DISPATCH as usize + 2] = 1;
-        h[wgsl::LIST_KEPT as usize] = self.kept;
-        h
+    /// The header's item count, prefix offsets, entries, and reserved capacity.
+    pub(crate) fn header_words(&self) -> [u32; wgsl::LIST_HEADER as usize] {
+        [self.items, self.counts, self.entries, self.kept]
     }
 }
 
-/// Values of an 8-bit digit. A height order counts each block's instances for each.
-const DIGIT_VALUES: u32 = 256;
-
 impl View {
+    /// Builds only invalidated lists. Every intermediate stays on the GPU, and persistent lists
+    /// are updated by ordered copies from shared scratch, avoiding sampled/attached aliases.
+    pub(super) fn record_lists(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        expanded: &[usize],
+        segments: &[usize],
+        ordered: &[usize],
+    ) {
+        if expanded.is_empty() && segments.is_empty() && ordered.is_empty() {
+            return;
+        }
+        let gpu = self.gpu.clone();
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let resources = self.resources.as_mut().expect("frame resources");
+        let groups = resources.groups(&gpu.0, inner);
+        for &i in segments.iter().chain(ordered) {
+            let shown = &self.marks[i];
+            for list in [shown.segments.list, shown.height_order.list].into_iter().flatten() {
+                resources.lists().write(queue, list.header, &list.header_words());
+            }
+        }
+        let input = |i: usize| crate::gpu::listing::Inputs {
+            pages: inner.arena.words(),
+            lists: resources.lists(),
+            view: &groups.view,
+            mark: &groups.mark,
+            offset: offset(i),
+            path: self.marks[i].path(),
+            projection: Projection::of(&self.scene.space),
+            measured: self.marks[i].measures_paths(),
+        };
+        let mut raster = crate::gpu::raster::Raster { device, queue, pipelines: &mut inner.pipelines, encoder };
+        for &i in expanded {
+            let shown = &self.marks[i];
+            inner.listing.expand(
+                &mut raster,
+                &input(i),
+                shown.rows + shown.exits,
+                shown.drawn_rows.at.expect("drawn rows")[0],
+            );
+        }
+        for &i in segments {
+            let shown = &self.marks[i];
+            let list = shown.segments.list.expect("segment list");
+            inner.listing.segments(
+                &mut raster,
+                &input(i),
+                crate::gpu::listing::Segments {
+                    items: list.items,
+                    kept: list.kept,
+                    counts: list.counts,
+                    destination: list.entries,
+                    areas: shown.kind() == MarkKind::Areas,
+                },
+            );
+        }
+        for &i in ordered {
+            let list = self.marks[i].height_order.list.expect("height order");
+            inner.listing.order(&mut raster, &input(i), list.kept, list.entries);
+        }
+    }
+
     /// Lays out the lists buffer: every listed mark's segment list at the front, using counts read
     /// back, then each paged mark's drawn-row words, then in `layered` frames the height order of
     /// each mark whose rows stand at different heights. A list smaller than its rows need grows,
@@ -122,9 +247,7 @@ impl View {
         for shown in &mut self.marks {
             if let Some((stamp, bytes)) = shown.segments.found.landed() {
                 let found = crate::wire::In::new(&bytes).u32().unwrap_or(0);
-                let kept = shown.segments.list.map_or(0, |l| l.kept);
-                let room = if found > kept { found + found / 4 } else { shown.segments.found.value };
-                shown.segments.found.make(stamp, room);
+                shown.segments.found.make(stamp, found);
             }
             if !shown.listed() {
                 shown.segments.list = None;
@@ -151,7 +274,7 @@ impl View {
             let items = shown.rows + shown.exits;
             let region = match shown.drawn_rows.at {
                 Some([start, room]) if start == at && room >= items => [start, room],
-                _ => [at, items + items / 4],
+                _ => [at, (items + items / 4).next_multiple_of(4)],
             };
             at += region[1];
             shown.drawn_rows.at = Some(region);
@@ -169,7 +292,7 @@ impl View {
                 Some(list) if list.header == at && list.kept >= kept => list,
                 _ => {
                     let kept = kept + kept / 4;
-                    let items = kept.div_ceil(DIGIT_VALUES) * DIGIT_VALUES;
+                    let items = 0;
                     List::at(at, at + List::front_words(kept, ORDER_WORDS), items, kept, ORDER_WORDS)
                 }
             };
@@ -190,10 +313,10 @@ impl View {
         match shown.kind() {
             MarkKind::Vertices => raised(&shown.mark),
             MarkKind::Edges => {
-                matches!(shown.path(), wgsl::PATH_ENDS | wgsl::PATH_POLES)
+                matches!(shown.path(), wgsl::PATH_ENDS | wgsl::PATH_BENDS | wgsl::PATH_POLES)
                     && shown.ends.iter().any(|end| end.mark.is_some_and(|m| raised(&self.marks[m].mark)))
             }
-            MarkKind::Faces | MarkKind::Lines | MarkKind::Areas => false,
+            MarkKind::Lines | MarkKind::Areas => false,
         }
     }
 
@@ -218,37 +341,6 @@ impl View {
         due
     }
 
-    /// Records the sort of each of `marks`' height orders: their keys, then for each digit the
-    /// count, the scan, and the scatter. `group` is the lists pass group, left at the segment
-    /// step.
-    pub(super) fn sort_height_orders(
-        &self,
-        pass: &mut wgpu::ComputePass<'_>,
-        inner: &mut Inner,
-        mark: &wgpu::BindGroup,
-        group: &wgpu::BindGroup,
-        marks: &[usize],
-    ) {
-        let device = &self.gpu.0.device;
-        let [count, scatter] = DIGIT_PASSES;
-        for &i in marks {
-            let shown = &self.marks[i];
-            let list = shown.height_order.list.expect("ordered");
-            pass.set_bind_group(1, mark, &[offset(i)]);
-            pass.set_pipeline(&inner.pipelines.compute(device, MarkVariants::shown(shown).height_keys()));
-            dispatch(pass, list.kept);
-            for k in 0..wgsl::DIGITS {
-                pass.set_bind_group(2, group, &[step(wgsl::STEP_DIGITS + k)]);
-                pass.set_pipeline(&inner.pipelines.compute(device, count));
-                dispatch(pass, list.kept);
-                scan(pass, &mut inner.pipelines, device, list.items);
-                pass.set_pipeline(&inner.pipelines.compute(device, scatter));
-                dispatch(pass, list.kept);
-            }
-            pass.set_bind_group(2, group, &[step(wgsl::STEP_SEGMENTS)]);
-        }
-    }
-
     /// The marks whose drawn-row words are rewritten this frame: those whose drawing, rows, word
     /// location, or lists buffer changed.
     pub(super) fn drawn_rows_due(&mut self) -> Vec<usize> {
@@ -270,20 +362,40 @@ impl View {
     /// drawing changed, or, along great circles or lanes, where the vertices their rows join are
     /// drawn. A color changing every frame rebuilds none.
     pub(super) fn segments_due(&mut self) -> Vec<usize> {
-        let vertices: Vec<(bool, u64)> =
-            self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices).map(Shown::places_drawn).collect();
+        let vertices: Vec<Option<Version>> =
+            self.marks.iter_mut().map(|m| (m.kind() == MarkKind::Vertices).then(|| m.shape_version())).collect();
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
-        // Lanes are laid out on screen, so they count again whenever the camera moves.
+        // Flat-plane lanes retain a conservative plan throughout a zoom octave. Draws test the
+        // exact current density. Other projections retain their full camera dependency.
         let projected = self.projected();
-        let sight = (projected.clip_from_world.to_cols_array().map(f64::to_bits), self.size.map(f64::to_bits));
+        let sight = projected.lane_band().map_or_else(
+            || {
+                stamp_of((
+                    projected.clip_from_world.to_cols_array().map(f64::to_bits),
+                    projected.center.map(f64::to_bits),
+                    self.size.map(f64::to_bits),
+                    projected.globe.to_bits(),
+                    self.scene.theme.edge.bow.to_bits(),
+                ))
+            },
+            |band| stamp_of((band.to_bits(), self.size.map(f64::to_bits), self.scene.theme.edge.bow.to_bits())),
+        );
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
             let laned = shown.laned().then_some(sight);
-            let arcs = (shown.geodesic || laned.is_some()).then(|| (&vertices, shown.places_drawn(), laned));
-            let tables = shown.tables.generation();
+            let measured = shown.measures_paths();
+            let arcs = (shown.geodesic || laned.is_some() || measured).then(|| {
+                let ends: Vec<_> = shown.ends.iter().map(|end| end.mark.map(|m| (m, vertices[m]))).collect();
+                (ends, shown.places_drawn(), laned)
+            });
+            let tables = shown.compiled.as_ref().map(|c| {
+                let generation = |column| (column, shown.tables.column_generation(column));
+                let ends: Vec<_> = c.program.ends.iter().map(|end| generation(end.column)).collect();
+                (generation(c.drawing.geometry), generation(c.drawing.lane), ends)
+            });
             let drawn = shown.drawing().map(|d| d.made);
-            let stamp = stamp_of((list.header, list.items, list.kept, tables, generation, arcs, drawn));
+            let stamp = stamp_of((list.header, list.items, list.kept, tables, generation, arcs, drawn, measured));
             if stamp != shown.segments.built {
                 shown.segments.built = stamp;
                 due.push(i);
@@ -292,23 +404,21 @@ impl View {
         due
     }
 
-    /// Reads back how many segments each great-circle mark needs, so a list too small grows. Each
-    /// mark has one readback at a time: a newer list does not cancel it, and is counted after it
-    /// arrives. A mark only bowed into lanes always has space for every piece of every lane, so it
-    /// reads back nothing.
+    /// Reads curved marks' counts without blocking. Great-circle reservations grow when needed;
+    /// a current count also trims lane draws to the compacted prefix. A new list invalidates its
+    /// old count immediately, so no changed geometry is dropped while a readback is pending.
     pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner) {
         let gpu = self.gpu.clone();
         let Some(resources) = &self.resources else { return };
         for shown in &mut self.marks {
-            let geodesic = shown.curved() && shown.geodesic;
-            let Some(list) = shown.segments.list.filter(|_| geodesic && shown.drawable()) else { continue };
+            let Some(list) = shown.segments.list.filter(|_| shown.curved() && shown.drawable()) else { continue };
             let built = shown.segments.built;
             if shown.segments.found.busy() || !shown.segments.found.due(built) {
                 continue;
             }
-            let at = u64::from(list.total()) * 4;
+            let at = list.total();
             let readback =
-                Readback::new(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 4, &self.waker);
+                Readback::words(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 1, &self.waker);
             shown.segments.found.start(built, readback);
         }
     }
@@ -320,25 +430,169 @@ pub(super) fn raised(mark: &Mark) -> bool {
 }
 
 impl Shown {
+    fn shape_version(&mut self) -> Version {
+        let seen = self.places_drawn();
+        if self.shape.seen != Some(seen) {
+            let inputs = ShapeInputs::of(self);
+            if !inputs.as_ref().zip(self.shape.inputs.as_ref()).is_some_and(|(now, before)| now.keeps(before)) {
+                self.shape.version = Some(Version::next());
+            }
+            self.shape.seen = Some(seen);
+            self.shape.inputs = inputs;
+        }
+        self.shape.version.expect("a shape is versioned on its first use")
+    }
+
     /// Whether its segment count is being read back, or is due to be.
     pub(crate) fn counting(&self) -> bool {
         let found = &self.segments.found;
-        found.busy() || (self.curved() && self.geodesic && self.drawable() && found.due(self.segments.built))
+        found.busy() || (self.curved() && self.drawable() && found.due(self.segments.built))
     }
 }
 
-/// Records the scan of the list the bound mark's uniform names.
-pub(super) fn scan(
-    pass: &mut wgpu::ComputePass<'_>,
-    pipelines: &mut crate::gpu::pipelines::Pipelines,
-    device: &wgpu::Device,
-    items: u32,
-) {
-    let [blocks, sums, add] = super::variants::SCAN;
-    pass.set_pipeline(&pipelines.compute(device, blocks));
-    dispatch(pass, items.max(1));
-    pass.set_pipeline(&pipelines.compute(device, sums));
-    pass.dispatch_workgroups(1, 1, 1);
-    pass.set_pipeline(&pipelines.compute(device, add));
-    dispatch(pass, items);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Camera, Color, Data, Frame, Gpu, Grid, Ids, Lines, Plane, Scene, Table, field};
+
+    #[test]
+    fn curved_lists_keep_counts_for_unreferenced_appends_but_follow_changed_endpoints() {
+        use crate::{Earth, Edges, Patch, Vertices};
+        let gpu = match pollster::block_on(Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let data = Data::new("d");
+        data.apply(
+            Patch::new()
+                .set(Table::new("Node", vec![0_u64, 1]).field("x", vec![-1.0, 1.0]).field("y", vec![0.0, 0.0]))
+                .set(Table::new("Link", Ids::count(2)).reference("from", "Node", vec![0_u64, 0]).reference(
+                    "to",
+                    "Node",
+                    vec![1_u64, 9],
+                )),
+        )
+        .unwrap();
+        let scene = |shift: f64| {
+            Scene::new(Earth { graticule: false, ..Earth::default() })
+                .ease(std::time::Duration::ZERO)
+                .draw(Vertices::of("d", "Node").position(field("x") + shift, field("y")).radius(1.0))
+                .draw(Edges::of("d", "Link").ends("from", "to"))
+        };
+        let mut view = View::new(&gpu, scene(0.0));
+        view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+        view.set_sources([&data]).unwrap();
+        let device = gpu.device();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("endpoint dependency test"),
+            size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::gpu::FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut time = 0.0;
+        let mut render = |view: &mut View| {
+            for _ in 0..20 {
+                time += 1.0 / 60.0;
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                view.render(
+                    &mut encoder,
+                    &Frame { target: &target, format: crate::gpu::FORMAT, size: [64, 64], pixel_ratio: 1.0, time },
+                );
+                gpu.queue().submit([encoder.finish()]);
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: Some(std::time::Duration::from_secs(10)),
+                    })
+                    .unwrap();
+                if !view.needs_render() {
+                    assert_eq!(gpu.work().late, 0);
+                    return view.marks[1].segments.built;
+                }
+            }
+            panic!("the view settles");
+        };
+        let first = render(&mut view);
+        assert_ne!(first, 0);
+        data.apply(Table::new("Node", [2_u64]).field("x", vec![5.0]).field("y", vec![0.0])).unwrap();
+        assert_eq!(render(&mut view), first, "an unreferenced append keeps existing geometry and its exact count");
+        data.apply(Table::new("Node", [1_u64]).field("x", vec![110.0])).unwrap();
+        let moved = render(&mut view);
+        assert_ne!(moved, first, "an existing endpoint moving changes its arc");
+        data.apply(Table::new("Node", [9_u64]).field("x", vec![60.0]).field("y", vec![30.0])).unwrap();
+        let connected = render(&mut view);
+        assert_ne!(connected, moved, "a formerly missing reference connecting changes its list");
+        view.set_scene(scene(1.0));
+        assert_ne!(render(&mut view), connected, "changing the position expression invalidates inherited geometry");
+    }
+
+    #[test]
+    fn path_lists_track_geometry_and_length_styles_but_not_color_updates() {
+        let gpu = match pollster::block_on(Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let data = Data::new("d");
+        data.apply(
+            Table::new("Path", Ids::count(1))
+                .field("geometry", vec![vec![[-10.0, 0.0], [0.0, 0.0], [10.0, 0.0]]])
+                .field("red", vec![false]),
+        )
+        .unwrap();
+        let line = Lines::of("d", "Path").color(crate::when(field("red")).then(Color::WHITE).otherwise(Color::BLACK));
+        let scene = |line| Scene::new(Plane { grid: Grid::Off }).ease(std::time::Duration::ZERO).draw(line);
+        let mut view = View::new(&gpu, scene(line.clone()));
+        view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+        view.set_sources([&data]).unwrap();
+        let device = gpu.device();
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("list invalidation test"),
+            size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::gpu::FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let target = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut time = 0.0;
+        let mut render = |view: &mut View| {
+            for _ in 0..20 {
+                time += 1.0 / 60.0;
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                view.render(
+                    &mut encoder,
+                    &Frame { target: &target, format: crate::gpu::FORMAT, size: [64, 64], pixel_ratio: 1.0, time },
+                );
+                gpu.queue().submit([encoder.finish()]);
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: Some(std::time::Duration::from_secs(10)),
+                    })
+                    .unwrap();
+                if !view.needs_render() {
+                    return view.marks[0].segments.built;
+                }
+            }
+            panic!("the view settles");
+        };
+        let first = render(&mut view);
+        assert_ne!(first, 0);
+        data.apply(Table::new("Path", [0_u64]).field("red", vec![true])).unwrap();
+        assert_eq!(render(&mut view), first, "changing color preserves the path list");
+        data.apply(Table::new("Path", [0_u64]).field("geometry", vec![vec![[-10.0, 0.0], [10.0, 0.0]]])).unwrap();
+        let changed = render(&mut view);
+        assert_ne!(changed, first, "changing the path rebuilds its list");
+        view.set_scene(scene(line.dash(true)));
+        assert_ne!(render(&mut view), changed, "enabling dashes measures the existing path");
+    }
 }

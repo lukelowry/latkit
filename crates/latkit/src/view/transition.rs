@@ -224,6 +224,7 @@ impl Shown {
         self.holding.clone_from(&before.holding);
         self.version = before.version + 1;
         self.place_version = before.place_version + 1;
+        self.shape = std::mem::take(&mut before.shape);
     }
 
     /// Begins a transition from the mark's current state, with rows moved as `moved` says, if they
@@ -261,7 +262,7 @@ impl Shown {
 }
 
 impl View {
-    /// Starts every transition beginning this frame, which this frame's compute pass freezes, and
+    /// Starts every transition beginning this frame, which this frame's raster pass freezes, and
     /// advances the running ones.
     pub(super) fn transitions(&mut self, inner: &mut Inner) {
         // A drag moves rows at once. So does any change until the transition pipelines land, and
@@ -310,7 +311,7 @@ impl View {
         }
     }
 
-    /// Writes the remap words from which the compute pass freezes each starting mark's shown state
+    /// Writes the remap words from which the raster pass freezes each starting mark's shown state
     /// into its frozen words, per mark: its state pages as the frame began, how many rows showed,
     /// each new row's old row when rows moved, and where the vertices its endpoints reference
     /// moved, if they did.

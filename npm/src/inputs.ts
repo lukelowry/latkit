@@ -92,10 +92,10 @@ export interface Budget {
    * GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's per-row
    * state. A table too large for a view's share draws as a paged table, with only the pages the
    * camera needs, so it always fits. Pages no view draws stay cached in the rest of the budget, and
-   * the least recently drawn are evicted first. Defaults to half the device's largest storage
-   * buffer, at most 1 GiB. The page pool grows as data needs it and never shrinks, so set the budget
-   * before drawing data. A device without the memory to grow the pool further lowers the budget to
-   * the pool's size.
+   * the least recently drawn are evicted first. Defaults to half the device's addressable
+   * word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never shrinks, so
+   * set the budget before drawing data. A device without the memory to grow the pool further lowers
+   * the budget to the pool's size.
    */
   bytes: number;
   /**
@@ -552,21 +552,6 @@ export type ExprNode =
   | CallNode;
 
 /**
- * Rows drawn as triangles between three vertices named by reference fields: meshes, surfaces, and
- * fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from
- * above shows its exact colors.
- */
-export interface Faces extends MarkOptions {
-  /** The dataset and table drawn, `[data, table]`. */
-  faces: TableInput;
-  /**
-   * The reference fields naming each row's three vertices. Required. Without a color, a face blends
-   * the colors of its corners.
-   */
-  corners?: [a: string, b: string, c: string] | null;
-}
-
-/**
  * A field's value in each row, from the mark's own table. With `from`, it reads another dataset's
  * table, joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
  */
@@ -839,14 +824,13 @@ export interface Lines extends MarkOptions, StrokeOptions {
  * One table a scene draws. The mark's kind is the key that holds its table, next to its options:
  * `{ vertices: [data, table], radius: 4 }`.
  */
-export type Mark = Vertices | Edges | Faces | Lines | Areas;
+export type Mark = Vertices | Edges | Lines | Areas;
 
 /** The options every mark has. */
 export interface MarkOptions {
   /**
    * Each row's color: a CSS color, a value through a colormap, or a conditional that picks between
-   * colors. Defaults to the theme's color for the mark. Faces default to a blend of their corners'
-   * colors.
+   * colors. Defaults to the theme's color for the mark.
    */
   color?: ExprInput | null;
   /** Whether each row is drawn and can be picked. Defaults to `true`. */
@@ -859,9 +843,9 @@ export interface MarkOptions {
   /** Distinguishes two marks of the same table across scenes, and names the mark in hits. */
   name?: string | null;
   /**
-   * Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, faces,
-   * and plot traces, and off for geometry: areas, and lines along paths such as coasts, borders, and
-   * roads. Either way, the mark shows which rows are selected and hovered.
+   * Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, and plot
+   * traces, and off for geometry: areas, and lines along paths such as coasts, borders, and roads.
+   * Either way, the mark shows which rows are selected and hovered.
    */
   pick?: boolean | null;
   /** Whether clicking a row selects it. Defaults to `true`. */
@@ -1208,8 +1192,6 @@ export type Theme =
       contrast?: number;
       /** The dash period: one dash and one gap of equal length. */
       dash?: number;
-      /** How much faces darken as they turn away from the camera, from 0 to 1. */
-      shading?: number;
       /** How labels, axis ticks, and titles look. */
       text?: TextTheme;
       /** Defaults for vertices. */

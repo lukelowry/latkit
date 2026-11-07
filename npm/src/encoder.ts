@@ -118,13 +118,18 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
       failed();
       const timestamp = Math.round((time * 100) / 9);
       times.push({ timestamp, time });
-      const frame = new VideoFrame(nv12, {
+      // The binding gives this encoder an owned buffer. Transfer it to the frame so browsers
+      // supporting WebCodecs buffer transfer can avoid another full-frame copy. Older browsers
+      // ignore the dictionary member and retain their copying behavior.
+      const init: VideoFrameBufferInit & { transfer: ArrayBuffer[] } = {
         format: 'NV12',
         codedWidth: width,
         codedHeight: height,
         timestamp,
         colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false },
-      });
+        transfer: nv12.buffer instanceof ArrayBuffer ? [nv12.buffer] : [],
+      };
+      const frame = new VideoFrame(nv12, init);
       try {
         video.encode(frame, { keyFrame: key });
       } finally {

@@ -115,27 +115,27 @@ impl Marker {
     /// How the mark's markers draw, with their inputs starting at extra word `input`.
     pub(crate) fn markers(&self, input: u32) -> Markers {
         let inputs = self.inputs().len() as u32;
-        let base = Markers { inputs, input, ..Markers::default() };
+        let base = Markers { inputs, input, marker: self.code(), ..Markers::default() };
         match self {
-            Marker::Shape(shape) => Markers { marker: wgsl::MARKER_SHAPE, shape: shape.code(), ..base },
+            Marker::Shape(shape) | Marker::Gauge { shape, .. } => Markers { shape: shape.code(), ..base },
             // A negative corner means the theme's corner radius.
-            Marker::Block { corner } => Markers {
-                marker: wgsl::MARKER_BLOCK,
-                shape: wgsl::SHAPE_ROUNDED,
-                corner: corner.unwrap_or(-1.0),
-                ..base
-            },
-            Marker::Gauge { shape, .. } => Markers { marker: wgsl::MARKER_GAUGE, shape: shape.code(), ..base },
-            Marker::Pie { colors, hole, .. } => Markers {
-                marker: wgsl::MARKER_PIE,
-                hole: *hole,
-                palette: colors.iter().map(|c| c.packed()).collect(),
-                ..base
-            },
-            Marker::Icon { images, .. } => Markers { marker: wgsl::MARKER_ICON, icons: images.clone(), ..base },
-            Marker::Wgsl { source, .. } => {
-                Markers { marker: wgsl::MARKER_CUSTOM, custom: Some(source.clone()), ..base }
+            Marker::Block { corner } => Markers { shape: wgsl::SHAPE_ROUNDED, corner: corner.unwrap_or(-1.0), ..base },
+            Marker::Pie { colors, hole, .. } => {
+                Markers { hole: *hole, palette: colors.iter().map(|c| c.packed()).collect(), ..base }
             }
+            Marker::Icon { images, .. } => Markers { icons: images.clone(), ..base },
+            Marker::Wgsl { source, .. } => Markers { custom: Some(source.clone()), ..base },
+        }
+    }
+
+    pub(crate) fn code(&self) -> u32 {
+        match self {
+            Marker::Shape(_) => wgsl::MARKER_SHAPE,
+            Marker::Block { .. } => wgsl::MARKER_BLOCK,
+            Marker::Gauge { .. } => wgsl::MARKER_GAUGE,
+            Marker::Pie { .. } => wgsl::MARKER_PIE,
+            Marker::Icon { .. } => wgsl::MARKER_ICON,
+            Marker::Wgsl { .. } => wgsl::MARKER_CUSTOM,
         }
     }
 }

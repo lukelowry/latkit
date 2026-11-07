@@ -40,7 +40,10 @@ fn every_mark_defaults_as_its_json_form_does() {
     let json = |kind: &str| -> Mark { serde_json::from_str(&format!(r#"{{ "{kind}": ["d", "t"] }}"#)).expect(kind) };
     assert_eq!(json("vertices"), Vertices::of("d", "t").into());
     assert_eq!(json("edges"), Edges::of("d", "t").into());
-    assert_eq!(json("faces"), Faces::of("d", "t").into());
+    assert!(
+        serde_json::from_str::<Mark>(r#"{ "faces": ["d", "t"] }"#).is_err(),
+        "face surfaces are no longer a mark kind"
+    );
     assert_eq!(json("lines"), Lines::of("d", "t").into());
     assert_eq!(json("areas"), Areas::of("d", "t").into());
 }
@@ -61,12 +64,11 @@ fn rows_pick_by_default_and_geometry_only_when_asked() {
 }
 
 #[test]
-fn faces_lines_and_controls_match_builders() {
+fn lines_and_controls_match_builders() {
     let json = r##"{
         "space": "plane",
         "controls": { "gestures": { "secondary": "none" }, "pickRadius": 12 },
         "marks": [
-            { "faces": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false },
             { "lines": ["mesh", "Body"], "geometry": "outline", "color": "#66c7ff", "width": 2, "flow": 8 },
             { "vertices": ["mesh", "Vertex"], "select": false, "drag": true, "ring": "red" }
         ]
@@ -77,7 +79,6 @@ fn faces_lines_and_controls_match_builders() {
             pick_radius: 12.0,
             ..Controls::default()
         })
-        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
         .draw(
             Lines::of("mesh", "Body")
                 .geometry("outline")

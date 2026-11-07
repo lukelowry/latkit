@@ -35,6 +35,15 @@ fn placed(v: Vertex) -> bool {
 // One sized in units is part of the drawing, so it only glows.
 fn point(row: u32) -> Point {
     let v = vertex_at(row_at(row));
+    var p: Point;
+    p.row = row;
+    p.world = world(v.hi, v.lo, v.elevation);
+    p.position = v.hi + v.lo;
+    p.clip = clip_of(p.world);
+    p.shown = (v.flags & VISIBLE) != 0u && placed(v) && shows(p.world) && p.clip.w > 0.0;
+    // Hidden rows keep their position for locating. Their marker, focus, and front depth
+    // cannot contribute to a draw, label, or hit, so do not calculate them.
+    if !p.shown { return p; }
     var half = vec2f(px(v.half.x, VERTEX_HALF));
     if (mark.flags & SIZED) != 0u {
         half.y = px(v.half.y, VERTEX_HALF + 1u);
@@ -44,18 +53,12 @@ fn point(row: u32) -> Point {
     let grows = (mark.units & (1u << VERTEX_HALF)) == 0u && (focus & HOVERED) != 0u;
     half *= select(1.0, frame.grow, grows) * growth(v.flags);
     let color = unpack4x8unorm(v.color);
-    var p: Point;
-    p.world = world(v.hi, v.lo, v.elevation);
-    p.position = v.hi + v.lo;
-    p.clip = clip_of(p.world);
     let front = toward_eye(p.clip, p.world, max(half.x, half.y));
     p.drawn_z = front.z / front.w;
     p.half = max(half, vec2f(0.0));
     p.color = vec4f(color.rgb, color.a * faded(row, v.flags));
     p.status = unpack4x8unorm(v.status);
-    p.row = row;
     p.focus = focus;
-    p.shown = (v.flags & VISIBLE) != 0u && placed(v) && shows(p.world) && p.clip.w > 0.0;
     return p;
 }
 

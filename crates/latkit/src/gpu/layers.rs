@@ -24,6 +24,8 @@ pub(crate) struct Layers<K> {
 impl<K: Hash + Eq> Layers<K> {
     /// An array of `capacity` layers of `size` texels, holding `what`.
     pub(crate) fn new(device: &wgpu::Device, what: &'static str, size: [u32; 2], capacity: u32) -> Layers<K> {
+        // GLES chooses a 2D target for a single layer; array samplers require an array target.
+        let capacity = capacity.max(2).next_power_of_two();
         let (texture, view) = create(device, what, size, capacity);
         Layers { what, size, texture, view, held: HashMap::new(), capacity, generation: 0 }
     }
@@ -122,9 +124,9 @@ mod tests {
         let mut layers = Layers::<u32>::new(device, "tests", [1, 1], 1);
         let first: Vec<u32> = (0..5).map(|key| layers.layer(device, queue, key, texel).expect("room")).collect();
         assert_eq!(first, [0, 1, 2, 3, 4], "each key gets its own layer");
-        assert_eq!(layers.generation, 3, "grown from 1 to 2, 4, then 8 layers");
+        assert_eq!(layers.generation, 2, "grown from 2 to 4, then 8 layers");
         assert_eq!(layers.layer(device, queue, 2, texel).expect("held"), 2, "a key keeps its layer");
-        assert_eq!(layers.generation, 3, "and nothing grows for it");
+        assert_eq!(layers.generation, 2, "and nothing grows for it");
         let max = device.limits().max_texture_array_layers;
         let mut full = Layers::<u32>::new(device, "tests", [1, 1], max);
         for key in 0..max {

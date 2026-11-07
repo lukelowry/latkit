@@ -19,7 +19,7 @@ import type { Work } from './outputs.js';
 import type { View } from './view.js';
 
 /**
- * A WebGPU device that views draw with. Views on one `Gpu` share its memory and draw together in
+ * A WebGL2 device that views draw with. Views on one `Gpu` share its memory and draw together in
  * each animation frame, so linked views always show the same moment. Views use the first `Gpu`
  * created unless given another, and `View.create` creates one if none exists. When the device is
  * lost, latkit requests a new one once the page is in the foreground, and moves the views, their
@@ -46,10 +46,10 @@ export class Gpu extends Handle {
   }
 
   /**
-   * Requests a WebGPU device. The first call takes the device `load()` requested. Create one before
+   * Requests a WebGL2 device. The first call takes the device `load()` requested. Create one before
    * any view to set its `budget` first, or create another for views that should not share memory
    * with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
-   * when the browser has no WebGPU device.
+   * when the browser has no WebGL2 device.
    */
   static async create(wait: Wait = {}): Promise<Gpu> {
     const until = due(wait);
@@ -121,7 +121,7 @@ export class Gpu extends Handle {
 
   /**
    * The GPU memory budget for data, shared by every view on this GPU. See {@link Budget}. Defaults
-   * to half the device's largest storage buffer, at most 1 GiB, with 32 MiB uploaded per frame.
+   * to half the device's addressable word-texture capacity, at most 1 GiB, with 32 MiB uploaded per frame.
    */
   get budget(): Budget {
     return JSON.parse(device(this).budget) as Budget;

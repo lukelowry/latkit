@@ -1,7 +1,7 @@
 {
   "name": "latkit",
   "version": "0.6.1",
-  "description": "Columnar data drawn as vertices, edges, lines, and areas with WebGPU.",
+  "description": "Columnar data drawn as vertices, edges, lines, and areas with WebGL2.",
   "type": "module",
   "sideEffects": false,
   "license": "MIT",

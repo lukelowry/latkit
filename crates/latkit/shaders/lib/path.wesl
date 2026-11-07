@@ -6,24 +6,36 @@
 // of path, so each pipeline compiles only that kind.
 
 import package::lib::types::{
-    NONE, VISIBLE, PLACED, DASH, ENDS_COLOR, GEODESIC, STEP_BEFORE, STEP_AFTER, MARK_EDGES, PATH_ENDS, PATH_TRACE,
+    NONE, VISIBLE, PLACED, DASH, ENDS_COLOR, GEODESIC, MARK_EDGES, PATH_ENDS, PATH_BENDS, PATH_TRACE,
     PATH_GEOMETRY, PATH_POLES, EDGE_WIDTH, LINE_WIDTH, GEODESIC_STEP, OWN_HEIGHT, TRIANGLES, MAX_PIECES, BOW_PIECES,
-    MISSING, MISSING_COLOR, FAMILY_LANES,
+    MISSING, MISSING_COLOR, FAMILY_LANES, PROJECTION_PLANAR, PROJECTION_DYNAMIC,
 };
 import package::lib::bind::{frame, eye, mark, focused};
 import package::lib::state::{row_at, edge_at, line_at, end_vertex, same_vertex, Vertex};
-import package::lib::project::{world, clip_of, shows, to_screen};
-import package::lib::read::{missing_bits, column_value, points_of, point_bits};
-import package::lib::trace::{trace_run, trace_level, trace_axis, trace_entry};
+import package::lib::project::{world, clip_of, plot_clip, shows, to_screen, geographic, PROJECTION};
+import package::lib::read::{missing_bits, bits_value, points_of, point_bits, Points};
+import package::lib::trace::{trace_sample, trace_pair};
 import package::lib::focus::{faded, growth};
 import package::lib::mark::{px, px_per_length};
 import package::lib::points::vertex_half;
-import package::lib::lists::{lists, list_entry, list_start, list_total};
+import package::lib::lists::{list, list_entry, list_start, list_total};
 import package::lib::drawn::{drawn_row, drawn_instance};
 
 // The path kind a pipeline's strokes read, one of the `PATH_` codes, fixed when the pipeline is
 // created.
 override PATH: u32 = PATH_ENDS;
+
+// Keep these constant decisions outside runtime conditions. The module optimizer propagates
+// their literal results, removing unused geometry before the driver compiles a program.
+fn has_end_vertices() -> bool {
+    if PATH == PATH_ENDS { return true; }
+    return PATH == PATH_BENDS;
+}
+
+fn clips_outlines() -> bool {
+    if has_end_vertices() { return true; }
+    return PATH == PATH_POLES;
+}
 
 // One segment of a row's path. `along` is the distance along the path where it starts, in position
 // units (degrees on the earth). The segment list stores it. Without a list it is 0. `row` is the
@@ -46,23 +58,26 @@ fn path_segment(item: u32, index: u32, along: f32) -> Segment {
     return Segment(d.row, item, index, along, d.presence, d.growth, d.leaving);
 }
 
-// A point on a path. Its source sets its position as high and low parts plus elevation, and
-// `placed_point` sets the same point in world and position units. It also has a color and whether
-// it shows.
+// A point on a path, in source coordinates. Projection happens once in `segment_screen`, after
+// the geometry has chosen both points. Bounds and lengths never need projection.
 struct PathPoint {
     hi: vec2f,
     lo: vec2f,
     z: f32,
-    world: vec3f,
-    position: vec3f,
     color: vec4f,
     // For a vertex, its half size in CSS pixels and whether it is a box (has its own height). Zero
     // elsewhere.
     half: vec2f,
     boxed: bool,
-    // Whether it has a position, and whether it lies in front of the globe's horizon.
+    // Whether it has a position.
     shown: bool,
-    ahead: bool,
+}
+
+// A segment has two named endpoints. Keeping this a record rather than a returned array lets
+// shader translators preserve direct field access without temporary array copies or indexing.
+struct PathEnds {
+    a: PathPoint,
+    b: PathPoint,
 }
 
 // How a row's path is stroked, including its comets' flow and how far they have traveled, and
@@ -81,7 +96,7 @@ struct Style {
 // and the drawn part as fractions along it. The drawn part is cut at the near plane and stops short
 // of the vertices at its ends.
 struct OnScreen {
-    ends: array<PathPoint, 2>,
+    ends: PathEnds,
     a: vec2f,
     b: vec2f,
     ca: vec4f,
@@ -98,13 +113,19 @@ fn numbered_segment(instance: u32) -> Segment {
         return path_segment(instance / per, instance % per, 0.0);
     }
     let entry = list_entry(mark.list, 2u * instance);
-    let item = lists[entry];
-    return path_segment(item, instance - list_start(mark.list, item), bitcast<f32>(lists[entry + 1u]));
+    let item = list(entry);
+    return path_segment(item, instance - list_start(mark.list, item), bitcast<f32>(list(entry + 1u)));
 }
 
 // The segment drawn at position `instance`, which `drawn_instance` gives.
 @if(!focused)
 fn segment(instance: u32) -> Segment {
+    // Traces have a fixed segment count and never sort by height. Keep their inner vertex loop
+    // free of list and height-order traversal; drawn rows still handle a shared paged table.
+    if PATH == PATH_TRACE {
+        let per = max(mark.per_row, 1u);
+        return path_segment(instance / per, instance % per, 0.0);
+    }
     return numbered_segment(drawn_instance(instance));
 }
 
@@ -112,19 +133,27 @@ fn segment(instance: u32) -> Segment {
 // distance along from the list. Segments past the row's last draw nothing.
 @if(focused)
 fn segment(instance: u32) -> Segment {
+    return lit_segment(instance);
+}
+
+fn lit_segment(instance: u32) -> Segment {
     let pieces = max(mark.pieces, 1u);
-    let item = focused[mark.focused + instance / pieces];
+    let item = focused(mark.focused + instance / pieces);
     let index = instance % pieces;
     var along = 0.0;
     if mark.per_row == NONE && item < mark.rows && index < path_count(item) {
-        along = bitcast<f32>(lists[list_entry(mark.list, 2u * (list_start(mark.list, item) + index)) + 1u]);
+        along = bitcast<f32>(list(list_entry(mark.list, 2u * (list_start(mark.list, item) + index)) + 1u));
     }
     return path_segment(item, index, along);
 }
 
 // Distance between two path points in position units, which a segment adds to the distance along.
 fn path_length(a: PathPoint, b: PathPoint) -> f32 {
-    return length(b.position.xy - a.position.xy);
+    return length((b.hi + b.lo) - (a.hi + a.lo));
+}
+
+fn path_position(p: PathPoint) -> vec3f {
+    return vec3f(p.hi + p.lo, p.z);
 }
 
 // Segments across all drawn rows' paths.
@@ -165,7 +194,7 @@ fn geometry_count(row: u32) -> u32 {
 // draws and probes alike. A lane whose curve lies off screen draws nothing. Where neighboring lanes
 // lie less than a pixel apart, only every `step`-th lane draws, `step` a power of two, so drawn
 // lanes are at least a pixel apart.
-fn lane_drawn(row: u32, l: Lane) -> bool {
+fn lane_drawn(row: u32, l: Lane, planning: bool) -> bool {
     let e = edge_at(row_at(row));
     let a = end_vertex(0u, e.a);
     let b = end_vertex(1u, e.b);
@@ -176,7 +205,8 @@ fn lane_drawn(row: u32, l: Lane) -> bool {
     }
     let sa = to_screen(ca);
     let sb = to_screen(cb);
-    if (mark.flags & GEODESIC) == 0u {
+    let banded = planning && frame.lane_scale > 0.0;
+    if !banded && (mark.flags & GEODESIC) == 0u {
         // The curve stays within the triangle of its ends and its control point, which lies twice
         // as far out as the curve's middle.
         let c = between(a, b, 0.5, 2.0 * l.offset * frame.bow);
@@ -193,7 +223,7 @@ fn lane_drawn(row: u32, l: Lane) -> bool {
         }
     }
     // Pixels between neighboring lanes at their middle.
-    let apart = distance(sa, sb) * abs(frame.bow) * l.step;
+    let apart = distance(sa, sb) * abs(frame.bow) * l.step * select(1.0, frame.lane_scale, banded);
     if !(apart < 1.0) {
         return true;
     }
@@ -207,27 +237,8 @@ fn lane_drawn(row: u32, l: Lane) -> bool {
 // per `GEODESIC_STEP` degrees of arc instead, when that is more (up to `MAX_PIECES`).
 fn row_segments(row: u32) -> u32 {
     switch PATH {
-        case PATH_ENDS: {
-            let middle = geometry_count(row);
-            if middle > 0u {
-                return middle + 1u;
-            }
-            let l = lane_of(row);
-            if l.offset != 0.0 && !lane_drawn(row, l) {
-                return 0u;
-            }
-            let pieces = select(1u, BOW_PIECES, l.offset != 0.0);
-            if (mark.flags & GEODESIC) == 0u {
-                return pieces;
-            }
-            let e = edge_at(row_at(row));
-            if e.a == NONE || e.b == NONE {
-                return 0u;
-            }
-            let a = end_vertex(0u, e.a);
-            let b = end_vertex(1u, e.b);
-            return max(pieces, arcs(a.hi + a.lo, b.hi + b.lo));
-        }
+        case PATH_ENDS: { return end_segments(row); }
+        case PATH_BENDS: { return end_segments(row); }
         case PATH_GEOMETRY: {
             let count = geometry_count(row);
             if mark.primitive == TRIANGLES {
@@ -236,15 +247,36 @@ fn row_segments(row: u32) -> u32 {
             }
             return max(count, 1u) - 1u;
         }
-        default: {
-            return mark.per_row;
-        }
+        default: { return mark.per_row; }
     }
 }
 
-// Vertex `held` of end `end` as a placed path point.
+fn end_segments(row: u32) -> u32 {
+    if PATH == PATH_BENDS {
+        let middle = geometry_count(row);
+        if middle > 0u { return middle + 1u; }
+    }
+    let l = lane_of(row);
+    if l.offset != 0.0 && !lane_drawn(row, l, true) { return 0u; }
+    let pieces = select(1u, BOW_PIECES, l.offset != 0.0);
+    if PROJECTION == PROJECTION_PLANAR { return pieces; }
+    if PROJECTION == PROJECTION_DYNAMIC {
+        if !geographic() { return pieces; }
+    }
+    if (mark.flags & GEODESIC) == 0u { return pieces; }
+    let e = edge_at(row_at(row));
+    if e.a == NONE || e.b == NONE { return 0u; }
+    let a = end_vertex(0u, e.a);
+    let b = end_vertex(1u, e.b);
+    return max(pieces, arcs(a.hi + a.lo, b.hi + b.lo));
+}
+
+// Vertex `held` of end `end` as a path point.
 fn vertex_point(end: u32, held: u32) -> PathPoint {
-    let v = end_vertex(end, held);
+    return vertex_shape(end_vertex(end, held));
+}
+
+fn vertex_shape(v: Vertex) -> PathPoint {
     var p: PathPoint;
     p.hi = v.hi;
     p.lo = v.lo;
@@ -253,7 +285,7 @@ fn vertex_point(end: u32, held: u32) -> PathPoint {
     p.half = vertex_half(v);
     p.boxed = (v.flags & OWN_HEIGHT) != 0u;
     p.shown = (v.flags & PLACED) != 0u;
-    return placed_point(p);
+    return p;
 }
 
 // CSS pixels from a vertex's center to its outline along `dir`, for a box or a circle.
@@ -278,15 +310,6 @@ fn position_point(xy: vec2f, z: f32, color: vec4f) -> PathPoint {
     p.color = color;
     p.shown = true;
     return p;
-}
-
-// `p` with `world`, `position`, and `ahead` computed.
-fn placed_point(p: PathPoint) -> PathPoint {
-    var out = p;
-    out.world = world(p.hi, p.lo, p.z);
-    out.position = vec3f(p.hi + p.lo, p.z);
-    out.ahead = shows(out.world);
-    return out;
 }
 
 // The point a fraction `t` along the great circle from `a` to `b` (in degrees), offset to the left
@@ -315,9 +338,13 @@ fn along_circle(a: vec2f, b: vec2f, t: f32, bow: f32) -> vec2f {
 fn between(a: Vertex, b: Vertex, t: f32, bow: f32) -> PathPoint {
     var p: PathPoint;
     p.z = mix(a.elevation, b.elevation, t);
-    if (mark.flags & GEODESIC) != 0u {
-        p.hi = along_circle(a.hi + a.lo, b.hi + b.lo, t, bow);
-        return p;
+    if PROJECTION != PROJECTION_PLANAR {
+        if geographic() {
+            if (mark.flags & GEODESIC) != 0u {
+                p.hi = along_circle(a.hi + a.lo, b.hi + b.lo, t, bow);
+                return p;
+            }
+        }
     }
     let d = (b.hi - a.hi) + (b.lo - a.lo);
     p.hi = a.hi;
@@ -325,7 +352,7 @@ fn between(a: Vertex, b: Vertex, t: f32, bow: f32) -> PathPoint {
     return p;
 }
 
-// Point `i` of an edge's path, placed: its first end, its bends, then its second end. Without
+// Point `i` of an edge's path: its first end, its bends, then its second end. Without
 // bends, it runs between its ends in `count` segments, and a lane bows in world space, so its curve
 // stays fixed as the camera moves. An end reads only its own vertex. Each kind of point is built in
 // one place, which keeps compiled shaders small.
@@ -334,69 +361,69 @@ fn end_point(row: u32, count: u32, i: u32) -> PathPoint {
     if e.a == NONE || e.b == NONE || same_vertex(e.a, e.b) {
         return hidden();
     }
-    let bends = points_of(mark.geometry, row);
+    let bends = bends_of(row);
     let last = select(bends.count + 1u, count, bends.count == 0u);
     if i == 0u || i >= last {
         return vertex_point(select(1u, 0u, i == 0u), select(e.b, e.a, i == 0u));
     }
-    let a = end_vertex(0u, e.a);
-    let b = end_vertex(1u, e.b);
-    let t = f32(i) / f32(last);
+    return edge_point(end_vertex(0u, e.a), end_vertex(1u, e.b), bends, last, lane(row) * frame.bow, i);
+}
+
+// Shared endpoint state is read once for a segment, including when both points lie on its curve.
+fn edge_point(a: Vertex, b: Vertex, bends: Points, last: u32, bow: f32, i: u32) -> PathPoint {
     var p: PathPoint;
-    if bends.count == 0u {
-        p = between(a, b, t, lane(row) * frame.bow * 4.0 * t * (1.0 - t));
+    if i == 0u {
+        p = vertex_shape(a);
+    } else if i >= last {
+        p = vertex_shape(b);
     } else {
-        let w = point_bits(bends, i - 1u);
-        if missing_bits(w.x) || missing_bits(w.y) {
-            return hidden();
-        }
-        p.hi = vec2f(bitcast<f32>(w.x), bitcast<f32>(w.y));
+        let t = f32(i) / f32(last);
+        p = middle_point(a, b, bends, t, bow, i);
+        if !p.shown { return p; }
+        p.color = mix(unpack4x8unorm(a.color), unpack4x8unorm(b.color), t);
+        p.shown = (a.flags & PLACED) != 0u && (b.flags & PLACED) != 0u;
     }
-    p.color = mix(unpack4x8unorm(a.color), unpack4x8unorm(b.color), t);
-    p.shown = (a.flags & PLACED) != 0u && (b.flags & PLACED) != 0u;
-    return placed_point(p);
+    return p;
+}
+
+// Only a path with declared bends needs geometry-column traversal. Ordinary endpoint paths
+// retain great circles and lane bows through the same interpolation helper.
+fn bends_of(row: u32) -> Points {
+    if PATH == PATH_BENDS { return points_of(mark.geometry, row); }
+    var empty: Points;
+    return empty;
+}
+
+fn middle_point(a: Vertex, b: Vertex, bends: Points, t: f32, bow: f32, i: u32) -> PathPoint {
+    if PATH == PATH_BENDS {
+        if bends.count > 0u {
+            let w = point_bits(bends, i - 1u);
+            if missing_bits(w.x) || missing_bits(w.y) { return hidden(); }
+            var p: PathPoint;
+            p.hi = bitcast<vec2f>(w);
+            p.shown = true;
+            return p;
+        }
+    }
+    var p = between(a, b, t, bow * 4.0 * t * (1.0 - t));
+    p.shown = true;
+    return p;
 }
 
 // Point `k` of a trace. In a run of buckets, each bucket gives its least and greatest value at its
 // middle. In a run of frames, each frame gives its value, plus the corners between frames when the
 // mark steps. A point past its run's last breaks the line before the next run.
 fn trace_point(row: u32, k: u32) -> PathPoint {
-    let run = trace_run(k);
-    let local = k - run.point;
-    var value = 0u;
-    var entry = 0u;
-    if trace_level(run.slot) > 0u {
-        if local >= 2u * run.entries {
-            return hidden();
-        }
-        entry = run.first + local / 2u;
-        value = trace_entry(row, run.slot, entry, local % 2u);
-    } else {
-        var across = local;
-        var up = local;
-        var count = run.entries;
-        if (mark.flags & STEP_AFTER) != 0u {
-            across = (local + 1u) / 2u;
-            up = local / 2u;
-            count = 2u * run.entries - 1u;
-        } else if (mark.flags & STEP_BEFORE) != 0u {
-            across = local / 2u;
-            up = (local + 1u) / 2u;
-            count = 2u * run.entries - 1u;
-        }
-        if local >= count {
-            return hidden();
-        }
-        entry = run.first + across;
-        value = trace_entry(row, run.slot, run.first + up, 0u);
-    }
-    if missing_bits(value) {
+    return sample_point(trace_sample(row, k));
+}
+
+fn sample_point(sample: vec3u) -> PathPoint {
+    if missing_bits(sample.z) {
         return hidden();
     }
-    let x = trace_axis(run.slot, entry);
     var p: PathPoint;
-    p.hi = vec2f(x.x, bitcast<f32>(value));
-    p.lo = vec2f(x.y, 0.0);
+    p.hi = vec2f(bitcast<f32>(sample.x), bitcast<f32>(sample.z));
+    p.lo = vec2f(bitcast<f32>(sample.y), 0.0);
     p.color = vec4f(1.0);
     p.shown = true;
     return p;
@@ -439,30 +466,60 @@ fn pole_point(row: u32, i: u32) -> PathPoint {
     if i > 0u {
         p.z = 0.0;
         p.half = vec2f(0.0);
-        p = placed_point(p);
     }
     return p;
 }
 
-// Point `i` of held row `row`'s path of `count` segments, for any path kind, placed in the world.
+// Point `i` of held row `row`'s path of `count` segments, for any path kind.
 fn path_point(row: u32, count: u32, i: u32) -> PathPoint {
     switch PATH {
         case PATH_ENDS: { return end_point(row, count, i); }
-        case PATH_TRACE: { return placed_point(trace_point(row, i)); }
-        case PATH_GEOMETRY: { return placed_point(geometry_point(row, i)); }
+        case PATH_BENDS: { return end_point(row, count, i); }
+        case PATH_TRACE: { return trace_point(row, i); }
+        case PATH_GEOMETRY: { return geometry_point(row, i); }
         case PATH_POLES: { return pole_point(row, i); }
         default: { return hidden(); }
     }
 }
 
-// Segment `s`'s two end points: points `index` and `index + 1` of its row's path. One loop computes
-// both, so the path code is compiled once.
-fn segment_ends(s: Segment) -> array<PathPoint, 2> {
-    var ends: array<PathPoint, 2>;
-    for (var e = 0u; e < 2u; e++) {
-        ends[e] = path_point(s.row, path_count(s.item), s.index + e);
+// Segment `s`'s two end points. An edge reads its shared state once for both positions.
+fn segment_ends(s: Segment) -> PathEnds {
+    if PATH == PATH_TRACE {
+        let samples = trace_pair(s.row, s.index);
+        return PathEnds(sample_point(samples[0]), sample_point(samples[1]));
     }
-    return ends;
+    let count = path_count(s.item);
+    if has_end_vertices() {
+        let e = edge_at(row_at(s.row));
+        if e.a == NONE || e.b == NONE || same_vertex(e.a, e.b) {
+            return PathEnds(hidden(), hidden());
+        }
+        let a = end_vertex(0u, e.a);
+        let b = end_vertex(1u, e.b);
+        // A single unbowed segment joins its vertices directly, including short great circles.
+        // No lane descriptor or curve interpolation participates in either endpoint.
+        if PATH == PATH_ENDS {
+            if count == 1u && mark.lane == NONE {
+                return PathEnds(vertex_shape(a), vertex_shape(b));
+            }
+        }
+        let bends = bends_of(s.row);
+        let last = select(bends.count + 1u, count, bends.count == 0u);
+        let l = lane_of(s.row);
+        // Only a plane uses retained lane bands. Geographic lists already contain exactly the
+        // lanes they draw; keep their shaders free of the three extra projections for this test.
+        if !geographic() {
+            if bends.count == 0u && frame.lane_scale > 0.0 && l.offset != 0.0 && !lane_drawn(s.row, l, false) {
+                return PathEnds(hidden(), hidden());
+            }
+        }
+        let bow = l.offset * frame.bow;
+        return PathEnds(
+            edge_point(a, b, bends, last, bow, s.index),
+            edge_point(a, b, bends, last, bow, s.index + 1u),
+        );
+    }
+    return PathEnds(path_point(s.row, count, s.index), path_point(s.row, count, s.index + 1u));
 }
 
 // Whether segment `s` ends a part of its row's path: the path's last segment, or one before a
@@ -492,7 +549,8 @@ fn lane_of(row: u32) -> Lane {
     }
     // The high 16 bits hold twice the lane's position from the middle, plus 32768. The low 16 bits
     // hold the family's size.
-    let word = column_value(mark.lane, row).x;
+    // Lanes are a derived static bit column, never joined or sampled channel values.
+    let word = bits_value(mark.lane, row);
     let size = word & 0xffffu;
     if word == NONE || word == MISSING || size < 2u {
         return Lane(0.0, 0u, 1.0);
@@ -522,14 +580,33 @@ fn segment_screen(s: Segment) -> OnScreen {
     let ends = segment_ends(s);
     var out: OnScreen;
     out.ends = ends;
-    let ca = clip_of(ends[0].world);
-    let cb = clip_of(ends[1].world);
-    let cut = in_front(ca, cb);
+    if !ends.a.shown || !ends.b.shown { return out; }
+    if PATH == PATH_TRACE {
+        out.ca = plot_clip(ends.a.hi, ends.a.lo);
+        out.cb = plot_clip(ends.b.hi, ends.b.lo);
+        out.a = to_screen(out.ca);
+        out.b = to_screen(out.cb);
+        out.kept = vec2f(0.0, 1.0);
+        out.shown = true;
+        return out;
+    }
+    let wa = world(ends.a.hi, ends.a.lo, ends.a.z);
+    let wb = world(ends.b.hi, ends.b.lo, ends.b.z);
+    let ca = clip_of(wa);
+    let cb = clip_of(wb);
+    var cut = vec2f(0.0, 1.0);
+    out.ca = ca;
+    out.cb = cb;
+    // Most segments are wholly in front. Only a segment crossing the near plane needs a
+    // division and endpoint interpolation, including when one end lies behind the eye.
+    if ca.z > ca.w || cb.z > cb.w {
+        cut = in_front(ca, cb);
+        out.ca = mix(ca, cb, cut.x);
+        out.cb = mix(ca, cb, cut.y);
+    }
     // A segment reaching past the globe's edge still draws. The globe's depth clips it there.
-    let ahead = ends[0].ahead || ends[1].ahead;
-    out.shown = ends[0].shown && ends[1].shown && ahead && cut.x < cut.y;
-    out.ca = mix(ca, cb, cut.x);
-    out.cb = mix(ca, cb, cut.y);
+    let ahead = shows(wa) || shows(wb);
+    out.shown = ahead && cut.x < cut.y;
     out.a = to_screen(out.ca);
     out.b = to_screen(out.cb);
     out.kept = cut;
@@ -537,14 +614,16 @@ fn segment_screen(s: Segment) -> OnScreen {
     // length. An end cut at the near plane has no vertex to stop at.
     let along = out.b - out.a;
     let length_along = length(along);
-    if length_along > 1e-3 {
-        let dir = along / length_along;
-        let room = 0.5 * length_along;
-        let outlines = vec2f(select(outline(ends[0], dir), 0.0, cut.x > 0.0), select(outline(ends[1], dir), 0.0, cut.y < 1.0));
-        let short = min(outlines, vec2f(room));
-        out.a += dir * short.x;
-        out.b -= dir * short.y;
-        out.kept = mix(vec2f(cut.x), vec2f(cut.y), vec2f(short.x, length_along - short.y) / length_along);
+    if clips_outlines() {
+        if length_along > 1e-3 {
+            let dir = along / length_along;
+            let room = 0.5 * length_along;
+            let outlines = vec2f(select(outline(ends.a, dir), 0.0, cut.x > 0.0), select(outline(ends.b, dir), 0.0, cut.y < 1.0));
+            let short = min(outlines, vec2f(room));
+            out.a += dir * short.x;
+            out.b -= dir * short.y;
+            out.kept = mix(vec2f(cut.x), vec2f(cut.y), vec2f(short.x, length_along - short.y) / length_along);
+        }
     }
     return out;
 }
@@ -552,34 +631,39 @@ fn segment_screen(s: Segment) -> OnScreen {
 // How row `row`'s path is stroked, never thinner than 0.75 CSS pixels. Comet flow and travel are in
 // the theme's flow unit.
 fn stroke_style(row: u32) -> Style {
+    // A fixed path kind also fixes its row type, except geometry paths shared by lines and nets.
+    if PATH == PATH_TRACE { return line_style(row); }
+    if has_end_vertices() { return edge_style(row); }
+    if PATH == PATH_POLES { return edge_style(row); }
+    if mark.kind == MARK_EDGES { return edge_style(row); }
+    return line_style(row);
+}
+
+fn edge_style(row: u32) -> Style {
     var s: Style;
-    if mark.kind == MARK_EDGES {
-        let e = edge_at(row_at(row));
-        s.width = clamp(px(e.width, EDGE_WIDTH), mark.size_min, mark.size_max) * growth(e.flags);
-        // An edge of a mark colored by its ends, whose color is missing, gets their colors in the
-        // draw. Here it only fades.
-        s.blends = ends_colored() && e.color == MISSING_COLOR;
-        s.color = select(unpack4x8unorm(e.color), vec4f(1.0), s.blends);
-        s.color.a *= faded(row, e.flags);
-        s.flow = e.flow;
-        s.travel = e.travel;
-        s.dash = (e.flags & DASH) != 0u;
-        s.shown = (e.flags & VISIBLE) != 0u;
-    } else {
-        let l = line_at(row_at(row));
-        s.width = clamp(px(l.width, LINE_WIDTH), mark.size_min, mark.size_max) * growth(l.flags);
-        s.color = unpack4x8unorm(l.color);
-        s.color.a *= faded(row, l.flags);
-        s.flow = l.flow;
-        s.travel = l.travel;
-        s.dash = (l.flags & DASH) != 0u;
-        s.shown = (l.flags & VISIBLE) != 0u;
-    }
+    let e = edge_at(row_at(row));
+    s.width = clamp(px(e.width, EDGE_WIDTH), mark.size_min, mark.size_max) * growth(e.flags);
+    // A missing color takes its endpoints' colors in the draw. Here it only fades.
+    s.blends = (mark.flags & ENDS_COLOR) != 0u && e.color == MISSING_COLOR;
+    s.color = select(unpack4x8unorm(e.color), vec4f(1.0), s.blends);
+    s.color.a *= faded(row, e.flags);
+    s.flow = e.flow;
+    s.travel = e.travel;
+    s.dash = (e.flags & DASH) != 0u;
+    s.shown = (e.flags & VISIBLE) != 0u;
     s.width = max(s.width, 0.75);
     return s;
 }
 
-// Whether a stroke's color blends its ends' colors.
-fn ends_colored() -> bool {
-    return mark.kind == MARK_EDGES && (mark.flags & ENDS_COLOR) != 0u;
+fn line_style(row: u32) -> Style {
+    let l = line_at(row_at(row));
+    var s: Style;
+    s.width = max(clamp(px(l.width, LINE_WIDTH), mark.size_min, mark.size_max) * growth(l.flags), 0.75);
+    s.color = unpack4x8unorm(l.color);
+    s.color.a *= faded(row, l.flags);
+    s.flow = l.flow;
+    s.travel = l.travel;
+    s.dash = (l.flags & DASH) != 0u;
+    s.shown = (l.flags & VISIBLE) != 0u;
+    return s;
 }

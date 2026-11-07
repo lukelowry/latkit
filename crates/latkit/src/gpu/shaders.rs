@@ -9,9 +9,8 @@ use super::specialize::{Constant, specialize};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Kind {
     Uniform,
-    Storage { read_only: bool },
     Texture { array: bool, filterable: bool },
-    Depth { multisampled: bool },
+    Words { array: bool },
     Sampler,
 }
 
@@ -26,13 +25,28 @@ pub(crate) struct Binding {
 
 const VERTEX: u32 = 1;
 const FRAGMENT: u32 = 2;
-const COMPUTE: u32 = 4;
 
 impl ShaderSource {
     /// The shader's WGSL for one pipeline: its declarations joined in order, with each of its
     /// [`constants`](ShaderSource::constants) declared as a `const` of `value(name)`. Each
     /// declaration is stored once and shared by every shader.
     pub(crate) fn wgsl(&self, value: impl Fn(&str) -> u32) -> String {
+        if !self.specializations.is_empty() {
+            let selected = self
+                .specializations
+                .iter()
+                .find(|s| self.constants.iter().zip(s.values).all(|(c, &v)| value(c.name) == v))
+                .expect("every pipeline specialization is built and validated");
+            return selected
+                .pieces
+                .iter()
+                .map(|&piece| {
+                    let (start, end) = PIECES[piece as usize];
+                    &WGSL[start as usize..end as usize]
+                })
+                .collect::<Vec<_>>()
+                .join(super::specialize::SEPARATOR);
+        }
         let pieces = self.pieces.iter().map(|&piece| {
             let (start, end) = PIECES[piece as usize];
             &WGSL[start as usize..end as usize]
@@ -41,8 +55,12 @@ impl ShaderSource {
     }
 
     /// Whether pipelines specialize the shader with the constant `name`.
-    pub(crate) fn reads(&self, name: &str) -> bool {
-        self.constants.iter().any(|constant| constant.name == name)
+    pub(crate) fn reads(&self, entry: &str, name: &str) -> bool {
+        match self.entry_constants.iter().find(|(key, _)| *key == entry) {
+            Some((_, constants)) => constants.contains(&name),
+            // Application programs supply their function bodies after reflection.
+            None => self.constants.iter().any(|constant| constant.name == name),
+        }
     }
 
     /// The size of its WGSL in bytes, a rough measure of compile time. A browser compiles the WGSL
@@ -70,19 +88,27 @@ pub(crate) struct ShaderSource {
     pub(crate) pass: &'static [Binding],
     /// The constants pipelines specialize it with.
     constants: &'static [Constant<'static>],
+    /// Constants reached by a pipeline's vertex and selected fragment entry together.
+    entry_constants: &'static [(&'static str, &'static [&'static str])],
+    /// Built-in modules with constant branches removed before browser compilation. Kernels and
+    /// application markers retain their helper declarations until their source is supplied.
+    specializations: &'static [Specialization],
     /// Whether it reads the view and mark groups. A shader that does not gets empty groups in their
     /// place.
     pub(crate) shared: bool,
+    /// Color attachments written by its fragment entries, reflected from their output locations.
+    pub(crate) targets: usize,
+}
+
+pub(crate) struct Specialization {
+    pub(crate) values: &'static [u32],
+    pub(crate) pieces: &'static [u16],
 }
 
 impl Binding {
     pub(crate) fn layout_entry(&self) -> wgpu::BindGroupLayoutEntry {
         let mut visibility = wgpu::ShaderStages::NONE;
-        for (bit, stage) in [
-            (VERTEX, wgpu::ShaderStages::VERTEX),
-            (FRAGMENT, wgpu::ShaderStages::FRAGMENT),
-            (COMPUTE, wgpu::ShaderStages::COMPUTE),
-        ] {
+        for (bit, stage) in [(VERTEX, wgpu::ShaderStages::VERTEX), (FRAGMENT, wgpu::ShaderStages::FRAGMENT)] {
             if self.stages & bit != 0 {
                 visibility |= stage;
             }
@@ -90,11 +116,6 @@ impl Binding {
         let ty = match self.kind {
             Kind::Uniform => wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: self.dynamic,
-                min_binding_size: None,
-            },
-            Kind::Storage { read_only } => wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
                 has_dynamic_offset: self.dynamic,
                 min_binding_size: None,
             },
@@ -107,10 +128,14 @@ impl Binding {
                 },
                 multisampled: false,
             },
-            Kind::Depth { multisampled } => wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Depth,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled,
+            Kind::Words { array } => wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Uint,
+                view_dimension: if array {
+                    wgpu::TextureViewDimension::D2Array
+                } else {
+                    wgpu::TextureViewDimension::D2
+                },
+                multisampled: false,
             },
             Kind::Sampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         };

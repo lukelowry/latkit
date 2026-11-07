@@ -184,7 +184,7 @@ Write a space as an object to give it options: `{ earth: { projection: 'globe' }
 A mark's kind key holds the table it draws: `{ vertices: grid.table('Bus') }`. A view loads every
 dataset its marks draw from. `JSON.stringify` writes a table as `[data, table]`, the form the
 command line reads, where `data` names one of the view's `sources`. The pointer hovers and clicks
-vertices, edges, faces, and a plot's traces. Set `pick: true` to make areas and lines respond too.
+vertices, edges, and a plot's traces. Set `pick: true` to make areas and lines respond too.
 Either way, every mark shows which of its rows are selected and hovered.
 
 | Mark       | Draws each row as                                                        |
@@ -193,7 +193,6 @@ Either way, every mark shows which of its rows are selected and hovered.
 | `edges`    | a stroke between the two rows its `ends` fields reference                |
 | `lines`    | a stroke along a path field; on a plot, a sampled field traced over time |
 | `areas`    | the area a polygon field covers                                          |
-| `faces`    | a triangle between three vertices                                        |
 
 `flow` animates comets along a stroke. An edges mark with `joins: [table, reference]` draws each
 row as a net: a star from the center of the vertex rows whose `reference` names it out to each one.
@@ -349,7 +348,7 @@ of one GPU share the budget. A view that needs less than an even split gets all 
 other views divide the rest. A table too large for its view's share is split into pages, and the
 view draws only the pages on screen. A patch re-evaluates only the pages it wrote.
 
-The budget defaults to half the device's largest storage buffer, at most 1 GiB. GPU memory that
+The budget defaults to half the device's addressable word-texture capacity, at most 1 GiB. GPU memory that
 latkit replaces, or that a closed view or a finished picture leaves behind, is freed by the next
 frame rather than whenever the browser collects it. A device without the memory to grow the data
 further is given up, and the views move to a new one with the budget lowered to what it gave.
@@ -494,12 +493,12 @@ The Rust library is the `latkit` crate.
 | ----------------------------------- | ------------------------------ | -------------------------------- | ---------------------------- |
 | Scenes, expressions, patch builders | `latkit`, no WebAssembly       | `latkit`, no WebAssembly         | JSON inputs                  |
 | Data and queries                    | WASM, no GPU required          | WASM with a compiled module      | Available without a GPU      |
-| Rendering                           | WebGPU in a secure context     | Use the CLI for native rendering | Vulkan, Metal, DX12          |
+| Rendering                           | WebGL2 enabled in the browser  | Use the CLI for native rendering | Vulkan, Metal, DX12          |
 | File/URL slices                     | Browser fetch and CORS         | Supply data directly             | Local paths and `file:` URLs |
 | H.264 MP4                           | WebCodecs Constrained Baseline | Use the CLI                      | Windows Media Foundation     |
 
 Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, and worker from the
-same package version. WebGPU needs HTTPS or localhost, and a supported device.
+same package version. Rendering requires an enabled WebGL2 context. WebCodecs video export requires HTTPS or localhost.
 
 ### Assets and workers
 

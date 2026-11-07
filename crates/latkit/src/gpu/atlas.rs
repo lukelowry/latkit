@@ -2,7 +2,7 @@
 //! into a distance field that extends `TEXT_SPREAD` texels past the text's edge, and packs it on a
 //! shelf of one texture. A distance field draws crisp at any size and also gives halos, so each run
 //! is rasterized once whatever size it shows at. Before a frame draws, the GPU builds the fields of
-//! every run rasterized in that frame in one batch (`compute/fields.wesl`).
+//! every run rasterized in that frame in two instanced draws (`raster/fields.wesl`).
 //!
 //! When no shelf has space, the least recently used shelf that is tall enough is cleared for the
 //! new run. A run counts as used when it is rasterized and whenever labels in view show it. A shelf
@@ -10,19 +10,21 @@
 //! the atlas is full for the rest of the frame and takes no more runs. It starts over only when
 //! nothing in it was used this frame. Views track evictions to drop stale references.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::gpu::grown::Grown;
 use crate::gpu::pipelines::{Pipelines, Variant};
-use crate::gpu::shaders::{FIELD_AT, FIELD_COLUMNS, FIELD_COVERAGE, FIELD_HEIGHT, FIELD_ROW, FIELD_WIDTH, FIELD_WORDS};
 use crate::gpu::shaders::{Shader, TEXT_BASE, TEXT_SPREAD};
+use crate::gpu::texture::Texture;
+use crate::gpu::words::Words;
 use crate::gpu::work::{Count, Counters, Queue};
 use crate::host::{Host, Raster, TextRun};
 
 /// The passes building distance fields: along columns, then along rows.
-pub(crate) const FIELDS: [Variant; 2] =
-    [Variant::compute(Shader::Fields, "columns"), Variant::compute(Shader::Fields, "rows")];
+pub(crate) const FIELDS: [Variant; 2] = [
+    Variant::pass(Shader::FieldsColumns, "columns", wgpu::TextureFormat::R32Uint),
+    Variant::pass(Shader::Fields, "rows", wgpu::TextureFormat::R8Unorm),
+];
 
 /// Texels across the atlas: room for about 1,400 labels of ten characters at the base size.
 const SIZE: u32 = 4096;
@@ -30,7 +32,7 @@ const SIZE: u32 = 4096;
 const GAP: u32 = 1;
 /// Texels of field around a run's coverage.
 const PAD: u32 = TEXT_SPREAD as u32;
-/// The most runs one dispatch builds fields for, one workgroup layer each.
+/// The most runs one batch builds fields for.
 const RUNS: usize = 65_535;
 
 /// Where `Atlas::hold` put a raster: at its glyphs on a shelf, nowhere because it has nothing to
@@ -93,9 +95,9 @@ pub(crate) struct Atlas {
     runs: HashMap<TextRun, Option<(Glyphs, usize)>>,
     /// Rasterized runs whose fields the next frame builds.
     waiting: Vec<Waiting>,
-    /// Scratch buffer for building fields, and its bind group once built.
-    work: Grown,
-    work_group: Option<wgpu::BindGroup>,
+    /// Packed run descriptors and coverage, and the exact vertical distances.
+    work: Words,
+    columns: Texture,
     /// Frame counter for shelf use.
     clock: u64,
     /// Whether a run found no room this frame, so no more are placed until the next.
@@ -112,12 +114,19 @@ impl Atlas {
     pub(crate) fn new(device: &wgpu::Device, counters: Arc<Counters>, retired: &super::retired::Retired) -> Atlas {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("latkit text"),
-            size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: SIZE.min(device.limits().max_texture_dimension_2d),
+                height: SIZE.min(device.limits().max_texture_dimension_2d),
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -128,13 +137,8 @@ impl Atlas {
             shelves: Vec::new(),
             runs: HashMap::new(),
             waiting: Vec::new(),
-            work: Grown::new(
-                device,
-                retired,
-                "latkit fields",
-                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            ),
-            work_group: None,
+            work: Words::new(device, retired, "latkit field coverage"),
+            columns: Texture::new(device, retired, "latkit field columns", wgpu::TextureFormat::R32Uint),
             clock: 0,
             full: false,
             evictions: 0,
@@ -201,7 +205,7 @@ impl Atlas {
             return Held::Nothing;
         }
         let (width, height) = (w.saturating_add(2 * PAD), h.saturating_add(2 * PAD));
-        if width > SIZE || height > SIZE {
+        if width > self.texture.width() || height > self.texture.height() {
             self.errors.push(crate::Error::Limit("text raster does not fit the atlas".into()));
             return Held::Nothing;
         }
@@ -248,96 +252,94 @@ impl Atlas {
         let rest = self.waiting.split_off(self.waiting.len().min(RUNS));
         let laid = std::mem::replace(&mut self.waiting, rest);
         let size = |w: &Waiting| w.raster.size.map(|n| n + 2 * PAD);
-        // Scratch layout: run entries, coverage, column distances, then fields. Each field starts
-        // at a valid copy offset, and its rows use the copy row pitch.
-        let mut runs = vec![[0_u32; FIELD_WORDS as usize]; laid.len()];
+        // Column minima live only for this batch. Pack its occupied shelves from the origin,
+        // independently of the runs' permanent atlas positions. The original shelves prove
+        // that these rectangles fit; gaps and previously rasterized runs need no scratch.
+        let mut shelves = BTreeMap::<usize, [u32; 3]>::new();
+        for w in &laid {
+            let shelf = shelves.entry(w.shelf).or_default();
+            shelf[2] = shelf[2].max(size(w)[1]);
+        }
+        let mut extent = [0, 0];
+        for shelf in shelves.values_mut() {
+            shelf[1] = extent[1];
+            extent[1] += shelf[2];
+        }
+        // Each run is two texels, followed by packed coverage. The coverage upload is ordered
+        // in the caller's encoder: another view may reuse this scratch before submission.
+        let mut runs = vec![[0_u32; 8]; laid.len()];
         let mut coverage = Vec::new();
-        let mut at = laid.len() as u32 * FIELD_WORDS;
+        let at = laid.len() as u32 * 8;
         for (w, run) in laid.iter().zip(&mut runs) {
-            run[FIELD_COVERAGE as usize] = at + (coverage.len() / 4) as u32;
-            [run[FIELD_WIDTH as usize], run[FIELD_HEIGHT as usize]] = w.raster.size;
+            run[0] = at + (coverage.len() / 4) as u32;
+            [run[1], run[2]] = w.raster.size;
+            [run[4], run[5]] = w.corner;
+            let shelf = shelves.get_mut(&w.shelf).expect("batch shelf");
+            [run[6], run[7]] = [shelf[0], shelf[1]];
+            shelf[0] += size(w)[0];
+            extent[0] = extent[0].max(shelf[0]);
             coverage.extend_from_slice(&w.raster.coverage);
             coverage.resize(coverage.len().next_multiple_of(4), 0);
         }
-        at += (coverage.len() / 4) as u32;
-        for (w, run) in laid.iter().zip(&mut runs) {
-            let [width, height] = size(w);
-            run[FIELD_COLUMNS as usize] = at;
-            at += width * height;
-        }
-        for (w, run) in laid.iter().zip(&mut runs) {
-            let [width, height] = size(w);
-            at = at.next_multiple_of(COPY_ALIGN / 4);
-            run[FIELD_AT as usize] = at;
-            run[FIELD_ROW as usize] = width.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) / 4;
-            at += run[FIELD_ROW as usize] * height;
-        }
-        let (buffer, group) = self.fit_work(device, pipelines, u64::from(at) * 4);
         let mut upload: Vec<u8> = bytemuck::cast_slice(&runs).to_vec();
         upload.extend_from_slice(&coverage);
-        queue.write_buffer_in(device, encoder, &buffer, 0, &upload);
-        let most = laid.iter().map(size).fold([0, 0], |m, s| [m[0].max(s[0]), m[1].max(s[1])]);
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("latkit fields"),
-                timestamp_writes: None,
+        upload.resize(upload.len().next_multiple_of(16), 0);
+        self.work.ensure(device, upload.len() as u64 / 4);
+        self.work.write_in(device, queue, encoder, 0, bytemuck::cast_slice(&upload));
+        self.columns.ensure(device, extent);
+        for (index, variant) in FIELDS.into_iter().enumerate() {
+            let (shader, view, target) = if index == 0 {
+                (Shader::FieldsColumns, &self.columns.view, &self.columns.raw)
+            } else {
+                (Shader::Fields, &self.view, &self.texture)
+            };
+            let dimensions = [target.width() as f32, target.height() as f32, 0.0, 0.0];
+            let uniform = queue.uniform(device, bytemuck::cast_slice(&dimensions));
+            let mut entries = vec![
+                wgpu::BindGroupEntry { binding: 0, resource: self.work.binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
+            ];
+            if index == 1 {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.columns.view),
+                });
+            }
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("latkit field pass"),
+                layout: &pipelines.pass_layout(device, shader),
+                entries: &entries,
             });
+            let pipeline = pipelines.render(device, variant);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("latkit distance fields"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &pipelines.empty, &[]);
             pass.set_bind_group(1, &pipelines.empty, &[]);
             pass.set_bind_group(2, &group, &[]);
-            let [columns, rows] = FIELDS;
-            pass.set_pipeline(&pipelines.compute(device, columns));
-            pass.dispatch_workgroups(most[0].div_ceil(16), most[1].div_ceil(16), laid.len() as u32);
-            pass.set_pipeline(&pipelines.compute(device, rows));
-            pass.dispatch_workgroups(most[0].div_ceil(4).div_ceil(16), most[1].div_ceil(16), laid.len() as u32);
+            pass.draw(0..6, 0..laid.len() as u32);
         }
-        for (w, run) in laid.iter().zip(&runs) {
-            let [width, height] = size(w);
-            encoder.copy_buffer_to_texture(
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &buffer,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: u64::from(run[FIELD_AT as usize]) * 4,
-                        bytes_per_row: Some(run[FIELD_ROW as usize] * 4),
-                        rows_per_image: Some(height),
-                    },
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: w.corner[0], y: w.corner[1], z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            );
-        }
-    }
-
-    /// The scratch buffer for building fields, at least `bytes` long, and its bind group.
-    fn fit_work(
-        &mut self,
-        device: &wgpu::Device,
-        pipelines: &mut Pipelines,
-        bytes: u64,
-    ) -> (wgpu::Buffer, wgpu::BindGroup) {
-        if self.work.ensure(device, bytes) || self.work_group.is_none() {
-            self.work_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("latkit fields"),
-                layout: &pipelines.pass_layout(device, Shader::Fields),
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.work.buffer.as_entire_binding() }],
-            }));
-        }
-        (self.work.buffer.clone(), self.work_group.clone().expect("built above"))
     }
 
     /// Finds space for `width` by `height` texels and returns the shelf and top-left corner.
     /// Returns `None` when every shelf that could hold it was used this frame.
     fn place(&mut self, width: u32, height: u32) -> Option<(usize, [u32; 2])> {
         let fits = |s: &Shelf| s.height >= height && s.height <= height + height / 2 + 4;
-        let at = self.shelves.iter().position(|s| fits(s) && s.used + width <= SIZE);
+        let at = self.shelves.iter().position(|s| fits(s) && s.used + width <= self.texture.width());
         let at = at.or_else(|| {
             let top = self.shelves.last().map_or(0, |s| s.top + s.height + GAP);
-            (top + height <= SIZE).then(|| {
+            (top + height <= self.texture.height()).then(|| {
                 self.shelves.push(Shelf { top, height, used: 0, tick: self.clock });
                 self.shelves.len() - 1
             })
@@ -374,9 +376,6 @@ impl Atlas {
         Some((at, corner))
     }
 }
-
-/// Alignment in bytes of a buffer-to-texture copy's start offset, valid on every backend.
-const COPY_ALIGN: u32 = 512;
 
 #[cfg(test)]
 mod tests {
@@ -442,16 +441,29 @@ mod tests {
         }
         coverage[5 * width + 37] = 40;
         let mut inner = gpu.0.lock();
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let crate::gpu::Inner { atlas, pipelines, .. } = &mut *inner;
+        // Occupy an earlier shelf. Later batches must use compact temporary coordinates,
+        // while writing their fields to different permanent coordinates in the atlas.
+        assert!(matches!(
+            atlas.hold(Raster {
+                size: [17, 57],
+                coverage: vec![255; 17 * 57],
+                baseline: 50.0,
+                line_box: [0.0, 0.0, 17.0, 57.0],
+            }),
+            Held::Placed(..)
+        ));
+        atlas.lay(device, queue, &mut encoder, pipelines);
         let raster = Raster {
             size: [width as u32, height as u32],
             coverage: coverage.clone(),
             baseline: 20.0,
             line_box: [0.0, 0.0, width as f32, height as f32],
         };
-        let Held::Placed(glyphs, _) = inner.atlas.hold(raster) else { panic!("placed") };
-        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        let crate::gpu::Inner { atlas, pipelines, .. } = &mut *inner;
+        let Held::Placed(glyphs, _) = atlas.hold(raster) else { panic!("placed") };
+        assert!(glyphs.rect[1] > 0, "the field is on a later atlas shelf");
         atlas.lay(device, queue, &mut encoder, pipelines);
         // Another view can lay a smaller batch into the same scratch buffer before submission.
         // Its upload must not replace the first batch's inputs before that batch has executed.

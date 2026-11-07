@@ -1,51 +1,23 @@
-// Probes and queries against a drawn frame, using the same geometry as the draws. One program,
-// compiled per primitive, answers every question in steps, and a dispatch's uniform selects the
-// step. Each step that reads instances projects each one to the screen once (`seen`) and tests what
-// the step needs.
-//
-// The hover takes three steps over every mark it reaches. `nearest` keeps the least key over all
-// instances within the probe's radius: the distance in 1/64 pixel, then the mark drawn last.
-// `topmost` keeps the instance of that mark drawn last at that key, and `describe` writes where
-// that hit lies. Instances are read by draw position, so the one drawn last is the one on top. Rows hidden behind other drawn marks are not hit. `under` writes the nearest depth drawn
-// around the probe, which gestures rotate and zoom about.
-//
-// Queries write after the probe's words, each mark from the word its `query` names. `hits` appends
-// every instance within the query's radius of its point while the mark has space for hits. `boxed`
-// sets a bit for every row with an instance in the query's box, whether or not something drawn
-// covers it. `locate` writes where one drawn row lies on screen. Every row an answer names is a
-// held row, which the view maps to a table row using its record of that frame.
-//
-// The keys step with the hover's steps, from the row they point at or the middle of the view, over
-// the rows the frame's `probe_` values allow.
-
+// Geometry shared by raster hover and queries.
 import package::lib::types::{
     NONE, FADE_OUT, POINTS, STROKES, MARK_EDGES, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH, PROBE_X, PROBE_Y,
-    PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED, STEP_NEAREST, STEP_TOPMOST,
-    STEP_DESCRIBE, STEP_HITS, STEP_BOXED, STEP_LOCATE, STEP_UNDER, HIT_WORDS, item,
+    PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED,
+    HIT_WORDS, PATH_TRACE,
 };
 import package::lib::bind::{frame, eye, mark, word};
 import package::lib::state::row_at;
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::point;
-import package::lib::path::{segment, segment_screen, stroke_style, stroke_instances, path_count};
-import package::lib::triangles::{triangle_corner, triangle_item, triangle_instances};
+import package::lib::path::{PATH, Segment, segment, path_segment, segment_screen, stroke_style, stroke_instances, path_count};
+import package::lib::triangles::{area_source, area_anchor, triangle_corner, triangle_instances};
 import package::lib::marker::outline_distance;
 import package::lib::mark::PRIMITIVE;
 import package::lib::drawn::{drawn_row, drawn_instance};
-import package::lib::center::{row_center, Center};
 
-// Which step a dispatch takes.
-struct Step {
-    step: u32,
-}
 
-@group(2) @binding(5) var<storage, read_write> probe: array<atomic<u32>>;
-@if(multisampled)
-@group(2) @binding(6) var depth: texture_depth_multisampled_2d;
-@else
-@group(2) @binding(6) var depth: texture_depth_2d;
-@group(2) @binding(17) var<uniform> step: Step;
-
+// A non-filtering float binding reads a depth texture without a comparison sampler. This is
+// supported by wgpu and maps to WebGL2's ordinary sampler2D/texelFetch path.
+@group(2) @binding(6) var depth: texture_2d<f32>;
 // How far the probe lies from an instance, and the instance's nearest point: its depth, and the
 // depth the frame drew it at there, which for a marker is its radius nearer the camera.
 struct Reach {
@@ -105,9 +77,10 @@ fn answers(item: u32, row: u32, leaving: bool) -> bool {
 }
 
 // The marker drawn at position `instance`.
-fn seen_point(instance: u32) -> Seen {
+fn seen_point(instance: u32, locating: bool) -> Seen {
     var s: Seen;
-    s.item = drawn_instance(instance);
+    s.item = instance;
+    if !locating { s.item = drawn_instance(instance); }
     let d = drawn_row(s.item);
     s.row = d.row;
     let pt = point(s.row);
@@ -121,13 +94,20 @@ fn seen_point(instance: u32) -> Seen {
 }
 
 // A stroke segment.
-fn seen_segment(instance: u32) -> Seen {
+fn seen_segment(instance: u32, locating: bool) -> Seen {
     var s: Seen;
-    let g = segment(instance);
+    var g: Segment;
+    if locating {
+        let count = path_count(instance);
+        if count == 0u { return s; }
+        g = path_segment(instance, select(count / 2u, count - 1u, PATH == PATH_TRACE), 0.0);
+    } else {
+        g = segment(instance);
+    }
     s.item = g.item;
     s.row = g.row;
     s.part = g.index;
-    s.kept = answers(g.item, g.row, g.leaving);
+    s.kept = locating || answers(g.item, g.row, g.leaving);
     if !s.kept {
         return s;
     }
@@ -141,19 +121,29 @@ fn seen_segment(instance: u32) -> Seen {
     return s;
 }
 
-// A triangle: a face, or one of an area's.
-fn seen_triangle(instance: u32) -> Seen {
+// One of an area's triangles.
+fn seen_triangle(instance: u32, locating: bool) -> Seen {
     var s: Seen;
-    s.item = triangle_item(instance);
+    if locating {
+        let d = drawn_row(instance);
+        let anchor = area_anchor(d.row);
+        let clip = clip_of(anchor.world);
+        s.a = screen(clip);
+        s.shown = anchor.shown && anchor.ahead && clip.w > 0.0;
+        return s;
+    }
+    let part = segment(instance);
+    s.item = part.item;
     let d = drawn_row(s.item);
     s.row = d.row;
     s.kept = answers(s.item, s.row, d.leaving);
     if !s.kept {
         return s;
     }
-    let ka = triangle_corner(instance, 0u);
-    let kb = triangle_corner(instance, 1u);
-    let kc = triangle_corner(instance, 2u);
+    let source = area_source(s.row);
+    let ka = triangle_corner(part, source, 0u);
+    let kb = triangle_corner(part, source, 1u);
+    let kc = triangle_corner(part, source, 2u);
     let ca = clip_of(ka.world);
     let cb = clip_of(kb.world);
     let cc = clip_of(kc.world);
@@ -167,12 +157,13 @@ fn seen_triangle(instance: u32) -> Seen {
     return s;
 }
 
-// Instance `instance` of the mark's primitive on screen.
-fn seen(instance: u32) -> Seen {
+// One primitive instance, or the representative primitive of drawn row `instance` when locating.
+// Both select their source first, then share the same projection and visibility calculation.
+fn seen(instance: u32, locating: bool) -> Seen {
     switch PRIMITIVE {
-        case POINTS: { return seen_point(instance); }
-        case STROKES: { return seen_segment(instance); }
-        default: { return seen_triangle(instance); }
+        case POINTS: { return seen_point(instance, locating); }
+        case STROKES: { return seen_segment(instance, locating); }
+        default: { return seen_triangle(instance, locating); }
     }
 }
 
@@ -253,7 +244,7 @@ fn boxed(s: Seen) -> bool {
 }
 
 fn drawn_depth(texel: vec2i) -> f32 {
-    return textureLoad(depth, texel, 0);
+    return textureLoad(depth, texel, 0).x;
 }
 
 // Whether the frame drew nothing in front of `r`. Depth is reversed: nearer is greater.
@@ -287,22 +278,6 @@ fn instances() -> u32 {
     return triangle_instances();
 }
 
-// Appends hit `r` to the mark's hits while there is room. At `mark.query` lie the number found and
-// the number kept, then the hits, `HIT_WORDS` each.
-fn append(r: Reach) {
-    let at = atomicAdd(&probe[mark.query], 1u);
-    if at >= atomicLoad(&probe[mark.query + 1u]) {
-        return;
-    }
-    let entry = mark.query + 2u + HIT_WORDS * at;
-    atomicStore(&probe[entry], r.row);
-    atomicStore(&probe[entry + 1u], min(u32(r.distance * 64.0), 0xffffffu));
-    atomicStore(&probe[entry + 2u], r.segment);
-    atomicStore(&probe[entry + 3u], bitcast<u32>(r.point.x));
-    atomicStore(&probe[entry + 4u], bitcast<u32>(r.point.y));
-    atomicStore(&probe[entry + 5u], bitcast<u32>(r.depth));
-}
-
 // Whether the hover's steps may find the row reached at `r`: not the row the frame passes over, in
 // its area and off its covers, and within 45° of its way from the probe unless that is zero.
 fn allowed(r: Reach) -> bool {
@@ -321,79 +296,3 @@ fn allowed(r: Reach) -> bool {
     return all(frame.probe_way == vec2f(0.0)) || dot(offset, frame.probe_way) > length(offset) * 0.70710678;
 }
 
-// Writes where drawn row `item` lies on screen, and whether it shows there.
-fn locate(item: u32) {
-    var center = Center(vec2f(0.0), false);
-    if item < mark.rows {
-        center = row_center(item);
-    }
-    atomicStore(&probe[PROBE_LOCATE_X], bitcast<u32>(center.at.x));
-    atomicStore(&probe[PROBE_LOCATE_Y], bitcast<u32>(center.at.y));
-    atomicStore(&probe[PROBE_LOCATED], u32(center.shown));
-}
-
-@compute @workgroup_size(256)
-fn answer(@builtin(global_invocation_id) id: vec3u) {
-    let s = step.step;
-    // Steps that read a single item use one invocation.
-    if s == STEP_UNDER || s == STEP_LOCATE || s == STEP_DESCRIBE {
-        if any(id != vec3u(0u)) {
-            return;
-        }
-    }
-    if s == STEP_UNDER {
-        atomicStore(&probe[PROBE_UNDER], bitcast<u32>(under()));
-        return;
-    }
-    // Locating reads the drawn row the query names.
-    if s == STEP_LOCATE {
-        locate(bitcast<u32>(frame.query.x));
-        return;
-    }
-    // Describing reads the topmost instance the hover found, if it belongs to this mark. Every step
-    // that reads an instance goes through the single `seen` call below.
-    var i = item(id);
-    if s == STEP_DESCRIBE {
-        let key = atomicLoad(&probe[PROBE_KEY]);
-        let instance = atomicLoad(&probe[PROBE_INSTANCE]);
-        if key == NONE || instance == 0u || 255u - (key & 255u) != min(mark.index, 255u) {
-            return;
-        }
-        i = instance - 1u;
-    } else if i >= instances() {
-        return;
-    }
-    let drawn = seen(i);
-    if s == STEP_BOXED {
-        if boxed(drawn) {
-            atomicOr(&probe[mark.query + drawn.row / 32u], 1u << (drawn.row % 32u));
-        }
-        return;
-    }
-    let hits = s == STEP_HITS;
-    let r = reach(drawn, select(frame.probe, frame.query.xy, hits));
-    if !(r.distance <= select(frame.probe_radius, frame.query.z, hits)) || !shown(r) || (!hits && !allowed(r)) {
-        return;
-    }
-    let key = (min(u32(r.distance * 64.0), 0xffffffu) << 8u) | (255u - min(mark.index, 255u));
-    switch s {
-        case STEP_NEAREST: {
-            atomicMin(&probe[PROBE_KEY], key);
-        }
-        case STEP_TOPMOST: {
-            if key == atomicLoad(&probe[PROBE_KEY]) {
-                atomicMax(&probe[PROBE_INSTANCE], i + 1u);
-            }
-        }
-        case STEP_DESCRIBE: {
-            atomicStore(&probe[PROBE_DEPTH], bitcast<u32>(r.depth));
-            atomicStore(&probe[PROBE_X], bitcast<u32>(r.point.x));
-            atomicStore(&probe[PROBE_Y], bitcast<u32>(r.point.y));
-            atomicStore(&probe[PROBE_ROW], r.row);
-            atomicStore(&probe[PROBE_SEGMENT], r.segment);
-        }
-        default: {
-            append(r);
-        }
-    }
-}

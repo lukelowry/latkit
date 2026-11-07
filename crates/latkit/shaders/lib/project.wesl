@@ -2,8 +2,21 @@
 // from the camera's center is computed part by part, so f64 data keeps its precision at any zoom.
 // Every pass projects through the view's `eye`.
 
-import package::lib::types::{SPACE_EARTH};
+import package::lib::types::{SPACE_EARTH, PROJECTION_PLANAR, PROJECTION_MERCATOR, PROJECTION_GLOBE, PROJECTION_DYNAMIC};
 import package::lib::bind::{frame, eye};
+
+// Geometry uses a fixed scene projection; shared state kernels read the current view.
+override PROJECTION: u32 = PROJECTION_DYNAMIC;
+fn geographic() -> bool {
+    if PROJECTION == PROJECTION_DYNAMIC { return frame.space == SPACE_EARTH; }
+    return PROJECTION != PROJECTION_PLANAR;
+}
+
+fn globe_amount() -> f32 {
+    if PROJECTION == PROJECTION_GLOBE { return 1.0; }
+    if PROJECTION != PROJECTION_DYNAMIC { return 0.0; }
+    return frame.globe;
+}
 
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
@@ -27,39 +40,64 @@ fn mercator_y(latitude: f32) -> f32 {
 fn mercator(hi: vec2f, lo: vec2f) -> vec2f {
     let d = relative(hi, lo);
     let lat = clamp(hi.y + lo.y, -MAX_LATITUDE, MAX_LATITUDE);
-    let near = radians(d.y) / cos(radians(lat - 0.5 * d.y));
-    let far = mercator_y(lat) - frame.mercator_y;
-    return vec2f(radians(d.x), select(far, near, abs(d.y) < 0.25));
+    // select evaluates both formulas. Nearby rows need only the precise local expansion;
+    // distant rows need only Mercator, avoiding unused transcendental operations either way.
+    if abs(d.y) < 0.25 {
+        return vec2f(radians(d.x), radians(d.y) / cos(radians(lat - 0.5 * d.y)));
+    }
+    return vec2f(radians(d.x), mercator_y(lat) - frame.mercator_y);
 }
 
 // The position on the unit sphere, rotated so the camera's center faces +z.
 fn on_sphere(hi: vec2f, lo: vec2f) -> vec3f {
     let lon = radians(relative(hi, lo).x);
     let lat = radians(clamp(hi.y + lo.y, -90.0, 90.0));
-    let lat0 = radians(frame.center_hi.y + frame.center_lo.y);
     let v = vec3f(cos(lat) * sin(lon), sin(lat), cos(lat) * cos(lon));
-    return vec3f(v.x, v.y * cos(lat0) - v.z * sin(lat0), v.y * sin(lat0) + v.z * cos(lat0));
+    return vec3f(v.x, v.y * frame.latitude_cos - v.z * frame.latitude_sin,
+        v.y * frame.latitude_sin + v.z * frame.latitude_cos);
 }
 
-// World coordinates of a position raised by `elevation`: plane or plot units relative to the
-// center, or Mercator radians morphing onto the globe. Only a morph in progress computes both
-// projections.
-fn surface(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
-    if frame.space != SPACE_EARTH {
-        return vec3f(relative(hi, lo), elevation);
+// Parallax changes a position's apparent height, but not its longitude or latitude. Project those
+// coordinates once, sharing the expensive geographic functions between both heights.
+struct Surfaces {
+    raised: vec3f,
+    apparent: vec3f,
+}
+
+fn planar_surfaces(hi: vec2f, lo: vec2f, elevation: f32) -> Surfaces {
+    let xy = relative(hi, lo);
+    return Surfaces(vec3f(xy, elevation), vec3f(xy, eye.parallax * elevation));
+}
+
+fn mercator_surfaces(hi: vec2f, lo: vec2f, elevation: f32) -> Surfaces {
+    let xy = mercator(hi, lo);
+    return Surfaces(vec3f(xy, radians(elevation)), vec3f(xy, radians(eye.parallax * elevation)));
+}
+
+fn globe_surfaces(hi: vec2f, lo: vec2f, elevation: f32) -> Surfaces {
+    let unit = on_sphere(hi, lo);
+    let s = unit * (1.0 + radians(elevation));
+    let a = unit * (1.0 + radians(eye.parallax * elevation));
+    let round = vec3f(s.xy, s.z - 1.0) / frame.latitude_cos;
+    let around = vec3f(a.xy, a.z - 1.0) / frame.latitude_cos;
+    return Surfaces(round, around);
+}
+
+fn surfaces(hi: vec2f, lo: vec2f, elevation: f32) -> Surfaces {
+    // Keep the specialization visible here: pruning removes the unused coordinate systems
+    // and all their helpers before a driver sees the module.
+    switch PROJECTION {
+        case PROJECTION_PLANAR: { return planar_surfaces(hi, lo, elevation); }
+        case PROJECTION_MERCATOR: { return mercator_surfaces(hi, lo, elevation); }
+        case PROJECTION_GLOBE: { return globe_surfaces(hi, lo, elevation); }
+        default: {}
     }
-    // On the earth, elevation is in degrees of arc and the world in earth radii.
-    let z = radians(elevation);
-    if frame.globe <= 0.0 {
-        return vec3f(mercator(hi, lo), z);
-    }
-    let lat0 = radians(frame.center_hi.y + frame.center_lo.y);
-    let s = on_sphere(hi, lo) * (1.0 + z);
-    let round = vec3f(s.xy, s.z - 1.0) / cos(lat0);
-    if frame.globe >= 1.0 {
-        return round;
-    }
-    return mix(vec3f(mercator(hi, lo), z), round, frame.globe);
+    if frame.space != SPACE_EARTH { return planar_surfaces(hi, lo, elevation); }
+    if frame.globe <= 0.0 { return mercator_surfaces(hi, lo, elevation); }
+    let round = globe_surfaces(hi, lo, elevation);
+    if frame.globe >= 1.0 { return round; }
+    let flat = mercator_surfaces(hi, lo, elevation);
+    return Surfaces(mix(flat.raised, round.raised, frame.globe), mix(flat.apparent, round.apparent, frame.globe));
 }
 
 // The world point a row at a position draws at. A row appears raised by `eye.parallax` of its
@@ -67,11 +105,12 @@ fn surface(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
 // Looking straight down, elevation so sets only depth, and every row draws over its ground
 // position. Tilting the camera eases the parallax to 1, where the point is the raised position.
 fn world(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
-    let raised = surface(hi, lo, elevation);
+    let projected = surfaces(hi, lo, elevation);
+    let raised = projected.raised;
     if eye.parallax >= 1.0 || elevation == 0.0 {
         return raised;
     }
-    let apparent = surface(hi, lo, eye.parallax * elevation);
+    let apparent = projected.apparent;
     let depth = clip_of(apparent).w;
     if !(depth > 0.0) {
         return raised;
@@ -92,18 +131,29 @@ fn project(hi: vec2f, lo: vec2f, z: f32) -> vec4f {
     return clip_of(world(hi, lo, z));
 }
 
+// A plot has no pitch, bearing, or elevation: its x/y axes are independent, and every point
+// shares depth and w. Preserve the same high/low subtraction and matrix coefficients while
+// omitting the zero terms of the general perspective transform.
+fn plot_clip(hi: vec2f, lo: vec2f) -> vec4f {
+    let p = relative(hi, lo);
+    let m = eye.clip_from_world;
+    return vec4f(vec2f(m[0].x, m[1].y) * p + m[3].xy, m[3].zw);
+}
+
 // The globe's center in world units. The globe is a sphere of radius `-center.z` whose top touches
 // the ground at the camera's center.
 fn globe_center() -> vec3f {
-    return vec3f(0.0, 0.0, -1.0 / cos(radians(frame.center_hi.y + frame.center_lo.y)));
+    return vec3f(0.0, 0.0, -frame.globe_radius);
 }
 
 // Whether world point `w` is on the visible side of the globe. On the round globe, it must lie in
 // front of the plane of the globe's visible edge, a test that is exact at any pitch. On the map, or
 // while the globe morphs, everything shows, and the ground's depth hides what lies behind it.
 fn shows(w: vec3f) -> bool {
-    if frame.space != SPACE_EARTH || frame.globe < 1.0 {
-        return true;
+    if PROJECTION == PROJECTION_PLANAR { return true; }
+    if PROJECTION == PROJECTION_MERCATOR { return true; }
+    if PROJECTION == PROJECTION_DYNAMIC {
+        if frame.space != SPACE_EARTH || frame.globe < 1.0 { return true; }
     }
     let c = globe_center();
     return dot(w - c, eye.position.xyz - w) > 0.0;
@@ -135,7 +185,7 @@ fn toward_eye(clip: vec4f, w: vec3f, px: f32) -> vec4f {
     return vec4f(clip.xy, moved.z / moved.w * clip.w, clip.w);
 }
 
-// `clip` moved slightly toward the camera, so a mark lying on a face draws over it.
+// `clip` moved slightly toward the camera, keeping strokes above coplanar ground geometry.
 fn nearer(clip: vec4f) -> vec4f {
     return vec4f(clip.xy, min(clip.z * 1.003, clip.w), clip.w);
 }

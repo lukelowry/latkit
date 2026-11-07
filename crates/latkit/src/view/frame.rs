@@ -1,7 +1,7 @@
 //! One frame, in order: tick the clock, settle readbacks, advance the camera, derive tables from
 //! the data, lay out drawings, sync columns, stream uploads, give marks word pages for their rows,
 //! start transitions, pack the program buffer, write focus words and uniforms, then record the
-//! compute, texts, render, probe, and query passes into the caller's encoder. No pass is recorded
+//! row, text, draw, probe, and query raster passes into the caller's encoder. No pass is recorded
 //! before the program buffer is packed, since packing may move a mark's words with copies
 //! recorded in the encoder.
 //!
@@ -126,8 +126,7 @@ impl View {
         // A legend over a field's whole history shows the domain the layout just wrote.
         self.lay_out_guides(&mut inner);
         let (elapsed, travel) = self.effect_clock();
-        let pages = inner.arena.buffer().clone();
-        self.write_focus(queue, &pages, fresh);
+        self.write_focus(queue, inner.arena.words(), fresh);
         if let Some(rows) = self.focus.take_lit() {
             self.resources.as_mut().expect("created").write_lit(device, queue, &rows);
         }
@@ -158,12 +157,12 @@ impl View {
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
         self.write_uniforms(&uniform, &eye, &sprites);
-        if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
+        if let Some(readback) = self.prepare_rows(encoder, &mut inner, measure.is_some(), travel > 0.0) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
-        self.place_labels(encoder, &mut inner, &eye);
+        self.place_labels(encoder, &mut inner, &eye, &uniform);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
         self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
         self.stats.draws = drawn.draws;
@@ -267,18 +266,17 @@ impl View {
         fresh
     }
 
-    /// Gives every mark word pages for its held rows: state, focus words, and, for a vertex mark
-    /// that faces attach to, the normals the faces sum. Rows in new state pages evaluate from
-    /// scratch. A mark whose pages do not fit in the arena draws nothing until they do. Returns
-    /// whether any focus word pages are new.
+    /// Gives every mark state pages, and focus pages once selection, hover, or a row fit needs
+    /// them. Focus pages then stay allocated to keep later interactions allocation-free. Rows
+    /// in new state pages evaluate from scratch. Returns whether any focus word pages are new.
     fn fit_words(&mut self, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = (&gpu.0.device, &gpu.0.queue);
-        let summing = super::graph::summing(&self.marks);
         let (mut fresh, mut short, mut changed) = (false, false, false);
-        for (shown, summing) in self.marks.iter_mut().zip(summing) {
+        let focus = self.focus.needs_pages();
+        for shown in &mut self.marks {
             let rows = shown.page_rows();
-            for (kept, width) in shown.kept_widths(summing) {
+            for (kept, width) in shown.kept_widths(focus) {
                 let Some(fitted) = shown.words.fit(kept, &rows, width, device, &mut inner.arena) else {
                     short = true;
                     continue;
@@ -493,7 +491,7 @@ impl View {
         }
         resources.fit_sprites(device, sprites.len());
         if !sprites.is_empty() {
-            queue.write_buffer(resources.sprites(), 0, bytemuck::cast_slice(sprites));
+            resources.sprites().write(queue, 0, bytemuck::cast_slice(sprites));
         }
     }
 
@@ -516,7 +514,10 @@ impl View {
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
         let mut marks = vec![0_u8; self.marks.len() * MARK_STRIDE as usize];
         for (i, shown) in self.marks.iter().enumerate() {
-            let uniform = uniforms::mark(i, shown, &self.labels, &self.clock);
+            let mut uniform = uniforms::mark(i, shown, &self.labels, &self.clock);
+            if !self.focus.has_words() {
+                uniform.focus = wgsl::NONE;
+            }
             let at = i * MARK_STRIDE as usize;
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(&uniform));
         }
@@ -651,7 +652,7 @@ impl View {
         if rows.len() == had {
             return true;
         }
-        let widths = shown.kept_widths(super::graph::summing(&self.marks)[i]);
+        let widths = shown.kept_widths(self.focus.needs_pages());
         let gpu = self.gpu.clone();
         let shown = &mut self.marks[i];
         widths.into_iter().all(|(kept, width)| {
@@ -723,7 +724,7 @@ impl View {
         if !kept || (shown.begin.is_none() && shown.transition.is_none()) {
             shown.tables.thaw(inner);
         }
-        // If where rows draw changed, bump the versions so normals, labels, and segment lists
+        // If where rows draw changed, bump the versions so labels and segment lists
         // follow. A changed column alone evaluates the channels reading it, which bump them.
         if !alike {
             shown.version += 1;
@@ -770,7 +771,7 @@ impl View {
                 shown.domains = domains;
                 shown.all_dirty();
             }
-            domains += shown.reductions();
+            domains += shown.reductions().next_multiple_of(2);
         }
         u64::from(domains)
     }

@@ -1,6 +1,6 @@
 # latkit
 
-Draw large networks, such as power grids, with WebGPU. Write datasets of tables, describe scenes of
+Draw large networks, such as power grids, with WebGL2. Write datasets of tables, describe scenes of
 vertices, edges, lines, and areas over them, and export pictures and video of the views.
 
 ```ts
