@@ -101,7 +101,7 @@ if (mode === 'prepare') {
   const sizes = {};
   for (const folder of ['dist', 'pkg']) {
     for (const file of fs.readdirSync(path.join(stage, folder)).sort()) {
-      if (!/\.(js|wasm)$/.test(file)) continue;
+      if (!/\.(js|wasm|bin)$/.test(file)) continue;
       const bytes = fs.readFileSync(path.join(stage, folder, file));
       sizes[`${folder}/${file}`] = {
         raw: bytes.length,

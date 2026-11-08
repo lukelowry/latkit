@@ -27,9 +27,20 @@ const VERTEX: u32 = 1;
 const FRAGMENT: u32 = 2;
 
 impl ShaderSource {
+    /// The shader's WGSL for one pipeline, with each of its
+    /// [`constants`](ShaderSource::constants) declared as a `const` of `value(name)`. The browser
+    /// build carries only the custom marker shaders' WGSL, in its store.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn wgsl(&self, value: impl Fn(&str) -> u32) -> String {
+        let linked = super::store::text(&format!("wgsl {}", self.label))
+            .unwrap_or_else(|| panic!("the browser build stores no WGSL for {}", self.label));
+        specialize(linked.split(super::specialize::SEPARATOR), self.constants, value)
+    }
+
     /// The shader's WGSL for one pipeline: its declarations joined in order, with each of its
     /// [`constants`](ShaderSource::constants) declared as a `const` of `value(name)`. Each
     /// declaration is stored once and shared by every shader.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn wgsl(&self, value: impl Fn(&str) -> u32) -> String {
         if !self.specializations.is_empty() {
             let selected = self
@@ -54,6 +65,13 @@ impl ShaderSource {
         specialize(pieces, self.constants, value)
     }
 
+    /// The values of its [`constants`](ShaderSource::constants) for one pipeline, in order: the
+    /// key of the pipeline's entries in the browser's store of translated shaders.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn values(&self, value: impl Fn(&str) -> u32) -> Vec<u32> {
+        self.constants.iter().map(|constant| value(constant.name)).collect()
+    }
+
     /// Whether pipelines specialize the shader with the constant `name`.
     pub(crate) fn reads(&self, entry: &str, name: &str) -> bool {
         match self.entry_constants.iter().find(|(key, _)| *key == entry) {
@@ -63,24 +81,19 @@ impl ShaderSource {
         }
     }
 
-    /// The size of its WGSL in bytes, a rough measure of compile time. A browser compiles the WGSL
-    /// once per pipeline.
+    /// The size of its linked WGSL in bytes, a rough measure of compile time.
     pub(crate) fn size(&self) -> usize {
-        self.pieces
-            .iter()
-            .map(|&piece| {
-                let (start, end) = PIECES[piece as usize];
-                (end - start) as usize
-            })
-            .sum()
+        self.size
     }
 }
 
 /// Every distinct top-level declaration of every linked shader, each stored once. [`PIECES`] gives
-/// each one's byte range.
+/// each one's byte range. The browser build has none.
+#[cfg(not(target_arch = "wasm32"))]
 static WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/shaders.wgsl"));
 
 /// One linked shader: its declarations, entry points included, and the bindings of its pass group.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code, reason = "the browser build's shaders are in its store"))]
 pub(crate) struct ShaderSource {
     pub(crate) label: &'static str,
     /// Its declarations, as indices into [`PIECES`], in order.
@@ -96,10 +109,11 @@ pub(crate) struct ShaderSource {
     /// Whether it reads the view and mark groups. A shader that does not gets empty groups in their
     /// place.
     pub(crate) shared: bool,
-    /// Color attachments written by its fragment entries, reflected from their output locations.
-    pub(crate) targets: usize,
+    /// The bytes of its linked WGSL.
+    size: usize,
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code, reason = "the browser build's shaders are in its store"))]
 pub(crate) struct Specialization {
     pub(crate) values: &'static [u32],
     pub(crate) pieces: &'static [u16],

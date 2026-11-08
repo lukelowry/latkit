@@ -174,18 +174,24 @@ impl Device {
     }
 
     fn pipeline(&self, desc: &wgpu::RenderPipelineDescriptor<'_>) -> Result<Rc<Program>, String> {
+        let passed = |module: &wgpu::ShaderModule| matches!(module.as_custom::<Shader>(), Some(Shader::Glsl { .. }));
+        if desc.layout.is_none()
+            && (passed(desc.vertex.module) || desc.fragment.as_ref().is_some_and(|f| passed(f.module)))
+        {
+            return Err("a pipeline of GLSL shader modules needs an explicit layout".into());
+        }
         let sources = vec![
             pipeline::glsl(
                 desc.vertex.module,
                 desc.vertex.entry_point,
-                naga::ShaderStage::Vertex,
+                pipeline::Stage::Vertex,
                 desc.vertex.compilation_options.constants,
             )?,
             match &desc.fragment {
                 Some(fragment) => pipeline::glsl(
                     fragment.module,
                     fragment.entry_point,
-                    naga::ShaderStage::Fragment,
+                    pipeline::Stage::Fragment,
                     fragment.compilation_options.constants,
                 )?,
                 None => pipeline::Source {
@@ -223,29 +229,41 @@ impl DeviceInterface for Device {
             ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Gl)
         }
     }
+    /// A WGSL module, with the `wgsl` feature. latkit's own shaders are GLSL, passed through.
     fn create_shader_module(
         &self,
         desc: wgpu::ShaderModuleDescriptor<'_>,
         shader_bound_checks: wgpu::ShaderRuntimeChecks,
     ) -> DispatchShaderModule {
-        let module = match desc.source {
+        #[cfg(feature = "wgsl")]
+        let shader = Shader::wgsl(match desc.source {
             wgpu::ShaderSource::Wgsl(source) => {
                 naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))
             }
-            wgpu::ShaderSource::Naga(module) => Ok(module.into_owned()),
             _ => Err("unsupported shader source".into()),
+        });
+        #[cfg(not(feature = "wgsl"))]
+        let shader = {
+            let message = "this build of latkit's WebGL2 device takes GLSL only: WGSL needs the `wgsl` feature";
+            self.error(validation(message.to_owned()));
+            Shader::glsl(String::new(), "")
         };
-        let shader = Shader::new(module);
         if let Some(message) = shader.error() {
             self.error(validation(message.to_owned()));
         }
         DispatchShaderModule::custom(shader)
     }
+    /// GLSL ES 3.00 for one entry point, starting with the header of its bindings that
+    /// `src/gpu/glsl.rs` writes. The device compiles it as is when a pipeline links it.
     unsafe fn create_shader_module_passthrough(
         &self,
         desc: &wgpu::ShaderModuleDescriptorPassthrough<'_>,
     ) -> DispatchShaderModule {
-        unimplemented!("prototype: create_shader_module_passthrough")
+        let entry = desc.entry_points.first().map(|entry| entry.name.to_string()).unwrap_or_default();
+        if desc.glsl.is_none() {
+            self.error(validation("the WebGL2 device passes through GLSL only".to_owned()));
+        }
+        DispatchShaderModule::custom(Shader::glsl(entry, desc.glsl.as_deref().unwrap_or_default()))
     }
     fn create_bind_group_layout(&self, desc: &wgpu::BindGroupLayoutDescriptor<'_>) -> DispatchBindGroupLayout {
         DispatchBindGroupLayout::custom(super::resource::Layout(desc.entries.to_vec()))

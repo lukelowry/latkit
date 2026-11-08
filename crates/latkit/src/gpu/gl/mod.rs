@@ -21,6 +21,11 @@ pub(crate) fn instance(gl: web_sys::WebGl2RenderingContext) -> crate::Result<wgp
     Ok(wgpu::Instance::from_custom(host::Instance(device)))
 }
 
+/// Whether `device` is latkit's WebGL2 device, which takes the GLSL the build translated.
+pub(crate) fn owns(device: &wgpu::Device) -> bool {
+    device.as_custom::<device::Device>().is_some()
+}
+
 /// Yields to the next browser task, where WebGL fences and queries advance.
 async fn turn() {
     crate::time::next_task().await;
@@ -57,10 +62,12 @@ fn blit(texture: &resource::Texture, canvas: &super::browser::Canvas) -> crate::
     if gl.is_context_lost() {
         return Err(crate::Error::Unsupported("WebGL2 context is lost".into()));
     }
-    let before = canvas.size();
     let size = texture.0.size;
-    let extent = [before[0].max(size.width), before[1].max(size.height)];
-    canvas.resize(extent);
+    // The caller reserved room for the texture, so the canvas never resizes while presenting.
+    let extent = canvas.size();
+    if size.width > extent[0] || size.height > extent[1] {
+        return Err(crate::Error::Unsupported("the presentation texture is larger than the WebGL2 canvas".into()));
+    }
     let read = gl
         .create_framebuffer()
         .ok_or_else(|| crate::Error::Unsupported("cannot allocate a presentation framebuffer".into()))?;

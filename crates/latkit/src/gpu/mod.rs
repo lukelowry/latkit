@@ -10,6 +10,8 @@ pub(crate) mod colormaps;
 pub(crate) mod dictionary;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod gl;
+#[cfg(all(feature = "wgsl", target_arch = "wasm32"))]
+mod glsl;
 pub(crate) mod grown;
 pub(crate) mod icons;
 pub(crate) mod kernel;
@@ -19,6 +21,7 @@ pub(crate) mod order;
 pub(crate) mod packed;
 pub(crate) mod pipelines;
 pub(crate) mod probing;
+#[cfg(any(not(target_arch = "wasm32"), feature = "wgsl"))]
 mod prune;
 pub(crate) mod raster;
 pub(crate) mod readback;
@@ -27,6 +30,8 @@ pub(crate) mod retired;
 pub(crate) mod shaders;
 mod specialize;
 pub(crate) mod state;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod store;
 pub(crate) mod texts;
 pub(crate) mod texture;
 pub(crate) mod words;
@@ -295,6 +300,12 @@ impl Gpu {
     /// Creates a WebGL2 device in browsers, or the best supported native raster device.
     /// Errors if no adapter or device is available.
     pub async fn new() -> Result<Gpu> {
+        #[cfg(target_arch = "wasm32")]
+        if !store::loaded() {
+            return Err(Error::Unsupported(
+                "latkit's shaders are not loaded: the page hands them over with Browser::set_shaders".into(),
+            ));
+        }
         #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: if cfg!(target_arch = "wasm32") { wgpu::Backends::GL } else { wgpu::Backends::PRIMARY },
@@ -352,10 +363,16 @@ impl Gpu {
     /// Draws with an application-owned device and queue without replacing their callbacks.
     /// Forward device loss and uncaptured errors through [`Gpu::device_events`]. Clone this
     /// `Gpu` to share its caches and budget between views. Errors if the device does not meet
-    /// the WebGL2 resource limits used by the shared raster algorithms.
+    /// the WebGL2 resource limits used by the shared raster algorithms. In a browser, latkit's
+    /// shaders are GLSL translated ahead of time, so the device must be the WebGL2 device of a
+    /// `Gpu` from [`Gpu::new`].
     pub fn from_wgpu(device: wgpu::Device, queue: wgpu::Queue) -> Result<Gpu> {
         if !wgpu::Limits::downlevel_webgl2_defaults().check_limits(&device.limits()) {
             return Err(Error::Unsupported("the device does not meet WebGL2 rendering limits".into()));
+        }
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        if !gl::owns(&device) {
+            return Err(Error::Unsupported("in a browser, latkit draws only on the WebGL2 device of Gpu::new".into()));
         }
         Ok(Gpu::create(None, None, device, queue))
     }

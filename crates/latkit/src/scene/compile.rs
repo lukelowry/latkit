@@ -12,6 +12,9 @@ pub(crate) struct Compiled {
     pub(crate) program: Arc<Program>,
     #[cfg(feature = "gpu")]
     pub(crate) kernel: Arc<str>,
+    /// For each plane of four words of the mark's rows, the channels evaluated to write it.
+    #[cfg(feature = "gpu")]
+    pub(crate) planes: Arc<[u32]>,
     pub(crate) drawing: Drawing,
     pub(crate) schemas: Vec<(Name, u64)>,
     pub(crate) failures: Vec<Error>,
@@ -46,9 +49,12 @@ pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Re
             schemas.push((name, schema));
         }
     }
+    let width = mark.kind().stride() + drawing.extras;
     Ok(Some(Compiled {
         #[cfg(feature = "gpu")]
-        kernel: crate::gpu::kernel::source(&program, mark.kind().stride() + drawing.extras),
+        kernel: crate::gpu::kernel::source(&program, width),
+        #[cfg(feature = "gpu")]
+        planes: crate::gpu::kernel::plane_channels(&program, width),
         program: Arc::new(program),
         drawing,
         schemas,

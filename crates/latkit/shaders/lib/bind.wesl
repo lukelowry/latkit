@@ -1,7 +1,7 @@
 // Bindings every pipeline shares: group 0 per view and frame, group 1 per mark, group 2 per pass.
 
 import package::lib::types::{Frame, Eye, Mark};
-import package::lib::words::word_read;
+import package::lib::words::{word_read, lane_word};
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 // Every mark's compiled program: column descriptors, page tables, code, constants, ends.
@@ -25,7 +25,7 @@ fn focused(at: u32) -> u32 {
 
 // The theme's word in slot `slot`, one of the `THEME_*` slots.
 fn theme_word(slot: u32) -> u32 {
-    return frame.theme[slot / 4u][slot % 4u];
+    return lane_word(frame.theme[slot / 4u], slot % 4u);
 }
 
 // All pages, in blocks allocated by the arena. Data pages hold column values as f32 or u32 words.

@@ -20,6 +20,8 @@ use std::sync::Arc;
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use browser::Browser;
+#[cfg(all(feature = "web", target_arch = "wasm32", not(feature = "wgsl")))]
+pub(crate) use browser::translate;
 pub use job::Job;
 pub(crate) use job::Placement;
 pub(crate) use job::{Key, Shaping, shapes_answer};

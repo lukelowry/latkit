@@ -37,14 +37,16 @@ pub(crate) struct Shared<'a> {
     pub(crate) offset: u32,
 }
 
-/// One integer raster dispatch. Resources are sampled inputs; the destination is separate.
+/// One integer raster dispatch. Resources are sampled inputs; the destination is separate. Every
+/// raster shader writes one color target, so ANGLE on D3D11 builds its pixel shader when the
+/// program links, not at its first draw.
 pub(crate) struct Render<'a> {
     pub(crate) variant: Variant,
     pub(crate) shared: Option<Shared<'a>>,
     pub(crate) bindings: &'a [wgpu::BindGroupEntry<'a>],
     pub(crate) uniform: u32,
     pub(crate) step: WordStep,
-    pub(crate) outputs: &'a [&'a Words],
+    pub(crate) output: &'a Words,
     pub(crate) words: u32,
 }
 
@@ -109,15 +111,14 @@ impl Raster<'_> {
         pass.draw(0..draw.vertices, 0..draw.instances);
     }
     pub(crate) fn render(&mut self, render: Render<'_>) {
-        let Render { variant, shared, bindings, uniform: slot, mut step, outputs, words } = render;
+        let Render { variant, shared, bindings, uniform: slot, mut step, output, words } = render;
         if words == 0 {
             return;
         }
         let shader = variant.shader();
-        assert_eq!(outputs.len(), shader.source().targets);
         let layout = self.pipelines.pass_layout(self.device, shader);
         let pipeline = self.pipelines.render(self.device, variant);
-        step.size = [outputs[0].texture().width(), outputs[0].texture().height()];
+        step.size = [output.texture().width(), output.texture().height()];
         for part in spans(step.destination, words) {
             let at = origin(part.at);
             step.layer = at.z;
@@ -132,21 +133,15 @@ impl Raster<'_> {
                 layout: &layout,
                 entries: &entries,
             });
-            let views: Vec<_> = outputs.iter().map(|output| output.attachment(at.z)).collect();
-            let targets: Vec<_> = views
-                .iter()
-                .map(|view| {
-                    Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                    })
-                })
-                .collect();
+            let view = output.attachment(at.z);
             let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(shader.source().label),
-                color_attachments: &targets,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,

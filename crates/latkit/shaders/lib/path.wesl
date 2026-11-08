@@ -433,27 +433,19 @@ fn sample_point(sample: vec3u) -> PathPoint {
 // During a transition, each point moves from the path at the transition's start: from the same
 // point when both paths have the same count, else from the old point at the same fraction along.
 fn geometry_point(row: u32, i: u32) -> PathPoint {
+    // Like column reads, this reads both paths' points and selects (see `lib/read.wesl`).
     let now = points_of(mark.geometry, row);
-    if i >= now.count {
-        return hidden();
-    }
     let w = point_bits(now, i);
-    if missing_bits(w.x) || missing_bits(w.y) {
-        return hidden();
-    }
-    var xy = vec2f(bitcast<f32>(w.x), bitcast<f32>(w.y));
-    if mark.frozen != NONE && mark.frozen_geometry != NONE && now.count > 0u {
-        let was = points_of(mark.frozen_geometry, row);
-        if was.count > 0u {
-            let along = f32(i) * f32(was.count - 1u) / f32(max(now.count, 2u) - 1u);
-            let k = select(u32(round(along)), i, was.count == now.count);
-            let o = point_bits(was, min(k, was.count - 1u));
-            if !missing_bits(o.x) && !missing_bits(o.y) {
-                xy = mix(vec2f(bitcast<f32>(o.x), bitcast<f32>(o.y)), xy, mark.motion);
-            }
-        }
-    }
-    return position_point(xy, 0.0, vec4f(1.0));
+    let xy = bitcast<vec2f>(w);
+    let was = points_of(mark.frozen_geometry, row);
+    let along = f32(i) * f32(max(was.count, 1u) - 1u) / f32(max(now.count, 2u) - 1u);
+    let k = select(u32(round(along)), i, was.count == now.count);
+    let o = point_bits(was, min(k, max(was.count, 1u) - 1u));
+    let eased = (mark.frozen != NONE) & (mark.frozen_geometry != NONE) & (was.count > 0u) & !missing_bits(o.x)
+        & !missing_bits(o.y);
+    var p = position_point(select(xy, mix(bitcast<vec2f>(o), xy, mark.motion), eased), 0.0, vec4f(1.0));
+    p.shown = (i < now.count) & !missing_bits(w.x) & !missing_bits(w.y);
+    return p;
 }
 
 // Point `i` of a pole: the row's own vertex, then the ground below it.

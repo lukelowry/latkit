@@ -45,15 +45,15 @@ fn labeled(i: u32) -> Labeled {
 @vertex
 fn vertex(@builtin(vertex_index) v: u32) -> @builtin(position) vec4f { return fullscreen(v); }
 
-struct Prepared { @location(0) metadata: vec4u, @location(1) position: vec4u }
-
+// A labeled row's metadata, or with `params.value` 1, the corner of its label's box. Each is a draw
+// of its own into one color target.
 @fragment
-fn metadata(@builtin(position) p: vec4f) -> Prepared {
-    var out: Prepared;
+fn metadata(@builtin(position) p: vec4f) -> @location(0) vec4u {
     let row = word_index(p, params.layer) / 4u;
-    if row >= mark.rows { return out; }
+    if row >= mark.rows { return vec4u(0u); }
     let l = labeled(row);
-    if !l.shows { return out; }
+    if !l.shows { return vec4u(0u); }
+    if params.value == 1u { return vec4u(bitcast<vec2u>(label_box(l.a, l.extent).lo), 0u, 0u); }
     let t = claimed(l.a, l.ready, l.extent, mark.label_size);
     let c = cells_of(t);
     let valid = all(c.first <= c.last);
@@ -65,8 +65,6 @@ fn metadata(@builtin(position) p: vec4f) -> Prepared {
     let drawable = l.ready && fits(l.extent, l.a.room);
     let first = vec2u(max(c.first, vec2i(0)));
     let last = vec2u(max(c.last, vec2i(0)));
-    out.metadata = vec4u(first.x | (first.y << 16u), last.x | (last.y << 16u), char_at(l.chars, 0u),
+    return vec4u(first.x | (first.y << 16u), last.x | (last.y << 16u), char_at(l.chars, 0u),
         u32(claim) | (u32(ask) << 1u) | (u32(seen) << 2u) | (u32(drawable) << 3u) | (u32(claims_room(l.a)) << 4u));
-    out.position = vec4u(bitcast<vec2u>(label_box(l.a, l.extent).lo), 0u, 0u);
-    return out;
 }

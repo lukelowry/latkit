@@ -8,7 +8,7 @@ const root = path.resolve(import.meta.dirname, '../../..');
 const fixture = path.join(import.meta.dirname, 'driver');
 const output = path.join(root, 'target/webgl2-driver-tests/pkg');
 if (!process.argv.includes('--skip-build')) {
-  execFileSync(
+  const built = execFileSync(
     'cargo',
     [
       'build',
@@ -20,9 +20,27 @@ if (!process.argv.includes('--skip-build')) {
       '--release',
       '--target-dir',
       path.join(root, 'target/webgl2-driver-tests'),
+      '--message-format=json-render-diagnostics',
     ],
-    { cwd: root, stdio: 'inherit' },
+    { cwd: root, stdio: ['inherit', 'pipe', 'inherit'], maxBuffer: 1 << 28 },
   );
+  // The shaders latkit's build translated, which the page hands over before creating a GPU.
+  const store = built
+    .toString()
+    .split('\n')
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as { reason?: string; package_id?: string; out_dir?: string }];
+      } catch {
+        return [];
+      }
+    })
+    .find(
+      (m) => m.reason === 'build-script-executed' && m.package_id?.includes('/crates/latkit#'),
+    )?.out_dir;
+  if (!store) throw new Error("cargo did not report latkit's build output");
+  fs.mkdirSync(output, { recursive: true });
+  fs.copyFileSync(path.join(store, 'shaders.bin'), path.join(output, 'shaders.bin'));
   execFileSync(
     'wasm-bindgen',
     [
@@ -41,7 +59,10 @@ if (!process.argv.includes('--skip-build')) {
   );
 }
 const files = new Map(
-  ['driver.js', 'driver_bg.wasm'].map((name) => [name, fs.readFileSync(path.join(output, name))]),
+  ['driver.js', 'driver_bg.wasm', 'shaders.bin'].map((name) => [
+    name,
+    fs.readFileSync(path.join(output, name)),
+  ]),
 );
 const server = http.createServer((req, res) => {
   const name = req.url?.slice(1);
@@ -59,7 +80,14 @@ const server = http.createServer((req, res) => {
     res.writeHead(404).end();
     return;
   }
-  res.setHeader('Content-Type', name.endsWith('.wasm') ? 'application/wasm' : 'text/javascript');
+  res.setHeader(
+    'Content-Type',
+    name.endsWith('.wasm')
+      ? 'application/wasm'
+      : name.endsWith('.bin')
+        ? 'application/octet-stream'
+        : 'text/javascript',
+  );
   res.end(bytes);
 });
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -84,6 +112,7 @@ try {
       const url = '/driver.js';
       const module = (await import(url)) as {
         default(): Promise<void>;
+        shaders(bytes: Uint8Array): void;
         compile(source: string): Promise<string>;
         render(integer: boolean, samples: number, automatic: boolean): Promise<string>;
         vertices(bundled: boolean): Promise<string>;
@@ -95,6 +124,7 @@ try {
         loss(): Promise<string>;
       };
       await module.default();
+      module.shaders(new Uint8Array(await (await fetch('/shaders.bin')).arrayBuffer()));
       console.debug('driver: compilation');
       const valid = await module.compile(
         '@vertex fn vertex(@builtin(vertex_index) i:u32)->@builtin(position) vec4f { return vec4f(f32(i),0,0,1); } @fragment fn fragment()->@location(0) vec4f { return vec4f(1); }',

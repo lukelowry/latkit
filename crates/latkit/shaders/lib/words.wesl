@@ -7,8 +7,14 @@ fn word_quad(words: texture_2d_array<u32>, at: u32) -> vec4u {
         i32(texel / (WORD_WIDTH * WORD_HEIGHT)), 0);
 }
 
+// Word `lane` of `v`. A vector indexed by a runtime value, `v[lane]`, becomes a function with a
+// switch in ANGLE's translation for D3D, compiled again wherever it is read, so selects pick it.
+fn lane_word(v: vec4u, lane: u32) -> u32 {
+    return select(select(v.x, v.y, lane == 1u), select(v.z, v.w, lane == 3u), lane >= 2u);
+}
+
 fn word_read(words: texture_2d_array<u32>, at: u32) -> u32 {
-    return word_quad(words, at)[at % 4u];
+    return lane_word(word_quad(words, at), at % 4u);
 }
 
 // Four words at any address. Aligned row records take one fetch; an unaligned range takes two.
@@ -17,11 +23,8 @@ fn word_four(words: texture_2d_array<u32>, at: u32) -> vec4u {
     let lane = at % 4u;
     if lane == 0u { return a; }
     let b = word_quad(words, at + 4u);
-    switch lane {
-        case 1u: { return vec4u(a.yzw, b.x); }
-        case 2u: { return vec4u(a.zw, b.xy); }
-        default: { return vec4u(a.w, b.xyz); }
-    }
+    let shifted = select(vec4u(a.yzw, b.x), vec4u(a.zw, b.xy), lane == 2u);
+    return select(shifted, vec4u(a.w, b.xyz), lane == 3u);
 }
 
 fn word_index(position: vec4f, layer: u32) -> u32 {

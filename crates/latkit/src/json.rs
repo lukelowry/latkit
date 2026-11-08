@@ -1,9 +1,8 @@
 //! Reading inputs from JSON. Errors name the path to the part that could not be read, such as
-//! `marks[2].color`.
+//! `marks[2].color`. Every read takes JSON text, buffered parts too, so each type deserializes
+//! from one kind of input and the build carries one copy of its reader.
 
-use std::fmt::Display;
-
-use serde::de::{Deserialize, DeserializeOwned, Deserializer};
+use serde::de::DeserializeOwned;
 use serde_path_to_error::Segment;
 
 use crate::{Error, Path, Result, Step};
@@ -20,28 +19,13 @@ use crate::{Error, Path, Result, Step};
 /// # Ok::<(), latkit::Error>(())
 /// ```
 pub fn from_json<T: DeserializeOwned>(text: &str) -> Result<T> {
-    let mut deserializer = serde_json::Deserializer::from_str(text);
-    let value = read(&mut deserializer)?;
-    deserializer.end().map_err(|e| Error::invalid(e.to_string()))?;
-    Ok(value)
-}
-
-/// Deserializes JSON `bytes` as `T`, like [`from_json`]. Bytes that are not UTF-8 are invalid.
-pub(crate) fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    from_json(std::str::from_utf8(bytes).map_err(|e| Error::invalid(format!("not UTF-8: {e}")))?)
-}
-
-/// Deserializes `T` from `deserializer`. Errors name the path to the part that could not be read.
-pub(crate) fn read<'de, T: Deserialize<'de>, D: Deserializer<'de>>(deserializer: D) -> Result<T>
-where
-    D::Error: Display,
-{
     // A failed `nested` read leaves the path within its value. Clear one left by a read that did not
     // pass through here, such as a test's `serde_json::from_str`.
     WITHIN.take();
-    let read = serde_path_to_error::deserialize(deserializer);
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let read = serde_path_to_error::deserialize(&mut deserializer);
     let within = WITHIN.take();
-    read.map_err(|error| {
+    let value = read.map_err(|error| {
         let steps = error.path().iter().filter_map(|segment| match segment {
             Segment::Seq { index } => Some(Step::Index(*index)),
             Segment::Map { key } => Some(Step::Name(key.as_str().into())),
@@ -50,7 +34,14 @@ where
         });
         let path = steps.chain(within.into_iter().flat_map(|path| path.0)).collect();
         Error::Invalid { path: Path(path), reason: unplaced(error.into_inner().to_string()).into() }
-    })
+    })?;
+    deserializer.end().map_err(|e| Error::invalid(e.to_string()))?;
+    Ok(value)
+}
+
+/// Deserializes JSON `bytes` as `T`, like [`from_json`]. Bytes that are not UTF-8 are invalid.
+pub(crate) fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    from_json(std::str::from_utf8(bytes).map_err(|e| Error::invalid(format!("not UTF-8: {e}")))?)
 }
 
 /// `reason` without the position that `serde_json` appends, such as ` at line 1 column 42`. The path
@@ -66,16 +57,16 @@ fn unplaced(reason: String) -> String {
 }
 
 thread_local! {
-    /// The path within a buffered value at which [`nested`] failed, for [`read`] to append to the
-    /// path of the value itself.
+    /// The path within a buffered value at which [`nested`] failed, for [`from_json`] to append to
+    /// the path of the value itself.
     static WITHIN: std::cell::Cell<Option<Path>> = const { std::cell::Cell::new(None) };
 }
 
-/// Deserializes `T` from `value`, a buffered part of the input [`read`] is reading. Marks are
-/// buffered, since the key naming a mark's kind may come after its options. An error's path
-/// continues from the value's own path.
-pub(crate) fn nested<T: DeserializeOwned, E: serde::de::Error>(value: serde_json::Value) -> std::result::Result<T, E> {
-    read(value).map_err(|error| match error {
+/// Deserializes `T` from `value`, a buffered part of the input [`from_json`] is reading, from its
+/// JSON text. Marks are buffered, since the key naming a mark's kind may come after its options. An
+/// error's path continues from the value's own path.
+pub(crate) fn nested<T: DeserializeOwned, E: serde::de::Error>(value: &serde_json::Value) -> std::result::Result<T, E> {
+    from_json(&value.to_string()).map_err(|error| match error {
         Error::Invalid { path, reason } => {
             WITHIN.set(Some(path));
             E::custom(reason)
@@ -84,8 +75,8 @@ pub(crate) fn nested<T: DeserializeOwned, E: serde::de::Error>(value: serde_json
     })
 }
 
-/// Deserializes `T` from `value`, a buffered part of the input [`read`] is reading, leaving out each
-/// part that can't be read. Returns the value and an error for each part left out, at its path.
+/// Deserializes `T` from `value`, a buffered part of the input [`from_json`] is reading, leaving out
+/// each part that can't be read. Returns the value and an error for each part left out, at its path.
 /// `option` names the part to leave out for an error at a path, or `None` when the value can't be
 /// read without it, which fails the whole value as [`nested`] does.
 pub(crate) fn lenient<T: DeserializeOwned, E: serde::de::Error>(
@@ -94,7 +85,7 @@ pub(crate) fn lenient<T: DeserializeOwned, E: serde::de::Error>(
 ) -> std::result::Result<(T, Vec<Error>), E> {
     let mut unread = Vec::new();
     loop {
-        match read::<T, _>(&value) {
+        match from_json::<T>(&value.to_string()) {
             Ok(read) => return Ok((read, unread)),
             Err(Error::Invalid { path, reason }) => {
                 if option(&path).is_none_or(|option| !take(&mut value, &option)) {

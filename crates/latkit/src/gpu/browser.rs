@@ -27,6 +27,18 @@ impl Canvas {
         }
     }
 
+    /// Grows the canvas to hold `size`, a power of two at a time on each side that is too small.
+    /// It never shrinks. In Chrome, resizing a WebGL canvas waits until the GPU process finishes
+    /// every shader compile it has queued, so the shared canvas starts at the screen's size and
+    /// grows only for a view larger than that.
+    pub(crate) fn reserve(&self, size: [u32; 2]) {
+        let have = self.size();
+        if size[0] > have[0] || size[1] > have[1] {
+            let grow = |have: u32, want: u32| if want > have { want.next_power_of_two() } else { have };
+            self.resize([grow(have[0], size[0]), grow(have[1], size[1])]);
+        }
+    }
+
     pub(crate) fn resize(&self, size: [u32; 2]) {
         let before = self.size();
         match self {
@@ -171,6 +183,8 @@ impl Browser {
         .ok_or_else(|| Error::Unsupported("WebGL2 is unavailable".into()))?
         .dyn_into::<web_sys::WebGl2RenderingContext>()
         .map_err(|_| Error::Unsupported("WebGL2 is unavailable".into()))?;
+        // Size the canvas now, while the GPU process has nothing queued (see Canvas::reserve).
+        canvas.reserve(screen(&context));
         let instance = super::gl::instance(context)?;
         Ok((instance, Self { canvas, lost: None }))
     }
@@ -187,6 +201,11 @@ impl Browser {
         self.lost = Some(lost);
     }
 
+    /// Makes room on the shared canvas for a view's texture of `size`, when the texture is made.
+    pub(crate) fn reserve(&self, size: [u32; 2]) {
+        self.canvas.reserve(size);
+    }
+
     fn target(&self) -> &web_sys::EventTarget {
         match &self.canvas {
             Canvas::Element(c) => c.as_ref(),
@@ -200,6 +219,22 @@ impl Browser {
         super::gl::present(source, &self.canvas)?;
         sink.copy(&self.canvas, size)
     }
+}
+
+/// The screen's size in device pixels, at most the largest drawing buffer `gl` makes. In a worker,
+/// which has no screen, one pixel: views there grow the canvas when they first present.
+fn screen(gl: &web_sys::WebGl2RenderingContext) -> [u32; 2] {
+    let limit = gl
+        .get_parameter(web_sys::WebGl2RenderingContext::MAX_RENDERBUFFER_SIZE)
+        .ok()
+        .and_then(|value| value.as_f64())
+        .map_or(4096, |value| value as u32);
+    let screen = web_sys::window().and_then(|window| {
+        let (screen, ratio) = (window.screen().ok()?, window.device_pixel_ratio());
+        let side = |css: i32| (f64::from(css) * ratio).ceil().max(1.0) as u32;
+        Some([side(screen.width().ok()?), side(screen.height().ok()?)])
+    });
+    screen.unwrap_or([1, 1]).map(|side| side.min(limit))
 }
 
 impl Drop for Browser {

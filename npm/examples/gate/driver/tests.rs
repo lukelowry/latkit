@@ -4,6 +4,12 @@ use wasm_bindgen::prelude::*;
 
 use wgpu::util::DeviceExt;
 
+/// Hands over the shaders latkit's build translated, which a `Gpu` needs.
+#[wasm_bindgen]
+pub fn shaders(bytes: Vec<u8>) -> Result<(), JsValue> {
+    latkit::host::Browser::set_shaders(bytes).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
 #[wasm_bindgen]
 pub async fn validation() -> Result<JsValue, JsValue> {
     let gpu = latkit::Gpu::new().await.map_err(|error| JsValue::from_str(&error.to_string()))?;

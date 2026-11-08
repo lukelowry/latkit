@@ -33,10 +33,10 @@ impl<'de> serde::Deserialize<'de> for Mark {
         };
         let form = serde_json::Value::Object(form);
         match kind {
-            MarkKind::Vertices => crate::json::nested(form).map(Mark::Vertices),
-            MarkKind::Edges => crate::json::nested(form).map(Mark::Edges),
-            MarkKind::Lines => crate::json::nested(form).map(Mark::Lines),
-            MarkKind::Areas => crate::json::nested(form).map(Mark::Areas),
+            MarkKind::Vertices => crate::json::nested(&form).map(Mark::Vertices),
+            MarkKind::Edges => crate::json::nested(&form).map(Mark::Edges),
+            MarkKind::Lines => crate::json::nested(&form).map(Mark::Lines),
+            MarkKind::Areas => crate::json::nested(&form).map(Mark::Areas),
         }
     }
 }

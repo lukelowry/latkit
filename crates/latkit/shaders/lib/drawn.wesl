@@ -11,12 +11,10 @@ import package::lib::types::{NONE, DRAWN_ROW, DRAWN_ENTERING, DRAWN_LEAVING, LIS
 import package::lib::bind::mark;
 import package::lib::lists::list;
 
-// The instance the current mark draws at position `position`.
+// The instance the current mark draws at position `position`. Like column reads, these read the
+// list and select, with no branch around the read (see `lib/read.wesl`).
 fn drawn_instance(position: u32) -> u32 {
-    if mark.height_order == NONE {
-        return position;
-    }
-    return list(mark.height_order + LIST_HEADER + position);
+    return select(list(mark.height_order + LIST_HEADER + position), position, mark.height_order == NONE);
 }
 
 struct DrawnRow {
@@ -30,20 +28,15 @@ struct DrawnRow {
 
 // Drawn row `i` of the current mark.
 fn drawn_row(i: u32) -> DrawnRow {
-    if mark.drawn == NONE {
-        return DrawnRow(i, 1.0, 1.0, false);
-    }
-    let word = list(mark.drawn + i);
+    let whole = mark.drawn == NONE;
+    let word = select(list(mark.drawn + i), i & DRAWN_ROW, whole);
     let entering = (word & DRAWN_ENTERING) != 0u;
     let leaving = (word & DRAWN_LEAVING) != 0u;
     let presence = select(select(1.0, mark.reveal, entering), 1.0 - mark.reveal, leaving);
-    return DrawnRow(word & DRAWN_ROW, presence, select(1.0, mark.reveal, entering), leaving);
+    return DrawnRow(select(word & DRAWN_ROW, i, whole), presence, select(1.0, mark.reveal, entering), leaving);
 }
 
 // The held row of the current mark's drawn row `i`.
 fn held_row(i: u32) -> u32 {
-    if mark.drawn == NONE {
-        return i;
-    }
-    return list(mark.drawn + i) & DRAWN_ROW;
+    return select(list(mark.drawn + i) & DRAWN_ROW, i, mark.drawn == NONE);
 }

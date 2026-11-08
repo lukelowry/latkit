@@ -1,6 +1,6 @@
 // Converts row planes to the arena's existing packed row layout, keeping all addresses stable.
 import package::lib::types::{WordStep, WORD_WIDTH, WORD_HEIGHT};
-import package::lib::words::{fullscreen, word_index, word_quad};
+import package::lib::words::{fullscreen, word_index, word_quad, lane_word};
 
 @group(2) @binding(0) var a: texture_2d_array<u32>;
 @group(2) @binding(1) var b: texture_2d_array<u32>;
@@ -32,7 +32,7 @@ fn plane(row: u32, quad: u32) -> vec4u {
 fn packed(at: u32) -> u32 {
     if at >= pack_step.count { return 0u; }
     let word = at % pack_step.value;
-    return plane(at / pack_step.value, word / 4u)[word % 4u];
+    return lane_word(plane(at / pack_step.value, word / 4u), word % 4u);
 }
 
 @fragment

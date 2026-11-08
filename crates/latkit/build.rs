@@ -7,6 +7,7 @@ fn main() {
     println!("cargo::rerun-if-changed=shaders");
     println!("cargo::rerun-if-changed=src/gpu/specialize.rs");
     println!("cargo::rerun-if-changed=src/gpu/prune.rs");
+    println!("cargo::rerun-if-changed=src/gpu/glsl.rs");
     println!("cargo::rerun-if-changed=src/expr/ramp.rs");
     #[cfg(feature = "gpu")]
     {
@@ -26,6 +27,10 @@ mod specialize;
 #[cfg(feature = "gpu")]
 #[path = "src/gpu/prune.rs"]
 mod prune;
+
+#[cfg(feature = "gpu")]
+#[path = "src/gpu/glsl.rs"]
+mod glsl;
 
 #[path = "build/colormaps.rs"]
 mod colormaps;

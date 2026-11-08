@@ -11,7 +11,8 @@ path = "tests.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-latkit = { path = "../../../../crates/latkit", features = ["web"] }
+# The driver's tests build pipelines from WGSL, which the browser build compiles with `wgsl`.
+latkit = { path = "../../../../crates/latkit", features = ["web", "wgsl"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4"

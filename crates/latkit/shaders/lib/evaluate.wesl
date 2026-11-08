@@ -218,25 +218,12 @@ fn position(row: u32, w: u32, x: vec2u, y: vec2u) {
 
 
 
-fn load_words(at: u32) {
-    let width = min(mark.stride + mark.extras, ROW_WORDS);
-    for (var w = 0u; w < width; w += 4u) {
-        let values = word_four(pages, at + w);
-        row_words[w] = values.x;
-        row_words[w + 1u] = values.y;
-        row_words[w + 2u] = values.z;
-        row_words[w + 3u] = values.w;
-    }
-}
-
 fn load_row(row: u32, clear: bool) {
     // Private registers start at zero. Loading only live words avoids unrolling the maximum
     // record size for small marks and leaves unused output lanes deterministically zero.
     if clear { return; }
-    load_words(word_at(row, 0u));
+    k_load_words(word_at(row, 0u));
 }
-
-
 
 fn finish_channels(row: u32) {
     if mark.kind == MARK_VERTICES {
@@ -248,13 +235,54 @@ fn finish_channels(row: u32) {
     }
 }
 
-// Replaced with straight-line code for the compiled program before module creation.
-fn run(row: u32, start: u32, end: u32) -> Reduction { return Reduction(NONE, vec2u(0u)); }
-fn channels(row: u32, clear: bool) { load_row(row, clear); finish_channels(row); }
+// What expression kernels call. `src/gpu/kernel.rs` writes a mark's program as straight-line code,
+// in WGSL or in GLSL for WebGL2, that calls only these `k_` functions. Their names survive
+// translation to GLSL unchanged, which the build checks, so a kernel written in GLSL links against
+// a shader translated ahead of time.
 
-// Kernel operations whose implementations live in other modules. These named exports keep
-// their dependencies available without retaining unrelated geometry or an interpreter.
-fn field_value(column: u32, row: u32) -> vec2u { return column_value(column, row); }
-fn scale_value(value: f32, domain: vec2f, range: vec2f) -> f32 { return scale(value, domain, range); }
-fn color_value(layer: u32, count: u32, value: f32, domain: vec2f) -> u32 { return colormap(layer, count, value, domain); }
-fn ordered_value(value: f32) -> u32 { return ordered(value); }
+// A kernel replaces these four: loading a row's words, evaluating the `channels` its pass writes,
+// running reduction `start`, and reading the four words from `word`. A kernel reads and writes its
+// row's words at constant indices only, so the driver keeps them in registers.
+fn k_output(word: u32) -> vec4u {
+    return vec4u(row_words[word], row_words[word + 1u], row_words[word + 2u], row_words[word + 3u]);
+}
+fn k_load_words(at: u32) {
+    let width = min(mark.stride + mark.extras, ROW_WORDS);
+    for (var w = 0u; w < width; w += 4u) {
+        let values = word_four(pages, at + w);
+        row_words[w] = values.x;
+        row_words[w + 1u] = values.y;
+        row_words[w + 2u] = values.z;
+        row_words[w + 3u] = values.w;
+    }
+}
+fn k_channels(row: u32, clear: bool, channels: u32) { load_row(row, clear); finish_channels(row); }
+fn k_run(row: u32, start: u32, end: u32) -> Reduction { return Reduction(NONE, vec2u(0u)); }
+
+fn k_set(w: u32, value: u32) { row_words[w] = value; }
+fn k_quad(at: u32) -> vec4u { return word_quad(pages, at); }
+fn k_four(at: u32) -> vec4u { return word_four(pages, at); }
+fn k_load_row(row: u32, clear: bool) { load_row(row, clear); }
+fn k_finish(row: u32) { finish_channels(row); }
+fn k_mask() -> u32 { return mark.mask; }
+fn k_domains() -> u32 { return mark.domains; }
+fn k_code(at: u32) -> u32 { return program(mark.code + at); }
+fn k_elapsed() -> u32 { return bits(frame.elapsed); }
+fn k_constant(i: u32) -> u32 { return constant(i); }
+fn k_constant_float(i: u32) -> f32 { return constant_float(i); }
+fn k_field(column: u32, row: u32) -> vec2u { return column_value(column, row); }
+fn k_viewed(code: u32, row: u32) -> u32 { return viewed(code, row); }
+fn k_theme(slot: u32) -> u32 { return theme_word(slot); }
+fn k_number(x: u32) -> f32 { return number(x); }
+fn k_bits(x: f32) -> u32 { return bits(x); }
+fn k_missing(x: f32) -> bool { return missing(x); }
+fn k_missing_bits(x: u32) -> bool { return missing_bits(x); }
+fn k_scale(x: f32, d: vec2f, r: vec2f) -> f32 { return scale(x, d, r); }
+fn k_domain(at: u32) -> vec2f { return domain(at); }
+fn k_color(layer: u32, count: u32, x: f32, d: vec2f) -> u32 { return colormap(layer, count, x, d); }
+fn k_ordered(x: f32) -> u32 { return ordered(x); }
+fn k_fallback(x: u32, slot: u32) -> u32 { return fallback(x, slot); }
+fn k_load(row: u32, w: u32) -> u32 { return load(row, w); }
+fn k_store(row: u32, w: u32, value: u32) { store(row, w, value); }
+fn k_store_flag(row: u32, w: u32, bit: u32, on: bool) { store_flag(row, w, bit, on); }
+fn k_position(row: u32, w: u32, x: vec2u, y: vec2u) { position(row, w, x, y); }

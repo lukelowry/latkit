@@ -1,6 +1,8 @@
-// One fragment evaluates one row into four integer planes. Wide rows use another batch of the
-// same machine. Packing these planes back into the existing row layout preserves every page
-// table and consumer, including shared endpoints, while scratch stays bounded to a row batch.
+// One fragment evaluates one row and writes four of its words, the plane starting at
+// `state_step.word`. Each plane is its own draw: ANGLE on D3D11 builds a pixel shader for the first
+// color target only, and builds one for more targets on the browser's GPU thread at the first draw.
+// Packing these planes back into the existing row layout preserves every page table and consumer,
+// including shared endpoints, while scratch stays bounded to a row batch.
 import package::lib::types::{
     StateStep, WORD_WIDTH, PAGE_ROWS, PAGE_BITS, PAGE_MASK, NONE, FRESH, ENTERING, FADE_IN, FADE_OUT,
     END_WORDS, END_COLUMN, END_SLOTS, END_STATE, BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION,
@@ -12,22 +14,13 @@ import package::lib::state::{record_at, travel_words};
 import package::lib::read::{bits_value, missing};
 import package::lib::ends::held_of;
 import package::lib::evaluate::{
-    ROW_WORDS, row_words, channels, live, load_row, load_words, run, was, settled, shown_at,
+    row_words, k_channels, k_output, live, load_row, k_load_words, k_run, was, settled, shown_at,
     ease_number, ease_color, ease_position, faded, easing, number, bits,
 };
 
 @group(2) @binding(12) var remap_words: texture_2d_array<u32>;
 @group(2) @binding(16) var blocks: texture_2d_array<u32>;
 @group(2) @binding(17) var<uniform> state_step: StateStep;
-
-struct Output {
-    @location(0) a: vec4u,
-    @location(1) b: vec4u,
-    @if(!narrow)
-    @location(2) c: vec4u,
-    @if(!narrow)
-    @location(3) d: vec4u,
-}
 
 @vertex
 fn vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return fullscreen(i); }
@@ -42,24 +35,13 @@ fn row_of(position: vec4f) -> vec2u {
     return vec2u((block & ~FRESH) * PAGE_ROWS + i % PAGE_ROWS, block & FRESH);
 }
 
-fn quad(at: u32) -> vec4u {
-    return vec4u(row_words[at], row_words[at + 1u], row_words[at + 2u], row_words[at + 3u]);
-}
-
-fn output() -> Output {
-    // A normal record fits one MRT pass. Constant indices let the driver keep its
-    // words in registers instead of lowering every output to a dynamic array lookup.
-    @if(!narrow) {
-        if ROW_WORDS <= 16u { return Output(quad(0u), quad(4u), quad(8u), quad(12u)); }
-    }
-    let first = state_step.word;
-    @if(narrow) { return Output(quad(first), quad(first + 4u)); }
-    @else { return Output(quad(first), quad(first + 4u), quad(first + 8u), quad(first + 12u)); }
+fn output() -> vec4u {
+    return k_output(state_step.word);
 }
 
 fn shown(row: u32) {
     if row >= mark.held { return; }
-    load_words(shown_at(row, 0u));
+    k_load_words(shown_at(row, 0u));
 }
 
 fn resolve_row(row: u32) {
@@ -132,17 +114,17 @@ fn freeze_row(row: u32) {
 }
 
 @fragment
-fn evaluate(@builtin(position) position: vec4f) -> Output {
+fn evaluate(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let id = row_of(position);
     let row = id.x;
     if row >= mark.held { return output(); }
-    if row < live() { channels(row, id.y != 0u && !easing()); }
+    if row < live() { k_channels(row, id.y != 0u && !easing(), state_step.channels); }
     else { shown(row); }
     return output();
 }
 
 @fragment
-fn ends(@builtin(position) position: vec4f) -> Output {
+fn ends(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let row = row_of(position).x;
     shown(row);
     if row < mark.held { resolve_row(row); }
@@ -150,7 +132,7 @@ fn ends(@builtin(position) position: vec4f) -> Output {
 }
 
 @fragment
-fn ease(@builtin(position) position: vec4f) -> Output {
+fn ease(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let row = row_of(position).x;
     shown(row);
     if row < mark.held { ease_row(row); }
@@ -158,7 +140,7 @@ fn ease(@builtin(position) position: vec4f) -> Output {
 }
 
 @fragment
-fn travel(@builtin(position) position: vec4f) -> Output {
+fn travel(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let row = row_of(position).x;
     shown(row);
     if row < mark.held { travel_row(); }
@@ -166,7 +148,7 @@ fn travel(@builtin(position) position: vec4f) -> Output {
 }
 
 @fragment
-fn carry(@builtin(position) position: vec4f) -> Output {
+fn carry(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let row = row_of(position).x;
     shown(row);
     let at = travel_words().x;
@@ -175,31 +157,28 @@ fn carry(@builtin(position) position: vec4f) -> Output {
 }
 
 @fragment
-fn freeze(@builtin(position) position: vec4f) -> Output {
+fn freeze(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let row = row_of(position).x;
     shown(row);
     if row < mark.held { freeze_row(row); }
     return output();
 }
 
-// Eight fitted domains per invocation. Reduction output is separate from the row registers,
-// so pointer-dependent domains see the same state even after another domain has been evaluated.
+// Two fitted domains per invocation: domain `state_step.word / 2` and the next. Reduction output
+// is separate from the row registers, so pointer-dependent domains see the same state even after
+// another domain has been evaluated.
 @fragment
-fn reduce(@builtin(position) position: vec4f) -> Output {
+fn reduce(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let row = row_of(position).x;
-    var ranges: array<vec4u, 4>;
-    if row < live() {
-        load_row(row, false);
-        for (var k = 0u; k < 2u; k++) {
-            let domain = state_step.word / 2u + k;
-            if domain < mark.reductions {
-                let range = mark.ranges + 2u * (mark.channels + domain);
-                let reduced = run(row, program(range), program(range + 1u));
-                ranges[k / 2u][2u * (k % 2u)] = reduced.range.x;
-                ranges[k / 2u][2u * (k % 2u) + 1u] = reduced.range.y;
-            }
-        }
-    }
-    @if(narrow) { return Output(ranges[0], ranges[1]); }
-    @else { return Output(ranges[0], ranges[1], ranges[2], ranges[3]); }
+    if row >= live() { return vec4u(0u); }
+    load_row(row, false);
+    let first = state_step.word / 2u;
+    return vec4u(domain_range(row, first), domain_range(row, first + 1u));
+}
+
+// The range `row` gives fitted domain `domain`, or nothing past the mark's last.
+fn domain_range(row: u32, domain: u32) -> vec2u {
+    if domain >= mark.reductions { return vec2u(0u); }
+    let range = mark.ranges + 2u * (mark.channels + domain);
+    return k_run(row, program(range), program(range + 1u)).range;
 }

@@ -124,7 +124,7 @@ fn render(
             value: u32::from(input.measured),
             size: [0; 2],
         },
-        outputs: &[output],
+        output,
         words,
     });
 }

@@ -556,7 +556,8 @@ let restored = Data::read(&saved, Reading::default()).await?;
 `Data::read` and `Patch::read` take a `Reading`: the dataset's name, the base its slices are
 relative to, and the `resource::Fetch` that fetches them. Every rendering `Host` is also a `Fetch`.
 Enable `gpu` for scenes, views, and wgpu rendering. `native` adds system fonts, jobs, files, and
-Windows H.264, and `web` adds browser integration for the WASM target.
+Windows H.264, and `web` adds browser integration for the WASM target. `wgsl` adds a WGSL compiler
+to the browser build, for custom markers without the npm package's translator.
 
 ### Share an existing device
 

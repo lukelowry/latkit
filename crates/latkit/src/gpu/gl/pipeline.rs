@@ -8,20 +8,64 @@ use wgpu::custom::{
     DispatchBindGroupLayout, RenderPipelineInterface, ShaderCompilationInfoFuture, ShaderModuleInterface,
 };
 
-#[derive(Debug)]
-pub(super) struct Shader {
-    module: Result<(naga::Module, naga::valid::ModuleInfo), String>,
-    sources: RefCell<HashMap<SourceKey, Source>>,
+/// A shader stage of a WebGL2 program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Stage {
+    Vertex,
+    Fragment,
 }
 
+/// A shader module: GLSL ES 3.00 for one entry point, passed through as is, or with the `wgsl`
+/// feature, a WGSL module translated for each entry point and constants a pipeline uses.
+#[derive(Debug)]
+pub(super) enum Shader {
+    Glsl {
+        entry: String,
+        source: Source,
+    },
+    #[cfg(feature = "wgsl")]
+    Wgsl {
+        module: Box<Result<(naga::Module, naga::valid::ModuleInfo), String>>,
+        sources: RefCell<HashMap<SourceKey, Source>>,
+    },
+}
+
+#[cfg(feature = "wgsl")]
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct SourceKey {
-    stage: naga::ShaderStage,
+pub(super) struct SourceKey {
+    stage: Stage,
     entry: String,
     constants: Vec<(String, u64)>,
 }
+
 impl Shader {
-    pub(super) fn new(module: Result<naga::Module, String>) -> Self {
+    /// The GLSL of entry point `entry`, with its bindings named in its header (see
+    /// `src/gpu/glsl.rs`).
+    pub(super) fn glsl(entry: String, text: &str) -> Self {
+        let slot =
+            |words: &[&str]| -> Option<Slot> { Some((words.first()?.parse().ok()?, words.get(1)?.parse().ok()?)) };
+        let bindings = text
+            .lines()
+            .skip(1)
+            .map_while(|line| line.strip_prefix("//@"))
+            .filter_map(|line| {
+                let words: Vec<&str> = line.split(' ').collect();
+                match *words.first()? {
+                    "uniform" => Some(Reflected::Uniform(words.get(1)?.to_string(), slot(&words[2..])?)),
+                    "texture" => Some(Reflected::Texture(
+                        words.get(1)?.to_string(),
+                        slot(&words[2..])?,
+                        words.get(4..).and_then(slot),
+                    )),
+                    _ => None,
+                }
+            })
+            .collect();
+        Self::Glsl { entry, source: Source { text: text.into(), bindings, layout: Vec::new() } }
+    }
+
+    #[cfg(feature = "wgsl")]
+    pub(super) fn wgsl(module: Result<naga::Module, String>) -> Self {
         let module = module.and_then(|module| {
             let info =
                 naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
@@ -29,22 +73,24 @@ impl Shader {
                     .map_err(|error| error.to_string())?;
             Ok((module, info))
         });
-        Self { module, sources: RefCell::default() }
+        Self::Wgsl { module: Box::new(module), sources: RefCell::default() }
     }
 
     pub(super) fn error(&self) -> Option<&str> {
-        self.module.as_ref().err().map(String::as_str)
+        match self {
+            Self::Glsl { .. } => None,
+            #[cfg(feature = "wgsl")]
+            Self::Wgsl { module, .. } => (**module).as_ref().err().map(String::as_str),
+        }
     }
 }
 
 impl ShaderModuleInterface for Shader {
     fn get_compilation_info(&self) -> std::pin::Pin<Box<dyn ShaderCompilationInfoFuture>> {
         let messages = self
-            .module
-            .as_ref()
-            .err()
+            .error()
             .map(|message| wgpu::CompilationMessage {
-                message: message.clone(),
+                message: message.to_owned(),
                 message_type: wgpu::CompilationMessageType::Error,
                 location: None,
             })
@@ -74,7 +120,7 @@ impl RenderPipelineInterface for Pipeline {
 pub(super) struct Program {
     pub(super) gl: Gl,
     pub(super) raw: WebGlProgram,
-    shaders: Vec<Rc<Stage>>,
+    shaders: Vec<Rc<Compiled>>,
     ready: OnceCell<Result<(), String>>,
     checking: Cell<bool>,
     waiters: RefCell<Vec<std::task::Waker>>,
@@ -100,16 +146,17 @@ pub(super) struct Source {
 }
 
 #[derive(Debug)]
-pub(super) struct Stage {
+/// A compiled WebGL shader.
+pub(super) struct Compiled {
     gl: Gl,
     raw: WebGlShader,
 }
-impl Drop for Stage {
+impl Drop for Compiled {
     fn drop(&mut self) {
         self.gl.delete_shader(Some(&self.raw));
     }
 }
-pub(super) type Stages = HashMap<(u32, Rc<str>), Rc<Stage>>;
+pub(super) type Stages = HashMap<(u32, Rc<str>), Rc<Compiled>>;
 
 impl Program {
     pub(super) fn new(gl: &Gl, sources: &[Source], stages: &mut Stages) -> Result<Self, String> {
@@ -124,7 +171,7 @@ impl Program {
                 let shader = gl.create_shader(kind).ok_or("cannot allocate a WebGL shader")?;
                 gl.shader_source(&shader, &source.text);
                 gl.compile_shader(&shader);
-                let shader = Rc::new(Stage { gl: gl.clone(), raw: shader });
+                let shader = Rc::new(Compiled { gl: gl.clone(), raw: shader });
                 stages.insert(key, shader.clone());
                 shader
             };
@@ -241,16 +288,50 @@ impl Drop for Program {
     }
 }
 
+/// The GLSL of `shader`'s entry point `name` for `stage`, specialized with `constants`. GLSL passed
+/// through takes no constants.
 pub(super) fn glsl(
     shader: &wgpu::ShaderModule,
     name: Option<&str>,
-    stage: naga::ShaderStage,
+    stage: Stage,
     constants: &[(&str, f64)],
 ) -> Result<Source, String> {
     let shader = shader.as_custom::<Shader>().ok_or("shader belongs to another backend")?;
-    let (module, info) = shader.module.as_ref().map_err(Clone::clone)?;
-    let mut matching =
-        module.entry_points.iter().filter(|entry| entry.stage == stage && name.is_none_or(|name| entry.name == name));
+    #[cfg(not(feature = "wgsl"))]
+    let _ = stage;
+    match shader {
+        Shader::Glsl { entry, source } => {
+            if name.is_some_and(|name| name != entry) {
+                return Err(format!("the GLSL module's entry point is {entry}, not {}", name.unwrap_or_default()));
+            }
+            if !constants.is_empty() {
+                return Err("a GLSL module takes no pipeline constants".into());
+            }
+            Ok(source.clone())
+        }
+        #[cfg(feature = "wgsl")]
+        Shader::Wgsl { module, sources } => translated(module, sources, name, stage, constants),
+    }
+}
+
+/// The GLSL of a WGSL module's entry point, translated on first use.
+#[cfg(feature = "wgsl")]
+fn translated(
+    module: &Result<(naga::Module, naga::valid::ModuleInfo), String>,
+    sources: &RefCell<HashMap<SourceKey, Source>>,
+    name: Option<&str>,
+    stage: Stage,
+    constants: &[(&str, f64)],
+) -> Result<Source, String> {
+    let (module, info) = module.as_ref().map_err(Clone::clone)?;
+    let stage_of = |stage: Stage| match stage {
+        Stage::Vertex => naga::ShaderStage::Vertex,
+        Stage::Fragment => naga::ShaderStage::Fragment,
+    };
+    let mut matching = module
+        .entry_points
+        .iter()
+        .filter(|entry| entry.stage == stage_of(stage) && name.is_none_or(|name| entry.name == name));
     let entry = matching.next().ok_or("no matching shader entry point")?;
     if matching.next().is_some() {
         return Err("an entry point must be specified when a shader has more than one for this stage".into());
@@ -261,9 +342,10 @@ pub(super) fn glsl(
     let constants: std::collections::BTreeMap<_, _> =
         constants.iter().map(|(k, v)| ((*k).to_owned(), v.to_bits())).collect();
     let key = SourceKey { stage, entry: entry.clone(), constants: constants.into_iter().collect() };
-    if let Some(source) = shader.sources.borrow().get(&key) {
+    if let Some(source) = sources.borrow().get(&key) {
         return Ok(source.clone());
     }
+    let stage = stage_of(stage);
     let specialized;
     let (module, info) = if module.overrides.is_empty() && key.constants.is_empty() {
         (module, info)
@@ -306,7 +388,7 @@ pub(super) fn glsl(
         bindings.push(Reflected::Texture(name, slot(texture.texture), texture.sampler.map(slot)));
     }
     let source = Source { text: output.into(), bindings, layout };
-    shader.sources.borrow_mut().insert(key, source.clone());
+    sources.borrow_mut().insert(key, source.clone());
     Ok(source)
 }
 

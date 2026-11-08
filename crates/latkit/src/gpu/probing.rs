@@ -62,7 +62,7 @@ impl Probing {
             input,
             input.variant.entry("probe"),
             [&self.winner, &self.details],
-            &[&self.first],
+            &self.first,
             WordStep { value: mark, ..step(count) },
             count * 4,
         );
@@ -72,7 +72,7 @@ impl Probing {
             input,
             input.variant.entry("probe"),
             [&self.winners, &self.details],
-            &[&self.packed],
+            &self.packed,
             WordStep { source: mark * 4, other: 1, ..step(count) },
             8,
         );
@@ -86,7 +86,7 @@ impl Probing {
             input,
             input.variant.entry("finish"),
             [&self.winner, &self.details],
-            &[input.output],
+            input.output,
             step(marks),
             12,
         );
@@ -98,7 +98,7 @@ impl Probing {
             input,
             input.variant.entry("probe"),
             [&self.winner, &self.details],
-            &[input.output],
+            input.output,
             WordStep { destination: 8, other: 4, ..step(1) },
             4,
         );
@@ -121,7 +121,7 @@ impl Probing {
             input,
             input.variant.entry("probe"),
             [&self.winner, &self.details],
-            &[&self.first],
+            &self.first,
             WordStep { other: 2, ..step(count) },
             count * 4,
         );
@@ -132,7 +132,7 @@ impl Probing {
             input,
             input.variant.entry("probe"),
             [&self.prefix, &self.details],
-            &[&self.packed],
+            &self.packed,
             WordStep { other: 3, value: room, ..step(count) },
             4 + room * 8,
         );
@@ -154,7 +154,7 @@ impl Probing {
             input,
             input.variant.entry("probe"),
             [&self.winner, &self.details],
-            &[&self.first],
+            &self.first,
             WordStep { other: 5, ..step(count) },
             count * 4,
         );
@@ -203,7 +203,7 @@ fn geometry(
     input: &ProbeInputs<'_>,
     variant: Variant,
     [source, details]: [&Words; 2],
-    outputs: &[&Words],
+    output: &Words,
     step: WordStep,
     words: u32,
 ) {
@@ -213,7 +213,7 @@ fn geometry(
         bindings: &bindings(input, source, details),
         uniform: 19,
         step,
-        outputs,
+        output,
         words,
     });
 }
@@ -224,7 +224,7 @@ fn pack(raster: &mut Raster<'_>, entry: &'static str, first: &Words, output: &Wo
         uniform: 19,
         step,
         bindings: &[wgpu::BindGroupEntry { binding: 18, resource: first.binding() }],
-        outputs: &[output],
+        output,
         words,
     });
 }

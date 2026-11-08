@@ -1,7 +1,10 @@
-//! Bounded row evaluation. A fragment evaluates one row into integer planes; a second pass
-//! packs those planes into the existing arena layout. Callers copy just the changed pages.
+//! Bounded row evaluation. A fragment evaluates one row into an integer plane of four of its words,
+//! one draw per plane; a second pass packs those planes into the existing arena layout. Callers
+//! copy just the changed pages.
 
 use std::sync::Arc;
+
+use bytemuck::Zeroable as _;
 
 use super::pipelines::Variant;
 use super::raster::Raster;
@@ -40,39 +43,37 @@ impl State {
         }
     }
 
-    pub(crate) fn shader(device: &wgpu::Device) -> Shader {
-        if device.limits().max_color_attachment_bytes_per_sample >= 64 { Shader::State } else { Shader::StateNarrow }
-    }
-
-    /// Evaluates a batch using `entry`, returning packed row words. This only records commands;
-    /// values stay on the GPU and the caller owns submission and sparse destination copies.
+    /// Evaluates a batch using `entry`, returning packed row words. With a kernel, the pass writing
+    /// plane `i` evaluates the channels `planes[i]` names, or every channel past the list's end.
+    /// This only records commands; values stay on the GPU and the caller owns submission and sparse
+    /// destination copies.
     pub(crate) fn record<'s>(
         &'s mut self,
         raster: &mut Raster<'_>,
         input: &Inputs<'_>,
         entry: &'static str,
-        kernel: Option<&Arc<str>>,
+        kernel: Option<(&Arc<str>, &[u32])>,
         mut step: StateStep,
         width: u32,
     ) -> &'s Words {
         assert!(step.rows > 0 && step.rows <= BATCH && width <= STATE_WORDS);
-        let shader = Self::shader(raster.device);
+        let shader = Shader::State;
         let reads = if matches!(entry, "evaluate" | "reduce") { input.reads } else { super::pipelines::Reads::ALL };
         let variant = Variant::state(shader, entry, reads);
-        let pipeline = if let Some(kernel) = kernel {
-            raster.pipelines.kernel(raster.device, kernel, variant)
+        let (pipeline, channels) = if let Some((kernel, channels)) = kernel {
+            (raster.pipelines.kernel(raster.device, kernel, variant), channels)
         } else {
-            raster.pipelines.render(raster.device, variant)
+            (raster.pipelines.render(raster.device, variant), &[][..])
         };
-        let attachments = shader.source().targets;
-        let used = (width as usize).div_ceil(attachments * 4) * attachments;
+        let used = width.div_ceil(4) as usize;
         for plane in &mut self.planes[..used] {
             plane.ensure(raster.device, u64::from(step.rows) * 4);
         }
         let layout = raster.pipelines.pass_layout(raster.device, shader);
         let base = step.word;
-        for first in (0..used).step_by(attachments) {
-            step.word = base + first as u32 * 4;
+        for plane in 0..used {
+            step.word = base + plane as u32 * 4;
+            step.channels = channels.get(plane).copied().unwrap_or(u32::MAX);
             let uniform = raster.queue.uniform(raster.device, bytemuck::bytes_of(&step));
             let entries: Vec<_> = shader
                 .source()
@@ -95,12 +96,10 @@ impl State {
                 layout: &layout,
                 entries: &entries,
             });
-            let views: Vec<_> =
-                self.planes[first..first + attachments].iter().map(|plane| plane.attachment(0)).collect();
-            let targets: Vec<_> = views.iter().map(|view| Some(target(view))).collect();
+            let view = self.planes[plane].attachment(0);
             let mut pass = raster.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(entry),
-                color_attachments: &targets,
+                color_attachments: &[Some(target(&view))],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -146,8 +145,14 @@ impl State {
                     raster,
                     input,
                     "reduce",
-                    Some(kernel),
-                    StateStep { first, rows: (rows - first).min(BATCH), block: super::shaders::NONE, word: domain * 2 },
+                    Some((kernel, &[])),
+                    StateStep {
+                        first,
+                        rows: (rows - first).min(BATCH),
+                        block: super::shaders::NONE,
+                        word: domain * 2,
+                        ..StateStep::zeroed()
+                    },
                     4,
                 );
                 self.maximum.record(
@@ -221,7 +226,6 @@ mod tests {
     use super::super::{kernel, readback::Readback, shaders as w};
     use super::*;
     use crate::expr::compile::{Channel, Program, Reads};
-    use bytemuck::Zeroable as _;
 
     #[test]
     fn generated_channels_preserve_bits_sparse_rows_and_wide_extras() {
@@ -258,6 +262,7 @@ mod tests {
             });
         }
         let kernel = kernel::source(&program, width);
+        let planes = kernel::plane_channels(&program, width);
         let mut words = vec![0u32; 40];
         for page in 0..3 {
             words[page] = page as u32 * w::PAGE_ROWS * width;
@@ -339,8 +344,8 @@ mod tests {
             &mut raster,
             &input,
             "evaluate",
-            Some(&kernel),
-            StateStep { first: 0, rows, block: 0, word: 0 },
+            Some((&kernel, &planes)),
+            StateStep { first: 0, rows, block: 0, word: 0, ..StateStep::zeroed() },
             width,
         );
         let read = Readback::words(

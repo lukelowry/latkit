@@ -22,6 +22,9 @@ default = ["gpu"]
 gpu = ["dep:wgpu", "dep:glam", "dep:web-time", "dep:wesl", "dep:naga"]
 native = ["gpu", "dep:cosmic-text", "dep:windows", "dep:windows-core"]
 web = ["gpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys", "dep:wgpu-types", "dep:raw-window-handle"]
+# A WGSL compiler in the browser build: the WebGL2 device takes WGSL shader modules, and custom
+# markers translate in the page, without the npm package's translator. It adds about 1 MB.
+wgsl = ["web", "wgpu/wgsl"]
 
 [dependencies]
 thiserror.workspace = true
@@ -39,12 +42,14 @@ flate2.workspace = true
 image-webp.workspace = true
 jpeg-encoder.workspace = true
 png.workspace = true
-wgpu = { workspace = true, optional = true }
-naga = { workspace = true, optional = true }
 glam = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }
+# Natively, WGSL modules are parsed and pruned per entry point. The browser build links none of it
+# unless the `wgsl` feature uses it.
+naga = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["dx12", "metal", "vulkan", "gles", "wgsl", "naga-ir"] }
 cosmic-text = { workspace = true, optional = true }
 
 # Native video: H.264 from the platform's encoder.
@@ -54,6 +59,7 @@ windows-core = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { workspace = true, optional = true, features = ["custom", "web"] }
+naga = { workspace = true, optional = true, features = ["glsl-out"] }
 wgpu-types = { version = "30", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 wasm-bindgen = { workspace = true, optional = true }
@@ -87,6 +93,7 @@ web-sys = { workspace = true, optional = true, features = [
     "RequestInit",
     "ResizeObserver",
     "Response",
+    "Screen",
     "TextMetrics",
     "WheelEvent",
     "Window",
@@ -107,7 +114,8 @@ web-sys = { workspace = true, optional = true, features = [
 
 [build-dependencies]
 wesl = { workspace = true, optional = true }
-naga = { workspace = true, optional = true, features = ["wgsl-out"] }
+naga = { workspace = true, optional = true, features = ["wgsl-out", "glsl-out"] }
+flate2.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

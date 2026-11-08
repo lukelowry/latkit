@@ -77,15 +77,18 @@ pub(crate) fn portable(source: &str) -> String {
 /// The separator between a linked shader's top-level declarations.
 pub(crate) const SEPARATOR: &str = "\n\n";
 
-/// Replaces the two evaluator functions with a program's straight-line code. This operates on
-/// linked, validated WGSL declarations, before creating a module on either backend.
+/// The declarations of the evaluation shader a WGSL kernel replaces: its register count and the
+/// functions it writes for a program.
+pub(crate) const KERNEL: [&str; 5] =
+    ["const ROW_WORDS:", "fn k_load_words(", "fn k_channels(", "fn k_run(", "fn k_output("];
+
+/// Replaces the evaluation shader's declarations that `kernel` declares (see [`KERNEL`]) with
+/// `kernel`'s straight-line code. This operates on linked, validated WGSL declarations, before
+/// creating a module.
 pub(crate) fn evaluator(source: &str, kernel: &str) -> String {
     let mut out = String::with_capacity(source.len() + kernel.len());
     for piece in source.split(SEPARATOR) {
-        if piece.starts_with("fn run(") || piece.starts_with("fn channels(") || piece.starts_with("const ROW_WORDS:") {
-            continue;
-        }
-        if piece.starts_with("fn load_words(") && kernel.contains("fn load_words(") {
+        if KERNEL.iter().any(|declares| piece.starts_with(declares) && kernel.contains(declares)) {
             continue;
         }
         if !out.is_empty() {

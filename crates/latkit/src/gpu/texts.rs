@@ -55,19 +55,22 @@ impl Texts {
     ) {
         self.metadata.ensure(raster.device, u64::from(rows.max(1)) * 4);
         self.positions.ensure(raster.device, u64::from(rows.max(1)) * 4);
-        raster.render(Render {
-            variant,
-            shared: Some(shared(input)),
-            uniform: 19,
-            step: step(rows),
-            bindings: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.pages.binding() },
-                wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
-                wgpu::BindGroupEntry { binding: 13, resource: labels.binding() },
-            ],
-            outputs: &[&self.metadata, &self.positions],
-            words: rows * 4,
-        });
+        // The metadata (value 0), then the corners of the labels' boxes (value 1).
+        for (value, output) in [(0, &self.metadata), (1, &self.positions)] {
+            raster.render(Render {
+                variant,
+                shared: Some(shared(input)),
+                uniform: 19,
+                step: WordStep { value, ..step(rows) },
+                bindings: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: input.pages.binding() },
+                    wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
+                    wgpu::BindGroupEntry { binding: 13, resource: labels.binding() },
+                ],
+                output,
+                words: rows * 4,
+            });
+        }
         self.metadata.copy_to(raster.encoder, 0, labels, destination[0], rows * 4);
         self.positions.copy_to(raster.encoder, 0, labels, destination[1], rows * 4);
     }
@@ -169,7 +172,7 @@ fn render(
             wgpu::BindGroupEntry { binding: 18, resource: source.binding() },
             wgpu::BindGroupEntry { binding: 20, resource: prefix.binding() },
         ],
-        outputs: &[output],
+        output,
         words,
     });
 }

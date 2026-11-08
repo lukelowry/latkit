@@ -73,6 +73,19 @@ pub fn set_jobs(run: js_sys::Function) {
     latkit::host::Browser::set_jobs(run);
 }
 
+/// Translates custom markers' WGSL with `translate`, the package's translator:
+/// `(wgsl: string) => Promise<string>`, resolving to a JSON object of each entry point's GLSL.
+#[wasm_bindgen(js_name = setTranslator)]
+pub fn set_translator(translate: js_sys::Function) {
+    latkit::host::Browser::set_translator(translate);
+}
+
+/// Hands over the shaders the build translated, the bytes of the package's `latkit/shaders` asset.
+#[wasm_bindgen(js_name = setShaders)]
+pub fn set_shaders(bytes: Vec<u8>) -> Result<(), Error> {
+    latkit::host::Browser::set_shaders(bytes).map_err(Error::from)
+}
+
 /// Runs a job a view handed to the page, in a worker, and returns the result's bytes.
 #[wasm_bindgen]
 pub fn job(bytes: &[u8]) -> Vec<u8> {

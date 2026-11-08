@@ -1,7 +1,9 @@
 // Extents for fitting: the least and greatest x, y, and z of each mark's shown instances, in
 // position units, and the widest margin its markers keep in CSS pixels, as order-preserving words.
 // It uses the same geometry as the draws: a vertex's box, a stroke's points, and an area's triangle
-// corners. While a fit measures chosen rows, only rows marked `FIT` count.
+// corners. While a fit measures chosen rows, only rows marked `FIT` count. A record is eight words,
+// written by two draws of one color target each: `params.value` 0 writes the least x, y, and z and
+// the greatest x, and 1 the greatest y and z and the margin.
 
 import package::lib::types::{
     NONE, FIT, PATH_ENDS, PATH_BENDS, PATH_TRACE, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS, OWN_HEIGHT, WordStep, SCAN_BLOCK,
@@ -22,10 +24,12 @@ import package::lib::words::{fullscreen, word_index};
 var<private> least: vec3u;
 var<private> most: vec3u;
 var<private> margin: u32;
-struct Output { @location(0) a: vec4u, @location(1) b: vec4u }
 @vertex
 fn vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return fullscreen(i); }
-fn output() -> Output { return Output(vec4u(least, most.x), vec4u(most.yz, margin, 0u)); }
+fn output() -> vec4u {
+    if params.value == 0u { return vec4u(least, most.x); }
+    return vec4u(most.yz, margin, 0u);
+}
 
 fn extend(p: vec3f) {
     let order = vec3u(ordered(p.x), ordered(p.y), ordered(p.z));
@@ -113,7 +117,7 @@ fn area(i: u32) {
 }
 
 @fragment
-fn points(@builtin(position) position: vec4f) -> Output {
+fn points(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let record = (word_index(position, params.layer) - params.destination) / 4u;
     let records = (params.count + SCAN_BLOCK - 1u) / SCAN_BLOCK;
     if record >= records { return output(); }
@@ -122,7 +126,7 @@ fn points(@builtin(position) position: vec4f) -> Output {
 }
 
 @fragment
-fn strokes(@builtin(position) position: vec4f) -> Output {
+fn strokes(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let record = (word_index(position, params.layer) - params.destination) / 4u;
     let records = (params.count + SCAN_BLOCK - 1u) / SCAN_BLOCK;
     if record >= records { return output(); }
@@ -131,7 +135,7 @@ fn strokes(@builtin(position) position: vec4f) -> Output {
 }
 
 @fragment
-fn areas(@builtin(position) position: vec4f) -> Output {
+fn areas(@builtin(position) position: vec4f) -> @location(0) vec4u {
     let record = (word_index(position, params.layer) - params.destination) / 4u;
     let records = (params.count + SCAN_BLOCK - 1u) / SCAN_BLOCK;
     if record >= records { return output(); }

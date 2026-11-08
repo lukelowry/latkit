@@ -649,6 +649,10 @@ impl Shown {
         let Some(compiled) = &self.compiled else { return };
         let start = out.len();
         let at = |out: &Vec<u32>| base + (out.len() - start) as u32;
+        // Column descriptors start at a whole texel, so a shader reads each in two fetches.
+        while !at(out).is_multiple_of(4) {
+            out.push(0);
+        }
         let columns = at(out);
         self.tables.pack(columns, out);
         let ranges = at(out);

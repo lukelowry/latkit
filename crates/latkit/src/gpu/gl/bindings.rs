@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 pub(super) type Entries = Vec<(u32, wgpu::BindGroupLayoutEntry)>;
 
+#[cfg(feature = "wgsl")]
 pub(super) fn reflect(
     module: &naga::Module,
     reflection: &naga::back::glsl::ReflectionInfo,

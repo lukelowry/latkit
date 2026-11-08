@@ -172,11 +172,7 @@ impl Variant {
             entry,
             primitive: 0,
             path: PATH_ENDS,
-            projection: if matches!(shader, Shader::State | Shader::StateNarrow) {
-                Projection::Dynamic
-            } else {
-                Projection::Planar
-            },
+            projection: if matches!(shader, Shader::State) { Projection::Dynamic } else { Projection::Planar },
             painted: true,
             marker: 0,
             reads: Reads::ALL,
@@ -209,11 +205,6 @@ impl Variant {
 
     pub(crate) fn state(shader: Shader, entry: &'static str, reads: Reads) -> Variant {
         Variant { reads, ..Variant::raster(shader, entry) }
-    }
-
-    pub(crate) fn state_kind(mut self, shader: Shader) -> Variant {
-        self.shader = shader;
-        self
     }
 
     /// This variant specialized for marks of `primitive` (a `POINTS`, `STROKES`, or `TRIANGLES`
@@ -348,18 +339,30 @@ impl Specialized {
         }
     }
 
-    /// The module's WGSL, with `appended` after the shader's own.
+    /// The module's WGSL, with `appended` after the shader's own: a custom marker's function, or for
+    /// the channel shader, a kernel replacing the declarations it writes.
     fn wgsl(&self, appended: &str) -> String {
         let mut wgsl = self.shader.source().wgsl(|name| self.value(name));
-        if matches!(self.shader, Shader::State | Shader::StateNarrow) {
-            let kernel = if appended.is_empty() { super::kernel::EMPTY } else { appended };
-            return super::specialize::portable(&super::specialize::evaluator(&wgsl, kernel));
+        if appended.is_empty() {
+            return wgsl;
         }
-        if !appended.is_empty() {
-            wgsl.push('\n');
-            wgsl.push_str(appended);
+        if self.shader == Shader::State {
+            return super::specialize::portable(&super::specialize::evaluator(&wgsl, appended));
         }
+        wgsl.push('\n');
+        wgsl.push_str(appended);
         super::specialize::portable(&wgsl)
+    }
+
+    /// The key of its entry point `entry`'s GLSL in the browser's store. A kernel's entries are
+    /// translated for the kernel's register count `rows`.
+    #[cfg(target_arch = "wasm32")]
+    fn key(&self, entry: &str, rows: Option<u32>) -> String {
+        let values = self.shader.source().values(|name| self.value(name));
+        match rows {
+            Some(rows) => format!("{:?} {entry} {values:?} rows {rows}", self.shader),
+            None => format!("{:?} {entry} {values:?}", self.shader),
+        }
     }
 }
 
@@ -444,8 +447,21 @@ pub(crate) struct Pipelines {
     pub(crate) empty: wgpu::BindGroup,
     empty_layout: wgpu::BindGroupLayout,
     pass_layouts: HashMap<Vec<wgpu::BindGroupLayoutEntry>, wgpu::BindGroupLayout>,
+    #[cfg(not(target_arch = "wasm32"))]
     modules: HashMap<Specialized, Modules>,
+    #[cfg(not(target_arch = "wasm32"))]
     application_modules: HashMap<(Arc<str>, Specialized), Modules>,
+    /// Each stage's module in the browser: the specialization's entry point, with the kernel or
+    /// custom marker it was built with.
+    #[cfg(target_arch = "wasm32")]
+    stages: HashMap<(Option<Arc<str>>, Specialized, &'static str), wgpu::ShaderModule>,
+    /// Each custom marker shader the page translated, by its marker and specialization: each entry
+    /// point's GLSL, or why it does not translate. `None` while it translates.
+    #[cfg(target_arch = "wasm32")]
+    translations: HashMap<(Arc<str>, Specialized), Option<Translation>>,
+    /// Custom marker pipelines waiting for their shader's translation, at their urgency.
+    #[cfg(target_arch = "wasm32")]
+    translating: Vec<(Urgency, Asked)>,
     kernels: HashMap<(Arc<str>, Variant), wgpu::RenderPipeline>,
     render: HashMap<Variant, wgpu::RenderPipeline>,
     custom: HashMap<(Arc<str>, Variant), Custom>,
@@ -538,8 +554,16 @@ impl Pipelines {
             empty,
             empty_layout,
             pass_layouts: HashMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             modules: HashMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             application_modules: HashMap::new(),
+            #[cfg(target_arch = "wasm32")]
+            stages: HashMap::new(),
+            #[cfg(target_arch = "wasm32")]
+            translations: HashMap::new(),
+            #[cfg(target_arch = "wasm32")]
+            translating: Vec::new(),
             kernels: HashMap::new(),
             render: HashMap::new(),
             custom: HashMap::new(),
@@ -662,6 +686,24 @@ impl Pipelines {
             }
             let (_, need) = self.queue.remove(0);
             let ahead = self.asked[&need].clone();
+            // A custom marker's shader translates first, which can take a task or more.
+            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            if let Asked::Custom(source, variant) = &need {
+                match self.translation(source, variant.specialized()) {
+                    Some(Ok(())) => {}
+                    Some(Err(message)) => {
+                        if ahead.refused.set(message).is_ok() {
+                            self.refusals.fetch_add(1, Ordering::AcqRel);
+                        }
+                        ahead.land(&self.landed);
+                        continue;
+                    }
+                    None => {
+                        self.translating.push((urgency, need));
+                        continue;
+                    }
+                }
+            }
             #[cfg(all(feature = "web", target_arch = "wasm32"))]
             {
                 self.started.push((urgency, ahead.clone()));
@@ -789,6 +831,7 @@ impl Pipelines {
 
     /// Parse each specialization once, then share its individual stages across pipeline targets
     /// and depth modes. Application markers and expression kernels follow the same path.
+    #[cfg(not(target_arch = "wasm32"))]
     fn program(&mut self, device: &wgpu::Device, variant: Variant, appended: Option<&Arc<str>>) -> Program {
         let specialized = variant.specialized();
         let modules = match appended {
@@ -803,6 +846,111 @@ impl Pipelines {
             vertex: modules.entry(device, label, "vertex"),
             fragment: modules.entry(device, label, variant.fragment()),
         }
+    }
+
+    /// In the browser, each stage is GLSL translated ahead of time and passed to the WebGL2 device
+    /// as is: latkit's shaders by the build, the channel shader's kernel entries completed by a
+    /// program's kernel, and a custom marker's shader by the page's translator. Stages are shared
+    /// across pipeline targets and depth modes.
+    #[cfg(target_arch = "wasm32")]
+    #[allow(unsafe_code, reason = "wgpu passes shader modules through unchecked")]
+    fn program(&mut self, device: &wgpu::Device, variant: Variant, appended: Option<&Arc<str>>) -> Program {
+        let specialized = variant.specialized();
+        let mut stage = |entry: &'static str| {
+            let key = (appended.cloned(), specialized, entry);
+            if let Some(module) = self.stages.get(&key) {
+                return module.clone();
+            }
+            let glsl = self.glsl(specialized, appended, entry);
+            let label = specialized.shader.source().label;
+            // SAFETY: the GLSL is ES 3.00 that the WebGL2 device validates itself when it links it.
+            let module = unsafe {
+                device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
+                    label: Some(label),
+                    entry_points: std::borrow::Cow::Owned(vec![wgpu::PassthroughShaderEntryPoint {
+                        name: entry.into(),
+                        workgroup_size: (0, 0, 0),
+                    }]),
+                    glsl: Some(glsl.into()),
+                    ..Default::default()
+                })
+            };
+            self.stages.insert(key, module.clone());
+            module
+        };
+        Program { vertex: stage("vertex"), fragment: stage(variant.fragment()) }
+    }
+
+    /// The GLSL of `specialized`'s entry `entry`, built with `appended`: a kernel, or a custom
+    /// marker whose shader translated.
+    #[cfg(target_arch = "wasm32")]
+    fn glsl(&self, specialized: Specialized, appended: Option<&Arc<str>>, entry: &str) -> String {
+        let stored = |key: String| {
+            super::store::text(&key).unwrap_or_else(|| panic!("the build translated no shader for {key}"))
+        };
+        match appended {
+            Some(kernel) if specialized.shader == Shader::State && entry != "vertex" => {
+                let rows = super::kernel::glsl_row_words(kernel).expect("a GLSL kernel names its registers");
+                super::kernel::linked(&stored(specialized.key(entry, Some(rows))), kernel)
+            }
+            Some(marker) if specialized.shader != Shader::State => {
+                let translated = self.translations.get(&(marker.clone(), specialized));
+                match translated.and_then(Option::as_ref) {
+                    Some(Ok(entries)) => entries.get(entry).cloned().unwrap_or_default(),
+                    _ => String::new(),
+                }
+            }
+            _ => stored(specialized.key(entry, None)),
+        }
+    }
+
+    /// Whether the shader of custom marker `source` specialized as `specialized` translated: `Ok`
+    /// once it did, or why it did not, and `None` while it translates. The first call starts it.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    fn translation(&mut self, source: &Arc<str>, specialized: Specialized) -> Option<std::result::Result<(), String>> {
+        let key = (source.clone(), specialized);
+        if let Some(translated) = self.translations.get(&key) {
+            return translated.as_ref().map(|result| result.as_ref().map(|_| ()).map_err(Clone::clone));
+        }
+        let wgsl = specialized.wgsl(source);
+        #[cfg(feature = "wgsl")]
+        {
+            let translated = translate(&wgsl);
+            self.translations.insert(key, Some(translated.clone()));
+            Some(translated.map(|_| ()))
+        }
+        #[cfg(not(feature = "wgsl"))]
+        {
+            self.translations.insert(key.clone(), None);
+            let pending = crate::host::translate(&wgsl);
+            let weak = self.gpu.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let answer = pending.await;
+                let Some(shared) = weak.upgrade() else { return };
+                let gpu = crate::Gpu(shared);
+                let mut inner = gpu.0.lock();
+                inner
+                    .pipelines
+                    .translated(&key, answer.map_err(|error| error.to_string()).and_then(|json| parse(&json)));
+            });
+            None
+        }
+    }
+
+    /// Keeps a custom marker shader's translation, and queues the pipelines that waited for it.
+    #[cfg(all(feature = "web", target_arch = "wasm32", not(feature = "wgsl")))]
+    fn translated(&mut self, key: &(Arc<str>, Specialized), result: Translation) {
+        self.translations.insert(key.clone(), Some(result));
+        let (ready, waiting) = std::mem::take(&mut self.translating).into_iter().partition(|(_, need)| {
+            matches!(need, Asked::Custom(source, variant) if *source == key.0 && variant.specialized() == key.1)
+        });
+        self.translating = waiting;
+        let ready: Vec<(Urgency, Asked)> = ready;
+        self.queue.extend(ready);
+        crate::order::by_key(&mut self.queue, |(urgency, need)| {
+            crate::order::pair(*urgency as u32, !(need.size().min(u32::MAX as usize) as u32))
+        });
+        self.schedule();
     }
 
     /// A program-specific raster pipeline. Values remain in resources, so only a change to
@@ -921,15 +1069,12 @@ impl Pipelines {
         let (format, samples) = variant.target.expect("a render variant");
         let raster = variant.entry != "vertex";
         let layout = self.pipeline_layout(device, shader);
-        let targets: Vec<_> = (0..shader.source().targets)
-            .map(|_| {
-                Some(wgpu::ColorTargetState {
-                    format,
-                    blend: (!raster).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })
-            })
-            .collect();
+        // Every fragment entry writes one color target (see `check_targets` in the build).
+        let targets = [Some(wgpu::ColorTargetState {
+            format,
+            blend: (!raster).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(&layout),
@@ -968,6 +1113,38 @@ struct Program {
     fragment: wgpu::ShaderModule,
 }
 
+/// A custom marker shader translated to GLSL: each entry point's, by name.
+#[cfg(target_arch = "wasm32")]
+type Translated = HashMap<String, String>;
+
+/// A custom marker shader's translation, or why it does not translate.
+#[cfg(target_arch = "wasm32")]
+type Translation = std::result::Result<Translated, String>;
+
+/// Translates a custom marker shader's `wgsl` in the page, with the `wgsl` feature.
+#[cfg(all(target_arch = "wasm32", feature = "wgsl"))]
+fn translate(wgsl: &str) -> Translation {
+    let module = naga::front::wgsl::parse_str(wgsl).map_err(|error| error.emit_to_string(wgsl))?;
+    module
+        .entry_points
+        .iter()
+        .map(|point| Ok((point.name.clone(), super::glsl::translate(&module, &point.name)?)))
+        .collect()
+}
+
+/// Reads the translator's answer: a JSON object of each entry point's GLSL, or of the `error` that
+/// stopped the translation.
+#[cfg(all(target_arch = "wasm32", not(feature = "wgsl")))]
+fn parse(json: &str) -> Translation {
+    let mut entries: Translated =
+        serde_json::from_str(json).map_err(|error| format!("the translator's answer is not JSON: {error}"))?;
+    match entries.remove("error") {
+        Some(error) => Err(error),
+        None => Ok(entries),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 enum Source {
     Parsed(Box<naga::Module>),
     Invalid(String),
@@ -976,11 +1153,13 @@ enum Source {
 /// Every stage follows one validated path. Keep source parsing shared, but remove functions and
 /// resources reachable only from other stages before driver translation. Invalid application
 /// WGSL still goes through wgpu's ordinary error-scope diagnostics.
+#[cfg(not(target_arch = "wasm32"))]
 struct Modules {
     source: Source,
     entries: HashMap<&'static str, wgpu::ShaderModule>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Modules {
     fn new(source: String) -> Self {
         let source = match naga::front::wgsl::parse_str(&source) {
@@ -1024,8 +1203,8 @@ mod tests {
             Variant::draw(Shader::Backdrop, format, 1),
             Variant::raster(Shader::Probe, "nearest"),
             Variant::raster(Shader::Probe, "describe"),
-            Variant::state(Shader::StateNarrow, "evaluate", Reads::ALL),
-            Variant::state(Shader::StateNarrow, "evaluate", Reads::NONE),
+            Variant::state(Shader::State, "evaluate", Reads::ALL),
+            Variant::state(Shader::State, "evaluate", Reads::NONE),
         ];
         let labels: HashSet<String> = variants.iter().map(|&variant| Asked::Shader(variant).label()).collect();
         assert_eq!(labels.len(), variants.len(), "variants that differ have labels that differ: {labels:?}");
@@ -1038,7 +1217,7 @@ mod tests {
     fn modules_declare_their_values_and_pipelines_pass_no_constants() {
         let wgsl = |variant: Variant| variant.specialized().wgsl("");
         let evaluate =
-            wgsl(Variant::state(Shader::StateNarrow, "evaluate", Reads { joined: true, timed: false, viewed: true }));
+            wgsl(Variant::state(Shader::State, "evaluate", Reads { joined: true, timed: false, viewed: true }));
         for declared in ["const JOINED: bool = true;", "const TIMED: bool = false;", "const VIEWED: bool = true;"] {
             assert!(evaluate.contains(declared), "{declared}");
         }

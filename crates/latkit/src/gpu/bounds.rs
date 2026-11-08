@@ -37,18 +37,21 @@ impl Bounds {
         let records = count.div_ceil(SCAN_BLOCK);
         self.first.ensure(raster.device, u64::from(records) * 4);
         self.last.ensure(raster.device, u64::from(records) * 4);
-        raster.render(Render {
-            variant,
-            shared: Some(Shared { view: input.view, mark: input.mark, offset: input.offset }),
-            bindings: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.pages.binding() },
-                wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
-            ],
-            uniform: 19,
-            step: WordStep { source: 0, other: 0, destination: 0, count, layer: 0, value: 0, size: [0; 2] },
-            outputs: &[&self.first, &self.last],
-            words: records * 4,
-        });
+        // The first four words of each record (value 0), then the last four (value 1).
+        for (value, output) in [(0, &self.first), (1, &self.last)] {
+            raster.render(Render {
+                variant,
+                shared: Some(Shared { view: input.view, mark: input.mark, offset: input.offset }),
+                bindings: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: input.pages.binding() },
+                    wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
+                ],
+                uniform: 19,
+                step: WordStep { source: 0, other: 0, destination: 0, count, layer: 0, value, size: [0; 2] },
+                output,
+                words: records * 4,
+            });
+        }
         self.maximum.record(raster, At::new(&self.first, 0), output, records);
         self.maximum.record(raster, At::new(&self.last, 0), At::new(output.words, output.at + 4), records);
     }

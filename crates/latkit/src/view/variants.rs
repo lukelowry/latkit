@@ -45,16 +45,16 @@ pub(super) const DIGIT_PASSES: [Variant; 2] =
     [Variant::raster(Shader::Order, "histogram"), Variant::raster(Shader::OrderScatter, "scatter")];
 
 /// Eases a mark in transition from its frozen words toward its settled ones.
-pub(super) const EASE: Variant = Variant::raster(Shader::StateNarrow, "ease");
+pub(super) const EASE: Variant = Variant::raster(Shader::State, "ease");
 
 /// Moves comets along their rows at this frame's flow.
-pub(super) const TRAVEL: Variant = Variant::raster(Shader::StateNarrow, "travel");
+pub(super) const TRAVEL: Variant = Variant::raster(Shader::State, "travel");
 
 /// Carries comets' travel over to the rows a transition moved.
-pub(super) const CARRY: Variant = Variant::raster(Shader::StateNarrow, "carry");
+pub(super) const CARRY: Variant = Variant::raster(Shader::State, "carry");
 
 /// Freezes the words a transition eases from.
-pub(super) const GATHER: Variant = Variant::raster(Shader::StateNarrow, "freeze");
+pub(super) const GATHER: Variant = Variant::raster(Shader::State, "freeze");
 
 /// Copies the pages the state passes wrote from their scratch into the arena.
 pub(super) const PAGES: Variant = Variant::raster(Shader::WordsGather, "gather");
@@ -315,11 +315,7 @@ impl View {
         let at = if let Some(at) = self.asked.iter().position(|a| a.target == target && a.input == input) {
             at
         } else {
-            let asking = Asking {
-                target,
-                input,
-                stages: stages(&self.scene, target.0, target.1, crate::gpu::state::State::shader(device)),
-            };
+            let asking = Asking { target, input, stages: stages(&self.scene, target.0, target.1) };
             for stage in Stage::ALL.into_iter().filter(|&stage| stage != Stage::Layers && asking.asks(stage, deep)) {
                 inner.pipelines.queue(asking.stages.of(stage), stage.urgency(input), &self.compile_waker);
             }
@@ -342,7 +338,7 @@ impl View {
     /// known, it reads no joins, samples, or view state.
     fn channels(&self) -> Vec<Asked> {
         let mut channels: Vec<Asked> = Vec::new();
-        let shader = crate::gpu::state::State::shader(&self.gpu.0.device);
+        let shader = Shader::State;
         for shown in &self.marks {
             let Some(compiled) = &shown.compiled else { continue };
             for entry in ["evaluate", "reduce"] {
@@ -399,7 +395,7 @@ impl View {
 
 /// The pipelines frames of `scene` into `format` at `samples` per pixel use, except each mark's
 /// channel pipeline, which depends on what its channels read.
-fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32, state: Shader) -> Stages {
+fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     let any = |test: &dyn Fn(&Mark) -> bool| scene.marks.iter().any(test);
     let draw = |shader| Asked::Shader(Variant::draw(shader, format, samples).projection(Projection::of(&scene.space)));
     let mut stages = Stages::default();
@@ -411,14 +407,13 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32, state: Shade
         );
     }
     if !scene.ease.is_zero() {
-        stages
-            .add_all(Stage::Changes, [Asked::Shader(EASE.state_kind(state)), Asked::Shader(GATHER.state_kind(state))]);
+        stages.add_all(Stage::Changes, [Asked::Shader(EASE), Asked::Shader(GATHER)]);
     }
     if !scene.marks.is_empty() {
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Pack, "pack")));
         stages.add(Stage::Draw, Asked::Shader(PAGES));
         if any(&|mark| matches!(mark, Mark::Edges(_))) {
-            stages.add(Stage::Draw, Asked::Shader(Variant::raster(state, "ends")));
+            stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::State, "ends")));
         }
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Words, "fill")));
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Words, "maximum")));
@@ -438,8 +433,8 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32, state: Shade
         stages.add_all(Stage::Text, FIELDS.map(Asked::Shader));
     }
     if any(&Mark::flows) {
-        stages.add(Stage::Draw, Asked::Shader(TRAVEL.state_kind(state)));
-        stages.add(Stage::Changes, Asked::Shader(CARRY.state_kind(state)));
+        stages.add(Stage::Draw, Asked::Shader(TRAVEL));
+        stages.add(Stage::Changes, Asked::Shader(CARRY));
     }
     if any(&|m| MarkVariants::of(m, &scene.space).listed()) {
         stages.add_all(Stage::Draw, SCAN.map(Asked::Shader));
@@ -519,7 +514,7 @@ mod tests {
             .draw(Vertices::of("g", "V"))
             .draw(Edges::of("g", "E").ends("from", "to"))
             .draw(Lines::of("g", "L"));
-        let stages = stages(&scene, wgpu::TextureFormat::Rgba8Unorm, 1, Shader::StateNarrow);
+        let stages = stages(&scene, wgpu::TextureFormat::Rgba8Unorm, 1);
         let draw = stages.of(Stage::Draw);
         let asks = |entry, path| {
             draw.contains(&Asked::Shader(
@@ -534,7 +529,7 @@ mod tests {
     #[test]
     fn only_rows_that_can_stand_at_heights_ask_to_sort_by_height() {
         let sorting = |scene: Scene| {
-            let stages = stages(&scene, wgpu::TextureFormat::Rgba8Unorm, 1, Shader::StateNarrow);
+            let stages = stages(&scene, wgpu::TextureFormat::Rgba8Unorm, 1);
             let layering = stages.of(Stage::Layers);
             let keys = |path| {
                 layering.contains(&Asked::Shader(

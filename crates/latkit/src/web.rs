@@ -934,9 +934,13 @@ impl Surface {
     }
 
     fn make(gpu: &Gpu, size: [u32; 2]) -> wgpu::Texture {
+        let size = size.map(|side| side.max(1));
+        if let Some(browser) = gpu.0.browser.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+            browser.reserve(size);
+        }
         gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: Some("latkit canvas"),
-            size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,

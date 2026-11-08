@@ -117,9 +117,8 @@ impl Waits {
     }
 
     /// Finishes the programs that linked and wakes their waiters. Finishing looks up a program's
-    /// uniforms, which waits for the browser's GPU process, and that process is busy for up to
-    /// seconds while a frame first draws with new pipelines. So the lookup follows a fence: before any
-    /// frame it runs at once, and after one it waits for the GPU to finish it.
+    /// uniforms, which the browser's GPU process answers at once: every program writes one color
+    /// target, so no frame makes that process build a shader on its own thread meanwhile.
     fn settle_links(&self, state: &Rc<State>) {
         let linking = std::mem::take(&mut *self.linking.borrow_mut());
         let mut pending = Vec::with_capacity(linking.len());
@@ -129,10 +128,8 @@ impl Waits {
             let done = !state.parallel
                 || state.gl.get_program_parameter(&program.raw, COMPLETION_STATUS).as_bool() != Some(false);
             if done {
-                Self::fence(state, move |_, _| {
-                    let _ = program.finish();
-                    program.wake();
-                });
+                let _ = program.finish();
+                program.wake();
             } else {
                 pending.push(weak);
             }

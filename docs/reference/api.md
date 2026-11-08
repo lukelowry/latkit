@@ -23,17 +23,22 @@ What every part of the package shares.
 ### `load()`
 
 {.signature}
-`function load(options?: { wasm?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
+`function load(options?: { wasm?: string | URL | WebAssembly.Module; shaders?: string | URL; worker?: string | URL | (() => Worker) }): Promise<void>`
 
 Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
 load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
-load rejects with an `io` error and can be retried. After the WebAssembly loads, `load()` creates
-the first WebGL2 device for [`Gpu.create()`](#gpu-create).
+load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
+also downloads the shaders, then creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
 
 {#load-wasm .member}
 **`wasm`**`?: string | URL | WebAssembly.Module` [¶](#load-wasm){.headerlink}
 : The URL of this version's `latkit/wasm` asset, or that asset compiled. Defaults to the
   bundled asset.
+
+{#load-shaders .member}
+**`shaders`**`?: string | URL` [¶](#load-shaders){.headerlink}
+: The URL of this version's `latkit/shaders` asset: the shaders translated for WebGL2. Defaults
+  to the bundled asset.
 
 {#load-worker .member}
 **`worker`**`?: string | URL | (() => Worker)` [¶](#load-worker){.headerlink}

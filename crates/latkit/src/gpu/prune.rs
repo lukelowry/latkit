@@ -173,11 +173,18 @@ pub(crate) fn module(mut module: naga::Module) -> naga::Module {
         })
         .collect();
     // Naga orders functions before their callers, so one pass propagates through helper chains.
+    // Calls to the functions expression kernels call (`k_`, see `lib/evaluate.wesl`) stay, since a
+    // kernel written after translation calls them by name.
     let mut returned_values = Vec::with_capacity(module.functions.len());
     for (_, function) in module.functions.iter_mut() {
         calls(&mut function.body, &mut function.expressions, &returned_values);
         block(&mut function.body, &function.expressions, &constants);
-        returned_values.push(returned(&function.body, &function.expressions, &constants));
+        let interface = function.name.as_deref().is_some_and(|name| name.starts_with("k_"));
+        returned_values.push(if interface {
+            None
+        } else {
+            returned(&function.body, &function.expressions, &constants)
+        });
         // Names retain otherwise-dead expressions during compaction, including results of calls
         // in removed branches. They are debug labels, not shader semantics.
         function.named_expressions.clear();

@@ -24,7 +24,7 @@ impl View {
         for &index in marks {
             let shown = &mut self.marks[index];
             let Some(compiled) = &shown.compiled else { continue };
-            let kernel = compiled.kernel.clone();
+            let (kernel, planes) = (compiled.kernel.clone(), compiled.planes.clone());
             let rows = if matches!(entry, "evaluate" | "ends") { shown.live() } else { shown.held() };
             let (blocks, first) = match entry {
                 "evaluate" => (shown.blocks.of(rows), shown.block),
@@ -62,8 +62,14 @@ impl View {
                     &mut raster,
                     &input,
                     entry,
-                    (entry == "evaluate").then_some(&kernel),
-                    w::StateStep { first: batch.start as u32 * w::PAGE_ROWS, rows: count, block: first, word: 0 },
+                    (entry == "evaluate").then_some((&kernel, &*planes)),
+                    w::StateStep {
+                        first: batch.start as u32 * w::PAGE_ROWS,
+                        rows: count,
+                        block: first,
+                        word: 0,
+                        ..bytemuck::Zeroable::zeroed()
+                    },
                     width,
                 );
                 let copies: Vec<[u32; 3]> = pages

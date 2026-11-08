@@ -45,6 +45,7 @@ impl InstanceInterface for Instance {
     fn poll_all_devices(&self, _: bool) -> bool {
         true
     }
+    #[cfg(feature = "wgsl")]
     fn wgsl_language_features(&self) -> wgpu::WgslLanguageFeatures {
         wgpu::WgslLanguageFeatures::empty()
     }
@@ -162,6 +163,7 @@ impl SurfaceInterface for Surface {
     fn configure(&self, device: &DispatchDevice, config: &wgpu::SurfaceConfiguration) {
         assert!(Rc::ptr_eq(&device.as_custom::<Device>().unwrap().0, &self.device.0));
         assert_eq!(config.format, wgpu::TextureFormat::Rgba8Unorm);
+        self.source.reserve([config.width, config.height]);
         let texture = Texture::new(
             &self.device.0.gl,
             &wgpu::TextureDescriptor {

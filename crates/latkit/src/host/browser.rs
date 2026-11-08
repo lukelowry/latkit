@@ -13,7 +13,8 @@ use crate::{Error, Pending};
 /// The browser host. Text is rasterized with a 2D canvas in the page's fonts, and bytes are fetched
 /// with `fetch`. Jobs run on the page's workers once [`set_jobs`](Browser::set_jobs) provides them,
 /// else immediately. Video is encoded with WebCodecs once [`set_encoder`](Browser::set_encoder)
-/// provides an encoder.
+/// provides an encoder. Custom markers' WGSL translates to GLSL with the translator
+/// [`set_translator`](Browser::set_translator) provides, or in the page with the `wgsl` feature.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Browser;
 
@@ -22,6 +23,32 @@ thread_local! {
     static JOBS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
     static QUEUE: RefCell<Queue> = RefCell::new(Queue::default());
     static ENCODERS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+    static TRANSLATOR: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+}
+
+/// Translates the WGSL of a custom marker's shader to GLSL with the page's translator, resolving to
+/// its answer: a JSON object of each entry point's GLSL, or of the `error` that stopped it.
+#[cfg(not(feature = "wgsl"))]
+pub(crate) fn translate(wgsl: &str) -> Pending<String> {
+    let Some(translate) = TRANSLATOR.with(|translator| translator.borrow().clone()) else {
+        return Pending::ready(Err(Error::Unsupported(
+            "a custom marker needs a WGSL translator in the browser: the npm package's, or latkit's `wgsl` feature"
+                .into(),
+        )));
+    };
+    let promise = match translate.call1(&JsValue::NULL, &wgsl.into()) {
+        Ok(answer) => js_sys::Promise::resolve(&answer),
+        Err(error) => return Pending::ready(Err(failure(&error, "the WGSL translator failed"))),
+    };
+    let (pending, resolver) = Pending::new();
+    wasm_bindgen_futures::spawn_local(async move {
+        let answer = wasm_bindgen_futures::JsFuture::from(promise).await;
+        resolver.resolve(match answer {
+            Ok(answer) => answer.as_string().ok_or_else(|| Error::Io("the WGSL translator answered no text".into())),
+            Err(error) => Err(failure(&error, "the WGSL translator failed")),
+        });
+    });
+    pending
 }
 
 /// How many jobs the page's workers run at once: one fewer than the number of cores, from 1 to 4.
@@ -89,6 +116,22 @@ impl Browser {
     /// npm package provides one built on WebCodecs.
     pub fn set_encoder(create: js_sys::Function) {
         ENCODERS.with(|encoders| *encoders.borrow_mut() = Some(create));
+    }
+
+    /// Translates custom markers' shaders with `translate`, which takes WGSL and returns a promise
+    /// of a JSON object of each entry point's GLSL ES 3.00, or of the `error` that stopped the
+    /// translation. The npm package provides one, loaded the first time a page draws a custom
+    /// marker. With the `wgsl` feature, latkit translates in the page and never calls it.
+    pub fn set_translator(translate: js_sys::Function) {
+        TRANSLATOR.with(|translator| *translator.borrow_mut() = Some(translate));
+    }
+
+    /// Hands over the shaders latkit's build translated for WebGL2: the bytes of `shaders.bin` in
+    /// the build's output, which the npm package serves as `latkit/shaders`. A [`Gpu`](crate::Gpu)
+    /// needs them, so the page loads them before creating one. Fails if the bytes are not a shader
+    /// store. Later calls change nothing.
+    pub fn set_shaders(bytes: Vec<u8>) -> crate::Result<()> {
+        crate::gpu::store::set(bytes)
     }
 }
 

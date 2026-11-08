@@ -133,7 +133,19 @@ fn rust() -> Result {
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"])?;
     cargo(&["clippy", "--locked", "-p", "latkit", "--no-default-features", "--all-targets", "--", "-D", "warnings"])?;
-    cargo(&["clippy", "--locked", "-p", "latkit-js", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"])?;
+    cargo(&[
+        "clippy",
+        "--locked",
+        "-p",
+        "latkit-js",
+        "-p",
+        "latkit-wgsl",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--",
+        "-D",
+        "warnings",
+    ])?;
     run_with(env!("CARGO"), &["test", "--locked", "--workspace"], &gpu)?;
     run_with(
         env!("CARGO"),
@@ -196,11 +208,23 @@ fn wasm(dev: bool) -> Result<String> {
     build_wasm(dev, "npm")
 }
 
-/// Builds the wasm package into `output`. Returns where latkit's build script wrote the linked
-/// shaders and `shaders.json`, the same for every target, which the browser gate reads.
+/// Builds the wasm package into `output`: latkit, and the WGSL translator a page loads when it draws
+/// a custom marker. Returns where latkit's build script wrote the linked shaders and
+/// `shaders.json`, which the browser gate reads.
 fn build_wasm(dev: bool, output: &str) -> Result<String> {
     let profile = if dev { "wasm-dev" } else { "wasm" };
-    let args = ["build", "--locked", "-p", "latkit-js", "--profile", profile, "--target", "wasm32-unknown-unknown"];
+    let args = [
+        "build",
+        "--locked",
+        "-p",
+        "latkit-js",
+        "-p",
+        "latkit-wgsl",
+        "--profile",
+        profile,
+        "--target",
+        "wasm32-unknown-unknown",
+    ];
     eprintln!("$ cargo {}", args.join(" "));
     let built = Command::new(env!("CARGO"))
         .args(args)
@@ -230,10 +254,14 @@ fn build_wasm(dev: bool, output: &str) -> Result<String> {
             installed.trim()
         ));
     }
-    let wasm = format!("target/wasm32-unknown-unknown/{profile}/latkit_js.wasm");
     let pkg = format!("{output}/pkg");
-    let bind = [wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", "latkit"];
-    run("wasm-bindgen", &bind)?;
+    for (crate_name, name) in [("latkit_js", "latkit"), ("latkit_wgsl", "latkit_wgsl")] {
+        let wasm = format!("target/wasm32-unknown-unknown/{profile}/{crate_name}.wasm");
+        run("wasm-bindgen", &[wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", name])?;
+    }
+    // The shaders the build translated, which the page loads beside the WebAssembly.
+    std::fs::copy(std::path::Path::new(&shaders).join("shaders.bin"), root().join(&pkg).join("latkit_shaders.bin"))
+        .map_err(|e| format!("latkit's shader store: {e}"))?;
     run("node", &["npm/build.mjs", "compile", output])?;
     Ok(shaders)
 }

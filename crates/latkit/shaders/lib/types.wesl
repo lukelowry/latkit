@@ -36,11 +36,18 @@ const RADIX_BLOCK: u32 = 16u;
 const RADIX_BITS: u32 = 4u;
 const STATE_WORDS: u32 = 32u;
 
+// A pass of the channel shader over `rows` rows from `first`, through page table `block` (or
+// `NONE`), writing the four words from `word`. `channels` has a bit for each channel the pass
+// evaluates: those its words depend on.
 struct StateStep {
     first: u32,
     rows: u32,
     block: u32,
     word: u32,
+    channels: u32,
+    padding_a: u32,
+    padding_b: u32,
+    padding_c: u32,
 }
 
 // Sentinel for no index, slot, or page.
@@ -106,8 +113,9 @@ const OP_FILL_POSITION: u32 = 46u;
 // Depth of the expression machine's value stack.
 const STACK: u32 = 16u;
 
-// Column descriptors, `COLUMN_WORDS` words per column, start at `mark.columns` in the program.
-const COLUMN_WORDS: u32 = 6u;
+// Column descriptors, `COLUMN_WORDS` words per column, start at `mark.columns` in the program, a
+// whole texel. Each is two texels, the last two words unused, so a shader reads one in two fetches.
+const COLUMN_WORDS: u32 = 8u;
 const COLUMN_FLAGS: u32 = 0u;
 const COLUMN_ROWS: u32 = 1u;
 // Where the column's page table starts in the program. A sampled column has cursors here instead.
