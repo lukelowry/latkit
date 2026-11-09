@@ -17,7 +17,7 @@ use super::sync::{Inputs, Rebuilt, Rows, Source, Window};
 use super::transition::{bound, holds_alike, in_place, moved};
 use super::variants::Stage;
 use super::words::Kept;
-use super::{Camera, Event, Frame, View, timer, uniforms};
+use super::{Camera, Event, Frame, View, uniforms};
 use crate::data::Keyed;
 use crate::derive::order::Order;
 use crate::expr::compile::Deps;
@@ -367,7 +367,8 @@ impl View {
     /// Takes the results that arrived since the last frame: GPU timing, fits, probes, queries, and
     /// the intents and key steps waiting on picks.
     fn settle(&mut self) {
-        if let Some(ms) = self.timer.as_mut().and_then(timer::Timer::landed) {
+        let device = &self.gpu.0.device;
+        if let Some(ms) = self.timer.as_mut().and_then(|timer| timer.landed(device)) {
             self.stats.gpu_ms = ms;
         }
         self.settle_fit();

@@ -744,10 +744,7 @@ impl View {
     /// finger dragging does something here (an input, a draggable mark, or a connection),
     /// `pan-x pan-y` when only two fingers do, so one finger scrolls the page, and otherwise
     /// `manipulation`, so the page pans and zooms.
-    #[cfg_attr(
-        not(all(feature = "web", target_arch = "wasm32")),
-        expect(dead_code, reason = "only a page hands touch input to the view")
-    )]
+    #[cfg_attr(not(target_arch = "wasm32"), expect(dead_code, reason = "only a page hands touch input to the view"))]
     pub(crate) fn touch_action(&self) -> &'static str {
         let inputs = &self.scene.controls.gestures;
         let still = Modifiers::default();

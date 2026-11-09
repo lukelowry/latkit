@@ -497,29 +497,43 @@ The Rust library is the `latkit` crate.
 | File/URL slices                     | Browser fetch and CORS         | Supply data directly             | Local paths and `file:` URLs |
 | H.264 MP4                           | WebCodecs Constrained Baseline | Use the CLI                      | Windows Media Foundation     |
 
-Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, and worker from the
-same package version. Rendering requires an enabled WebGL2 context. WebCodecs video export requires HTTPS or localhost.
+Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, shaders, and worker
+from the same package version: latkit refuses shaders from another version. Rendering requires an
+enabled WebGL2 context. WebCodecs video export requires HTTPS or localhost.
 
 ### Assets and workers
 
-By default, `load()` finds the WASM and worker files next to the installed modules. With Vite or
-another bundler that supports URL imports, pass their URLs. This also works when the app is
-deployed under a nested path:
+The package has four assets besides its modules:
+
+- `latkit/wasm`: the WebAssembly.
+- `latkit/shaders`: the shaders, translated for WebGL2 when the package was built. `load()`
+  downloads them while the WebAssembly compiles, wherever a canvas is available. Only drawing needs
+  them, so if the download fails, `Gpu.create()` rejects with an `io` error and the next call
+  downloads them again.
+- `latkit/wgsl`: the WebAssembly that translates custom markers' WGSL. A page loads it the first
+  time it draws a custom marker.
+- `latkit/worker`: a standalone classic worker that runs jobs.
+
+By default, `load()` finds each next to the installed modules. With Vite or another bundler that
+supports URL imports, pass their URLs. This also works when the app is deployed under a nested
+path:
 
 ```ts
 import { load } from 'latkit';
+import shadersUrl from 'latkit/shaders?url';
 import wasmUrl from 'latkit/wasm?url';
+import wgslUrl from 'latkit/wgsl?url';
 import workerUrl from 'latkit/worker?url';
 
-await load({ wasm: wasmUrl, worker: workerUrl });
+await load({ wasm: wasmUrl, shaders: shadersUrl, wgsl: wgslUrl, worker: workerUrl });
 ```
 
-`latkit/worker` is a standalone classic worker. A worker URL on another origin, such as a CDN,
-starts through a Blob URL on the page's origin. Workers start when needed and stop after 30 idle
-seconds. Where workers are unavailable, jobs run on the calling
-thread. Your Content Security Policy must allow the WASM asset and data origins in `connect-src`,
-WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), and the worker URL in
-`worker-src` (with `blob:` for one on another origin).
+A worker URL on another origin, such as a CDN, starts through a Blob URL on the page's origin.
+Workers start when needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on
+the calling thread. Your Content Security Policy must allow the WASM, shaders, and data origins in
+`connect-src`, WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), the
+package's modules in `script-src` (the WGSL translator is imported when first used), and the
+worker URL in `worker-src` (with `blob:` for one on another origin).
 
 ### Server-side builders and data
 

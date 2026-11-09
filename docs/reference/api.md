@@ -23,12 +23,13 @@ What every part of the package shares.
 ### `load()`
 
 {.signature}
-`function load(options?: { wasm?: string | URL | WebAssembly.Module; shaders?: string | URL; worker?: string | URL | (() => Worker) }): Promise<void>`
+`function load(options?: { wasm?: string | URL | WebAssembly.Module; shaders?: string | URL; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
 
 Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
 load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
 load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
-also downloads the shaders, then creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
+also downloads the shaders, then creates the first WebGL2 device for [`Gpu.create()`](#gpu-create). Only
+drawing needs the shaders, so a failed download fails `Gpu.create()`, not `load()`.
 
 {#load-wasm .member}
 **`wasm`**`?: string | URL | WebAssembly.Module` [¶](#load-wasm){.headerlink}
@@ -39,6 +40,12 @@ also downloads the shaders, then creates the first WebGL2 device for [`Gpu.creat
 **`shaders`**`?: string | URL` [¶](#load-shaders){.headerlink}
 : The URL of this version's `latkit/shaders` asset: the shaders translated for WebGL2. Defaults
   to the bundled asset.
+
+{#load-wgsl .member}
+**`wgsl`**`?: string | URL | WebAssembly.Module` [¶](#load-wgsl){.headerlink}
+: The URL of this version's `latkit/wgsl` asset, the WebAssembly that translates custom
+  markers' WGSL, or that asset compiled. A page loads it the first time it draws a custom
+  marker. Defaults to the bundled asset.
 
 {#load-worker .member}
 **`worker`**`?: string | URL | (() => Worker)` [¶](#load-worker){.headerlink}
@@ -1469,7 +1476,8 @@ its views and frame listeners. Other GPUs and datasets stay usable.
 : Requests a WebGL2 device. The first call takes the device [`load()`](#load) requested. Create one before
   any view to set its `budget` first, or create another for views that should not share memory
   with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
-  when the browser has no WebGL2 device.
+  when the browser has no WebGL2 device, and with an `io` error when the shaders could not be
+  downloaded. The next call downloads them again.
 
 {#gpu-on .member}
 **`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}

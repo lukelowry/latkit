@@ -7,13 +7,17 @@
 mod bindings;
 mod command;
 mod device;
+mod elapsed;
 mod host;
 mod pipeline;
 mod queue;
 mod resource;
 mod transfer;
+mod unsupported;
 mod vertex;
 mod waits;
+
+pub(crate) use elapsed::{Elapsed, disjoint};
 
 pub(crate) fn instance(gl: web_sys::WebGl2RenderingContext) -> crate::Result<wgpu::Instance> {
     let device = device::Device::new(gl)

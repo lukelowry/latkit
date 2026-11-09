@@ -13,6 +13,11 @@
 // Builds with `gpu` lint every feature, so they still catch code nothing uses.
 #![cfg_attr(not(feature = "gpu"), allow(dead_code))]
 
+// A browser build draws only through the page: the `web` feature hands latkit its canvas, shaders,
+// and timers.
+#[cfg(all(feature = "gpu", target_arch = "wasm32", not(feature = "web")))]
+compile_error!("in a browser, latkit draws with the `web` feature; use `default-features = false` for data alone");
+
 mod data;
 #[cfg(feature = "gpu")]
 mod derive;

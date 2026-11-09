@@ -1,9 +1,14 @@
-#![allow(unused_variables)]
 use super::{
+    device::State,
     pipeline::Pipeline,
     resource::{Binding, Buffer, Group, Texture, View},
+    unsupported::{Unsupported, report},
 };
-use std::{cell::RefCell, ops::Range, rc::Rc};
+use std::{
+    cell::RefCell,
+    ops::Range,
+    rc::{Rc, Weak},
+};
 use web_sys::WebGl2RenderingContext as Gl;
 use wgpu::custom::{
     CommandBufferInterface, CommandEncoderInterface, DispatchBindGroup, DispatchBuffer, DispatchCommandBuffer,
@@ -34,9 +39,22 @@ pub(super) enum Command {
     Upload(Buffer, wgpu::TexelCopyBufferLayout, Image, wgpu::Extent3d),
     Clear(Buffer, u64, u64),
     Render(Render),
+    /// Starts timing the GPU work that follows (see [`Elapsed`](super::Elapsed)).
+    Begin(Rc<super::elapsed::Query>),
+    /// Stops timing.
+    End(Rc<super::elapsed::Query>),
 }
-#[derive(Debug, Default)]
-pub(super) struct Encoder(pub(super) Rc<RefCell<Vec<Command>>>);
+/// Commands recorded for one submission, and the device they report errors to.
+#[derive(Debug)]
+pub(super) struct Encoder {
+    pub(super) commands: Rc<RefCell<Vec<Command>>>,
+    state: Weak<State>,
+}
+impl Encoder {
+    pub(super) fn new(state: &Rc<State>) -> Self {
+        Self { commands: Rc::default(), state: Rc::downgrade(state) }
+    }
+}
 #[derive(Debug)]
 pub(super) struct Commands(pub(super) RefCell<Vec<Command>>);
 impl CommandBufferInterface for Commands {}
@@ -74,6 +92,7 @@ pub(super) enum Draw {
 pub(super) struct Pass {
     encoder: Option<Rc<RefCell<Vec<Command>>>>,
     render: Option<Render>,
+    state: Weak<State>,
 }
 impl Pass {
     fn new(encoder: &Encoder, desc: &wgpu::RenderPassDescriptor<'_>) -> Self {
@@ -92,10 +111,18 @@ impl Pass {
             .depth_stencil_attachment
             .as_ref()
             .map(|d| Depth { view: d.view.as_custom::<View>().unwrap().clone(), ops: d.depth_ops });
-        Self { encoder: Some(encoder.0.clone()), render: Some(Render { colors, depth, draws: Vec::new() }) }
+        Self {
+            encoder: Some(encoder.commands.clone()),
+            render: Some(Render { colors, depth, draws: Vec::new() }),
+            state: encoder.state.clone(),
+        }
     }
-    pub(super) fn bundle() -> Self {
-        Self { encoder: None, render: Some(Render { colors: Vec::new(), depth: None, draws: Vec::new() }) }
+    pub(super) fn bundle(state: &Rc<State>) -> Self {
+        Self {
+            encoder: None,
+            render: Some(Render { colors: Vec::new(), depth: None, draws: Vec::new() }),
+            state: Rc::downgrade(state),
+        }
     }
     fn push(&mut self, draw: Draw) {
         self.render.as_mut().unwrap().draws.push(draw);
@@ -194,6 +221,11 @@ impl Command {
                 super::transfer::upload(gl, super::transfer::Source::Buffer(from), *layout, to, *size);
             }
             Self::Render(render) => render.run(gl),
+            Self::Begin(query) => gl.begin_query(super::elapsed::TIME_ELAPSED, &query.raw),
+            Self::End(query) => {
+                gl.end_query(super::elapsed::TIME_ELAPSED);
+                query.ended.set(true);
+            }
         }
     }
 }
@@ -510,7 +542,7 @@ impl CommandEncoderInterface for Encoder {
         destination_offset: wgpu::BufferAddress,
         copy_size: Option<wgpu::BufferAddress>,
     ) {
-        self.0.borrow_mut().push(Command::BufferCopy(
+        self.commands.borrow_mut().push(Command::BufferCopy(
             source.as_custom::<Buffer>().unwrap().clone(),
             source_offset,
             destination.as_custom::<Buffer>().unwrap().clone(),
@@ -524,7 +556,7 @@ impl CommandEncoderInterface for Encoder {
         destination: wgpu::TexelCopyTextureInfo<'_>,
         copy_size: wgpu::Extent3d,
     ) {
-        self.0.borrow_mut().push(Command::Upload(
+        self.commands.borrow_mut().push(Command::Upload(
             source.buffer.as_custom::<Buffer>().unwrap().clone(),
             source.layout,
             Image::new(destination),
@@ -537,7 +569,7 @@ impl CommandEncoderInterface for Encoder {
         destination: wgpu::TexelCopyBufferInfo<'_>,
         copy_size: wgpu::Extent3d,
     ) {
-        self.0.borrow_mut().push(Command::Read(
+        self.commands.borrow_mut().push(Command::Read(
             Image::new(source),
             destination.buffer.as_custom::<Buffer>().unwrap().clone(),
             destination.layout,
@@ -550,56 +582,57 @@ impl CommandEncoderInterface for Encoder {
         destination: wgpu::TexelCopyTextureInfo<'_>,
         copy_size: wgpu::Extent3d,
     ) {
-        self.0.borrow_mut().push(Command::TextureCopy(Image::new(source), Image::new(destination), copy_size));
+        self.commands.borrow_mut().push(Command::TextureCopy(Image::new(source), Image::new(destination), copy_size));
     }
-    fn begin_compute_pass(&self, desc: &wgpu::ComputePassDescriptor<'_>) -> DispatchComputePass {
-        unimplemented!("prototype: begin_compute_pass")
+    fn begin_compute_pass(&self, _desc: &wgpu::ComputePassDescriptor<'_>) -> DispatchComputePass {
+        report(&self.state, "run compute passes");
+        DispatchComputePass::custom(Unsupported)
     }
     fn begin_render_pass(&self, desc: &wgpu::RenderPassDescriptor<'_>) -> DispatchRenderPass {
         DispatchRenderPass::custom(Pass::new(self, desc))
     }
     fn finish(&mut self) -> DispatchCommandBuffer {
-        DispatchCommandBuffer::custom(Commands(RefCell::new(std::mem::take(&mut *self.0.borrow_mut()))))
+        DispatchCommandBuffer::custom(Commands(RefCell::new(std::mem::take(&mut *self.commands.borrow_mut()))))
     }
-    fn clear_texture(&self, texture: &DispatchTexture, subresource_range: &wgpu::ImageSubresourceRange) {
-        unimplemented!("prototype: clear_texture")
+    fn clear_texture(&self, _texture: &DispatchTexture, _subresource_range: &wgpu::ImageSubresourceRange) {
+        report(&self.state, "clear a texture outside a render pass");
     }
     fn clear_buffer(&self, buffer: &DispatchBuffer, offset: wgpu::BufferAddress, size: Option<wgpu::BufferAddress>) {
-        self.0.borrow_mut().push(Command::Clear(
+        self.commands.borrow_mut().push(Command::Clear(
             buffer.as_custom::<Buffer>().unwrap().clone(),
             offset,
             size.unwrap_or(buffer.as_custom::<Buffer>().unwrap().0.size - offset),
         ));
     }
-    fn insert_debug_marker(&self, label: &str) {}
-    fn push_debug_group(&self, label: &str) {}
+    fn insert_debug_marker(&self, _label: &str) {}
+    fn push_debug_group(&self, _label: &str) {}
     fn pop_debug_group(&self) {}
-    fn write_timestamp(&self, query_set: &DispatchQuerySet, query_index: u32) {
-        unimplemented!("prototype: write_timestamp")
+    fn write_timestamp(&self, _query_set: &DispatchQuerySet, _query_index: u32) {
+        report(&self.state, "write timestamps");
     }
     fn resolve_query_set(
         &self,
-        query_set: &DispatchQuerySet,
-        first_query: u32,
-        query_count: u32,
-        destination: &DispatchBuffer,
-        destination_offset: wgpu::BufferAddress,
+        _query_set: &DispatchQuerySet,
+        _first_query: u32,
+        _query_count: u32,
+        _destination: &DispatchBuffer,
+        _destination_offset: wgpu::BufferAddress,
     ) {
-        unimplemented!("prototype: resolve_query_set")
+        report(&self.state, "resolve query sets");
     }
     fn mark_acceleration_structures_built<'a>(
         &self,
-        blas: &mut dyn Iterator<Item = &'a wgpu::Blas>,
-        tlas: &mut dyn Iterator<Item = &'a wgpu::Tlas>,
+        _blas: &mut dyn Iterator<Item = &'a wgpu::Blas>,
+        _tlas: &mut dyn Iterator<Item = &'a wgpu::Tlas>,
     ) {
-        unimplemented!("prototype: mark_acceleration_structures_built")
+        report(&self.state, "build acceleration structures");
     }
     fn build_acceleration_structures<'a>(
         &self,
-        blas: &mut dyn Iterator<Item = &'a wgpu::BlasBuildEntry<'a>>,
-        tlas: &mut dyn Iterator<Item = &'a wgpu::Tlas>,
+        _blas: &mut dyn Iterator<Item = &'a wgpu::BlasBuildEntry<'a>>,
+        _tlas: &mut dyn Iterator<Item = &'a wgpu::Tlas>,
     ) {
-        unimplemented!("prototype: build_acceleration_structures")
+        report(&self.state, "build acceleration structures");
     }
     fn transition_resources<'a>(
         &mut self,
@@ -635,8 +668,8 @@ impl RenderPassInterface for Pass {
     ) {
         self.push(Draw::Vertex(slot, buffer.map(|buffer| super::vertex::Slice::new(buffer, offset, size))));
     }
-    fn set_immediates(&mut self, offset: u32, data: &[u8]) {
-        unimplemented!("prototype: set_immediates")
+    fn set_immediates(&mut self, _offset: u32, _data: &[u8]) {
+        report(&self.state, "set immediates");
     }
     fn set_blend_constant(&mut self, color: wgpu::Color) {
         self.push(Draw::Blend(color));
@@ -647,99 +680,102 @@ impl RenderPassInterface for Pass {
     fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32, min_depth: f32, max_depth: f32) {
         self.push(Draw::Viewport(x, y, width, height, min_depth, max_depth));
     }
-    fn set_stencil_reference(&mut self, reference: u32) {
-        unimplemented!("prototype: set_stencil_reference")
+    fn set_stencil_reference(&mut self, _reference: u32) {
+        report(&self.state, "test stencils");
     }
     fn draw(&mut self, vertices: Range<u32>, instances: Range<u32>) {
         self.push(Draw::Vertices(vertices, instances));
     }
     fn draw_indexed(&mut self, indices: Range<u32>, base_vertex: i32, instances: Range<u32>) {
-        assert_eq!(base_vertex, 0, "WebGL2 does not expose the BASE_VERTEX downlevel capability");
+        if base_vertex != 0 {
+            report(&self.state, "offset indexed draws by a base vertex");
+            return;
+        }
         self.push(Draw::Indexed(indices, instances));
     }
-    fn draw_mesh_tasks(&mut self, group_count_x: u32, group_count_y: u32, group_count_z: u32) {
-        unimplemented!("prototype: draw_mesh_tasks")
+    fn draw_mesh_tasks(&mut self, _group_count_x: u32, _group_count_y: u32, _group_count_z: u32) {
+        report(&self.state, "draw mesh tasks");
     }
-    fn draw_indirect(&mut self, indirect_buffer: &DispatchBuffer, indirect_offset: wgpu::BufferAddress) {
-        unimplemented!("prototype: draw_indirect")
+    fn draw_indirect(&mut self, _indirect_buffer: &DispatchBuffer, _indirect_offset: wgpu::BufferAddress) {
+        report(&self.state, "draw indirectly");
     }
-    fn draw_indexed_indirect(&mut self, indirect_buffer: &DispatchBuffer, indirect_offset: wgpu::BufferAddress) {
-        unimplemented!("prototype: draw_indexed_indirect")
+    fn draw_indexed_indirect(&mut self, _indirect_buffer: &DispatchBuffer, _indirect_offset: wgpu::BufferAddress) {
+        report(&self.state, "draw indirectly");
     }
-    fn draw_mesh_tasks_indirect(&mut self, indirect_buffer: &DispatchBuffer, indirect_offset: wgpu::BufferAddress) {
-        unimplemented!("prototype: draw_mesh_tasks_indirect")
+    fn draw_mesh_tasks_indirect(&mut self, _indirect_buffer: &DispatchBuffer, _indirect_offset: wgpu::BufferAddress) {
+        report(&self.state, "draw mesh tasks");
     }
     fn multi_draw_indirect(
         &mut self,
-        indirect_buffer: &DispatchBuffer,
-        indirect_offset: wgpu::BufferAddress,
-        count: u32,
+        _indirect_buffer: &DispatchBuffer,
+        _indirect_offset: wgpu::BufferAddress,
+        _count: u32,
     ) {
-        unimplemented!("prototype: multi_draw_indirect")
+        report(&self.state, "draw indirectly");
     }
     fn multi_draw_indexed_indirect(
         &mut self,
-        indirect_buffer: &DispatchBuffer,
-        indirect_offset: wgpu::BufferAddress,
-        count: u32,
+        _indirect_buffer: &DispatchBuffer,
+        _indirect_offset: wgpu::BufferAddress,
+        _count: u32,
     ) {
-        unimplemented!("prototype: multi_draw_indexed_indirect")
+        report(&self.state, "draw indirectly");
     }
     fn multi_draw_indirect_count(
         &mut self,
-        indirect_buffer: &DispatchBuffer,
-        indirect_offset: wgpu::BufferAddress,
-        count_buffer: &DispatchBuffer,
-        count_buffer_offset: wgpu::BufferAddress,
-        max_count: u32,
+        _indirect_buffer: &DispatchBuffer,
+        _indirect_offset: wgpu::BufferAddress,
+        _count_buffer: &DispatchBuffer,
+        _count_buffer_offset: wgpu::BufferAddress,
+        _max_count: u32,
     ) {
-        unimplemented!("prototype: multi_draw_indirect_count")
+        report(&self.state, "draw indirectly");
     }
     fn multi_draw_mesh_tasks_indirect(
         &mut self,
-        indirect_buffer: &DispatchBuffer,
-        indirect_offset: wgpu::BufferAddress,
-        count: u32,
+        _indirect_buffer: &DispatchBuffer,
+        _indirect_offset: wgpu::BufferAddress,
+        _count: u32,
     ) {
-        unimplemented!("prototype: multi_draw_mesh_tasks_indirect")
+        report(&self.state, "draw mesh tasks");
     }
     fn multi_draw_indexed_indirect_count(
         &mut self,
-        indirect_buffer: &DispatchBuffer,
-        indirect_offset: wgpu::BufferAddress,
-        count_buffer: &DispatchBuffer,
-        count_buffer_offset: wgpu::BufferAddress,
-        max_count: u32,
+        _indirect_buffer: &DispatchBuffer,
+        _indirect_offset: wgpu::BufferAddress,
+        _count_buffer: &DispatchBuffer,
+        _count_buffer_offset: wgpu::BufferAddress,
+        _max_count: u32,
     ) {
-        unimplemented!("prototype: multi_draw_indexed_indirect_count")
+        report(&self.state, "draw indirectly");
     }
     fn multi_draw_mesh_tasks_indirect_count(
         &mut self,
-        indirect_buffer: &DispatchBuffer,
-        indirect_offset: wgpu::BufferAddress,
-        count_buffer: &DispatchBuffer,
-        count_buffer_offset: wgpu::BufferAddress,
-        max_count: u32,
+        _indirect_buffer: &DispatchBuffer,
+        _indirect_offset: wgpu::BufferAddress,
+        _count_buffer: &DispatchBuffer,
+        _count_buffer_offset: wgpu::BufferAddress,
+        _max_count: u32,
     ) {
-        unimplemented!("prototype: multi_draw_mesh_tasks_indirect_count")
+        report(&self.state, "draw mesh tasks");
     }
-    fn insert_debug_marker(&mut self, label: &str) {}
-    fn push_debug_group(&mut self, group_label: &str) {}
+    fn insert_debug_marker(&mut self, _label: &str) {}
+    fn push_debug_group(&mut self, _group_label: &str) {}
     fn pop_debug_group(&mut self) {}
-    fn write_timestamp(&mut self, query_set: &DispatchQuerySet, query_index: u32) {
-        unimplemented!("prototype: write_timestamp")
+    fn write_timestamp(&mut self, _query_set: &DispatchQuerySet, _query_index: u32) {
+        report(&self.state, "write timestamps");
     }
-    fn begin_occlusion_query(&mut self, query_index: u32) {
-        unimplemented!("prototype: begin_occlusion_query")
+    fn begin_occlusion_query(&mut self, _query_index: u32) {
+        report(&self.state, "count occluded samples");
     }
     fn end_occlusion_query(&mut self) {
-        unimplemented!("prototype: end_occlusion_query")
+        report(&self.state, "count occluded samples");
     }
-    fn begin_pipeline_statistics_query(&mut self, query_set: &DispatchQuerySet, query_index: u32) {
-        unimplemented!("prototype: begin_pipeline_statistics_query")
+    fn begin_pipeline_statistics_query(&mut self, _query_set: &DispatchQuerySet, _query_index: u32) {
+        report(&self.state, "count pipeline statistics");
     }
     fn end_pipeline_statistics_query(&mut self) {
-        unimplemented!("prototype: end_pipeline_statistics_query")
+        report(&self.state, "count pipeline statistics");
     }
     fn execute_bundles(&mut self, render_bundles: &mut dyn Iterator<Item = &DispatchRenderBundle>) {
         let draws = &mut self.render.as_mut().expect("active render pass").draws;

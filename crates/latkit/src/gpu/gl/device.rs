@@ -1,5 +1,5 @@
-#![allow(unused_variables)]
 use super::pipeline::{self, Pipeline, Program, Programs, Shader};
+use super::unsupported::{Unsupported, report_to};
 use super::waits::Waits;
 use std::{
     cell::{Cell, RefCell},
@@ -118,7 +118,8 @@ impl Device {
         }
     }
 
-    fn error(&self, error: wgpu::Error) {
+    /// Reports `error` to the innermost scope catching its kind, or else to the error handler.
+    pub(super) fn error(&self, error: wgpu::Error) {
         let filter = match &error {
             wgpu::Error::Validation { .. } => wgpu::ErrorFilter::Validation,
             wgpu::Error::OutOfMemory { .. } => wgpu::ErrorFilter::OutOfMemory,
@@ -212,7 +213,7 @@ impl Device {
     }
 }
 
-fn validation(message: String) -> wgpu::Error {
+pub(super) fn validation(message: String) -> wgpu::Error {
     wgpu::Error::Validation { source: Box::new(std::io::Error::other(message.clone())), description: message }
 }
 
@@ -233,7 +234,7 @@ impl DeviceInterface for Device {
     fn create_shader_module(
         &self,
         desc: wgpu::ShaderModuleDescriptor<'_>,
-        shader_bound_checks: wgpu::ShaderRuntimeChecks,
+        _shader_bound_checks: wgpu::ShaderRuntimeChecks,
     ) -> DispatchShaderModule {
         #[cfg(feature = "wgsl")]
         let shader = Shader::wgsl(match desc.source {
@@ -244,6 +245,7 @@ impl DeviceInterface for Device {
         });
         #[cfg(not(feature = "wgsl"))]
         let shader = {
+            let _ = desc;
             let message = "this build of latkit's WebGL2 device takes GLSL only: WGSL needs the `wgsl` feature";
             self.error(validation(message.to_owned()));
             Shader::glsl(String::new(), "")
@@ -332,13 +334,24 @@ impl DeviceInterface for Device {
         })
     }
     fn create_mesh_pipeline(&self, desc: &wgpu::MeshPipelineDescriptor<'_>) -> DispatchRenderPipeline {
-        unimplemented!("prototype: create_mesh_pipeline")
+        let message = "WebGL2 has no mesh shaders".to_owned();
+        self.error(validation(message.clone()));
+        DispatchRenderPipeline::custom(Pipeline {
+            program: Err(message),
+            vertices: Rc::default(),
+            primitive: desc.primitive,
+            depth: desc.depth_stencil.clone(),
+            targets: desc.fragment.as_ref().map_or_else(Vec::new, |f| f.targets.to_vec()),
+            layouts: Vec::new(),
+        })
     }
-    fn create_compute_pipeline(&self, desc: &wgpu::ComputePipelineDescriptor<'_>) -> DispatchComputePipeline {
-        unimplemented!("prototype: create_compute_pipeline")
+    fn create_compute_pipeline(&self, _desc: &wgpu::ComputePipelineDescriptor<'_>) -> DispatchComputePipeline {
+        report_to(&self.0, "run compute shaders");
+        DispatchComputePipeline::custom(Unsupported)
     }
-    unsafe fn create_pipeline_cache(&self, desc: &wgpu::PipelineCacheDescriptor<'_>) -> DispatchPipelineCache {
-        unimplemented!("prototype: create_pipeline_cache")
+    unsafe fn create_pipeline_cache(&self, _desc: &wgpu::PipelineCacheDescriptor<'_>) -> DispatchPipelineCache {
+        report_to(&self.0, "cache pipelines");
+        DispatchPipelineCache::custom(Unsupported)
     }
     fn create_buffer(&self, desc: &wgpu::BufferDescriptor<'_>) -> DispatchBuffer {
         let buffer = super::resource::Buffer::new(&self.0, desc);
@@ -352,35 +365,41 @@ impl DeviceInterface for Device {
     }
     fn create_external_texture(
         &self,
-        desc: &wgpu::ExternalTextureDescriptor<'_>,
-        planes: &[&wgpu::TextureView],
+        _desc: &wgpu::ExternalTextureDescriptor<'_>,
+        _planes: &[&wgpu::TextureView],
     ) -> DispatchExternalTexture {
-        unimplemented!("prototype: create_external_texture")
+        report_to(&self.0, "sample external textures");
+        DispatchExternalTexture::custom(Unsupported)
     }
     fn create_blas(
         &self,
-        desc: &wgpu::CreateBlasDescriptor<'_>,
-        sizes: wgpu::BlasGeometrySizeDescriptors,
+        _desc: &wgpu::CreateBlasDescriptor<'_>,
+        _sizes: wgpu::BlasGeometrySizeDescriptors,
     ) -> (Option<u64>, DispatchBlas) {
-        unimplemented!("prototype: create_blas")
+        report_to(&self.0, "build acceleration structures");
+        (None, DispatchBlas::custom(Unsupported))
     }
-    fn create_tlas(&self, desc: &wgpu::CreateTlasDescriptor<'_>) -> DispatchTlas {
-        unimplemented!("prototype: create_tlas")
+    fn create_tlas(&self, _desc: &wgpu::CreateTlasDescriptor<'_>) -> DispatchTlas {
+        report_to(&self.0, "build acceleration structures");
+        DispatchTlas::custom(Unsupported)
     }
     fn create_sampler(&self, desc: &wgpu::SamplerDescriptor<'_>) -> DispatchSampler {
         DispatchSampler::custom(super::resource::Sampler::new(&self.0.gl, desc))
     }
-    fn create_query_set(&self, desc: &wgpu::QuerySetDescriptor<'_>) -> DispatchQuerySet {
-        unimplemented!("prototype: create_query_set")
+    /// WebGL2 has no query sets: it counts no timestamps on Direct3D, and only whether any sample
+    /// passed. latkit times frames with [`Elapsed`](super::Elapsed) instead.
+    fn create_query_set(&self, _desc: &wgpu::QuerySetDescriptor<'_>) -> DispatchQuerySet {
+        report_to(&self.0, "make query sets");
+        DispatchQuerySet::custom(Unsupported)
     }
-    fn create_command_encoder(&self, desc: &wgpu::CommandEncoderDescriptor<'_>) -> DispatchCommandEncoder {
-        DispatchCommandEncoder::custom(super::command::Encoder::default())
+    fn create_command_encoder(&self, _desc: &wgpu::CommandEncoderDescriptor<'_>) -> DispatchCommandEncoder {
+        DispatchCommandEncoder::custom(super::command::Encoder::new(&self.0))
     }
     fn create_render_bundle_encoder(
         &self,
-        desc: &wgpu::RenderBundleEncoderDescriptor<'_>,
+        _desc: &wgpu::RenderBundleEncoderDescriptor<'_>,
     ) -> DispatchRenderBundleEncoder {
-        DispatchRenderBundleEncoder::custom(super::command::Pass::bundle())
+        DispatchRenderBundleEncoder::custom(super::command::Pass::bundle(&self.0))
     }
     fn set_device_lost_callback(&self, device_lost_callback: BoxDeviceLostCallback) {
         if let Some(reason) = self.0.lost_reason.get() {
@@ -431,7 +450,7 @@ impl DeviceInterface for Device {
     }
     unsafe fn start_graphics_debugger_capture(&self) {}
     unsafe fn stop_graphics_debugger_capture(&self) {}
-    fn poll(&self, poll_type: wgpu_types::PollType<u64>) -> Result<wgpu::PollStatus, wgpu::PollError> {
+    fn poll(&self, _poll_type: wgpu_types::PollType<u64>) -> Result<wgpu::PollStatus, wgpu::PollError> {
         Ok(wgpu::PollStatus::QueueEmpty)
     }
     fn get_internal_counters(&self) -> wgpu::InternalCounters {

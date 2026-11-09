@@ -16,6 +16,7 @@
     },
     "./wasm": "./pkg/latkit_bg.wasm",
     "./shaders": "./pkg/latkit_shaders.bin",
+    "./wgsl": "./pkg/latkit_wgsl_bg.wasm",
     "./worker": "./dist/worker.js"
   },
   "files": [

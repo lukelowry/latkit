@@ -3,6 +3,7 @@ use super::{
     device::State,
     resource::Buffer,
     transfer::{Source, upload},
+    unsupported::{Unsupported, report_to},
     waits::Waits,
 };
 use std::{cell::Cell, rc::Rc};
@@ -44,7 +45,7 @@ impl QueueInterface for Queue {
         _dest: wgpu::CopyExternalImageDestInfo<&wgpu::Texture>,
         _size: wgpu::Extent3d,
     ) {
-        unimplemented!("prototype: external image")
+        report_to(&self.state, "copy external images");
     }
     fn submit(&self, command_buffers: &mut dyn Iterator<Item = DispatchCommandBuffer>) -> u64 {
         for buffer in command_buffers {
@@ -56,6 +57,7 @@ impl QueueInterface for Queue {
         self.submitted.set(serial);
         serial
     }
+    /// WebGL2 writes no timestamps on Direct3D, so the device has no `TIMESTAMP_QUERY`.
     fn get_timestamp_period(&self) -> f32 {
         0.0
     }
@@ -63,7 +65,8 @@ impl QueueInterface for Queue {
         Waits::fence(&self.state, move |_, _| callback());
     }
     fn compact_blas(&self, _: &DispatchBlas) -> (Option<u64>, DispatchBlas) {
-        unimplemented!("WebGL2 has no BLAS")
+        report_to(&self.state, "build acceleration structures");
+        (None, DispatchBlas::custom(Unsupported))
     }
     fn present(&self, detail: &DispatchSurfaceOutputDetail) {
         detail.as_custom::<super::host::Output>().unwrap().present();

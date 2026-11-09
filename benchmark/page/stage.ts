@@ -6,11 +6,14 @@
  * lands. So a run draws the same frames however fast the device is, and its work counts repeat.
  *
  * A phase is an action, timed from its start until everything settles: no view wants a frame,
- * every view is complete, and no tile is loading. That is what a viewer waits for. Work in progress
- * that wakes no frame is awaited until it finishes. Compiles nothing waits for, such as the
- * pipelines that answer picks, finish after the time stops, so the next phase starts with none. A steady phase acts before each of a set number of frames, so each action
- * shows in its own frame, and its CPU and GPU times are per frame. A lost device fails the phase at
- * once, and every wait has a deadline that cancels the work it waits on.
+ * every view is complete, and no tile is loading. That is what a viewer waits for. A scene that
+ * moves on its own, such as comets, always wants a frame, so it settles once a frame after the
+ * action is complete. Work in progress that wakes no frame is awaited until it finishes. Compiles
+ * nothing waits for, such as the pipelines that answer picks, finish after the time stops, so the
+ * next phase starts with none. A steady phase acts before each of a set number of frames, so each
+ * action shows in its own frame, and its CPU and GPU times are per frame. A lost device fails the
+ * phase at once, unless the phase loses it on purpose, and every wait has a deadline that cancels
+ * the work it waits on.
  */
 import {
   Data,
@@ -44,6 +47,8 @@ export interface Cost {
   work: Work;
   /** Bytes resident on the GPU afterwards: data pages, and each view's per-row data. */
   resident: number;
+  /** Bytes of WebAssembly memory afterwards. It only grows, so it is the most the run needed. */
+  heap: number;
   /** Whether the phase acted every frame. If so, `cpu` is its time; otherwise `ms` is. */
   steady: boolean;
 }
@@ -74,16 +79,31 @@ export class Stage {
   readonly canvases: readonly HTMLCanvasElement[];
   /** The scenario's size. */
   readonly size: number;
+  /** Whether the scene moves on its own, so its views always want a frame. */
+  readonly moving: boolean;
   readonly views: View[] = [];
   /** Errors the views reported. Any error, such as a mark that does not fit its data, fails the
    * run. */
   readonly errors: string[] = [];
   readonly #data = new Map<string, Data>();
+  /** Bytes of WebAssembly memory now. */
+  readonly #heap: () => number;
   /** The clock of the stepped frames, in milliseconds. */
   #now = performance.now();
 
-  constructor(gpu: Gpu, canvases: readonly HTMLCanvasElement[], size: number) {
-    [this.gpu, this.canvases, this.size] = [gpu, canvases, size];
+  constructor(
+    gpu: Gpu,
+    canvases: readonly HTMLCanvasElement[],
+    size: number,
+    { moving = false, heap }: { moving?: boolean; heap: () => number },
+  ) {
+    [this.gpu, this.canvases, this.size, this.moving, this.#heap] = [
+      gpu,
+      canvases,
+      size,
+      moving,
+      heap,
+    ];
     // Step from the start, so no animation frame draws while the views load either.
     void gpu.step(this.#now);
   }
@@ -116,6 +136,23 @@ export class Stage {
   /** The range of axis coordinates dataset `name` recorded, or [0, 1] if none. */
   span(name: string): [number, number] {
     return this.#data.get(name)!.describe().span ?? [0, 1];
+  }
+
+  /** Dataset `name`. */
+  data(name: string): Data {
+    return this.#data.get(name)!;
+  }
+
+  /** Loses the device, as a browser does when its GPU resets, and measures until the views moved
+   * to a new one and drew everything again. */
+  recover(): Promise<Cost> {
+    return this.#phase(false, async (drawn) => {
+      // `lose` and `recover` are internal to latkit, for tests of the move.
+      const gpu = this.gpu as unknown as { lose(): void; recover(): Promise<void> };
+      gpu.lose();
+      await gpu.recover();
+      await this.#settle(drawn, true, true);
+    });
   }
 
   /** Applies each dataset to a new `Data`. The arrays are made beforehand, so this times latkit
@@ -181,7 +218,7 @@ export class Stage {
   once(act: () => unknown): Promise<Cost> {
     return this.#phase(false, async (drawn) => {
       await this.until(Promise.resolve().then(act), drawn, true);
-      await this.#settle(drawn, true);
+      await this.#settle(drawn, true, true);
     });
   }
 
@@ -229,15 +266,16 @@ export class Stage {
         act(i);
         await this.#frame(drawn, i >= WARM);
       }
-      await this.#settle(drawn, false);
+      await this.#settle(drawn, false, false);
     });
   }
 
   /** Counts the frames drawn in `IDLE` frames stepped after everything settles. Views that sleep
-   * draw none. */
+   * draw none. A scene that moves on its own draws every frame, so it counts none. */
   async idle(): Promise<number> {
     const drawn: Drawn = { frames: 0, cpu: [], gpu: [] };
-    await this.#settle(drawn, false);
+    await this.#settle(drawn, false, false);
+    if (this.moving) return 0;
     const before = drawn.frames;
     for (let i = 0; i < IDLE; i++) await this.#frame(drawn, false);
     return drawn.frames - before;
@@ -262,6 +300,7 @@ export class Stage {
       gpu: quantile(drawn.gpu, 0.5),
       work,
       resident: this.gpu.resident,
+      heap: this.#heap(),
       steady,
     };
   }
@@ -287,17 +326,21 @@ export class Stage {
   }
 
   /** Steps frames until everything settles: no view wants a frame, every view is complete, and no
-   * tile is loading. Work in progress that wakes no frame, such as a layout or a fetch, is awaited
-   * until it finishes. `measuring` is true for a once phase, whose every frame is measured. */
-  async #settle(drawn: Drawn, measuring: boolean): Promise<void> {
+   * tile is loading. A scene that moves on its own always wants a frame, so it settles once a frame
+   * drawn after the action is complete: `acted` says there was one. Work in progress that wakes no
+   * frame, such as a layout or a fetch, is awaited until it finishes. `measuring` is true for a
+   * once phase, whose every frame is measured. */
+  async #settle(drawn: Drawn, measuring: boolean, acted: boolean): Promise<void> {
+    const done = () => this.views.every((v) => v.complete && !v.stats.tilesLoading);
     for (let frames = 0; frames < MOST;) {
       if (this.gpu.lost) throw new Error('the GPU device was lost');
+      if (this.moving && (frames > 0 || !acted) && done()) return;
       if (this.views.some((v) => v.wantsFrame)) {
         await this.#frame(drawn, measuring);
         frames++;
         continue;
       }
-      if (this.views.every((v) => v.complete && !v.stats.tilesLoading)) return;
+      if (done()) return;
       await this.gpu.landed({ signal: AbortSignal.timeout(DEADLINE) }).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`waiting on ${this.#waiting() || 'nothing'}: ${message}`);

@@ -12,7 +12,7 @@ declare global {
 
 const root = path.resolve(import.meta.dirname, '..');
 const server = await serve(root, 5234, 'WebGL2 runtime verification');
-const chrome = await launch(['--disable-webgpu'], process.argv.includes('--software'));
+const chrome = await launch(['--disable-webgpu'], process.argv.includes('--software') || undefined);
 try {
   const page = await chrome.browser.newPage({ viewport: { width: 900, height: 700 } });
   const errors = errorsOf(page);

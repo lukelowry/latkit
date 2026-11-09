@@ -406,7 +406,9 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
             Asked::Shader(Variant::draw(Shader::Backdrop, format, 1).projection(Projection::of(&scene.space))),
         );
     }
-    if !scene.ease.is_zero() {
+    // A transition freezes rows' state and eases from it. Without an ease, comets on rows that moved
+    // still carry over through a transition of no length (see `View::transitions`).
+    if !scene.ease.is_zero() || any(&Mark::flows) {
         stages.add_all(Stage::Changes, [Asked::Shader(EASE), Asked::Shader(GATHER)]);
     }
     if !scene.marks.is_empty() {
@@ -524,6 +526,18 @@ mod tests {
         assert!(asks("points", PATH_ENDS), "vertices frame a fit");
         assert!(asks("strokes", PATH_GEOMETRY), "so do lines along their paths");
         assert!(!asks("strokes", PATH_ENDS), "edges lie between the vertices that frame them");
+    }
+
+    #[test]
+    fn comets_ask_for_the_transition_that_carries_them_even_without_an_ease() {
+        let changes = |scene: Scene| {
+            let stages = stages(&scene.ease(std::time::Duration::ZERO), wgpu::TextureFormat::Rgba8Unorm, 1);
+            [EASE, GATHER, CARRY].map(|pass| stages.of(Stage::Changes).contains(&Asked::Shader(pass)))
+        };
+        let still = Scene::new(Plane::default()).draw(Edges::of("g", "E").ends("a", "b"));
+        assert_eq!(changes(still), [false; 3], "nothing eases or carries");
+        let flowing = Scene::new(Plane::default()).draw(Edges::of("g", "E").ends("a", "b").flow(crate::field("s")));
+        assert_eq!(changes(flowing), [true; 3], "rows that move freeze, ease, and carry their comets over");
     }
 
     #[test]

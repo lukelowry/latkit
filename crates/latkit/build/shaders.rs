@@ -233,21 +233,35 @@ pub(crate) fn generate() {
             let shared = module.global_variables.iter().any(|(_, g)| g.binding.as_ref().is_some_and(|b| b.group < 2));
             let entry_constants =
                 if custom || entry.module == "raster::state" { Vec::new() } else { entry_constants(&module) };
+            // Natively, a shader's WGSL joins its declarations. The browser build's shaders are in
+            // its store instead.
+            let declarations = if browser {
+                String::new()
+            } else {
+                format!(" pieces: &{:?}, specializations: &[{}],", pieces.add(&source), specializations.join(", "))
+            };
             writeln!(
                 sources,
-                "        Shader::{name} => &ShaderSource {{ label: {label:?}, pieces: &{refs:?}, pass: &[{pass}], constants: &[{constants}], entry_constants: &[{entry_constants}], specializations: &[{specializations}], shared: {shared}, size: {size} }},",
-                refs = if browser { Vec::new() } else { pieces.add(&source) },
+                "        Shader::{name} => &ShaderSource {{ label: {label:?},{declarations} pass: &[{pass}], constants: &[{constants}], entry_constants: &[{entry_constants}], shared: {shared}, size: {size} }},",
                 pass = pass.join(", "),
                 constants = constants.join(", "),
                 entry_constants = entry_constants.join(", "),
-                specializations = specializations.join(", "),
                 size = source.len(),
             )
             .unwrap();
         }
     }
     fs::write(out.join("shaders.wgsl"), &pieces.text).unwrap();
-    fs::write(out.join("shaders.bin"), store.finish()).unwrap();
+    let store = store.finish();
+    if browser {
+        writeln!(
+            rust,
+            "/// The stamp of the `shaders.bin` this build wrote. The page must hand over exactly that file.\npub(crate) const STORE: u64 = {:#018x};\n",
+            stamp(&store)
+        )
+        .unwrap();
+    }
+    fs::write(out.join("shaders.bin"), store).unwrap();
     writeln!(
         rust,
         "/// Each declaration's byte range in `shaders.wgsl`.\n#[cfg(not(target_arch = \"wasm32\"))]\npub(crate) static PIECES: &[(u32, u32)] = &{:?};\n",
@@ -356,9 +370,8 @@ struct Specializing<'a> {
 impl Specializing<'_> {
     /// Writes the module of each specialization pipelines use, as the runtime writes it, and
     /// validates it, then translates each entry point to GLSL for the browser's `store`, except a
-    /// custom marker shader's. Returns each module as JSON for the browser gate, with the
-    /// `Specialization` of each pruned module for the runtime. Natively, those carry their
-    /// declarations in `pieces`.
+    /// custom marker shader's. Returns each module as JSON for the browser gate and, natively, the
+    /// `Specialization` of each pruned module for the runtime, with its declarations in `pieces`.
     fn specializations(
         &self,
         out: &Path,
@@ -401,8 +414,10 @@ impl Specializing<'_> {
                 Self::write(out, &file, &specialized, CUSTOM_MARKER);
             } else {
                 let pruned = prune(&specialized);
-                let refs = if browser { Vec::new() } else { pieces.add(&pruned) };
-                specializations.push(format!("Specialization {{ values: &{numbers:?}, pieces: &{refs:?} }}"));
+                if !browser {
+                    let refs = pieces.add(&pruned);
+                    specializations.push(format!("Specialization {{ values: &{numbers:?}, pieces: &{refs:?} }}"));
+                }
                 for (entry, glsl) in Self::write(out, &file, &pruned, "") {
                     store.add(&format!("{} {entry} {numbers:?}", self.name), &glsl);
                 }
@@ -511,6 +526,12 @@ struct Store {
 /// The inflated bytes of a store block, at most, unless one chunk is longer.
 const BLOCK: usize = 32 << 10;
 
+/// The 64-bit FNV-1a hash of `bytes`. `src/gpu/store.rs` stamps the file a page hands over the same
+/// way, and refuses it unless the stamps match.
+fn stamp(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
 impl Store {
     fn add(&mut self, key: &str, text: &str) {
         let mut chunks = Vec::new();
@@ -614,7 +635,9 @@ fn check_targets(module: &naga::Module, name: &str) {
     }
 }
 
-/// Every combination of `module`'s constants that pipelines use.
+/// Every combination of `module`'s constants that pipelines use. Asserts there is at least one,
+/// since a shader the browser build translates for no pipeline crashes the first page that draws
+/// with it.
 fn combinations<'a>(shader: &str, module: &'a naga::Module, types: &naga::Module) -> Vec<Vec<(&'a str, u32)>> {
     let mut combinations: Vec<Vec<(&str, u32)>> = vec![Vec::new()];
     for (_, o) in module.overrides.iter() {
@@ -634,15 +657,19 @@ fn combinations<'a>(shader: &str, module: &'a naga::Module, types: &naga::Module
                     next
                 })
             })
-            .filter(|c| made(shader, c, types))
             .collect();
     }
+    // Filtered once complete, so a constant missing means the shader has none, never one not yet
+    // added.
+    combinations.retain(|c| made(shader, c, types));
+    assert!(!combinations.is_empty(), "{shader}: no pipeline uses any combination of its constants");
     combinations
 }
 
-/// Whether any pipeline of `module` uses `constants`. Only channel evaluation (`raster::state`)
-/// runs without joins or samples. Points read no path, so they keep the default `PATH_ENDS`;
-/// area triangles always read geometry.
+/// Whether any pipeline of `module` uses `constants`, all of the constants it has. Only channel
+/// evaluation (`raster::state`) runs without joins or samples. Points read no path, so they keep
+/// the default `PATH_ENDS`; area triangles always read geometry, and their focus variant reads no
+/// path.
 fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
     let value = |name: &str| constants.iter().find(|(n, _)| *n == name).map(|&(_, v)| v);
     // Every geometry pipeline is specialized for its scene. Only the shared expression
@@ -657,7 +684,7 @@ fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
     }
     let path = value("PATH");
     if module == "draw::areas" {
-        return path == Some(type_constant(types, "PATH_GEOMETRY"));
+        return path.is_none_or(|path| path == type_constant(types, "PATH_GEOMETRY"));
     }
     match (value("PRIMITIVE"), path) {
         (Some(primitive), Some(path)) => {

@@ -13,6 +13,13 @@ import { typescript } from './schema.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const output = path.join(root, 'target/npm');
+/** The most bytes each WebAssembly and shader asset may have, raw and with brotli, which is what a
+ * page downloads. A release over either fails its package step, so growth is a choice. */
+const BUDGET = {
+  'pkg/latkit_bg.wasm': { raw: 3_610_000, brotli: 1_020_000 },
+  'pkg/latkit_shaders.bin': { raw: 245_000, brotli: 245_000 },
+  'pkg/latkit_wgsl_bg.wasm': { raw: 1_320_000, brotli: 345_000 },
+};
 const [mode, directory, version] = process.argv.slice(2);
 const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const write = (file, value) => fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
@@ -133,6 +140,15 @@ if (mode === 'prepare') {
   };
   write(path.join(output, 'package.json'), report);
   console.log(JSON.stringify(report, null, 2));
+  for (const [file, most] of Object.entries(BUDGET)) {
+    const size = sizes[file];
+    assert(size, `${file} is missing from the package`);
+    for (const measure of /** @type {const} */ (['raw', 'brotli']))
+      assert(
+        size[measure] <= most[measure],
+        `${file} is ${size[measure]} bytes ${measure === 'raw' ? 'raw' : 'with brotli'}, over its budget of ${most[measure]}: shrink it, or raise BUDGET in npm/build.mjs`,
+      );
+  }
 } else if (mode === 'consumer') {
   const report = read(path.join(output, 'package.json'));
   assert.equal(

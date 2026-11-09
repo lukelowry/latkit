@@ -4,12 +4,12 @@
 pub(crate) mod arena;
 pub(crate) mod atlas;
 pub(crate) mod bounds;
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod browser;
 pub(crate) mod colormaps;
 pub(crate) mod dictionary;
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
-mod gl;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod gl;
 #[cfg(all(feature = "wgsl", target_arch = "wasm32"))]
 mod glsl;
 pub(crate) mod grown;
@@ -131,7 +131,7 @@ pub(crate) struct Shared {
     /// [`Gpu::work`] reads them.
     pub(crate) counters: Arc<Counters>,
     pub(crate) sampler: wgpu::Sampler,
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) browser: Mutex<Option<browser::Browser>>,
     pub(crate) lost: Arc<AtomicBool>,
     /// Errors the device raised outside any error scope, for every view to report.
@@ -306,12 +306,12 @@ impl Gpu {
                 "latkit's shaders are not loaded: the page hands them over with Browser::set_shaders".into(),
             ));
         }
-        #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: if cfg!(target_arch = "wasm32") { wgpu::Backends::GL } else { wgpu::Backends::PRIMARY },
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         let (instance, mut browser) = browser::Browser::new()?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -341,7 +341,7 @@ impl Gpu {
             .await
             .map_err(|e| Error::Unsupported(format!("no GPU device: {e}").into()))?;
         let gpu = Gpu::create(Some(instance), Some(adapter), device, queue);
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         {
             browser.watch(&gpu);
             *gpu.0.browser.lock().unwrap_or_else(PoisonError::into_inner) = Some(browser);
@@ -370,7 +370,7 @@ impl Gpu {
         if !wgpu::Limits::downlevel_webgl2_defaults().check_limits(&device.limits()) {
             return Err(Error::Unsupported("the device does not meet WebGL2 rendering limits".into()));
         }
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         if !gl::owns(&device) {
             return Err(Error::Unsupported("in a browser, latkit draws only on the WebGL2 device of Gpu::new".into()));
         }
@@ -386,7 +386,7 @@ impl Gpu {
     /// they report it even when nothing else would draw a frame.
     pub(crate) fn raise(&self, error: Error) {
         self.device_events().raise(error);
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         crate::web::waker(self).wake();
     }
 
@@ -458,7 +458,7 @@ impl Gpu {
                 queue,
                 counters,
                 sampler,
-                #[cfg(all(feature = "web", target_arch = "wasm32"))]
+                #[cfg(target_arch = "wasm32")]
                 browser: Mutex::new(None),
                 lost,
                 raised,
@@ -468,7 +468,7 @@ impl Gpu {
         });
         // In a page, set the multisample count now from the screen's pixel ratio. Every view and
         // canvas of the GPU draws for that screen.
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         if let Some(window) = web_sys::window() {
             let _ = shared.samples.set(samples_at(window.device_pixel_ratio() as f32));
         }
@@ -478,16 +478,16 @@ impl Gpu {
             let loss = events.clone();
             // In a page, a lost device or an error wakes the views, so they report it even when
             // nothing else would draw a frame.
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             let (wake, wake_on_error) = (crate::web::waker(&gpu), crate::web::waker(&gpu));
             gpu.0.device.set_device_lost_callback(move |_, _| {
                 loss.lost();
-                #[cfg(all(feature = "web", target_arch = "wasm32"))]
+                #[cfg(target_arch = "wasm32")]
                 wake.wake_by_ref();
             });
             gpu.0.device.on_uncaptured_error(Arc::new(move |error| {
                 events.error(&error);
-                #[cfg(all(feature = "web", target_arch = "wasm32"))]
+                #[cfg(target_arch = "wasm32")]
                 wake_on_error.wake_by_ref();
             }));
         }
@@ -566,7 +566,7 @@ impl Gpu {
 /// In a page, nothing records once the last view and shot of a `Gpu` are gone, so the pool and the
 /// memory retired go at once, instead of whenever JavaScript collects them. Natively, dropping them
 /// frees them once the GPU is done with them.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 impl Drop for Shared {
     fn drop(&mut self) {
         self.queue.retired().destroy();

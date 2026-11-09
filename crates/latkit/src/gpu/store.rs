@@ -9,13 +9,26 @@ use std::sync::OnceLock;
 
 static STORE: OnceLock<Store> = OnceLock::new();
 
-/// Keeps the store's `bytes`. Later calls change nothing: a page has one build's shaders.
+/// Keeps the store's `bytes`. Errors unless they are exactly the `shaders.bin` this build wrote, so a
+/// file from another version, or a damaged one, fails here rather than when a shader compiles. Later
+/// calls change nothing: a page has one build's shaders.
 pub(crate) fn set(bytes: Vec<u8>) -> crate::Result<()> {
-    if STORE.get().is_none() {
-        let store = Store::read(bytes).ok_or_else(|| crate::Error::invalid("not latkit's shader store"))?;
-        let _ = STORE.set(store);
+    if STORE.get().is_some() {
+        return Ok(());
     }
+    if stamp(&bytes) != super::shaders::STORE {
+        return Err(crate::Error::invalid(
+            "latkit_shaders.bin is not the file this latkit build wrote: serve it from the same version as the WebAssembly",
+        ));
+    }
+    let store = Store::read(bytes).ok_or_else(|| crate::Error::invalid("latkit_shaders.bin could not be read"))?;
+    let _ = STORE.set(store);
     Ok(())
+}
+
+/// The 64-bit FNV-1a hash of `bytes`, as `build/shaders.rs` stamps the store it writes.
+fn stamp(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
 /// Whether the page handed over the store.
@@ -89,9 +102,10 @@ impl Store {
         for &id in ids {
             let [block, start, length] = *self.chunks.get(id as usize)?;
             let (range, size, inflated) = self.blocks.get(block as usize)?;
+            // The stamp checked in `set` guarantees the bytes are the build's own.
             let block = inflated.get_or_init(|| {
-                let bytes = inflate(&self.bytes[range.clone()], *size).unwrap_or_default();
-                String::from_utf8(bytes).unwrap_or_default().into_boxed_str()
+                let bytes = inflate(&self.bytes[range.clone()], *size).expect("a stamped store block inflates");
+                String::from_utf8(bytes).expect("a stamped store block is text").into_boxed_str()
             });
             text.push_str(block.get(start as usize..(start + length) as usize)?);
         }

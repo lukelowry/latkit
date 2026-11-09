@@ -34,7 +34,7 @@ fn extent(words: u64, layers: u32) -> wgpu::Extent3d {
     assert!(depth <= u64::from(layers), "word store exceeds the texture layer limit");
     // Native GLES infers the texture target from its allocation; two layers keep its array
     // target. The browser driver chooses the target explicitly and needs no spare layer.
-    let minimum_layers = if cfg!(all(feature = "web", target_arch = "wasm32")) { 1 } else { 2 };
+    let minimum_layers = if cfg!(target_arch = "wasm32") { 1 } else { 2 };
     // Before the first logical row is full, only its occupied prefix needs storage. Its texel
     // coordinates already match the final width, so growth never relocates a word.
     wgpu::Extent3d {
@@ -62,9 +62,9 @@ fn make(device: &wgpu::Device, label: &str, words: u64) -> wgpu::Texture {
             | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     };
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     return super::gl::array_texture(device, &desc);
-    #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     device.create_texture(&desc)
 }
 

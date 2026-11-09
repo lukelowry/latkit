@@ -8,19 +8,19 @@
 //! `Native`. It loads fonts on first use, runs jobs and reads files on a worker pool, and encodes
 //! H.264 with Media Foundation on Windows. It needs no window or network client.
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 mod browser;
 mod job;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod native;
-#[cfg(any(test, all(feature = "web", target_arch = "wasm32")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 mod queue;
 
 use std::sync::Arc;
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub use browser::Browser;
-#[cfg(all(feature = "web", target_arch = "wasm32", not(feature = "wgsl")))]
+#[cfg(all(target_arch = "wasm32", not(feature = "wgsl")))]
 pub(crate) use browser::translate;
 pub use job::Job;
 pub(crate) use job::Placement;
@@ -116,8 +116,8 @@ pub struct Raster {
 /// How many times fonts finished loading in the browser. Text set before a font loaded is set again
 /// in it. Natively it stays 0, since fonts load before any text is set.
 pub(crate) fn fonts() -> u64 {
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     return browser::fonts();
-    #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     0
 }

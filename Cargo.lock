@@ -826,6 +826,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "latkit-browser-tests"
+version = "0.0.0"
+dependencies = [
+ "js-sys",
+ "latkit",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wgpu",
+]
+
+[[package]]
 name = "latkit-cli"
 version = "0.6.1"
 dependencies = [

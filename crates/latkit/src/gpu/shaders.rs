@@ -93,18 +93,20 @@ impl ShaderSource {
 static WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/shaders.wgsl"));
 
 /// One linked shader: its declarations, entry points included, and the bindings of its pass group.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code, reason = "the browser build's shaders are in its store"))]
+/// The browser build's shaders are in its store, so there it has no declarations.
 pub(crate) struct ShaderSource {
     pub(crate) label: &'static str,
     /// Its declarations, as indices into [`PIECES`], in order.
+    #[cfg(not(target_arch = "wasm32"))]
     pieces: &'static [u16],
     pub(crate) pass: &'static [Binding],
     /// The constants pipelines specialize it with.
     constants: &'static [Constant<'static>],
     /// Constants reached by a pipeline's vertex and selected fragment entry together.
     entry_constants: &'static [(&'static str, &'static [&'static str])],
-    /// Built-in modules with constant branches removed before browser compilation. Kernels and
-    /// application markers retain their helper declarations until their source is supplied.
+    /// Each specialization pipelines use, with its constant branches removed. Kernels and custom
+    /// markers keep their helper declarations until their source is supplied.
+    #[cfg(not(target_arch = "wasm32"))]
     specializations: &'static [Specialization],
     /// Whether it reads the view and mark groups. A shader that does not gets empty groups in their
     /// place.
@@ -113,7 +115,9 @@ pub(crate) struct ShaderSource {
     size: usize,
 }
 
-#[cfg_attr(target_arch = "wasm32", allow(dead_code, reason = "the browser build's shaders are in its store"))]
+/// One specialization of a shader: the values of its constants, and its declarations after
+/// pruning, as indices into [`PIECES`].
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct Specialization {
     pub(crate) values: &'static [u32],
     pub(crate) pieces: &'static [u16],

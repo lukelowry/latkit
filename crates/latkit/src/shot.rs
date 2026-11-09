@@ -320,7 +320,7 @@ impl Drop for Picture {
             retired.retire(uniform);
         }
         // In a page, the next animation frame destroys them, even when no view draws then.
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         crate::web::waker(&self.gpu).wake();
     }
 }

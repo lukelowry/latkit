@@ -108,6 +108,7 @@ web-sys = { workspace = true, optional = true, features = [
     "WebGlSync",
     "WebGlShader",
     "WebGlProgram",
+    "WebGlQuery",
     "WebGlUniformLocation",
     "WebGlVertexArrayObject",
 ] }

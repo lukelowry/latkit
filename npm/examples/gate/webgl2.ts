@@ -44,7 +44,7 @@ const dimension = (name: string) => {
   return Number(value);
 };
 const dimensions = [dimension('WORD_WIDTH'), dimension('WORD_HEIGHT')];
-const chrome = await launch(['--disable-webgpu'], process.argv.includes('--software'));
+const chrome = await launch(['--disable-webgpu'], process.argv.includes('--software') || undefined);
 try {
   const page = await chrome.browser.newPage();
   page.on('console', (message) => console.log(message.text()));

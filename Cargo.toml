@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "xtask"]
+members = ["crates/*", "xtask", "npm/examples/gate/driver"]
 default-members = ["crates/latkit"]
 resolver = "3"
 

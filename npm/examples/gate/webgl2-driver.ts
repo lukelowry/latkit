@@ -1,3 +1,9 @@
+/**
+ * Checks latkit's WebGL2 device through the public Rust API (`driver/tests.rs`) in Chrome: WGSL
+ * compilation and scopes, rendering, vertices, transfers, exports, surfaces, unsupported calls, and
+ * device loss. It builds the `latkit-browser-tests` workspace crate, which uses latkit's `wgsl`
+ * feature, unless given `--skip-build`. `--software` draws with SwiftShader, as Linux always does.
+ */
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -5,21 +11,19 @@ import { execFileSync } from 'node:child_process';
 import { deadline, errorsOf, launch, STEP } from './browser.ts';
 
 const root = path.resolve(import.meta.dirname, '../../..');
-const fixture = path.join(import.meta.dirname, 'driver');
-const output = path.join(root, 'target/webgl2-driver-tests/pkg');
+const output = path.join(root, 'target/webgl2-driver');
 if (!process.argv.includes('--skip-build')) {
   const built = execFileSync(
     'cargo',
     [
       'build',
       '--locked',
-      '--manifest-path',
-      path.join(fixture, 'Cargo.toml'),
+      '-p',
+      'latkit-browser-tests',
       '--target',
       'wasm32-unknown-unknown',
-      '--release',
-      '--target-dir',
-      path.join(root, 'target/webgl2-driver-tests'),
+      '--profile',
+      'wasm-dev',
       '--message-format=json-render-diagnostics',
     ],
     { cwd: root, stdio: ['inherit', 'pipe', 'inherit'], maxBuffer: 1 << 28 },
@@ -44,10 +48,7 @@ if (!process.argv.includes('--skip-build')) {
   execFileSync(
     'wasm-bindgen',
     [
-      path.join(
-        root,
-        'target/webgl2-driver-tests/wasm32-unknown-unknown/release/latkit_browser_tests.wasm',
-      ),
+      path.join(root, 'target/wasm32-unknown-unknown/wasm-dev/latkit_browser_tests.wasm'),
       '--target',
       'web',
       '--out-dir',
@@ -95,7 +96,7 @@ const address = server.address();
 if (!address || typeof address === 'string') throw new Error('test server has no port');
 const browser = await launch(
   ['--disable-webgpu', '--disable-gpu-shader-disk-cache'],
-  process.argv.includes('--software'),
+  process.argv.includes('--software') || undefined,
 );
 try {
   const page = await browser.browser.newPage();
@@ -120,6 +121,7 @@ try {
         exports(): Promise<string>;
         surfaces(canvas: OffscreenCanvas, external: OffscreenCanvas): Promise<string>;
         scopes(): Promise<string>;
+        unsupported(): Promise<string>;
         validation(): Promise<string>;
         loss(): Promise<string>;
       };
@@ -169,6 +171,7 @@ try {
         exports: await check('exports', () => module.exports()),
         surfaces,
         scopes: await check('scopes', () => module.scopes()),
+        unsupported: await check('unsupported', () => module.unsupported()),
         validation: await check('validation', () => module.validation()),
         loss: await check('loss', () => module.loss()),
       };

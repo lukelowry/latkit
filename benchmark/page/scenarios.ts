@@ -8,17 +8,23 @@
  * - views share pages;
  * - returning the camera to where it was packs, uploads, and evaluates nothing;
  * - appending never thins what draws;
- * - loading grows no faster than the data.
+ * - loading grows no faster than the data;
+ * - a scene moving on its own, such as comets, costs the CPU the same at any size;
+ * - a lost device recovers in time linear in the data.
  *
  * Every scenario starts with `init`, `data`, and `load`, and idle frames are counted after its last
- * phase.
+ * phase. Between them, the scenarios draw every kind of mark and marker, labels, legends and a
+ * title, joined fields, comets, elevation on a tilted globe, layouts, tiles, plots, pictures, and
+ * video.
  */
 import {
   Shot,
   field,
+  type Bitmap,
   type Budget,
   type Camera,
   type ColormapName,
+  type Query,
   type Scene,
   type Space,
 } from 'latkit';
@@ -44,6 +50,8 @@ export interface Scenario {
   cold?: boolean;
   /** Data is fetched as the camera needs it, so uploads vary with the frame a fetch arrives in. */
   fetches?: boolean;
+  /** The scene moves on its own, as comets do, so its views draw every frame. */
+  moving?: boolean;
 }
 
 export interface Built {
@@ -58,12 +66,14 @@ export interface Built {
 
 /**
  * How a phase's cost may grow with size: 0 means not at all, 1 means no faster than linearly.
- * `time` is a steady phase's CPU time per frame, or a once phase's milliseconds. `bytes` limits the
- * bytes uploaded, and for `load` also the bytes resident unless `resident` is set. A measure left
- * out is checked only against the baselines.
+ * `time` is a steady phase's CPU time per frame, or a once phase's milliseconds. `gpu` is a steady
+ * phase's GPU time per frame, and defaults to 1, since a frame draws what is in view. `bytes` limits
+ * the bytes uploaded, and for `load` also the bytes resident and the WebAssembly memory unless
+ * `resident` is set. A measure left out is checked only against the baselines.
  */
 export interface Order {
   time?: 0 | 1;
+  gpu?: 0 | 1;
   bytes?: 0 | 1;
   resident?: 0 | 1;
 }
@@ -127,6 +137,96 @@ const laidOut: Scene = {
     { vertices: ['d', 'Node'], label: { text: '$name' } },
   ],
 };
+
+/** Dataset `g`'s buses raised by load on a globe, over the lines between them. */
+const raised: Scene = {
+  space: { earth: { projection: 'globe' } },
+  ease: 0,
+  marks: [
+    { edges: ['g', 'Line'], ends: ['from', 'to'], width: 0.6 },
+    {
+      vertices: ['g', 'Bus'],
+      position: ['$lon', '$lat'],
+      elevation: field('load').mul(4),
+      color: field('load').colormap('viridis').domain(0, 1),
+    },
+  ],
+};
+
+/** Comets flowing along dataset `g`'s lines, at each line's `speed`. */
+const flowing: Scene = {
+  space: 'plane',
+  ease: 0,
+  marks: [
+    { edges: ['g', 'Line'], ends: ['from', 'to'], width: 1.5, flow: field('speed') },
+    { vertices: ['g', 'Bus'], position: ['$lon', '$lat'], radius: 2 },
+  ],
+};
+
+/** Two 2×2 icons: a red one and a blue one. */
+const ICONS: Bitmap[] = [
+  { size: [2, 2], rgba: Array.from({ length: 4 }, () => [220, 60, 60, 255]).flat() },
+  { size: [2, 2], rgba: Array.from({ length: 4 }, () => [60, 90, 220, 255]).flat() },
+];
+
+/** A custom marker: a disc shaded from the row's color toward orange by its first input. `tint`
+ * changes the source, so a new one compiles. */
+const custom = (tint: number) =>
+  `fn marker(f: MarkerFragment) -> MarkerColor {
+  let shade = mix(f.color.rgb, vec3f(1.0, ${tint.toFixed(2)}, 0.2), f.input[0]);
+  return MarkerColor(vec4f(shade, f.color.a), length(f.p) - min(f.half.x, f.half.y));
+}`;
+
+/** Dataset `m`'s rows as every kind of marker, one table each. */
+const markers = (tint: number): Scene => {
+  const at = { position: ['$x', '$y'] as [string, string], radius: 5 };
+  return {
+    space: 'plane',
+    ease: 0,
+    marks: [
+      {
+        vertices: ['m', 'Shape'],
+        ...at,
+        marker: { shape: 'diamond' },
+        color: field('v').colormap('viridis').domain(0, 1),
+      },
+      { vertices: ['m', 'Gauge'], ...at, marker: { gauge: { fill: '$v', shape: 'rounded' } } },
+      {
+        vertices: ['m', 'Pie'],
+        ...at,
+        marker: { pie: { slices: ['$v', '$w'], colors: ['#e15759', '#4e79a7'], hole: 0.4 } },
+      },
+      {
+        vertices: ['m', 'Icon'],
+        ...at,
+        marker: { icon: { images: ICONS, index: field('v').gt(0.5) } },
+      },
+      {
+        vertices: ['m', 'Custom'],
+        ...at,
+        marker: { wgsl: { source: custom(tint), inputs: ['$v'] } },
+      },
+    ],
+  };
+};
+
+/** Dataset `g`'s buses, colored and sized by fields of dataset `w` joined by row id, with a title
+ * and a legend of the colors. */
+const joined = (colormap: ColormapName): Scene => ({
+  space: 'plane',
+  ease: 0,
+  title: { text: 'Load by bus', subtitle: 'joined from another dataset', place: 'top' },
+  marks: [
+    { edges: ['g', 'Line'], ends: ['from', 'to'], width: 0.5 },
+    {
+      vertices: ['g', 'Bus'],
+      position: ['$lon', '$lat'],
+      color: field('load').from(['w', 'Bus']).colormap(colormap).domain(0, 1),
+      radius: field('size').from(['w', 'Bus']),
+      legend: { title: 'Load', unit: ' pu', place: 'right' },
+    },
+  ],
+});
 
 // Phases.
 
@@ -361,6 +461,29 @@ const arrange = (): Phase => ({
   run: (s) => s.once(() => s.view.arrange()),
 });
 
+/** Draws frames with nothing changed, as a scene that moves on its own does. The GPU moves
+ * everything, so a frame's CPU time stays flat. */
+const still = (): Phase => ({
+  name: 'still',
+  order: { time: 0, bytes: 0 },
+  run: (s) => s.steady(FRAMES, () => {}),
+});
+
+/** Queries dataset `data`'s rows, as an application's table or search does. It reads on the CPU,
+ * and draws nothing. */
+const query = (data: string, request: Query): Phase => ({
+  name: 'query',
+  order: { time: 1, bytes: 0 },
+  run: (s) => s.once(() => s.data(data).query(request)),
+});
+
+/** Loses the device and measures until the views draw everything on a new one. */
+const recover = (): Phase => ({
+  name: 'recover',
+  order: { time: 1, bytes: 1 },
+  run: (s) => s.recover(),
+});
+
 /** A shot of every view side by side, at 16:9, with about the scenario's size in pixels. */
 function shot(s: Stage) {
   const width = Math.round(Math.sqrt((s.size * 16) / 9) / 4) * 4;
@@ -415,6 +538,37 @@ export const scenarios: Record<string, Scenario> = {
     build: (n) => ({ scene: dots('plane'), data: { d: make.scatter(n) } }),
     phases: [],
   },
+  'start globe': {
+    about: 'a first visit to a grid on the globe: lines, buses, and the globe compiled cold',
+    unit: 'buses',
+    sizes: [1e4],
+    cold: true,
+    build: (n) => ({
+      scene: grid({ earth: { projection: 'globe' } }),
+      data: { g: make.lattice(n) },
+    }),
+    phases: [],
+  },
+  'start labels': {
+    about: 'a first visit to labeled points: the text pipelines compiled cold',
+    unit: 'rows',
+    sizes: [1e4],
+    cold: true,
+    build: (n) => ({
+      scene: dots('plane', 'viridis', 'name'),
+      data: { d: make.scatter(n, 1, true) },
+    }),
+    phases: [],
+  },
+  'start markers': {
+    about:
+      'a first visit to every kind of marker: the custom marker translated and all compiled cold',
+    unit: 'rows',
+    sizes: [1e4],
+    cold: true,
+    build: (n) => ({ scene: markers(0.6), data: { m: make.markers(n) } }),
+    phases: [],
+  },
   points: {
     about: 'vertices on a plane, colored through a colormap',
     unit: 'rows',
@@ -430,6 +584,12 @@ export const scenarios: Record<string, Scenario> = {
       ...pick(),
       hover(),
       select('d', 'Point'),
+      query('d', {
+        of: 'Point',
+        filter: field('v').gt(0.9),
+        sort: [[field('v'), 'descending']],
+        limit: 100,
+      }),
       append('d', 'Point', (i) => ({
         x: [((i * 37) % 100) / 100],
         y: [((i * 53) % 100) / 100],
@@ -470,6 +630,56 @@ export const scenarios: Record<string, Scenario> = {
       data: { d: make.scatter(n, 1, true) },
     }),
     phases: [pan(), zoom()],
+  },
+  raised: {
+    about: 'buses raised by load on a tilted globe: heights sorted on the GPU, depth tested',
+    unit: 'buses',
+    sizes: DECADES,
+    build: (n) => ({
+      scene: raised,
+      data: { g: make.lattice(n) },
+      camera: { center: [0, 20], zoom: 2, pitch: 50, bearing: 0 },
+    }),
+    // A changed height sorts every raised row again on the GPU.
+    phases: [pan(), one('g', 'Bus', 'load'), every('g', 'Bus', 'load'), ...pick()],
+  },
+  markers: {
+    about: 'shapes, gauges, pies, icons, and a custom WGSL marker, a fifth of the rows each',
+    unit: 'rows',
+    sizes: [1e3, 1e4, 1e5, 1e6],
+    build: (n) => ({ scene: markers(0.6), data: { m: make.markers(n) } }),
+    phases: [
+      pan(),
+      one('m', 'Custom', 'v'),
+      // Another custom marker source translates and compiles its pipelines again.
+      restyle(markers(0.3)),
+      ...pick(),
+    ],
+  },
+  comets: {
+    about: 'comets flowing along every line of a grid, moved by the GPU each frame',
+    unit: 'buses',
+    sizes: [1e3, 1e4, 1e5, 1e6],
+    moving: true,
+    build: (n) => ({ scene: flowing, data: { g: make.lattice(n, true) } }),
+    phases: [still(), pan(), one('g', 'Line', 'speed'), ...pick()],
+  },
+  joins: {
+    about:
+      'buses colored and sized by fields joined from another dataset, under a title and legend',
+    unit: 'buses',
+    sizes: DECADES,
+    build: (n) => ({
+      scene: joined('viridis'),
+      data: { g: make.lattice(n), w: make.weather(n) },
+    }),
+    phases: [
+      pan(),
+      one('w', 'Bus', 'load'),
+      every('w', 'Bus', 'load'),
+      // The legend's bar redraws in the new colormap.
+      restyle(joined('magma')),
+    ],
   },
   lanes: {
     about: 'edges by the thousand between the same sixteen pairs of vertices',
@@ -584,5 +794,13 @@ export const scenarios: Record<string, Scenario> = {
     views: () => 2,
     build: () => ({ scene: grid('plane'), data: { g: make.lattice(1e5) } }),
     phases: [image(), png(), video(true), video(false)],
+  },
+  // Last, since a device that fails to come back stops the sweep.
+  recovery: {
+    about: 'a lost device: the views move to a new one and draw everything again',
+    unit: 'buses',
+    sizes: [1e3, 1e4, 1e5, 1e6],
+    build: (n) => ({ scene: grid('plane'), data: { g: make.lattice(n) } }),
+    phases: [recover()],
   },
 };

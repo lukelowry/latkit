@@ -39,7 +39,7 @@ pub(crate) enum Urgency {
 /// longer than a display frame, so the frames drawn with the finished pipelines are on the GPU.
 /// A browser builds each pipeline's shaders for its real targets when a frame first draws with it,
 /// and until it finishes, every synchronous query a starting compile makes blocks the page.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Draw passes can share a shader module while retaining their own fixed depth state.
@@ -472,15 +472,15 @@ pub(crate) struct Pipelines {
     queue: Vec<(Urgency, Asked)>,
     /// Compiles started and not finished, by urgency. A browser compiles them on the same threads,
     /// so less urgent ones wait until these finish.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     started: Vec<(Urgency, Arc<Ahead>)>,
     /// The least urgent compiles that may start without first waiting for the GPU to settle.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     opened: Urgency,
     /// Compiles at this urgency wait for the GPU to settle before they start.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     settling: Option<Urgency>,
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     scheduled: bool,
     /// How many requested compiles have finished. In a browser, `compiling` counts those in
     /// progress.
@@ -490,10 +490,7 @@ pub(crate) struct Pipelines {
     /// Counts the pipelines compiled.
     counters: Arc<Counters>,
     /// The GPU these belong to, so a finished compile can start the next.
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", feature = "web")),
-        expect(dead_code, reason = "only a browser compiles ahead")
-    )]
+    #[cfg_attr(not(target_arch = "wasm32"), expect(dead_code, reason = "only a browser compiles ahead"))]
     gpu: Weak<Shared>,
 }
 
@@ -569,13 +566,13 @@ impl Pipelines {
             custom: HashMap::new(),
             asked: HashMap::new(),
             queue: Vec::new(),
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             started: Vec::new(),
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             opened: Urgency::Draw,
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             settling: None,
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             scheduled: false,
             landed: Arc::default(),
             refusals: Arc::default(),
@@ -589,7 +586,7 @@ impl Pipelines {
     pub(crate) fn ask(&mut self, device: &wgpu::Device, needs: &[Asked], urgency: Urgency, waker: &Waker) {
         self.queue(needs, urgency, waker);
         let _ = device;
-        #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         self.pump(device);
     }
 
@@ -615,13 +612,13 @@ impl Pipelines {
         crate::order::by_key(&mut self.queue, |(urgency, need)| {
             crate::order::pair(*urgency as u32, !(need.size().min(u32::MAX as usize) as u32))
         });
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         self.schedule();
     }
 
     /// A single task advances the queue independently of animation frames and explicit stepping.
     /// It holds only a weak device reference between tasks and stops as soon as the queue empties.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     fn schedule(&mut self) {
         if self.scheduled || self.queue.is_empty() {
             return;
@@ -671,10 +668,10 @@ impl Pipelines {
     /// (see [`SETTLE`]). Returns whether a pipeline waits.
     fn pump(&mut self, device: &wgpu::Device) -> bool {
         let started = web_time::Instant::now();
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         self.started.retain(|(_, ahead)| !ahead.landed());
         while let Some(&(urgency, _)) = self.queue.first() {
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             {
                 if self.started.iter().any(|&(before, _)| before < urgency) {
                     return true;
@@ -687,7 +684,7 @@ impl Pipelines {
             let (_, need) = self.queue.remove(0);
             let ahead = self.asked[&need].clone();
             // A custom marker's shader translates first, which can take a task or more.
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             if let Asked::Custom(source, variant) = &need {
                 match self.translation(source, variant.specialized()) {
                     Some(Ok(())) => {}
@@ -704,7 +701,7 @@ impl Pipelines {
                     }
                 }
             }
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             {
                 self.started.push((urgency, ahead.clone()));
                 let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -723,7 +720,7 @@ impl Pipelines {
                     ahead.land(&landed);
                 });
             }
-            #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             {
                 let _ = urgency;
                 ahead.land(&self.landed);
@@ -784,12 +781,12 @@ impl Pipelines {
     }
 
     /// Requested compiles still in progress or queued.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn compiling(&self) -> u64 {
         self.asked.values().filter(|ahead| !ahead.landed()).count() as u64
     }
 
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     fn create(&mut self, device: &wgpu::Device, need: &Asked) {
         match need {
             Asked::Shader(variant) => {
@@ -882,11 +879,14 @@ impl Pipelines {
     }
 
     /// The GLSL of `specialized`'s entry `entry`, built with `appended`: a kernel, or a custom
-    /// marker whose shader translated.
+    /// marker whose shader translated. One the build did not translate is a shader that fails to
+    /// compile, saying so, so the browser refuses its pipeline and the views that need it report
+    /// why, rather than the page stopping.
     #[cfg(target_arch = "wasm32")]
     fn glsl(&self, specialized: Specialized, appended: Option<&Arc<str>>, entry: &str) -> String {
         let stored = |key: String| {
-            super::store::text(&key).unwrap_or_else(|| panic!("the build translated no shader for {key}"))
+            super::store::text(&key)
+                .unwrap_or_else(|| format!("#version 300 es\n#error latkit's build translated no shader for {key}\n"))
         };
         match appended {
             Some(kernel) if specialized.shader == Shader::State && entry != "vertex" => {
@@ -906,7 +906,7 @@ impl Pipelines {
 
     /// Whether the shader of custom marker `source` specialized as `specialized` translated: `Ok`
     /// once it did, or why it did not, and `None` while it translates. The first call starts it.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     fn translation(&mut self, source: &Arc<str>, specialized: Specialized) -> Option<std::result::Result<(), String>> {
         let key = (source.clone(), specialized);
         if let Some(translated) = self.translations.get(&key) {
@@ -938,7 +938,7 @@ impl Pipelines {
     }
 
     /// Keeps a custom marker shader's translation, and queues the pipelines that waited for it.
-    #[cfg(all(feature = "web", target_arch = "wasm32", not(feature = "wgsl")))]
+    #[cfg(all(target_arch = "wasm32", not(feature = "wgsl")))]
     fn translated(&mut self, key: &(Arc<str>, Specialized), result: Translation) {
         self.translations.insert(key.clone(), Some(result));
         let (ready, waiting) = std::mem::take(&mut self.translating).into_iter().partition(|(_, need)| {

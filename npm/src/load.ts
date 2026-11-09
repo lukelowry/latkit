@@ -4,12 +4,20 @@ import init, * as bindings from '../pkg/latkit.js';
 import { encoder } from './encoder.js';
 import { loaded, stop, thrown } from './internal.js';
 import { jobs } from './jobs.js';
-import { translate } from './wgsl.js';
+import { translator } from './wgsl.js';
 
-let configured:
-  | { wasm?: string | WebAssembly.Module; shaders?: string; worker?: string | (() => Worker) }
-  | undefined;
+interface Configured {
+  wasm?: string | WebAssembly.Module;
+  shaders?: string;
+  wgsl?: string | WebAssembly.Module;
+  worker?: string | (() => Worker);
+}
+
+let configured: Configured | undefined;
 let loading: Promise<void> | undefined;
+
+/** The shaders' download and handover, while it runs or once it succeeded. */
+let shaders: Promise<void> | undefined;
 
 /** The GPU device requested while loading, kept until the first `Gpu.create()` takes it. */
 let first: Promise<bindings.Gpu> | undefined;
@@ -18,7 +26,8 @@ let first: Promise<bindings.Gpu> | undefined;
  * Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
  * load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
  * load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
- * also downloads the shaders, then creates the first WebGL2 device for `Gpu.create()`.
+ * also downloads the shaders, then creates the first WebGL2 device for `Gpu.create()`. Only
+ * drawing needs the shaders, so a failed download fails `Gpu.create()`, not `load()`.
  */
 export function load(
   options: {
@@ -33,6 +42,12 @@ export function load(
      */
     shaders?: string | URL;
     /**
+     * The URL of this version's `latkit/wgsl` asset, the WebAssembly that translates custom
+     * markers' WGSL, or that asset compiled. A page loads it the first time it draws a custom
+     * marker. Defaults to the bundled asset.
+     */
+    wgsl?: string | URL | WebAssembly.Module;
+    /**
      * The URL of this version's standalone `latkit/worker` asset, or a function that creates a
      * worker running it. A URL on another origin, such as a CDN, starts through a script on the
      * page's origin, since browsers start workers only from there. Defaults to the bundled worker.
@@ -41,21 +56,24 @@ export function load(
   } = {},
 ): Promise<void> {
   // Store a URL as text, so the caller cannot change the configuration while it loads.
-  const wasm = options.wasm instanceof URL ? options.wasm.href : options.wasm;
-  const shaders = options.shaders instanceof URL ? options.shaders.href : options.shaders;
-  const worker = options.worker instanceof URL ? options.worker.href : options.worker;
+  const text = <T>(value: T | URL) => (value instanceof URL ? value.href : value);
+  const asked: Configured = {
+    wasm: text(options.wasm),
+    shaders: text(options.shaders),
+    wgsl: text(options.wgsl),
+    worker: text(options.worker),
+  };
   if (loading) {
-    if (
-      (wasm !== undefined && wasm !== configured?.wasm) ||
-      (shaders !== undefined && shaders !== configured?.shaders) ||
-      (worker !== undefined && worker !== configured?.worker)
-    )
+    const differs = (Object.keys(asked) as (keyof Configured)[]).some(
+      (key) => asked[key] !== undefined && asked[key] !== configured?.[key],
+    );
+    if (differs)
       return Promise.reject(
         thrown({ code: 'io', message: 'latkit is already loading or loaded with other options' }),
       );
     return loading;
   }
-  configured = { wasm, shaders, worker };
+  configured = asked;
   loading = initialize(configured).catch((cause: unknown) => {
     configured = undefined;
     loading = undefined;
@@ -69,30 +87,63 @@ export function load(
  * where the browser has them. Where a browser canvas is available, including workers, the shaders
  * download meanwhile, and once handed over, the first GPU device is requested.
  */
-async function initialize(options: {
-  wasm?: string | WebAssembly.Module;
-  shaders?: string;
-  worker?: string | (() => Worker);
-}) {
+async function initialize(options: Configured) {
   const drawing = typeof OffscreenCanvas === 'function' || typeof document !== 'undefined';
-  const shaders = drawing
-    ? fetched(options.shaders ?? new URL('../pkg/latkit_shaders.bin', import.meta.url))
-    : undefined;
-  // Report a failed download once loading awaits it, not as an unhandled rejection if init fails.
-  shaders?.catch(() => {});
-  await init(options.wasm === undefined ? undefined : { module_or_path: options.wasm });
-  if (shaders) bindings.setShaders(await shaders);
+  const instantiated = init(
+    options.wasm === undefined ? undefined : { module_or_path: options.wasm },
+  );
+  const handed = drawing ? download(instantiated) : undefined;
+  await instantiated;
   bindings.onStop(stop);
-  bindings.setTranslator(translate);
+  bindings.setTranslator(translator(options.wgsl));
   const worker = typeof options.worker === 'string' ? workerAt(options.worker) : options.worker;
   if (worker || typeof Worker === 'function')
     bindings.setJobs(jobs(bindings.module() as WebAssembly.Module, worker));
   if (typeof VideoEncoder === 'function') bindings.setEncoder(encoder);
   loaded(bindings);
-  if (drawing) {
-    first = bindings.Gpu.create();
-    first.catch(() => {});
+  if (handed) {
+    const device = handed.then(() => bindings.Gpu.create());
+    device.catch(() => {});
+    first = device;
+    // A failed download leaves no device for `Gpu.create()` to take: it downloads again.
+    handed.catch(() => {
+      if (first === device) first = undefined;
+    });
   }
+}
+
+/**
+ * Downloads the shaders meanwhile, and hands them over once `instantiated` resolves. A failure
+ * rejects with an `io` error, and the next `Gpu.create()` downloads them again.
+ */
+function download(instantiated: Promise<unknown>): Promise<void> {
+  const at = configured?.shaders ?? new URL('../pkg/latkit_shaders.bin', import.meta.url);
+  const bytes = fetched(at);
+  const handed = Promise.all([bytes, instantiated]).then(([shaders]) =>
+    bindings.setShaders(shaders),
+  );
+  const tried: Promise<void> = handed.catch((cause: unknown) => {
+    if (shaders === tried) shaders = undefined;
+    throw thrown({
+      code: 'io',
+      message: `could not load latkit's shaders from ${String(at)}`,
+      cause,
+    });
+  });
+  tried.catch(() => {});
+  shaders = tried;
+  return tried;
+}
+
+/**
+ * @internal Resolves once the shaders are handed over, downloading them again if the last download
+ * failed. Rejects with an `io` error if they cannot be. Without a browser canvas, there is nothing
+ * to draw on, and it resolves at once.
+ */
+export function shadersLoaded(): Promise<void> {
+  const drawing = typeof OffscreenCanvas === 'function' || typeof document !== 'undefined';
+  if (!drawing) return Promise.resolve();
+  return shaders ?? download(Promise.resolve());
 }
 
 /** The bytes at `url`. Fails on a status other than 200. */

@@ -32,7 +32,9 @@ impl Readbacks {
         Readbacks { free: Arc::default(), counters: Some(counters), mapping: Arc::default(), retired: retired.clone() }
     }
 
-    /// A pool whose readbacks are not counted: the frame timer's, which only some devices support.
+    /// A pool whose readbacks are not counted: the native frame timer's, which only some devices
+    /// support.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn uncounted(retired: &Retired) -> Readbacks {
         Readbacks { free: Arc::default(), counters: None, mapping: Arc::default(), retired: retired.clone() }
     }
@@ -48,7 +50,7 @@ impl Readbacks {
     }
 
     /// Readbacks from this pool the GPU has not mapped yet.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn mapping(&self) -> u64 {
         self.mapping.load(Ordering::Acquire)
     }
@@ -144,7 +146,8 @@ impl Readback {
     }
 
     /// Copies `size` bytes of `source` from `offset`, to read once `encoder` is submitted. `waker`
-    /// wakes when they can be read.
+    /// wakes when they can be read. Only the native frame timer reads a buffer.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new(
         pool: &Readbacks,
         device: &wgpu::Device,
@@ -232,7 +235,7 @@ impl Readback {
             Mapping::Waiting | Mapping::Read => None,
             Mapping::Failed => Some(Err(Error::DeviceLost)),
             Mapping::Ready => {
-                #[cfg(all(target_arch = "wasm32", feature = "web"))]
+                #[cfg(target_arch = "wasm32")]
                 if let Some(mut bytes) = super::gl::take_read(buffer, self.size) {
                     self.compact(&mut bytes);
                     buffer.unmap();
@@ -270,7 +273,7 @@ impl Readback {
 
     /// Strip padding inside an owned mapping. Every destination precedes its source, so
     /// overlapping rows and multiple planes need neither scratch memory nor a second image.
-    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    #[cfg(target_arch = "wasm32")]
     fn compact(&self, bytes: &mut Vec<u8>) {
         if self.rows.iter().all(|&(_, stride, width, _)| stride == width) {
             if self.range.start != 0 {

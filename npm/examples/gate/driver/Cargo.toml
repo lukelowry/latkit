@@ -1,24 +1,20 @@
 [package]
 name = "latkit-browser-tests"
+description = "Checks latkit's WebGL2 device through the public Rust API, in Chrome (gate/webgl2-driver.ts)."
 version = "0.0.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 publish = false
-
-[workspace]
 
 [lib]
 path = "tests.rs"
 crate-type = ["cdylib"]
 
-[dependencies]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 # The driver's tests build pipelines from WGSL, which the browser build compiles with `wgsl`.
-latkit = { path = "../../../../crates/latkit", features = ["web", "wgsl"] }
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
-wasm-bindgen = "0.2.129"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-
-[profile.release]
-opt-level = 2
-panic = "abort"
-strip = true
+latkit = { workspace = true, features = ["web", "wgsl"] }
+wgpu = { workspace = true, features = ["wgsl"] }
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true

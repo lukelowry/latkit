@@ -17,7 +17,7 @@ pub(crate) fn wake_after(after: Duration, waker: Waker) {
 }
 
 /// Waits until `after` has passed.
-#[cfg(all(target_arch = "wasm32", feature = "web"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn sleep(after: Duration) {
     let mut armed = false;
     std::future::poll_fn(|context| {
@@ -137,7 +137,7 @@ mod platform {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "web"))]
+#[cfg(target_arch = "wasm32")]
 mod platform {
     use std::task::Waker;
     use std::time::Duration;
@@ -161,20 +161,9 @@ mod platform {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "web")))]
-mod platform {
-    use std::task::Waker;
-    use std::time::Duration;
-
-    /// Without browser timers, wakes `waker` immediately so the wait is polled again.
-    pub(super) fn wake_after(_: Duration, waker: Waker) {
-        waker.wake();
-    }
-}
-
 /// Yields to a browser task, allowing WebGL fences to advance without the nested-timer
 /// four-millisecond clamp. One shared message channel serves every outstanding GPU wait.
-#[cfg(all(target_arch = "wasm32", feature = "web"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn next_task() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;

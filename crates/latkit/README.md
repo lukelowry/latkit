@@ -23,8 +23,9 @@ fn main() -> Result<(), latkit::Error> {
   GeoJSON, and images, with no GPU dependency.
 - `gpu` (default): scenes, views, picking, layouts, and rendering into wgpu targets.
 - `native`: system fonts, file loading, jobs, and Windows Media Foundation video.
-- `web`: browser integration on `wasm32-unknown-unknown`. The page hands over the shaders the build
-  translated, `shaders.bin` in its output, with `host::Browser::set_shaders`.
+- `web`: browser integration on `wasm32-unknown-unknown`, which drawing there requires. The page
+  hands over the shaders the build translated, `shaders.bin` in its output, with
+  `host::Browser::set_shaders`.
 - `wgsl`: a WGSL compiler in the browser build, for custom markers and WGSL shader modules on the
   WebGL2 device. It adds about 1 MB.
 

@@ -14,7 +14,7 @@ import {
   type Due,
   type Wait,
 } from './internal.js';
-import { firstDevice, load } from './load.js';
+import { firstDevice, load, shadersLoaded } from './load.js';
 import type { Work } from './outputs.js';
 import type { View } from './view.js';
 
@@ -49,11 +49,13 @@ export class Gpu extends Handle {
    * Requests a WebGL2 device. The first call takes the device `load()` requested. Create one before
    * any view to set its `budget` first, or create another for views that should not share memory
    * with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
-   * when the browser has no WebGL2 device.
+   * when the browser has no WebGL2 device, and with an `io` error when the shaders could not be
+   * downloaded. The next call downloads them again.
    */
   static async create(wait: Wait = {}): Promise<Gpu> {
     const until = due(wait);
     await waited(load(), until, 'loading latkit');
+    await waited(shadersLoaded(), until, "loading latkit's shaders");
     const gpu = new Gpu(await requested(firstDevice() ?? wasm().Gpu.create(), until));
     if (!Gpu.#shared || Gpu.#shared.lost) Gpu.#shared = gpu;
     return gpu;

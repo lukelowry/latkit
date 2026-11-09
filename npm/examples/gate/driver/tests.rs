@@ -1,4 +1,6 @@
-//! Browser regression checks through the public Rust GPU API.
+//! Browser regression checks through the public Rust GPU API. Natively the crate is empty.
+#![cfg(target_arch = "wasm32")]
+#![allow(clippy::disallowed_methods, reason = "the tests drive the WebGL2 device through wgpu itself")]
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
 
@@ -162,6 +164,45 @@ struct Out { @builtin(position) position: vec4f, @location(0) value: vec2f }
         return Err(JsValue::from_str(&format!("link failure leaked to the parent: {error}")));
     }
     Ok(JsValue::from_str("link failures belong to the nearest scope"))
+}
+
+/// WebGL2 has no query sets or compute passes. Asking for them reports a validation error to the
+/// scope that catches it, and the device goes on working.
+#[wasm_bindgen]
+pub async fn unsupported() -> Result<JsValue, JsValue> {
+    let gpu = latkit::Gpu::new().await.map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let device = gpu.device();
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let set =
+        device.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty: wgpu::QueryType::Timestamp, count: 2 });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.write_timestamp(&set, 0);
+    drop(encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default()));
+    gpu.queue().submit([encoder.finish()]);
+    match scope.pop().await {
+        Some(error) if error.to_string().contains("WebGL2 cannot") => {}
+        Some(error) => return Err(JsValue::from_str(&format!("unexpected error: {error}"))),
+        None => return Err(JsValue::from_str("unsupported calls reported no error")),
+    }
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 4,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    gpu.queue().write_buffer(&buffer, 0, &[1, 2, 3, 4]);
+    let mapped = Rc::new(RefCell::new(None));
+    let complete = mapped.clone();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| *complete.borrow_mut() = Some(result));
+    while mapped.borrow().is_none() {
+        turn().await;
+    }
+    let read = mapped.borrow_mut().take().unwrap().is_ok()
+        && buffer.slice(..).get_mapped_range().is_ok_and(|bytes| *bytes == [1, 2, 3, 4]);
+    if !read {
+        return Err(JsValue::from_str("the device stopped working after an unsupported call"));
+    }
+    Ok(JsValue::from_str("unsupported calls report validation errors, and the device goes on"))
 }
 
 #[wasm_bindgen]

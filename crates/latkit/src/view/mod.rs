@@ -1015,7 +1015,7 @@ impl View {
 
     /// Whether the draw pipelines are still compiling. The view draws nothing new until they have
     /// all finished.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn compiling(&self) -> bool {
         !self.can_use(Stage::Draw)
     }
@@ -1226,7 +1226,7 @@ impl Drop for View {
         }
         // Its buffers and textures are retired as its resources drop. In a page, the next animation
         // frame destroys them, even when no view draws then.
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         crate::web::waker(&self.gpu).wake();
     }
 }

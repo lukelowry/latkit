@@ -7,9 +7,10 @@
  * `--quick` runs each scenario once at its smallest size. It checks every phase and the work
  * baseline in under a minute on a GPU. Growth and times are judged only in a full sweep.
  * `--repeats` sets the runs per size (3 by default). `--update` merges this run's results into the
- * committed baselines, keeping entries it did not run. Only a full sweep on the GPU writes times.
- * `--software` draws with SwiftShader on the CPU, as Linux always does. Work counts the same there,
- * times are only reported, and no shader can hang the GPU.
+ * committed baselines, keeping entries it did not run. Only a full sweep on the GPU writes times,
+ * into the baseline of that GPU, `baselines/<renderer>.json`. A full sweep on a GPU without one
+ * fails until `--update` records it. `--software` draws with SwiftShader on the CPU, as Linux
+ * always does. Work counts the same there, times are only reported, and no shader can hang the GPU.
  *
  * A scenario moves to its next size only while every phase's fastest repeat at the last size,
  * scaled up by the phase's order, stays within `LIMIT`. The fastest repeat is used because a
@@ -52,9 +53,10 @@ const software = flags.software || process.platform === 'linux';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const baselines = path.join(here, 'baselines');
 const results = path.resolve(here, '../target/bench');
-/** Gives WebGPU timestamps, which measure each frame's GPU time, full precision. Chrome otherwise
- * rounds them to 100 µs. The page steps each frame as soon as the GPU finishes the last, so the
- * display's frame rate never affects a run. */
+/** latkit draws with WebGL2, so WebGPU is off. A preserved package (`LATKIT_PACKAGE`) from before
+ * WebGL2 draws with WebGPU instead, whose timestamps have full precision only with developer
+ * features. The page steps each frame as soon as the GPU finishes the last, so the display's frame
+ * rate never affects a run. */
 const FLAGS = process.env.LATKIT_PACKAGE
   ? ['--enable-webgpu-developer-features']
   : ['--disable-webgpu'];
@@ -231,7 +233,10 @@ if (machines.length > 1)
   );
 if (!runs.length) failures.push('nothing ran');
 const machine = machines[0] ?? 'unknown';
+// Times belong to the GPU, so its baseline is named by the renderer alone. A browser update keeps
+// it, and the judge notes the change.
 const slug = machine
+  .replace(/ · Chrome \S+$/, '')
   .toLowerCase()
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '');
@@ -239,10 +244,17 @@ const workFile = path.join(baselines, 'work.json');
 const timesFile = path.join(baselines, `${slug}.json`);
 // Times are held to a baseline, and written to one, only by a full sweep on the GPU. A quick run
 // makes one run per scenario without a warm-up, and SwiftShader's times measure the CPU.
-const timed = !flags.quick && !software;
+const timed = !flags.quick && !software && runs.length > 0;
+const timesBase = timed ? read<TimeBaseline>(timesFile) : undefined;
+if (timed && !timesBase && !flags.update)
+  failures.push(
+    `no times baseline for ${machine} (${path.relative(process.cwd(), timesFile)}): record one with a full sweep and --update`,
+  );
 const verdict = judge(runs, list, {
   work: read<WorkBaseline>(workFile),
-  times: timed ? read<TimeBaseline>(timesFile) : undefined,
+  times: timesBase,
+  timed,
+  updating: !!flags.update,
 });
 console.log(`\n${machine}`);
 console.log(report(list, verdict));
@@ -258,7 +270,7 @@ if (flags.update) {
   } else {
     fs.mkdirSync(baselines, { recursive: true });
     write(workFile, work(verdict, read<WorkBaseline>(workFile)));
-    if (timed) write(timesFile, times(verdict, machine, read<TimeBaseline>(timesFile)));
+    if (timed) write(timesFile, times(verdict, machine, timesBase));
   }
 }
 console.log('');
