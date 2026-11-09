@@ -44,13 +44,17 @@ const dimension = (name: string) => {
   return Number(value);
 };
 const dimensions = [dimension('WORD_WIDTH'), dimension('WORD_HEIGHT')];
-const chrome = await launch(['--disable-webgpu'], process.argv.includes('--software') || undefined);
+// SwiftShader (`--software`, and always on Linux) draws each of the sort's points on the CPU, about
+// 8 ms per thousand. Sorting enough records to cross a texture layer would take minutes there, so
+// only a GPU sorts that many. The native radix test sorts them too.
+const software = process.argv.includes('--software') || process.platform === 'linux';
+const chrome = await launch(['--disable-webgpu'], software);
 try {
   const page = await chrome.browser.newPage();
   page.on('console', (message) => console.log(message.text()));
   const result = await deadline(
     page.evaluate(
-      ({ modules, dimensions }) => {
+      ({ modules, dimensions, software }) => {
         const gl = document.createElement('canvas').getContext('webgl2', { antialias: false });
         if (!gl) throw new Error('WebGL2 context creation failed');
         const context = gl;
@@ -283,8 +287,9 @@ try {
           }
           if (gl.getError() !== gl.NO_ERROR) throw new Error(`WebGL error after scan ${n}`);
           for (const texture of allocated.splice(0)) gl.deleteTexture(texture);
+          console.log(`Scanned ${n} words at ${performance.now().toFixed(0)} ms`);
         }
-        const orders = [1, 15, 16, 17, 1003, 65539, 600003];
+        const orders = [1, 15, 16, 17, 1003, 65539, ...(software ? [] : [600003])];
         for (const n of orders) {
           const data = new Uint32Array(n * 4);
           for (let i = 0; i < n; i++)
@@ -330,6 +335,7 @@ try {
             }
           if (gl.getError() !== gl.NO_ERROR) throw new Error(`WebGL error after radix ${n}`);
           for (const texture of allocated.splice(0)) gl.deleteTexture(texture);
+          console.log(`Sorted ${n} records at ${performance.now().toFixed(0)} ms`);
         }
         const debug = gl.getExtension('WEBGL_debug_renderer_info');
         return {
@@ -342,7 +348,7 @@ try {
           webgl: String(gl.getParameter(gl.VERSION)),
         };
       },
-      { modules, dimensions },
+      { modules, dimensions, software },
     ),
     STEP,
     'WebGL2 raster validation',
