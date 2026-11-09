@@ -115,6 +115,9 @@ impl BufferInterface for Buffer {
     fn unmap(&self) {
         self.0.generation.set(self.0.generation.get() + 1);
         if let Some((range, wgpu::MapMode::Write, bytes)) = self.0.mapped.borrow_mut().take() {
+            if let Some(state) = self.0.state.upgrade() {
+                Waits::issued(&state);
+            }
             self.write(range.start, &bytes);
         }
     }

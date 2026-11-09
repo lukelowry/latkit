@@ -213,11 +213,9 @@ impl Browser {
         }
     }
 
-    /// Blit the retained texture directly to the shared canvas, then copy its visible region.
-    pub(crate) fn present(&mut self, source: &wgpu::Texture, sink: &Sink) -> Result<()> {
-        let size = [source.width(), source.height()];
-        super::gl::present(source, &self.canvas)?;
-        sink.copy(&self.canvas, size)
+    /// Blits the retained texture to the shared canvas, then copies its visible region into `sink`.
+    pub(crate) fn present(&mut self, queue: &wgpu::Queue, source: &wgpu::Texture, sink: &Sink) -> Result<()> {
+        super::gl::present(queue, source, &self.canvas, sink)
     }
 }
 

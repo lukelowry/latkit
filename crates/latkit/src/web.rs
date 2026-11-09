@@ -370,20 +370,22 @@ pub fn landed(gpu: &Gpu) -> impl Future<Output = ()> + 'static {
     })
 }
 
-/// Waits until `gpu` has finished its submitted work, mapped every readback, and compiled every
-/// requested pipeline. A frame stepped afterwards draws all the results.
+/// Waits until `gpu` has finished the work submitted before the call, with the readbacks it copies,
+/// and compiled every requested pipeline. A frame stepped afterwards draws all the results.
 pub async fn done(gpu: &Gpu) {
     settled(gpu, true).await;
 }
 
-/// Waits until `gpu` has finished its submitted work and mapped every readback, as after a frame.
-/// Pipelines may still compile: a view waiting for one wakes when it lands.
+/// Waits until `gpu` has finished the work submitted before the call, with the readbacks it copies,
+/// as after a frame. Pipelines may still compile: a view waiting for one wakes when it lands.
 pub async fn finished(gpu: &Gpu) {
     settled(gpu, false).await;
 }
 
-/// Waits until `gpu` has finished its submitted work and mapped every readback, and if `compiled`,
-/// compiled every requested pipeline.
+/// Waits until `gpu` has finished the work submitted before the call, and if `compiled`, compiled
+/// every requested pipeline. A readback maps as soon as the work that copies it finishes, so the
+/// readbacks of that work have landed too. Frames drawn meanwhile, and their readbacks, are not
+/// waited for, so a page that reads back every frame still finishes waiting.
 async fn settled(gpu: &Gpu, compiled: bool) {
     let (submitted, finished) = crate::Pending::new();
     gpu.queue().on_submitted_work_done(move || finished.resolve(Ok(())));
@@ -391,11 +393,8 @@ async fn settled(gpu: &Gpu, compiled: bool) {
     loop {
         let _ = gpu.device().poll(wgpu::PollType::Poll);
         completed |= submitted.take().is_some();
-        let under_way = {
-            let inner = gpu.0.lock();
-            inner.readbacks.mapping() + if compiled { inner.pipelines.compiling() } else { 0 }
-        };
-        if completed && under_way == 0 || gpu.lost() {
+        let compiling = compiled && gpu.0.lock().pipelines.compiling() > 0;
+        if completed && !compiling || gpu.lost() {
             return;
         }
         crate::time::next_task().await;
@@ -975,7 +974,7 @@ impl Surface {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_mut()
             .ok_or_else(|| Error::Unsupported("no WebGL2 context".into()))?
-            .present(texture, &self.sink)
+            .present(self.gpu.queue(), texture, &self.sink)
     }
 }
 

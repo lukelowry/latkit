@@ -110,8 +110,8 @@ impl Gpu {
         })
     }
 
-    /// Resolves once the GPU has finished its submitted work, every readback has arrived, and every
-    /// requested pipeline has compiled.
+    /// Resolves once the GPU has finished the work submitted before the call, with the readbacks it
+    /// copies, and every requested pipeline has compiled.
     pub fn done(&self) -> Task {
         let gpu = self.0.clone();
         task(async move {
