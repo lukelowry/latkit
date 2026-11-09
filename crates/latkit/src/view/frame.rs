@@ -157,7 +157,7 @@ impl View {
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
         self.write_uniforms(&uniform, &eye, &sprites);
-        if let Some(readback) = self.prepare_rows(encoder, &mut inner, measure.is_some(), travel > 0.0) {
+        if let Some(readback) = self.prepare_rows(encoder, &mut inner, measure.is_some(), travel > 0.0, input) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);

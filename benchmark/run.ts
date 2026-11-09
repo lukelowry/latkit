@@ -3,6 +3,7 @@
  * judges and reports the results.
  *
  *   cargo xtask bench [--quick] [--only a,b] [--repeats n] [--update] [--software]
+ *                     [--firefox | --webkit]
  *
  * `--quick` runs each scenario once at its smallest size. It checks every phase and the work
  * baseline in under a minute on a GPU. Growth and times are judged only in a full sweep.
@@ -11,6 +12,8 @@
  * into the baseline of that GPU, `baselines/<renderer>.json`. A full sweep on a GPU without one
  * fails until `--update` records it. `--software` draws with SwiftShader on the CPU, as Linux
  * always does. Work counts the same there, times are only reported, and no shader can hang the GPU.
+ * `--firefox` and `--webkit` run in that browser instead of Chrome, with the same work baseline and
+ * a times baseline of their own. `LATKIT_ANGLE` picks the backend Chrome draws with.
  *
  * A scenario moves to its next size only while every phase's fastest repeat at the last size,
  * scaled up by the phase's order, stays within `LIMIT`. The fastest repeat is used because a
@@ -26,6 +29,7 @@ import { parseArgs } from 'node:util';
 import {
   STEP,
   deadline,
+  engineOf,
   errorsOf,
   launch,
   serve,
@@ -43,13 +47,17 @@ const { values: flags } = parseArgs({
     repeats: { type: 'string' },
     update: { type: 'boolean' },
     software: { type: 'boolean' },
+    firefox: { type: 'boolean' },
+    webkit: { type: 'boolean' },
   },
 });
+const engine = engineOf(process.argv);
 const repeats = flags.quick ? 1 : Number(flags.repeats ?? 3);
 if (!Number.isInteger(repeats) || repeats < 1)
   throw new Error(`--repeats takes a count, not ${flags.repeats}`);
 const only = flags.only?.split(',');
-const software = flags.software || process.platform === 'linux';
+// Only Chrome draws on SwiftShader.
+const software = engine === 'chromium' && (flags.software || process.platform === 'linux');
 const here = path.dirname(fileURLToPath(import.meta.url));
 const baselines = path.join(here, 'baselines');
 const results = path.resolve(here, '../target/bench');
@@ -115,7 +123,7 @@ let list: Listed[] = [];
  * without a shader cache instead. */
 async function measure(warm: Chrome, scenario: Listed, size: number): Promise<Run> {
   if (!scenario.cold) return visit(warm, scenario, size);
-  const cold = await launch([...FLAGS, '--disable-gpu-shader-disk-cache'], software);
+  const cold = await launch([...FLAGS, '--disable-gpu-shader-disk-cache'], software, engine);
   try {
     return await visit(cold, scenario, size);
   } finally {
@@ -157,7 +165,7 @@ async function visit(chrome: Chrome, scenario: Listed, size: number): Promise<Ru
   }
 }
 
-const warm = await launch(FLAGS, software);
+const warm = await launch(FLAGS, software, engine);
 try {
   const page = await deadline(warm.browser.newPage(PAGE), STEP, 'open a page');
   await deadline(page.goto(url), STEP, 'open the bench page');
@@ -233,10 +241,11 @@ if (machines.length > 1)
   );
 if (!runs.length) failures.push('nothing ran');
 const machine = machines[0] ?? 'unknown';
-// Times belong to the GPU, so its baseline is named by the renderer alone. A browser update keeps
-// it, and the judge notes the change.
+// Times belong to the GPU and the browser, so its baseline is named by the renderer, and the
+// browser unless Chrome. A browser update keeps it, and the judge notes the change.
 const slug = machine
   .replace(/ · Chrome \S+$/, '')
+  .replace(/ · (\w+) \S+$/, ' $1')
   .toLowerCase()
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '');

@@ -348,6 +348,13 @@ pub(crate) struct Scan {
 
 impl Scan {
     pub(crate) fn record(&mut self, raster: &mut Raster<'_>, input: At<'_>, output: At<'_>, count: u32) {
+        self.reserve(raster, count);
+        scan(raster, &self.levels, input, output, count);
+    }
+
+    /// Makes room for scans of up to `count` inputs, so smaller scans never make their scratch
+    /// again.
+    pub(crate) fn reserve(&mut self, raster: &mut Raster<'_>, count: u32) {
         let mut count_at = count;
         let mut level = 0;
         while count_at > SCAN_BLOCK {
@@ -362,7 +369,6 @@ impl Scan {
             self.levels[level].prefix.ensure(raster.device, u64::from((count_at + 1).next_multiple_of(4)));
             level += 1;
         }
-        scan(raster, &self.levels, input, output, count);
     }
 }
 
@@ -671,7 +677,9 @@ pub(super) mod tests {
         let mut input = Words::new(device, queue.retired(), "radix input test");
         let mut output = Words::new(device, queue.retired(), "radix output test");
         let mut order = crate::gpu::order::Order::new(device, queue.retired());
-        for n in [1_u32, 15, 16, 17, 63, 64, 65, 1_003, 65_539, 600_003] {
+        let sizes = [1_u32, 15, 16, 17, 63, 64, 65, 1_003, 65_539, 600_003];
+        // Whole keys, and keys sorted by their low 20 bits only, which then tie more often.
+        for (n, bits) in sizes.into_iter().map(|n| (n, 32)).chain([(17, 20), (65_539, 20)]) {
             let room = n * 4 + 8;
             input.ensure(device, u64::from(room));
             output.ensure(device, u64::from(room));
@@ -687,11 +695,12 @@ pub(super) mod tests {
                 })
                 .collect();
             input.write(queue, 4, bytemuck::cast_slice(&records));
-            records.sort_by_key(|record| record[0]);
+            let mask = u32::MAX >> (32 - bits);
+            records.sort_by_key(|record| record[0] & mask);
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             let mut raster = Raster { device, queue, pipelines: &mut fixture.pipelines, encoder: &mut encoder };
             raster.fill(&input, At::new(&output, 0), room, 0xfedc_ba98);
-            order.record(&mut raster, At::new(&input, 4), At::new(&output, 4), n);
+            order.record(&mut raster, (At::new(&input, 4), At::new(&output, 4)), n, n, bits);
             let read =
                 Readback::words(&fixture.readbacks, device, &mut encoder, &output, 0, room, std::task::Waker::noop());
             queue.submit([encoder.finish()]);
@@ -706,7 +715,7 @@ pub(super) mod tests {
             assert_eq!(actual[0], [0xfedc_ba98; 4]);
             assert_eq!(actual[n as usize + 1], [0xfedc_ba98; 4]);
             if let Some(i) = actual[1..=n as usize].iter().zip(&records).position(|(a, b)| a != b) {
-                panic!("sort of {n}, record {i}: {:?} != {:?}", actual[i + 1], records[i]);
+                panic!("sort of {n} by {bits} bits, record {i}: {:?} != {:?}", actual[i + 1], records[i]);
             }
         }
     }

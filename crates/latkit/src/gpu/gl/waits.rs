@@ -99,7 +99,8 @@ impl Waits {
             if pending.is_empty()
                 && let Some(fence) = entry.fence.take()
             {
-                let status = state.gl.client_wait_sync_with_u32(&fence, 0, 0);
+                // Without the flush flag, Firefox does not promise a polled fence ever signals.
+                let status = state.gl.client_wait_sync_with_u32(&fence, Gl::SYNC_FLUSH_COMMANDS_BIT, 0);
                 if status == Gl::TIMEOUT_EXPIRED {
                     entry.fence = Some(fence);
                 } else {

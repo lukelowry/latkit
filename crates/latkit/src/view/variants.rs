@@ -40,9 +40,14 @@ pub(super) const SCAN: [Variant; 2] =
     [Variant::raster(Shader::Words, "scan_totals"), Variant::raster(Shader::Words, "scan")];
 
 /// The passes sorting a height order by one digit of its keys, around a [`SCAN`]: counting each
-/// block's instances by digit, then moving them in order.
-pub(super) const DIGIT_PASSES: [Variant; 2] =
-    [Variant::raster(Shader::Order, "histogram"), Variant::raster(Shader::OrderScatter, "scatter")];
+/// block's instances by digit, ordering the counts by digit, then ranking and moving the
+/// instances.
+pub(super) const DIGIT_PASSES: [Variant; 4] = [
+    Variant::raster(Shader::Order, "histogram"),
+    Variant::raster(Shader::Order, "by_digit"),
+    Variant::raster(Shader::Order, "rank"),
+    Variant::raster(Shader::OrderScatter, "scatter"),
+];
 
 /// Eases a mark in transition from its frozen words toward its settled ones.
 pub(super) const EASE: Variant = Variant::raster(Shader::State, "ease");
@@ -538,6 +543,46 @@ mod tests {
         assert_eq!(changes(still), [false; 3], "nothing eases or carries");
         let flowing = Scene::new(Plane::default()).draw(Edges::of("g", "E").ends("a", "b").flow(crate::field("s")));
         assert_eq!(changes(flowing), [true; 3], "rows that move freeze, ease, and carry their comets over");
+    }
+
+    /// The browser holds GLSL only for specializations the build made. A scene asking for any other
+    /// would stop the page that draws it, as glowing areas once did.
+    #[test]
+    fn every_pipeline_a_scene_asks_for_was_built_for_the_browser() {
+        use crate::{Areas, Earth, Label, Legend, Plot, Shape, field};
+        let markers = [
+            Marker::Shape(Shape::Diamond),
+            Marker::Block { corner: None },
+            Marker::Gauge { fill: field("f"), shape: Shape::Ellipse },
+            Marker::Pie { slices: vec![field("a")], colors: vec![], hole: 0.0 },
+            Marker::Icon { images: vec![], index: field("i") },
+            Marker::Wgsl { source: "fn marker(f: MarkerFragment) -> MarkerColor { }".into(), inputs: vec![] },
+        ];
+        let globe = Earth::default().projection(crate::Projection::Globe);
+        let spaces = [Space::Plane(Plane::default()), Space::Earth(Earth::default()), Space::Earth(globe)];
+        for space in spaces.into_iter().chain([Space::Plot(Plot::default())]) {
+            let mut scene = Scene::new(space).title("t");
+            for marker in &markers {
+                let raised = Vertices::of("g", "V").marker(marker.clone()).elevation(field("z"));
+                scene = scene.draw(raised.label(Label::new(field("n"))).legend(Legend::new("l")).color(field("c")));
+            }
+            let edges = || Edges::of("g", "E").ends("a", "b");
+            for edges in [edges(), edges().poles(), edges().bends("p"), edges().joins("J", "j")] {
+                scene = scene
+                    .draw(edges.clone())
+                    .draw(edges.flow(field("s")).dash(field("d")).label(Label::new(field("n"))));
+            }
+            scene =
+                scene.draw(Lines::of("g", "L")).draw(Lines::of("g", "L").flow(field("s"))).draw(Areas::of("g", "A"));
+            for samples in [1, 4] {
+                let stages = stages(&scene, wgpu::TextureFormat::Bgra8Unorm, samples);
+                for need in Stage::ALL.iter().flat_map(|&stage| stages.of(stage)) {
+                    if let Asked::Shader(variant) = need {
+                        assert!(variant.built(), "the browser has no GLSL for {}", need.label());
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium, webkit, type Browser, type Page } from 'playwright-core';
+import { chromium, firefox, webkit, type Browser, type Page } from 'playwright-core';
 import { createServer } from 'vite';
 
 /** Milliseconds any one step may take before giving up on it. */
@@ -101,7 +101,7 @@ export function chrome(): string {
   );
 }
 
-/** A launched test browser. The name is retained for the benchmark's Chrome sessions. */
+/** A launched test browser: Chrome unless launched as another engine. */
 export interface Chrome {
   browser: Browser;
   /**
@@ -114,23 +114,39 @@ export interface Chrome {
 /** Software WebGL2 for GPU-less CI. Hardware runs never override the driver's blocklist. */
 const SOFTWARE = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
 
-/** Selects the high-performance GPU consistently for comparable measurements. */
-const HARDWARE = ['--force_high_performance_gpu'];
+/** Selects the high-performance GPU consistently for comparable measurements, and the backend
+ * Chrome draws WebGL2 with when `LATKIT_ANGLE` names one: `d3d11`, `vulkan`, `gl`, or `metal`.
+ * Each backend reports its own renderer, so the benchmark keeps its times apart. */
+function hardware(): string[] {
+  const angle = process.env.LATKIT_ANGLE;
+  return ['--force_high_performance_gpu', ...(angle ? [`--use-angle=${angle}`] : [])];
+}
 
-/** Launches headless Chrome with the extra `args`. It draws on SwiftShader when `software`, which
- * defaults to true on Linux. WebKit checks use its default renderer and no Chrome flags. */
+/** A browser the gate and the benchmark can drive. */
+export type Engine = 'chromium' | 'firefox' | 'webkit';
+
+/** The engine a script's `--firefox` or `--webkit` flag names. Defaults to Chrome. */
+export function engineOf(argv: readonly string[]): Engine {
+  return argv.includes('--firefox') ? 'firefox' : argv.includes('--webkit') ? 'webkit' : 'chromium';
+}
+
+/** Launches the headless browser `engine` (Chrome by default) with the extra `args`. Chrome draws
+ * on SwiftShader when `software`, which defaults to true on Linux. Firefox and WebKit use their
+ * default renderers and take no Chrome flags. */
 export async function launch(
   args: readonly string[] = [],
   software = process.platform === 'linux',
-  engine: 'chromium' | 'webkit' = 'chromium',
+  engine: Engine = 'chromium',
 ): Promise<Chrome> {
-  const driver = engine === 'webkit' ? webkit : chromium;
+  const driver = { chromium, firefox, webkit }[engine];
   const server = await deadline(
     driver.launchServer({
       headless: true,
       ...(engine === 'chromium'
-        ? { executablePath: chrome(), args: [...(software ? SOFTWARE : HARDWARE), ...args] }
+        ? { executablePath: chrome(), args: [...(software ? SOFTWARE : hardware()), ...args] }
         : {}),
+      // Headless Firefox blocks WebGL2 on its GPU blocklist unless forced.
+      ...(engine === 'firefox' ? { firefoxUserPrefs: { 'webgl.force-enabled': true } } : {}),
     }),
     STEP,
     `launch ${engine}`,

@@ -456,7 +456,7 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
                 Field::Values(column, Version::next())
             }
             (Some(Field::Reference(old)), Field::Reference(source)) if old.to == source.to => {
-                let ids = old.ids.write(len, &writes, &source.ids).map_err(|e| e.at(&name))?;
+                let ids = old.ids.widened_for(&source.ids).write(len, &writes, &source.ids).map_err(|e| e.at(&name))?;
                 if ids.shares(&old.ids) {
                     Field::Reference(old.clone())
                 } else {

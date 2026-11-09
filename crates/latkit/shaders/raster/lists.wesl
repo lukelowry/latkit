@@ -2,7 +2,8 @@
 // no pass appends, scatters overlapping writes, or waits for a count to reach the CPU.
 import package::lib::bind::{mark, program};
 import package::lib::types::{WordStep, NONE, POINTS, TRIANGLES, PATH_TRACE, RUN_WORDS,
-    FADE_IN, FADE_OUT, DRAWN_ENTERING, DRAWN_LEAVING, LIST_ITEMS, LIST_KEPT, WORD_WIDTH, WORD_HEIGHT, POINT_BITS};
+    FADE_IN, FADE_OUT, DRAWN_ENTERING, DRAWN_LEAVING, LIST_ITEMS, LIST_KEPT, WORD_WIDTH, WORD_HEIGHT, POINT_BITS,
+    HEIGHT_BITS};
 import package::lib::words::{word_read, word_quad, word_index, fullscreen};
 import package::lib::lists::{list, list_start, list_total};
 import package::lib::read::{last_at_most, points_of, point_address};
@@ -133,8 +134,11 @@ fn instances() -> u32 {
     return list_total(mark.list);
 }
 
+// The low HEIGHT_BITS bits sort: rows that left after the rest, each lowest first. The top bits of
+// a height's order-preserving bits keep its sign, exponent, and 14 bits of mantissa.
 fn height_key(height: f32, left: bool) -> u32 {
-    return select(0u, 0x80000000u, left) | (ordered(select(height, 0.0, height == 0.0)) >> 1u);
+    let order = ordered(select(height, 0.0, height == 0.0)) >> (33u - HEIGHT_BITS);
+    return select(0u, 1u << (HEIGHT_BITS - 1u), left) | order;
 }
 
 @fragment

@@ -65,7 +65,7 @@ impl Derive for Lanes {
                 made.make(stamp, ());
                 changed |= keep(&mut self.tables, key, table, words(&a.targets(), &b.targets()));
             } else {
-                made.start(stamp, jobs.spawn(Job::lanes(&a.targets(), &b.targets())));
+                made.start(stamp, jobs.spawn(Job::lanes(rows, a, b)));
             }
         }
         let before = self.tables.len();

@@ -34,6 +34,9 @@ struct Pages {
 const SCAN_BLOCK: u32 = 64u;
 const RADIX_BLOCK: u32 = 16u;
 const RADIX_BITS: u32 = 4u;
+// Bits of an instance's key in a height order: whether its row left, then its height. Heights
+// within about 0.01% of each other tie and keep the order their instances are numbered in.
+const HEIGHT_BITS: u32 = 24u;
 const STATE_WORDS: u32 = 32u;
 
 // A pass of the channel shader over `rows` rows from `first`, through page table `block` (or

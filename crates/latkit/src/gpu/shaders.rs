@@ -72,6 +72,14 @@ impl ShaderSource {
         self.constants.iter().map(|constant| value(constant.name)).collect()
     }
 
+    /// Whether the build made the specialization `value` names, which the browser's store holds
+    /// translated. The build lists none for the channel shader or custom marker shaders, which are
+    /// completed at runtime.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn built(&self, value: impl Fn(&str) -> u32) -> bool {
+        self.specializations.iter().any(|s| self.constants.iter().zip(s.values).all(|(c, &v)| value(c.name) == v))
+    }
+
     /// Whether pipelines specialize the shader with the constant `name`.
     pub(crate) fn reads(&self, entry: &str, name: &str) -> bool {
         match self.entry_constants.iter().find(|(key, _)| *key == entry) {

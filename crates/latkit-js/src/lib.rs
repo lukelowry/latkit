@@ -86,10 +86,11 @@ pub fn set_shaders(bytes: Vec<u8>) -> Result<(), Error> {
     latkit::host::Browser::set_shaders(bytes).map_err(Error::from)
 }
 
-/// Runs a job a view handed to the page, in a worker, and returns the result's bytes.
+/// Runs a job a view handed to the page, in a worker, and returns the result's bytes. The job's
+/// bytes come in once, owned, rather than borrowed and copied again.
 #[wasm_bindgen]
-pub fn job(bytes: &[u8]) -> Vec<u8> {
-    latkit::host::Job::from_bytes(bytes.to_vec()).run()
+pub fn job(bytes: Vec<u8>) -> Vec<u8> {
+    latkit::host::Job::from_bytes(bytes).run()
 }
 
 /// The compiled module, for workers to instantiate.

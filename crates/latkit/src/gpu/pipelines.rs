@@ -287,6 +287,17 @@ impl Variant {
         }
     }
 
+    /// Whether the build translated this variant's shader for the browser. Channel pipelines
+    /// project through any view, and the build translates them for every value of what they read.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn built(&self) -> bool {
+        let specialized = self.specialized();
+        match self.shader {
+            Shader::State => self.projection == Projection::Dynamic,
+            shader => shader.source().built(|name| specialized.value(name)),
+        }
+    }
+
     /// A label naming exactly this pipeline. Browsers show it in their errors, and it finds the
     /// pipeline compiled ahead for it.
     fn label(&self) -> String {

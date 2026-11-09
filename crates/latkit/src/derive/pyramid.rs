@@ -75,7 +75,7 @@ pub(crate) struct Placing {
     pub(crate) priority: Arc<[f32]>,
     /// For an edge table placed by its endpoints: the index of the table they reference, and each
     /// endpoint reference's target rows.
-    pub(crate) ends: Option<(u32, Vec<Arc<[u32]>>)>,
+    pub(crate) ends: Option<(u32, Vec<Vec<u32>>)>,
 }
 
 /// Each row's anchor in `domain`'s square in `u32` fixed point (the full `u32` range spans the
@@ -198,7 +198,7 @@ pub(crate) fn answer(leveling: &Leveling) -> Vec<(u32, Pyramid)> {
 /// Anchors and extents for `n` rows placed by `ends`, among target rows anchored at `at`: the
 /// middle of the box the endpoints span, and half its larger side. A row with an unset endpoint
 /// gets the origin and no extent.
-fn by_ends(ends: &[Arc<[u32]>], at: &[[u32; 2]], wraps: bool, n: usize) -> (Vec<[u32; 2]>, Vec<u32>) {
+fn by_ends(ends: &[Vec<u32>], at: &[[u32; 2]], wraps: bool, n: usize) -> (Vec<[u32; 2]>, Vec<u32>) {
     let mut anchors = Vec::with_capacity(n);
     let mut extents = Vec::with_capacity(n);
     for r in 0..n {

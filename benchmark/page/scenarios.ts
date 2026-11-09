@@ -280,6 +280,20 @@ const revisit = (): Phase => ({
   },
 });
 
+/** Pans with only the mark of `scene` that draws `table`, so each marker kind's GPU time is held
+ * to a baseline of its own. */
+const alone = (scene: Scene, table: string): Phase => ({
+  name: `pan ${table.toLowerCase()} alone`,
+  order: { time: 0 },
+  run: async (s) => {
+    const marks = (scene.marks ?? []).filter(
+      (m) => 'vertices' in m && Array.isArray(m.vertices) && m.vertices[1] === table,
+    );
+    await s.once(() => (s.scene = { ...scene, marks }));
+    return pan().run(s);
+  },
+});
+
 /** Recolors through `scene`'s colormap. The GPU evaluates again, but no data is uploaded. */
 const restyle = (scene: Scene): Phase => ({
   name: 'restyle',
@@ -654,6 +668,7 @@ export const scenarios: Record<string, Scenario> = {
       // Another custom marker source translates and compiles its pipelines again.
       restyle(markers(0.3)),
       ...pick(),
+      ...['Shape', 'Gauge', 'Pie', 'Icon', 'Custom'].map((table) => alone(markers(0.3), table)),
     ],
   },
   comets: {

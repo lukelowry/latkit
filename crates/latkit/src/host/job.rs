@@ -9,7 +9,9 @@
 
 use std::sync::Arc;
 
-use crate::data::{GeometryBuilder, Id, Name, Patch, Table, Value, Values, read_values, values_bytes};
+use crate::data::{
+    GeometryBuilder, Id, Name, Patch, Reference, Table, UNWIRED, Value, Values, read_values, values_bytes,
+};
 use crate::derive::pyramid::{Leveling, Places, Placing};
 use crate::derive::sight::Domain;
 use crate::geo::mvt::Kind as Geometry;
@@ -186,14 +188,17 @@ impl Job {
     /// A job laying out `placement` with `layout` (layered or stress). Its result sets each keyed
     /// vertex's center as fields `x` and `y`, y up.
     pub(crate) fn layout(layout: &Layout, placement: &Placement<'_>) -> Job {
+        // Room for each vertex's pin and key, which a long table name or text id outgrows, and
+        // each link's ends.
+        let rest = 32 + 48 * placement.pinned.len() + 8 * placement.links.len();
         let mut out = match *layout {
             Layout::Stress(stress) => {
-                let mut out = job(Kind::Stress);
+                let mut out = job(Kind::Stress, rest);
                 out.f64(stress.gap);
                 out
             }
             Layout::Layered(layered) => {
-                let mut out = job(Kind::Layered);
+                let mut out = job(Kind::Layered, rest);
                 out.u32(layered.direction.code());
                 out.f64(layered.gap);
                 out.f64(layered.rank_gap);
@@ -227,7 +232,7 @@ impl Job {
     /// A job computing `shaping` for every row of each geometry column in `parts`. Its result holds
     /// each part's shapes, read by [`shapes_answer`].
     pub(crate) fn shapes(shaping: Shaping, parts: &[Values]) -> Job {
-        let mut out = job(Kind::Shapes);
+        let mut out = job(Kind::Shapes, 0);
         out.u32(shaping.code());
         write_columns(&mut out, parts);
         Job(out.0)
@@ -236,7 +241,7 @@ impl Job {
     /// A job decoding tile `key` from `bytes`, optionally gzip-compressed, into rows of `tables`
     /// with their derived shapes. Its result is a patch of those rows.
     pub(crate) fn tile(key: TileKey, tables: &[Decoded], bytes: &[u8]) -> Job {
-        let mut out = job(Kind::Tile);
+        let mut out = job(Kind::Tile, 64 + bytes.len());
         out.u32(u32::from(key.z));
         out.u32(key.x);
         out.u32(key.y);
@@ -257,7 +262,7 @@ impl Job {
     /// A job encoding `image` as a file of `format`. Its result is the file's bytes, or no bytes if
     /// the image cannot be encoded.
     pub fn encode(image: &crate::Image, format: crate::ImageFormat) -> Job {
-        let mut out = job(Kind::Image);
+        let mut out = job(Kind::Image, 12 + image.rgba.len());
         out.u32(format.code());
         out.u32(image.size[0]);
         out.u32(image.size[1]);
@@ -273,20 +278,29 @@ impl Job {
         if !crate::data::geojson(bytes) {
             return None;
         }
-        let mut out = job(Kind::GeoJson);
+        let mut out = job(Kind::GeoJson, 4 + name.len() + bytes.len());
         out.str(name);
         out.bytes(bytes);
         Some(Job(out.0))
     }
 
     /// A job assigning each edge row a lane among the rows joining the same two vertices, from the
-    /// rows' endpoints `from` and `to`. Its result is every row's lane word as a little-endian
-    /// `u32`, or no bytes when no two rows share endpoints.
-    pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Job {
-        let mut out = job(Kind::Lanes);
-        out.len(from.len());
-        out.pod(from);
-        out.pod(to);
+    /// target rows of the rows' endpoints `from` and `to`, references of `rows` rows each. Its
+    /// result is every row's lane word as a little-endian `u32`, or no bytes when no two rows share
+    /// endpoints.
+    pub(crate) fn lanes(rows: usize, from: &Reference, to: &Reference) -> Job {
+        let mut out = job(Kind::Lanes, 4 + 8 * rows);
+        out.len(rows);
+        // Exactly `rows` targets of each end, unwired past a shorter reference's end.
+        for end in [from, to] {
+            let mut left = rows;
+            end.each_targets(|targets| {
+                let n = targets.len().min(left);
+                out.pod(&targets[..n]);
+                left -= n;
+            });
+            out.pod(&vec![UNWIRED; left]);
+        }
         Job(out.0)
     }
 
@@ -294,7 +308,16 @@ impl Job {
     /// once. Its result holds each table's pyramid, read by
     /// [`Pyramid::read`](crate::derive::pyramid::Pyramid::read).
     pub(crate) fn pyramid(leveling: &Leveling) -> Job {
-        let mut out = job(Kind::Pyramid);
+        let size = |table: &Placing| {
+            let places = match &table.places {
+                Places::None => 0,
+                Places::Points(points) => size_of_val(&points[..]),
+                Places::Boxes(boxes) => size_of_val(&boxes[..]),
+            };
+            let ends = table.ends.as_ref().map_or(0, |(_, ends)| 8 + ends.iter().map(|e| 4 * e.len()).sum::<usize>());
+            8 + places + size_of_val(&table.priority[..]) + ends
+        };
+        let mut out = job(Kind::Pyramid, 36 + leveling.tables.iter().map(size).sum::<usize>());
         out.pod(&leveling.domain.words());
         out.len(leveling.tables.len());
         for table in &leveling.tables {
@@ -328,9 +351,10 @@ impl Job {
     }
 }
 
-/// A job's bytes so far: its kind.
-fn job(kind: Kind) -> Out {
-    let mut out = Out::default();
+/// A job's bytes so far: its kind, with room for the `rest` bytes after it. A large job's input
+/// is written once into room made for all of it, never copied as it grows.
+fn job(kind: Kind, rest: usize) -> Out {
+    let mut out = Out(Vec::with_capacity(4 + rest));
     out.u32(kind.code());
     out
 }
@@ -449,7 +473,7 @@ fn run_pyramid(input: &mut In<'_>) -> Option<Vec<u8>> {
         let ends = if has(5) {
             let target = input.u32()?;
             let count = input.u32()?;
-            Some((target, (0..count).map(|_| input.pod::<u32>(n).map(Arc::from)).collect::<Option<Vec<_>>>()?))
+            Some((target, (0..count).map(|_| input.pod::<u32>(n)).collect::<Option<Vec<_>>>()?))
         } else {
             None
         };

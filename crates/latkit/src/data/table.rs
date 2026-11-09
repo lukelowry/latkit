@@ -164,20 +164,33 @@ impl Reference {
     /// value at a time.
     pub(crate) fn targets(&self) -> Vec<u32> {
         let mut out = Vec::with_capacity(self.rows.len());
+        self.each_targets(|targets| out.extend_from_slice(targets));
+        out
+    }
+
+    /// Calls `take` with each page's target rows, as [`targets`](Reference::targets) gives them,
+    /// without gathering them first. A page of present rows passes its own values.
+    pub(crate) fn each_targets(&self, mut take: impl FnMut(&[u32])) {
         for page in self.rows.pages() {
             let values = &page.values;
             match (&values.array, &values.valid) {
-                (Array::U32(rows), None) => out.extend_from_slice(rows),
+                (Array::U32(rows), None) => take(rows),
                 (Array::U32(rows), Some(valid)) => {
-                    out.extend(rows.iter().enumerate().map(|(i, &t)| if valid.get(i) { t } else { UNWIRED }));
+                    let rows: Vec<u32> =
+                        rows.iter().enumerate().map(|(i, &t)| if valid.get(i) { t } else { UNWIRED }).collect();
+                    take(&rows);
                 }
-                _ => out.extend((0..values.len()).map(|i| match values.get(i) {
-                    Some(Value::Number(n)) => n as u32,
-                    _ => UNWIRED,
-                })),
+                _ => {
+                    let rows: Vec<u32> = (0..values.len())
+                        .map(|i| match values.get(i) {
+                            Some(Value::Number(n)) => n as u32,
+                            _ => UNWIRED,
+                        })
+                        .collect();
+                    take(&rows);
+                }
             }
         }
-        out
     }
 
     /// The rows that reference each target row. Built once by counting the rows per target,
@@ -236,6 +249,12 @@ impl Reference {
             {
                 pages.push(rows.clone());
                 resolved.push(*r);
+                continue;
+            }
+            // Ids that are their own row numbers share their page.
+            if index.names_itself(&page.values) {
+                pages.push(page.clone());
+                resolved.push(Resolved { ids: page.id, order, structure, dangling: false });
                 continue;
             }
             let (rows, dangling) = index.resolve(&target.ids, &page.values, UNWIRED);

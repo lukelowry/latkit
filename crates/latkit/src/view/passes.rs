@@ -330,12 +330,14 @@ impl super::marks::Shown {
 impl View {
     /// Records row preparation: transition snapshots, changed channels, endpoint resolution,
     /// segment lists, and height order. Extents and their readback are included when requested.
+    /// Only a frame taking `input` waits to sort heights again (see `View::height_orders_due`).
     pub(super) fn prepare_rows(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         measure: bool,
         travel: bool,
+        input: bool,
     ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
@@ -350,7 +352,7 @@ impl View {
             travelled,
             expanded,
             ordered,
-        } = self.work(measure, travel);
+        } = self.work(measure, travel, input);
         let all = [&frozen, &work, &resolved, &eased, &segments, &measured, &carried, &travelled, &expanded, &ordered];
         if all.iter().all(|marks| marks.is_empty()) {
             return None;
@@ -423,7 +425,7 @@ impl View {
     /// Chooses the marks each raster step covers this frame: freezing, evaluation, endpoint
     /// resolution, easing, segment counting, measuring, comet carry, run expansion,
     /// height order sorting, and with `travel`, comet travel.
-    fn work(&mut self, measure: bool, travel: bool) -> Work {
+    fn work(&mut self, measure: bool, travel: bool, input: bool) -> Work {
         let frozen = (0..self.marks.len()).filter(|&i| self.marks[i].remap != wgsl::NONE).collect();
         for shown in &mut self.marks {
             // A mark without rows has nothing to evaluate and no endpoints to resolve.
@@ -465,7 +467,7 @@ impl View {
         let travelled = (0..self.marks.len()).filter(|i| travel && flowing(i)).collect();
         let expanded = self.drawn_rows_due();
         // After the versions above move and the segment lists are stamped.
-        let ordered = self.height_orders_due();
+        let ordered = self.height_orders_due(input);
         Work { frozen, evaluated: work, resolved, eased, segments, measured, carried, travelled, expanded, ordered }
     }
 

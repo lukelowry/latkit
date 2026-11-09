@@ -1,10 +1,11 @@
-/** Real package smoke test with WebGPU disabled. Use `--webkit` to check WebKit compatibility. */
+/** Real package smoke test with WebGPU disabled. Use `--firefox` or `--webkit` to check another
+ * browser. */
 import path from 'node:path';
-import { deadline, launch, serve } from './browser.ts';
+import { deadline, engineOf, launch, serve } from './browser.ts';
 
 const root = path.resolve(import.meta.dirname, '..');
 const server = await serve(root, 5232, 'WebGL2 examples');
-const engine = process.argv.includes('--webkit') ? 'webkit' : 'chromium';
+const engine = engineOf(process.argv);
 const chrome = await launch(['--disable-webgpu'], undefined, engine);
 try {
   const page = await chrome.browser.newPage({ viewport: { width: 1280, height: 800 } });

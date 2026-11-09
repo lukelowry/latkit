@@ -35,7 +35,9 @@ impl Buffer {
             gl.bind_buffer(Gl::ELEMENT_ARRAY_BUFFER, None);
         }
         gl.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&raw));
-        gl.buffer_data_with_f64(Gl::COPY_WRITE_BUFFER, desc.size as f64, Gl::DYNAMIC_COPY);
+        // Firefox stalls reading back a buffer not made for reading.
+        let hint = if desc.usage.contains(wgpu::BufferUsages::MAP_READ) { Gl::STREAM_READ } else { Gl::DYNAMIC_COPY };
+        gl.buffer_data_with_f64(Gl::COPY_WRITE_BUFFER, desc.size as f64, hint);
         let mapped =
             desc.mapped_at_creation.then(|| (0..desc.size, wgpu::MapMode::Write, Rc::new(vec![0; desc.size as usize])));
         Self(Rc::new(BufferData {

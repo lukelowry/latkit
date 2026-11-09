@@ -351,9 +351,11 @@ export class Stage {
     );
   }
 
-  /** Lists what the views are waiting on, including tiles. */
+  /** Lists what the views are waiting on, including tiles, and the errors they reported: a view
+   * that can't draw its scene waits for good. */
   #waiting(): string {
     const tiles = this.views.some((v) => v.stats.tilesLoading) ? ['tiles'] : [];
-    return [...new Set(this.views.flatMap((v) => v.waiting)), ...tiles].join(', ');
+    const waiting = [...new Set(this.views.flatMap((v) => v.waiting)), ...tiles].join(', ');
+    return this.errors.length ? `${waiting} (after ${this.errors.join('; ')})` : waiting;
   }
 }

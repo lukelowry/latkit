@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use super::name::PageId;
-use super::values::{Kind, Picks, Value, Values};
+use super::values::{Array, Kind, Picks, Value, Values};
 use crate::Result;
 
 /// Log2 of the rows per page (4,096). A page is the unit of sharing between versions, of GPU
@@ -231,6 +231,27 @@ impl Column {
             });
         }
         Ok(Column { len, pages: pages.into(), like: self.like.clone(), fixed })
+    }
+
+    /// This column, ready for `source` to be written into it: `u32` numbers widen to `u64` when
+    /// `source` holds a larger one, so no id is cut short. A reference keeps `u32` ids, as they
+    /// arrive from writers without 64-bit integers, while every id fits.
+    pub(crate) fn widened_for(&self, source: &Column) -> Column {
+        let larger = |page: &Page| match &page.values.array {
+            Array::U64(ids) => ids.iter().any(|&id| id > u64::from(u32::MAX)),
+            _ => false,
+        };
+        if !matches!(self.like.array, Array::U32(_)) || !source.pages.iter().any(larger) {
+            return self.clone();
+        }
+        let wide = |values: &Values| match &values.array {
+            Array::U32(ids) => {
+                Values { array: Array::U64(ids.iter().map(|&id| u64::from(id)).collect()), ..values.clone() }
+            }
+            _ => values.clone(),
+        };
+        let pages: Vec<Page> = self.pages.iter().map(|page| Page::new(wide(&page.values))).collect();
+        Column { len: self.len, pages: pages.into(), like: wide(&self.like), fixed: self.fixed }
     }
 
     /// Whether the first `rows` rows are unchanged since `before`, which this column was written

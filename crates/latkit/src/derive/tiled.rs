@@ -648,10 +648,10 @@ fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, Named<[f
             && let Some(target) = names.iter().position(|n| n == to)
             && !placed[target].1.place.eq(&Place::Nowhere)
         {
-            let ends: Option<Vec<Arc<[u32]>>> = fields
+            let ends: Option<Vec<Vec<u32>>> = fields
                 .iter()
                 .map(|f| match table.field_named(f) {
-                    Some(Field::Reference(r)) if r.to == *to => Some(r.targets().into()),
+                    Some(Field::Reference(r)) if r.to == *to => Some(r.targets()),
                     _ => None,
                 })
                 .collect();

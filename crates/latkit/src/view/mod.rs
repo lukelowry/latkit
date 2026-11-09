@@ -1057,6 +1057,8 @@ impl View {
             // A mark evaluates once its columns are synced. Until then, the pages they wait for
             // wake the view.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
+            // Heights that changed within `lists::RESORT` of the last sort sort in a later frame.
+            || self.marks.iter().any(|m| m.height_order.stale())
             || (moves && self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME))))
             || (moves && self.flowing())
             || self.gpu.0.lock().arena.uploading()

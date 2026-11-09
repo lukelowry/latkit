@@ -120,14 +120,33 @@ pub(crate) struct DrawnRows {
     expanded: u64,
 }
 
-/// A mark's height order: the list of its digit counts, whose entries are its instances and their
-/// keys twice over (`ORDER_WORDS` per instance), and a stamp of its last sort's inputs. Its first
-/// entries are the instance drawn at each position.
+/// A mark's height order: its list, whose entries are the instance drawn at each position
+/// (`ORDER_WORDS` per instance), and how many instances its last sort covered: those draws cover,
+/// not the spare room of the lists they come from. It sorts again when its instances change, and
+/// at most every [`RESORT`] seconds while only their heights change.
 #[derive(Default)]
 pub(crate) struct HeightOrder {
     pub(crate) list: Option<List>,
-    sorted: u64,
+    count: u32,
+    /// Stamps of what its instances are and of where they stand.
+    instances: u64,
+    heights: u64,
+    /// Whether heights changed since its last sort, which happened at `sorted` on the view's clock.
+    stale: bool,
+    sorted: f64,
 }
+
+impl HeightOrder {
+    /// Whether heights changed since the last sort, which a coming frame makes.
+    pub(super) fn stale(&self) -> bool {
+        self.stale
+    }
+}
+
+/// The fewest seconds between two sorts of a height order while only heights change, as when they
+/// stream in every frame. Meanwhile, a row whose height changed may draw out of order among rows of
+/// nearly its height.
+const RESORT: f64 = 0.1;
 
 /// Words a height order keeps per instance: the instance and its key, on each of two sides.
 const ORDER_WORDS: u32 = 1;
@@ -233,8 +252,9 @@ impl View {
             );
         }
         for &i in ordered {
-            let list = self.marks[i].height_order.list.expect("height order");
-            inner.listing.order(&mut raster, &input(i), list.kept, list.entries);
+            let order = &self.marks[i].height_order;
+            let list = order.list.expect("height order");
+            inner.listing.order(&mut raster, &input(i), (order.count, list.kept), list.entries);
         }
     }
 
@@ -279,8 +299,8 @@ impl View {
             at += region[1];
             shown.drawn_rows.at = Some(region);
         }
-        // Then a height order for each mark whose rows stand at different heights, sorting every
-        // instance it draws, in blocks of 256.
+        // Then a height order for each mark whose rows stand at different heights, with room for
+        // every instance it may draw.
         let ordered: Vec<bool> = (0..self.marks.len()).map(|i| layered && self.heights_vary(i)).collect();
         for (shown, ordered) in self.marks.iter_mut().zip(ordered) {
             if !ordered {
@@ -321,20 +341,31 @@ impl View {
     }
 
     /// The marks whose height orders sort this frame: those whose order, lists buffer, or instances
-    /// changed, or the heights of their rows. Those change where its rows or the vertices they end
-    /// at are drawn ([`Shown::places_drawn`]), and where the rows resolve their ends this frame.
-    pub(super) fn height_orders_due(&mut self) -> Vec<usize> {
+    /// changed, and, at most every [`RESORT`] seconds, those whose rows' heights changed. Heights
+    /// change where its rows or the vertices they end at are drawn ([`Shown::places_drawn`]), with
+    /// the paths drawn between them, and where the rows resolve their ends. Only an `input` frame
+    /// that moves the clock waits: a picture's or a video's frame shows every row in order, and
+    /// without the clock moving, no later frame would come.
+    pub(super) fn height_orders_due(&mut self, input: bool) -> Vec<usize> {
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
         let places: Vec<(bool, u64)> = self.marks.iter().map(Shown::places_drawn).collect();
+        let (now, waits) = (self.clock.now(), input && self.clock.moved());
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
-            let Some(list) = shown.height_order.list.filter(|_| shown.drawable()) else { continue };
+            let Some(list) = shown.height_order.list.filter(|_| shown.drawable()) else {
+                shown.height_order.stale = false;
+                continue;
+            };
             let ends: Vec<(bool, u64)> = shown.ends.iter().filter_map(|end| end.mark).map(|m| places[m]).collect();
             let drawn = shown.drawing().map(|d| d.made);
-            let instances = (shown.rows, shown.exits, drawn, shown.segments.built);
-            let stamp = stamp_of((list.header, list.kept, generation, instances, places[i], ends));
-            if stamp != shown.height_order.sorted || shown.end_block_count > 0 {
-                shown.height_order.sorted = stamp;
+            let count = shown.counted_instances(shown.instances()).min(list.kept);
+            let instances = stamp_of((list.header, list.kept, generation, shown.rows, shown.exits, drawn, count));
+            let heights = stamp_of((shown.segments.built, places[i], ends));
+            let order = &mut shown.height_order;
+            order.stale |= heights != order.heights || shown.end_block_count > 0;
+            order.heights = heights;
+            if instances != order.instances || (order.stale && (!waits || now - order.sorted >= RESORT)) {
+                (order.instances, order.count, order.stale, order.sorted) = (instances, count, false, now);
                 due.push(i);
             }
         }
@@ -530,6 +561,75 @@ mod tests {
         assert_ne!(connected, moved, "a formerly missing reference connecting changes its list");
         view.set_scene(scene(1.0));
         assert_ne!(render(&mut view), connected, "changing the position expression invalidates inherited geometry");
+    }
+
+    #[test]
+    fn heights_changing_every_frame_sort_at_most_every_resort_and_end_in_order() {
+        use crate::Vertices;
+        let gpu = match pollster::block_on(Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let data = Data::new("d");
+        let node = |z: f64| Table::new("Node", vec![0_u64, 1, 2]).field("z", vec![0.0, z, 2.0]);
+        data.apply(node(1.0).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3])).unwrap();
+        let raised = Vertices::of("d", "Node").position(field("x"), field("y")).elevation(field("z"));
+        let scene = Scene::new(Plane { grid: Grid::Off }).ease(std::time::Duration::ZERO).draw(raised);
+        let mut view = View::new(&gpu, scene);
+        // Tilted, depth varies, so the raised rows draw lowest first.
+        view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 50.0, bearing: 0.0 });
+        view.set_sources([&data]).unwrap();
+        let device = gpu.device();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("height order test"),
+            size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::gpu::FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut time = 0.0;
+        let mut frame = |view: &mut View| {
+            time += 1.0 / 60.0;
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            let size = [64, 64];
+            view.render(
+                &mut encoder,
+                &Frame { target: &target, format: crate::gpu::FORMAT, size, pixel_ratio: 1.0, time },
+            );
+            gpu.queue().submit([encoder.finish()]);
+            let wait =
+                wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(10)) };
+            device.poll(wait).unwrap();
+        };
+        for _ in 0..10 {
+            frame(&mut view);
+        }
+        assert!(view.marks[0].height_order.list.is_some(), "the tilted view orders its raised rows");
+        // Half a second of a height changing every frame sorts about every `RESORT`, not every frame.
+        let mut sorts = 0;
+        for i in 0..30 {
+            let before = view.marks[0].height_order.sorted;
+            data.apply(node(f64::from(i % 4))).unwrap();
+            frame(&mut view);
+            sorts += u32::from(view.marks[0].height_order.sorted != before);
+        }
+        assert!((4..=6).contains(&sorts), "{sorts} sorts in 30 frames of 1/60 s");
+        // Once the heights stop changing, a frame soon sorts them all, and the view sleeps.
+        assert!(view.needs_render() || !view.marks[0].height_order.stale());
+        for _ in 0..12 {
+            if !view.needs_render() {
+                break;
+            }
+            frame(&mut view);
+        }
+        assert!(!view.needs_render(), "the view sleeps");
+        assert!(!view.marks[0].height_order.stale(), "with every row in order");
+        assert_eq!(gpu.work().late, 0);
     }
 
     #[test]

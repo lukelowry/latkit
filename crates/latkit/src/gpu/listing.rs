@@ -79,12 +79,22 @@ impl Listing {
         self.packed.copy_to(raster.encoder, 0, input.lists, destination, words);
     }
 
-    pub(crate) fn order(&mut self, raster: &mut Raster<'_>, input: &Inputs<'_>, count: u32, destination: u32) {
-        self.work.ensure(raster.device, u64::from(count) * 4);
-        self.scanned.ensure(raster.device, u64::from(count) * 4);
-        self.packed.ensure(raster.device, u64::from(count.next_multiple_of(4)));
+    /// Writes the order the mark's first `count` instances draw in, lowest first, at `destination`
+    /// in the lists buffer. Scratch has room for the list's `kept` instances, so a count that
+    /// changes between sorts never makes it again.
+    pub(crate) fn order(
+        &mut self,
+        raster: &mut Raster<'_>,
+        input: &Inputs<'_>,
+        (count, kept): (u32, u32),
+        destination: u32,
+    ) {
+        self.work.ensure(raster.device, u64::from(kept) * 4);
+        self.scanned.ensure(raster.device, u64::from(kept) * 4);
+        self.packed.ensure(raster.device, u64::from(kept.next_multiple_of(4)));
         render(raster, input, "height_keys", &self.scanned, &self.work, count, count * 4);
-        self.order.record(raster, At::new(&self.work, 0), At::new(&self.scanned, 0), count);
+        let sides = (At::new(&self.work, 0), At::new(&self.scanned, 0));
+        self.order.record(raster, sides, count, kept, super::shaders::HEIGHT_BITS);
         render(raster, input, "pack_order", &self.scanned, &self.packed, count, count.next_multiple_of(4));
         self.packed.copy_to(raster.encoder, 0, input.lists, destination, count.next_multiple_of(4));
     }

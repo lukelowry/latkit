@@ -179,12 +179,11 @@ try {
         ) {
           if (source.texture === output.texture || other.texture === output.texture)
             throw new Error('sample/attachment alias');
-          const module =
-            entry === 'histogram'
-              ? 'raster.order.main.wgsl.glsl.json'
-              : entry === 'scatter'
-                ? 'raster.order.scatter.wgsl.glsl.json'
-                : group;
+          const module = ['histogram', 'by_digit', 'rank'].includes(entry)
+            ? 'raster.order.main.wgsl.glsl.json'
+            : entry === 'scatter'
+              ? 'raster.order.scatter.wgsl.glsl.json'
+              : group;
           const program = programs.get(`${module}:${entry}`);
           if (!program) throw new Error(`Missing ${entry}`);
           context.useProgram(program);
@@ -310,12 +309,14 @@ try {
           let source = words(n * 4, data);
           const sides = [words(n * 4), words(n * 4)];
           const bins = Math.ceil(n / 16) * 16;
-          const counts = words(bins);
+          const [blocks, counts, ranks] = [words(bins), words(bins), words(aligned(n))];
           for (let digit = 0; digit < 8; digit++) {
-            run('histogram', source, source, counts, n, bins, digit * 4);
+            run('histogram', source, source, blocks, n, bins, digit * 4);
+            run('by_digit', blocks, blocks, counts, n, bins, digit * 4);
             const offsets = scan(counts, bins);
+            run('rank', source, offsets, ranks, n, aligned(n), digit * 4);
             const destination = sides[digit % 2]!;
-            run('scatter', source, offsets, destination, n, n * 4, digit * 4);
+            run('scatter', source, ranks, destination, n, n * 4, digit * 4);
             source = destination;
           }
           const actual = read(source, n * 4);
