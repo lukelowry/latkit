@@ -1,5 +1,79 @@
 # latkit
 
+## 0.7.0
+
+### Minor Changes
+
+- e87e862: Pages show their first frame sooner on a first visit, and no longer stall right after it. The WebAssembly is 3.4 MiB instead of 6.0 MiB (1.0 MiB with brotli instead of 1.3): latkit's shaders are translated to GLSL when it is built, so the page carries no WGSL compiler.
+
+  - Added: the `latkit/shaders` asset, the shaders translated for WebGL2. `load()` downloads it while the WebAssembly compiles, wherever a browser canvas is available. Its `shaders` option names another URL for it. Only drawing needs it, so a failed download fails `Gpu.create()` with an `io` error, and the next call downloads it again. A file from another version is refused.
+  - Added: a custom marker's WGSL translates in a module of its own, the `latkit/wgsl` asset, which a page loads the first time it draws a custom marker. The `wgsl` option of `load()` names another URL for it.
+  - Added: in Rust, `host::Browser::set_shaders` hands over the shaders before a `Gpu` is created, and fails unless they are the file the same build wrote. `host::Browser::set_translator` provides the custom marker translator. The `wgsl` feature translates custom markers in the page instead, and lets the WebGL2 device take WGSL shader modules.
+  - Changed: every raster pass writes one color target. Chrome on Windows built a shader again on its GPU thread the first time a pass wrote several, which froze the page for up to 1.6 s after its first frame.
+  - Changed: the WebGL2 canvas latkit draws through starts at the screen's size. Growing it waited for every shader compile in flight.
+  - Changed: shaders read columns and lists without branching around texture reads or indexing vectors at runtime, which made the D3D compiler behind Chrome on Windows take several times longer. Column descriptors are 8 words.
+  - Changed: a channel kernel is written in GLSL in a browser and evaluates only the channels the words it writes depend on.
+  - Removed: in a browser, `Gpu::from_wgpu` takes only the WebGL2 device of a `Gpu` from `Gpu::new`.
+
+- e87e862: The diagram space is gone. Graphs draw on a plane or the earth, a plain length is CSS pixels everywhere, and the wasm is about 8% smaller. Laid-out graphs open faster, and dragging their rows costs only the rows that move.
+
+  - Removed: the `diagram` space and its theme group: `Diagram`, `DiagramTheme`, and `ShadowTheme`.
+  - Removed: vertex `ports`, `contains`, and `shadow`, with `Port` and `Side`. Edges without `ends` are no longer nets, and the `orthogonal` route is gone, so `Route` is `straight` or `geodesic`.
+  - Removed: grid `snap`, the theme's `edge.spacing`, `px()`, and the `{ px }` form of sizes and lengths. A plain number is already CSS pixels.
+  - Removed: `Hit.port`, `End.port`, and the `port` option of `view.screenOf`. In Rust, `View::screen_of(row)` takes only the row, and `Host::measure` is gone.
+  - Changed: the block marker's corner defaults to the theme's new `vertex.corner`.
+  - Changed: with a layout, a vertex mark draws each row at its data's position and takes the layout's place only where the data gives none. Editing positions, as a drag does every frame, no longer rebuilds every row's place: only the rows written are checked for a lost position. Nets' stars recompute only when their members, the members' positions, or the layout's places change.
+  - Changed: a layout small enough for the frame runs on it rather than in a host job, and a stress layout stops once it settles. Layouts place points, so they no longer size, nest, or pad rows, and a layout job carries a third of the bytes per row.
+  - Fixed: layouts and `view.neighbors` now follow nets drawn with `joins`. Each net links its first member to every other.
+
+- e87e862: latkit draws with WebGL2 in browsers instead of WebGPU, so a page draws wherever the browser has WebGL2.
+
+  - Changed: in a browser, a `Gpu` is a WebGL2 device, and `Gpu.create()` rejects with an `unsupported` error where the browser has no WebGL2. latkit no longer uses `navigator.gpu`.
+  - Changed: a `Gpu`'s default budget is half the device's addressable word-texture capacity, at most 1 GiB, instead of half its largest storage buffer.
+  - Changed: `stats.gpuMs` comes from WebGL2 timer queries (`EXT_disjoint_timer_query_webgl2`), and is 0 where the browser has none.
+  - Changed: in Rust, the WebGL2 device reports the wgpu calls WebGL2 cannot do, such as compute passes, query sets, and indirect draws, as validation errors to its error scopes and handler.
+  - Removed: in Rust, the `gpu` feature without `web` no longer builds for `wasm32`, where it could not draw. Use `web` to draw, or `default-features = false` for data alone.
+
+### Patch Changes
+
+- e87e862: A view is complete as soon as everything it draws is ready, so `done()`, `complete`, and pictures come sooner on a cold page.
+
+  - Changed: `complete`, `done()`, and `waiting`'s `compiling` wait only for the pipelines frames draw with: those of the marks and any text, transitions while rows ease, the glow while a row is lit, and layers where depth varies. The pipelines that answer the pointer, picks, and queries no longer count, so on a cold page the first hover or pick can answer a moment after `done()`.
+  - Changed: a change that arrives before the transition pipelines have compiled applies at once, as with motion off, instead of compiling them in the frame that needs them.
+  - Changed: `gpu.step(now)` returns a promise that resolves once the GPU has finished the frame and its readbacks. `gpu.done()` still also waits for every requested pipeline.
+  - Removed: compiling ahead the pipelines nearly every scene uses when the first view opens. A GPU compiles only what its views ask for.
+
+- e87e862: Pages read GPU results back in Firefox without stalling it.
+
+  - Fixed: buffers that results are read back from are made for reading, which Firefox reads without stalling the GPU.
+  - Fixed: waiting on the GPU asks the browser to flush its commands, which Firefox needs before it promises to finish them.
+
+- e87e862: Rows that stand at different heights sort again in a quarter of the GPU time, and only every 0.1 s while their heights stream in.
+
+  - Changed: sorting rows by height takes about a quarter of the GPU time it did: 21 ms instead of 83 ms for the 1.2 million line segments of a 100,000-bus grid on a globe.
+  - Changed: while heights change in every frame, as when they stream in, a view sorts them again at most every 0.1 s, and once more after they stop. A picture or video frame always draws every row in order.
+  - Changed: heights within about 0.01% of each other count as one, and keep their table order.
+
+- e87e862: Flat views open about 0.4 s sooner, and stepping through rows with the keys costs the same however many rows are in view.
+
+  - Fixed: a view whose depth doesn't vary (straight down at a plane or flat map, with no rows raised) no longer compiles or waits for the opaque draws and the height sorting it never uses, so `complete`, `done()`, and pictures come sooner. A view asks for them once its camera tilts, the globe shows, or rows stand at heights, and until they are ready it draws its marks in order.
+  - Fixed: Tab and the arrow keys find the next row on the GPU and read back only that row. Before, the first step read back and decoded every row in view, an 80 ms frame on a view of a few thousand rows.
+  - Changed: an arrow that finds no row its way pans the camera a frame or two later, once the GPU has looked.
+
+- e87e862: Large datasets with references take about 40% less WebAssembly memory, which a page never gives back.
+
+  - Changed: a reference whose ids arrive as `u32` keeps them as `u32`. Where they name the rows of a table with counted ids, its resolved rows share the ids' pages instead of copying them. An id too large for `u32` widens the reference's ids to `u64`. A grid of a million buses and two million lines takes 30 MiB less once read.
+  - Changed: a background job's input is written once into room made for all of it, and the lanes job writes each line's ends straight from their pages. Loading that grid peaks 31 MiB lower.
+
+- e87e862: WebGL2 pages show their first frame about a quarter sooner on a first visit. Frames that zoom, evaluate rows, append, or answer the pointer draw faster in Chrome on Windows.
+
+  - Changed: a pipeline waits to compile while more urgent ones still compile, so the pipelines a first frame draws with have the browser's compile threads to themselves. Those that answer the pointer and draw lit rows and layers start once the GPU has finished the frames drawn with the others.
+  - Changed: building a pipeline no longer asks the browser for its errors, which waited for the browser's GPU process while it compiled. Translation and link errors still refuse the pipeline.
+  - Fixed: a shader's flat values come from the first vertex of each primitive, as WGSL defines. Chrome on Windows no longer runs every mark's draw through a geometry shader to take them from the last.
+  - Changed: the rows a frame evaluates are copied into place with one draw per batch, instead of a texture copy per page and row span.
+  - Changed: one task waits on everything the GPU is doing. Compiling programs are checked every 4 ms instead of every browser task, which kept the page busy while a scene compiled.
+  - Fixed: a native `Gpu` no longer opens OpenGL alongside Vulkan, DirectX 12, or Metal. On Windows, opening several at once from different threads could hang.
+
 ## 0.6.1
 
 ### Patch Changes

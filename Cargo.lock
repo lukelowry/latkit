@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "latkit"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "latkit-cli"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "clap",
  "latkit",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "latkit-js"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "console_error_panic_hook",
  "futures-util",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "latkit-wgsl"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "naga",
  "serde_json",
@@ -2425,7 +2425,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "serde_json",
  "toml_edit",
