@@ -1,14 +1,21 @@
 use rustc_hash::FxHashMap;
 
-use super::levels::{Graph, Level, Runs, bounds, frame, nested};
+use super::graph::{Graph, Runs, bounds};
 use super::pack;
-use super::rect::union;
 use crate::scene::{Direction, Layered};
 
 /// The target width over height of the rows that parts with no pinned vertex pack into.
 const ASPECT: f64 = 16.0 / 9.0;
 /// Crossing-reduction sweeps, alternately down and up the ranks.
 const SWEEPS: usize = 8;
+/// Estimated microseconds per vertex and link in each sweep, ranking and placing included.
+const STEP: f64 = 0.05;
+
+/// Estimated microseconds a layered layout of `count` vertices and `links` links takes: ranking,
+/// `SWEEPS` sweeps that sort each rank, and placing, each about linear in both.
+pub(crate) fn cost(count: usize, links: usize) -> u64 {
+    ((count + links) as f64 * SWEEPS as f64 * STEP).ceil() as u64
+}
 
 /// Every vertex's center from a layered layout. Pinned vertices stay put. The others go in ranks
 /// along `options.direction` (`Direction::Up` is toward +y), `options.gap` apart within a rank and
@@ -16,44 +23,35 @@ const SWEEPS: usize = 8;
 /// are broken.
 ///
 /// Each connected part is laid out separately, and parts with no pinned vertex pack into rows
-/// (aspect 16:9) below the pinned ones. Across the direction, each vertex lines up with its
-/// sources. In a part with no pinned vertex, each source then centers among the vertices it fans
-/// out to. Groups nest as [`nested`] lays them out.
+/// (aspect 16:9) below the pinned ones, tallest first. Across the direction, each vertex lines up
+/// with its sources. In a part with no pinned vertex, each source then centers among the vertices
+/// it fans out to.
 pub(crate) fn layered(graph: &Graph<'_>, options: &Layered) -> Vec<[f64; 2]> {
-    nested(graph, |level| arrange(level, options))
-}
-
-/// Places one level: lays out each connected part in ranks, then packs the parts with no pinned
-/// vertex in rows below the pinned ones, tallest first.
-fn arrange(level: &Level, options: &Layered) -> Vec<[f64; 2]> {
-    let (sizes, pins) = (&level.sizes, &level.pinned);
-    let mut centers = vec![[0.0; 2]; sizes.len()];
-    let (part, count) = parts(sizes.len(), &level.links);
-    let inside = Runs::new(count, (0..sizes.len()).map(|i| (part[i] as usize, i as u32)));
-    let joins = Runs::new(count, level.links.iter().map(|&link| (part[link[0] as usize] as usize, link)));
+    let (count, pins, links) = (graph.len(), graph.pins(), graph.links());
+    let mut centers = vec![[0.0; 2]; count];
+    let (part, parts) = parts(count, &links);
+    let inside = Runs::new(parts, (0..count).map(|i| (part[i] as usize, i as u32)));
+    let joins = Runs::new(parts, links.iter().map(|&link| (part[link[0] as usize] as usize, link)));
     // Each member's index within its part. A part's members are in index order.
-    let mut slot = vec![0_u32; sizes.len()];
-    for p in 0..count {
+    let mut slot = vec![0_u32; count];
+    for p in 0..parts {
         for (s, &i) in inside.get(p).iter().enumerate() {
             slot[i as usize] = s as u32;
         }
     }
     let vertex = |i: u32| i as usize;
     let direction = options.direction;
-    let mut anchored: Option<[f64; 4]> = None;
+    let mut anchored: Vec<[f64; 2]> = Vec::new();
     let mut loose: Vec<(usize, [f64; 4])> = Vec::new();
-    for p in 0..count {
+    for p in 0..parts {
         let part_members = inside.get(p);
         let free = part_members.iter().filter(|&&i| pins[vertex(i)].is_none()).count();
-        if free > 0 && part_members.len() == 1 {
-            centers[vertex(part_members[0])] = [0.0; 2];
-        } else if free > 0 {
-            let extents: Vec<[f64; 2]> = part_members.iter().map(|&i| extent(direction, sizes[vertex(i)])).collect();
+        if free > 0 && part_members.len() > 1 {
             let fixed: Vec<Option<[f64; 2]>> =
                 part_members.iter().map(|&i| pins[vertex(i)].map(|pin| to_ranks(direction, pin))).collect();
             let part_links: Vec<[u32; 2]> =
                 joins.get(p).iter().map(|&[from, to]| [slot[from as usize], slot[to as usize]]).collect();
-            let placed = ranked(&extents, &fixed, &part_links, options.gap, options.rank_gap);
+            let placed = ranked(&fixed, &part_links, options.gap, options.rank_gap);
             for (&i, &at) in part_members.iter().zip(&placed) {
                 centers[vertex(i)] = from_ranks(direction, at);
             }
@@ -63,16 +61,17 @@ fn arrange(level: &Level, options: &Layered) -> Vec<[f64; 2]> {
                 centers[vertex(i)] = pin;
             }
         }
-        let bounds = bounds(part_members.iter().map(|&i| frame(centers[vertex(i)], sizes[vertex(i)])));
+        let points = part_members.iter().map(|&i| centers[vertex(i)]);
         if free == part_members.len() {
-            loose.push((p, bounds));
+            loose.push((p, bounds(points)));
         } else {
-            anchored = Some(anchored.map_or(bounds, |anchored| union(anchored, bounds)));
+            anchored.extend(points);
         }
     }
     if loose.is_empty() {
         return centers;
     }
+    let anchored = (!anchored.is_empty()).then(|| bounds(anchored.into_iter()));
     // Tallest first, ties in part order (by first member), so similar parts line up.
     crate::order::by_key(&mut loose, |a| !crate::order::number(a.1[3] - a.1[1]));
     let boxes: Vec<[f64; 2]> = loose.iter().map(|(_, b)| [b[2] - b[0], b[3] - b[1]]).collect();
@@ -146,25 +145,10 @@ fn from_ranks(direction: Direction, [along, across]: [f64; 2]) -> [f64; 2] {
     }
 }
 
-/// A width and height as a length along `direction` and a span across it.
-fn extent(direction: Direction, [width, height]: [f64; 2]) -> [f64; 2] {
-    match direction {
-        Direction::Right | Direction::Left => [width, height],
-        Direction::Down | Direction::Up => [height, width],
-    }
-}
-
-/// One part's centers in rank coordinates (see [`to_ranks`]). `extents` are each vertex's length
-/// along the direction and span across it, `pins` the centers of pinned vertices, and `links` are
-/// directed.
-fn ranked(
-    extents: &[[f64; 2]],
-    pins: &[Option<[f64; 2]>],
-    links: &[[u32; 2]],
-    gap: f64,
-    rank_gap: f64,
-) -> Vec<[f64; 2]> {
-    let count = extents.len();
+/// One part's centers in rank coordinates (see [`to_ranks`]). `pins` are the centers of pinned
+/// vertices, and `links` are directed.
+fn ranked(pins: &[Option<[f64; 2]>], links: &[[u32; 2]], gap: f64, rank_gap: f64) -> Vec<[f64; 2]> {
+    let count = pins.len();
     let rank = ranks(count, links);
     let rank_count = rank.iter().max().map_or(0, |&last| last as usize + 1);
     let mut layers = Runs::new(rank_count, (0..count).map(|i| (rank[i] as usize, i as u32)));
@@ -182,9 +166,9 @@ fn ranked(
             .map(|link| (rank[link[0] as usize] as usize, link)),
     );
     reorder(&mut layers, &above, &below, &adjacent);
-    let mut centers = coordinates(extents, pins, &layers, &above, gap, rank_gap);
+    let mut centers = coordinates(pins, &layers, &above, gap, rank_gap);
     if pins.iter().all(Option::is_none) {
-        balance(&mut centers, extents, &layers, &below, gap);
+        balance(&mut centers, &layers, &below, gap);
     }
     centers
 }
@@ -343,13 +327,12 @@ impl Crossings {
     }
 }
 
-/// Each vertex's center in rank coordinates. Ranks run `rank_gap` apart along the direction, each
-/// vertex centered in its rank's band. Across the direction, each vertex lines up with the median
-/// of its neighbors in earlier ranks, unless that brings it within `gap` of the previous vertex in
-/// its rank. A rank holding pinned vertices starts where they do, and vertices step past pinned
-/// ones they would come within `gap` of.
+/// Each vertex's center in rank coordinates. Ranks run `rank_gap` apart along the direction.
+/// Across the direction, each vertex lines up with the median of its neighbors in earlier ranks,
+/// unless that brings it within `gap` of the previous vertex in its rank. A rank holding pinned
+/// vertices sits where the first of them does, and vertices step past pinned ones they would come
+/// within `gap` of.
 fn coordinates(
-    extents: &[[f64; 2]],
     pins: &[Option<[f64; 2]>],
     layers: &Runs<u32>,
     above: &Runs<u32>,
@@ -357,55 +340,46 @@ fn coordinates(
     rank_gap: f64,
 ) -> Vec<[f64; 2]> {
     let mut centers: Vec<[f64; 2]> = pins.iter().map(|pin| pin.unwrap_or_default()).collect();
-    let length_of = |vertex: u32| extents[vertex as usize][0];
-    let bands: Vec<f64> =
-        (0..layers.len()).map(|k| layers.get(k).iter().map(|&i| length_of(i)).fold(0.0, f64::max)).collect();
     // Where a rank's pinned vertices begin along the direction.
-    let lead = |k: usize| {
-        layers.get(k).iter().filter_map(|&i| pins[i as usize].map(|pin| pin[0] - length_of(i) / 2.0)).reduce(f64::min)
-    };
+    let lead = |k: usize| layers.get(k).iter().filter_map(|&i| pins[i as usize].map(|pin| pin[0])).reduce(f64::min);
     let first = (0..layers.len()).find_map(|k| lead(k).map(|at| (k, at)));
     // Ranks before the first rank with a pinned vertex end where that rank starts.
-    let mut major = first.map_or(0.0, |(k, at)| at - bands[..k].iter().map(|band| band + rank_gap).sum::<f64>());
-    let mut obstacles = first.map(|_| Obstacles::new(extents, pins, [gap.min(rank_gap), gap]));
+    let mut along = first.map_or(0.0, |(k, at)| at - k as f64 * rank_gap);
+    let mut obstacles = first.map(|_| Obstacles::new(pins, [gap.min(rank_gap), gap]));
     let mut wanted: Vec<f64> = Vec::new();
-    for (k, &band) in bands.iter().enumerate() {
+    for k in 0..layers.len() {
         if let Some(at) = lead(k) {
-            major = at;
+            along = at;
         }
-        let along = major + band / 2.0;
         let mut floor: Option<f64> = None;
         for &i in layers.get(k) {
             let i = i as usize;
             if pins[i].is_some() {
                 continue;
             }
-            let [length, span] = extents[i];
             wanted.clear();
-            wanted.extend(above.get(i).iter().map(|&other| centers[other as usize][1] - span / 2.0));
+            wanted.extend(above.get(i).iter().map(|&other| centers[other as usize][1]));
             let median = (!wanted.is_empty()).then(|| {
                 let middle = (wanted.len() - 1) / 2;
                 *wanted.select_nth_unstable_by(middle, f64::total_cmp).1
             });
-            let mut low = match (median, floor) {
+            let mut across = match (median, floor) {
                 (Some(median), Some(floor)) => median.max(floor),
                 (Some(at), None) | (None, Some(at)) => at,
                 (None, None) => 0.0,
             };
-            let (start, end) = (along - length / 2.0, along + length / 2.0);
             if let Some(obstacles) = &obstacles {
-                while let Some(high) = obstacles.reach([start, low, end, low + span]) {
-                    low = high + gap;
+                while let Some(reach) = obstacles.reach([along, across]) {
+                    across = reach + gap;
                 }
             }
-            let high = low + span;
-            centers[i] = [along, low + span / 2.0];
+            centers[i] = [along, across];
             if let Some(obstacles) = &mut obstacles {
-                obstacles.add([start, low, end, high]);
+                obstacles.add([along, across]);
             }
-            floor = Some(high + gap);
+            floor = Some(across + gap);
         }
-        major += band + rank_gap;
+        along += rank_gap;
     }
     centers
 }
@@ -413,7 +387,7 @@ fn coordinates(
 /// Moves each vertex across the direction toward the median of its neighbors in later ranks, last
 /// ranks first, as far as its neighbors in its rank allow at `gap` apart. A source centers among
 /// the vertices it fans out to, and a chain stays in line.
-fn balance(centers: &mut [[f64; 2]], extents: &[[f64; 2]], layers: &Runs<u32>, below: &Runs<u32>, gap: f64) {
+fn balance(centers: &mut [[f64; 2]], layers: &Runs<u32>, below: &Runs<u32>, gap: f64) {
     let mut across: Vec<f64> = Vec::new();
     let mut goals: Vec<Option<f64>> = Vec::new();
     for k in (0..layers.len()).rev() {
@@ -434,85 +408,79 @@ fn balance(centers: &mut [[f64; 2]], extents: &[[f64; 2]], layers: &Runs<u32>, b
         // Toward greater across, the last vertex first, each held short of the one after it.
         let mut ceiling = f64::INFINITY;
         for (&vertex, goal) in layer.iter().zip(&goals).rev() {
-            let half = extents[vertex as usize][1] / 2.0;
             let center = &mut centers[vertex as usize][1];
             if let Some(goal) = *goal
                 && goal > *center
             {
-                *center = goal.min(ceiling - half).max(*center);
+                *center = goal.min(ceiling).max(*center);
             }
-            ceiling = *center - half - gap;
+            ceiling = *center - gap;
         }
         // Then toward lesser across, the first vertex first, each held short of the one before it.
         let mut floor = f64::NEG_INFINITY;
         for (&vertex, goal) in layer.iter().zip(&goals) {
-            let half = extents[vertex as usize][1] / 2.0;
             let center = &mut centers[vertex as usize][1];
             if let Some(goal) = *goal
                 && goal < *center
             {
-                *center = goal.max(floor + half).min(*center);
+                *center = goal.max(floor).min(*center);
             }
-            floor = *center + half + gap;
+            floor = *center + gap;
         }
     }
 }
 
-/// Placed boxes in rank coordinates, bucketed in square cells to find those near a box quickly.
+/// Placed points in rank coordinates, bucketed in square cells to find those near a point quickly.
 struct Obstacles {
     /// A cell's side.
     cell: f64,
-    /// The clearance boxes keep between them, along the direction and across it.
+    /// The clearance points keep between them, along the direction and across it.
     room: [f64; 2],
-    /// Each box: its least along and across, then its greatest.
-    boxes: Vec<[f64; 4]>,
-    /// The boxes reaching into each cell.
+    /// Each point: along, then across.
+    points: Vec<[f64; 2]>,
+    /// The points in each cell.
     cells: FxHashMap<[i64; 2], Vec<u32>>,
 }
 
 impl Obstacles {
-    /// Obstacles holding the pinned vertices' boxes, keeping `room` between boxes. Cells span a few
-    /// vertices, so each box reaches few cells.
-    fn new(extents: &[[f64; 2]], pins: &[Option<[f64; 2]>], room: [f64; 2]) -> Obstacles {
-        let largest = extents.iter().flatten().fold(0.0, |largest: f64, &side| largest.max(side));
-        let cell = (room[1] * 8.0).max(largest * 2.0);
+    /// Obstacles holding the pinned vertices, keeping `room` between points. Cells span a few gaps.
+    fn new(pins: &[Option<[f64; 2]>], room: [f64; 2]) -> Obstacles {
+        let cell = room[1] * 8.0;
         let mut obstacles = Obstacles {
             cell: if cell > 0.0 { cell } else { 1.0 },
             room,
-            boxes: Vec::new(),
+            points: Vec::new(),
             cells: FxHashMap::default(),
         };
-        for (pin, &[length, span]) in pins.iter().zip(extents) {
-            if let Some([along, across]) = *pin {
-                obstacles.add([along - length / 2.0, across - span / 2.0, along + length / 2.0, across + span / 2.0]);
-            }
+        for pin in pins.iter().flatten() {
+            obstacles.add(*pin);
         }
         obstacles
     }
 
-    /// Adds a placed box.
-    fn add(&mut self, placed: [f64; 4]) {
-        let id = self.boxes.len() as u32;
-        self.boxes.push(placed);
-        for key in cells(self.cell, placed) {
-            self.cells.entry(key).or_default().push(id);
-        }
+    /// Adds a placed point.
+    fn add(&mut self, point: [f64; 2]) {
+        let id = self.points.len() as u32;
+        self.points.push(point);
+        self.cells.entry(self.key(point)).or_default().push(id);
     }
 
-    /// The greatest across edge among the boxes that `query` comes within `room` of, if any.
-    fn reach(&self, query: [f64; 4]) -> Option<f64> {
+    /// The cell holding `point`.
+    fn key(&self, [along, across]: [f64; 2]) -> [i64; 2] {
+        [(along / self.cell).floor() as i64, (across / self.cell).floor() as i64]
+    }
+
+    /// The greatest across among the points that `query` comes within `room` of, if any.
+    fn reach(&self, query: [f64; 2]) -> Option<f64> {
         let [along, across] = self.room;
-        let grown = [query[0] - along, query[1] - across, query[2] + along, query[3] + across];
+        let [from_along, from_across] = self.key([query[0] - along, query[1] - across]);
+        let [to_along, to_across] = self.key([query[0] + along, query[1] + across]);
         let mut reach: Option<f64> = None;
-        for key in cells(self.cell, grown) {
+        for key in (from_along..=to_along).flat_map(|a| (from_across..=to_across).map(move |c| [a, c])) {
             for &id in self.cells.get(&key).into_iter().flatten() {
-                let other = self.boxes[id as usize];
-                let near = other[0] < query[2] + along
-                    && query[0] < other[2] + along
-                    && other[1] < query[3] + across
-                    && query[1] < other[3] + across;
-                if near {
-                    reach = Some(reach.map_or(other[3], |reach| reach.max(other[3])));
+                let other = self.points[id as usize];
+                if (other[0] - query[0]).abs() < along && (other[1] - query[1]).abs() < across {
+                    reach = Some(reach.map_or(other[1], |reach| reach.max(other[1])));
                 }
             }
         }
@@ -520,76 +488,32 @@ impl Obstacles {
     }
 }
 
-/// The cells of side `cell` that `area` reaches into.
-fn cells(cell: f64, area: [f64; 4]) -> impl Iterator<Item = [i64; 2]> {
-    let index = |at: f64| (at / cell).floor() as i64;
-    let (across_from, across_to) = (index(area[1]), index(area[3]));
-    (index(area[0])..=index(area[2]))
-        .flat_map(move |along| (across_from..=across_to).map(move |across| [along, across]))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SIZE: [f64; 2] = [20.0, 10.0];
 
     fn options(direction: Direction) -> Layered {
         Layered { direction, gap: 10.0, rank_gap: 40.0 }
     }
 
-    /// A graph's columns, owned.
-    struct Columns {
-        sizes: Vec<[f64; 2]>,
-        edges: Vec<[u32; 2]>,
-        pinned: Vec<Option<[f64; 2]>>,
-        groups: Vec<Option<u32>>,
-        pads: Vec<[f64; 4]>,
-    }
-
-    impl Columns {
-        /// `count` vertices of [`SIZE`] joined by `edges`, none pinned or grouped. A group pads its
-        /// members by half a gap.
-        fn new(count: usize, edges: &[[u32; 2]]) -> Columns {
-            Columns {
-                sizes: vec![SIZE; count],
-                edges: edges.to_vec(),
-                pinned: vec![None; count],
-                groups: vec![None; count],
-                pads: vec![[5.0; 4]; count],
-            }
+    /// `count` vertices joined by `links`, laid out with the pins `pinned` lists.
+    fn layout(count: usize, links: &[[u32; 2]], pinned: &[(usize, [f64; 2])], options: &Layered) -> Vec<[f64; 2]> {
+        let mut pins = vec![None; count];
+        for &(v, at) in pinned {
+            pins[v] = Some(at);
         }
-
-        fn layout(&self, options: &Layered) -> Vec<[f64; 2]> {
-            let graph = Graph {
-                sizes: &self.sizes,
-                links: &self.edges,
-                pinned: &self.pinned,
-                groups: &self.groups,
-                pads: &self.pads,
-            };
-            layered(&graph, options)
-        }
-
-        /// Vertex `v`'s box: a group's is its members' bounds, padded.
-        fn frame(&self, centers: &[[f64; 2]], v: usize, padding: f64) -> [f64; 4] {
-            let members: Vec<usize> = (0..self.sizes.len()).filter(|&m| self.groups[m] == Some(v as u32)).collect();
-            if members.is_empty() {
-                return frame(centers[v], self.sizes[v]);
-            }
-            let inner = bounds(members.iter().map(|&m| self.frame(centers, m, padding)));
-            [inner[0] - padding, inner[1] - padding, inner[2] + padding, inner[3] + padding]
-        }
-    }
-
-    /// Whether two boxes share more than an edge.
-    fn overlap(a: [f64; 4], b: [f64; 4]) -> bool {
-        const SLACK: f64 = 1e-6;
-        a[0] < b[2] - SLACK && b[0] < a[2] - SLACK && a[1] < b[3] - SLACK && b[1] < a[3] - SLACK
+        layered(&Graph { pinned: &pins, links }, options)
     }
 
     fn near(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    /// Whether every two of `centers` are at least `gap` apart along x or y.
+    fn clear(centers: &[[f64; 2]], gap: f64) -> bool {
+        (0..centers.len()).all(|a| {
+            (a + 1..centers.len()).all(|b| (0..2).any(|k| (centers[a][k] - centers[b][k]).abs() >= gap - 1e-6))
+        })
     }
 
     /// How many edge pairs cross between the same two ranks of a rightward layout.
@@ -610,19 +534,17 @@ mod tests {
 
     #[test]
     fn a_chain_ranks_along_the_direction_in_order() {
-        let graph = Columns::new(4, &[[2, 3], [0, 1], [1, 2]]);
         for direction in [Direction::Right, Direction::Left, Direction::Down, Direction::Up] {
-            let centers = graph.layout(&options(direction));
+            let centers = layout(4, &[[2, 3], [0, 1], [1, 2]], &[], &options(direction));
             let (along, across, sign) = match direction {
                 Direction::Right => (0, 1, 1.0),
                 Direction::Left => (0, 1, -1.0),
                 Direction::Down => (1, 0, -1.0),
                 Direction::Up => (1, 0, 1.0),
             };
-            let length = SIZE[along];
             for pair in centers.windows(2) {
                 let step = (pair[1][along] - pair[0][along]) * sign;
-                assert!(near(step, length + 40.0), "{direction:?}: ranks a rank gap apart: {centers:?}");
+                assert!(near(step, 40.0), "{direction:?}: ranks a rank gap apart: {centers:?}");
                 assert!(near(pair[1][across], pair[0][across]), "{direction:?}: in line with its source: {centers:?}");
             }
         }
@@ -631,7 +553,7 @@ mod tests {
     #[test]
     fn a_source_centers_on_its_fan() {
         // 0 fans out to 1, 2, and 3; 3 runs on to 4.
-        let centers = Columns::new(5, &[[0, 1], [0, 2], [0, 3], [3, 4]]).layout(&options(Direction::Down));
+        let centers = layout(5, &[[0, 1], [0, 2], [0, 3], [3, 4]], &[], &options(Direction::Down));
         assert!(near(centers[0][0], centers[2][0]), "the source is centered on its fan: {centers:?}");
         assert!(near(centers[3][0], centers[4][0]), "a chain stays in line: {centers:?}");
         assert!(centers[1][0] < centers[2][0] && centers[2][0] < centers[3][0], "{centers:?}");
@@ -639,37 +561,25 @@ mod tests {
 
     #[test]
     fn pinned_vertices_stay_put() {
-        let mut graph = Columns::new(5, &[[0, 1], [1, 2], [1, 3], [3, 4]]);
-        graph.pinned[1] = Some([500.0, -300.0]);
-        graph.pinned[3] = Some([620.0, -260.0]);
-        let centers = graph.layout(&options(Direction::Right));
+        let pinned = [(1, [500.0, -300.0]), (3, [620.0, -260.0])];
+        let centers = layout(5, &[[0, 1], [1, 2], [1, 3], [3, 4]], &pinned, &options(Direction::Right));
         assert_eq!(centers[1], [500.0, -300.0]);
         assert_eq!(centers[3], [620.0, -260.0]);
         assert!(centers[0][0] < centers[1][0] && centers[2][0] > centers[1][0], "{centers:?}");
-        for a in 0..5 {
-            for b in a + 1..5 {
-                assert!(!overlap(frame(centers[a], SIZE), frame(centers[b], SIZE)), "{a} and {b}: {centers:?}");
-            }
-        }
+        assert!(clear(&centers, 10.0), "{centers:?}");
     }
 
     #[test]
-    fn disconnected_parts_do_not_overlap() {
-        let graph = Columns::new(8, &[[0, 1], [1, 2], [3, 4], [4, 5]]);
-        let centers = graph.layout(&options(Direction::Right));
-        for a in 0..8 {
-            for b in a + 1..8 {
-                assert!(!overlap(frame(centers[a], SIZE), frame(centers[b], SIZE)), "{a} and {b}: {centers:?}");
-            }
-        }
-        let first = bounds((0..3).map(|v| frame(centers[v], SIZE)));
+    fn disconnected_parts_keep_apart() {
+        let centers = layout(8, &[[0, 1], [1, 2], [3, 4], [4, 5]], &[], &options(Direction::Right));
+        assert!(clear(&centers, 10.0), "{centers:?}");
+        let first = bounds((0..3).map(|v| centers[v]));
         assert!(near(first[0], 0.0) && near(first[3], 0.0), "the first part's top left is the origin: {first:?}");
     }
 
     #[test]
     fn a_cycle_still_lays_out() {
-        let graph = Columns::new(4, &[[0, 1], [1, 2], [2, 0], [2, 3]]);
-        let centers = graph.layout(&options(Direction::Right));
+        let centers = layout(4, &[[0, 1], [1, 2], [2, 0], [2, 3]], &[], &options(Direction::Right));
         assert!(centers.iter().flatten().all(|at| at.is_finite()));
         assert!(
             centers.windows(2).all(|pair| pair[1][0] > pair[0][0]),
@@ -686,55 +596,14 @@ mod tests {
         for (count, width, edges) in [(4, 2, &small[..]), (9, 3, &large[..])] {
             let in_index_order: Vec<[f64; 2]> = (0..count).map(|v| [(v / width) as f64, (v % width) as f64]).collect();
             assert!(crossings(edges, &in_index_order) > 0);
-            let centers = Columns::new(count, edges).layout(&options(Direction::Right));
+            let centers = layout(count, edges, &[], &options(Direction::Right));
             assert_eq!(crossings(edges, &centers), 0, "{centers:?}");
         }
     }
 
     #[test]
-    fn groups_contain_their_members_and_keep_other_vertices_out() {
-        // Group 0 holds 1 → 2 → 3 and group 6, which holds 7 → 8. Vertex 4 feeds group 0, and 5
-        // drains it.
-        let mut graph = Columns::new(9, &[[1, 2], [2, 3], [4, 1], [3, 5], [2, 7], [7, 8]]);
-        graph.groups = vec![None, Some(0), Some(0), Some(0), None, None, Some(0), Some(6), Some(6)];
-        let options = options(Direction::Right);
-        let centers = graph.layout(&options);
-        let padding = options.gap / 2.0;
-        let frame = |v: usize| graph.frame(&centers, v, padding);
-        for (group, members) in [(0, &[1, 2, 3, 6][..]), (6, &[7, 8][..])] {
-            let outer = frame(group);
-            let middle = [outer[0].midpoint(outer[2]), outer[1].midpoint(outer[3])];
-            assert!(near(centers[group][0], middle[0]) && near(centers[group][1], middle[1]), "{centers:?}");
-            for &m in members {
-                let inner = frame(m);
-                assert!(inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3]);
-            }
-        }
-        for (a, b) in [(0, 4), (0, 5), (4, 5), (6, 1), (6, 2), (6, 3), (1, 2), (2, 3), (1, 3), (7, 8)] {
-            assert!(!overlap(frame(a), frame(b)), "{a} and {b}: {centers:?}");
-        }
-        assert!(frame(4)[2] < frame(0)[0] && frame(0)[2] < frame(5)[0], "the group ranks as one vertex: {centers:?}");
-    }
-
-    #[test]
-    fn a_pinned_member_fixes_its_group_and_a_pinned_group_moves_its_members() {
-        let mut graph = Columns::new(7, &[[1, 2], [3, 0], [5, 6], [4, 5]]);
-        graph.groups = vec![None, Some(0), Some(0), None, None, Some(4), Some(4)];
-        graph.pinned[1] = Some([300.0, 200.0]);
-        graph.pinned[4] = Some([-1000.0, 1000.0]);
-        let options = options(Direction::Right);
-        let centers = graph.layout(&options);
-        assert_eq!(centers[1], [300.0, 200.0]);
-        assert!(near(centers[4][0], -1000.0) && near(centers[4][1], 1000.0), "{centers:?}");
-        let frame = |v: usize| graph.frame(&centers, v, options.gap / 2.0);
-        let group = frame(4);
-        assert!(near(group[0].midpoint(group[2]), -1000.0) && near(group[1].midpoint(group[3]), 1000.0));
-        assert!(!overlap(frame(3), frame(0)) && frame(3)[2] < frame(0)[0], "{centers:?}");
-    }
-
-    #[test]
-    fn large_graphs_lay_out_without_overlaps() {
-        // Fifty groups of twenty, and edges joining random vertices, many against the direction.
+    fn large_graphs_lay_out_a_gap_apart() {
+        // Edges joining random vertices, many against the direction.
         let count = 10_000;
         let mut seed = 0x9e37_79b9_u32;
         let mut random = move |below: usize| {
@@ -743,23 +612,15 @@ mod tests {
             seed ^= seed << 5;
             seed as usize % below
         };
-        let mut edges: Vec<[u32; 2]> = (51..count).map(|v| [(50 + random(v - 50)) as u32, v as u32]).collect();
-        edges.extend((0..count / 2).map(|_| [(50 + random(count - 50)) as u32, (50 + random(count - 50)) as u32]));
-        let mut graph = Columns::new(count, &edges);
-        for v in 50..1050 {
-            graph.groups[v] = Some(((v - 50) / 20) as u32);
-        }
-        let options = options(Direction::Down);
-        let centers = graph.layout(&options);
+        let mut edges: Vec<[u32; 2]> = (1..count).map(|v| [random(v) as u32, v as u32]).collect();
+        edges.extend((0..count / 2).map(|_| [random(count) as u32, random(count) as u32]));
+        let mut centers = layout(count, &edges, &[], &options(Direction::Down));
         assert!(centers.iter().flatten().all(|at| at.is_finite()));
-        let mut frames: Vec<(usize, [f64; 4])> = (50..count).map(|v| (v, frame(centers[v], SIZE))).collect();
-        frames.extend((0..50).map(|g| (g, graph.frame(&centers, g, options.gap / 2.0))));
-        // Ranks run down the page, so sweeping down it compares each frame with few others.
-        crate::order::by_key(&mut frames, |a| crate::order::number(a.1[1]));
-        for (k, &(a, first)) in frames.iter().enumerate() {
-            for &(b, second) in frames[k + 1..].iter().take_while(|(_, second)| second[1] < first[3]) {
-                let held = graph.groups[a] == Some(b as u32) || graph.groups[b] == Some(a as u32);
-                assert!(held || !overlap(first, second), "{a} {first:?} and {b} {second:?}");
+        // Ranks run down the page, and within a rank, vertices are a gap apart.
+        centers.sort_by(|a, b| a[1].total_cmp(&b[1]).then(a[0].total_cmp(&b[0])));
+        for pair in centers.windows(2) {
+            if near(pair[0][1], pair[1][1]) {
+                assert!(pair[1][0] - pair[0][0] >= 10.0 - 1e-6, "{pair:?}");
             }
         }
     }

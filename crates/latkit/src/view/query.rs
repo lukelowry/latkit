@@ -25,6 +25,14 @@ use crate::{Pending, Resolver, Row};
 /// runs again with space for them.
 const HITS: u32 = 1024;
 
+/// The raster operation answering a query.
+#[derive(Clone, Copy)]
+pub(super) enum Kind {
+    Hits,
+    Boxed,
+    Locate,
+}
+
 /// A query for the GPU.
 pub(crate) enum Ask {
     /// Every row within `radius` CSS pixels of `point`, keeping up to `room` hits of each mark.
@@ -58,12 +66,12 @@ impl Ask {
         }
     }
 
-    /// The probe program's step answering it.
-    fn step(&self) -> u32 {
+    /// The raster operation answering it.
+    fn kind(&self) -> Kind {
         match self {
-            Ask::Hits { .. } => wgsl::STEP_HITS,
-            Ask::Boxed { .. } => wgsl::STEP_BOXED,
-            Ask::Locate { .. } => wgsl::STEP_LOCATE,
+            Ask::Hits { .. } => Kind::Hits,
+            Ask::Boxed { .. } => Kind::Boxed,
+            Ask::Locate { .. } => Kind::Locate,
         }
     }
 
@@ -73,9 +81,9 @@ impl Ask {
         match self {
             Ask::Hits { room, .. } => {
                 let kept = instances.min(*room);
-                (kept, 2 + kept * wgsl::HIT_WORDS)
+                (kept, 4 + kept * wgsl::HIT_WORDS)
             }
-            Ask::Boxed { .. } => (rows, rows.div_ceil(32)),
+            Ask::Boxed { .. } => (rows, rows.div_ceil(32).next_multiple_of(4)),
             Ask::Locate { .. } => (0, 0),
         }
     }
@@ -139,63 +147,19 @@ impl View {
         if !self.marks_show_at(point) {
             return Pending::ready(Ok(Vec::new()));
         }
-        self.hits(point, radius)
-    }
-
-    /// [`pick`](View::pick), wherever `point` lies, as the keys use to list the rows in view.
-    pub(super) fn hits(&mut self, point: [f32; 2], radius: f32) -> Pending<Vec<Hit>> {
         let (answer, reply) = Pending::new();
         self.queries.waiting.push_back(Ask::Hits { point, radius: radius.max(0.0), room: HITS, reply });
         self.wake();
         answer
     }
 
-    /// Where `row` lies on screen, or its port whose reference field is `port`, in CSS pixels from
-    /// the top left, as the next frames draw it. `None` when no mark draws it in view, or it has no
-    /// such port. A diagram's vertices and ports resolve at once from its sheet. Only a diagram has
-    /// ports.
-    pub fn screen_of(&mut self, row: &Row, port: Option<&str>) -> Pending<Option<[f32; 2]>> {
-        let diagram = matches!(self.scene.space, crate::Space::Diagram(_));
-        if let Some(b) = self.derived.sheet.bounds(row).filter(|_| diagram) {
-            let view = self.projected();
-            let center = [b[0].midpoint(b[2]), b[1].midpoint(b[3])];
-            let at = match port {
-                None => Some(center),
-                Some(port) => self
-                    .port_offset(row, port, [(b[2] - b[0]) / 2.0, (b[3] - b[1]) / 2.0])
-                    .map(|o| [center[0] + o[0], center[1] + o[1]]),
-            };
-            let screen = at.and_then(|[x, y]| view.screen(view.world([x, y, 0.0])));
-            return Pending::ready(Ok(screen.map(|s| [s[0] as f32, s[1] as f32])));
-        }
-        if port.is_some() {
-            return Pending::ready(Ok(None));
-        }
+    /// Where `row` lies on screen, in CSS pixels from the top left, as the next frames draw it.
+    /// `None` when no mark draws it in view.
+    pub fn screen_of(&mut self, row: &Row) -> Pending<Option<[f32; 2]>> {
         let (answer, reply) = Pending::new();
         self.queries.waiting.push_back(Ask::Locate { row: row.clone(), reply });
         self.wake();
         answer
-    }
-
-    /// Where port `port` of diagram vertex `row`, whose box is `half` units each way from its middle,
-    /// sits from that middle, in units with y down. `None` if no vertex mark of its table has the
-    /// port.
-    fn port_offset(&self, row: &Row, port: &str, half: [f64; 2]) -> Option<[f64; 2]> {
-        let (i, k) = self.marks.iter().enumerate().find_map(|(i, shown)| match &shown.mark {
-            crate::Mark::Vertices(v) if v.style.data == row.data && v.style.table == row.table => {
-                Some((i, v.ports.iter().position(|(reference, _)| reference.as_str() == port)?))
-            }
-            _ => None,
-        })?;
-        // A port code holds its side, then its index among the ports on that side and their count.
-        let code = *self.port_codes(i).get(k)?;
-        let along = f64::from(((code >> 2) & 255) + 1) / f64::from(((code >> 10) & 255) + 1) * 2.0 - 1.0;
-        Some(match code & 3 {
-            wgsl::SIDE_LEFT => [-half[0], along * half[1]],
-            wgsl::SIDE_RIGHT => [half[0], along * half[1]],
-            wgsl::SIDE_TOP => [along * half[0], -half[1]],
-            _ => [along * half[0], half[1]],
-        })
     }
 
     /// Selects every row in the box between two screen points, with `trigger` as the cause.
@@ -207,12 +171,18 @@ impl View {
     /// The position of `row` among the rows mark `i` draws, if it draws it.
     pub(super) fn row_index(&self, i: usize, row: &Row) -> Option<u32> {
         let shown = self.marks.get(i)?;
+        shown.item_of(self.held_of(i, row)?).filter(|&item| item < shown.rows)
+    }
+
+    /// The held row of `row` in mark `i`, if the mark holds it.
+    pub(super) fn held_of(&self, i: usize, row: &Row) -> Option<u32> {
+        let shown = self.marks.get(i)?;
         let style = shown.mark.style();
         if style.data != row.data || style.table != row.table {
             return None;
         }
         let index = self.snapshot(&style.data)?.table(&style.table)?.row(row.id.as_ref())?;
-        shown.item_of(shown.held_row(index as u32)?).filter(|&item| item < shown.rows)
+        shown.held_row(index as u32)
     }
 
     /// Starts the next query this frame if none is in progress, skipping those nobody awaits.
@@ -257,26 +227,15 @@ impl View {
     pub(super) fn run_query(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
         let Some(Running { ask, found, words }) = self.queries.running.take() else { return };
         let gpu = self.gpu.clone();
-        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        let probe = self.resources.as_ref().expect("created before queries").probe().clone();
-        let start = u64::from(wgsl::PROBE_WORDS) * 4;
-        // Results start empty: for hits, a zero count and each mark's capacity; for a box, no rows.
-        match &ask {
-            Ask::Hits { .. } => {
-                for f in &found {
-                    queue.write_buffer(&probe, u64::from(f.at) * 4, bytemuck::cast_slice(&[0, f.room]));
-                }
-            }
-            Ask::Boxed { .. } if words > 0 => encoder.clear_buffer(&probe, start, Some(u64::from(words) * 4)),
-            Ask::Boxed { .. } | Ask::Locate { .. } => {}
-        }
-        let marks: Vec<usize> = found.iter().map(|f| f.mark).collect();
-        self.probe_pass(encoder, inner, "latkit query", &[(ask.step(), &marks)]);
-        let (at, bytes) = match &ask {
-            Ask::Locate { .. } => (u64::from(wgsl::PROBE_LOCATE_X) * 4, 16),
-            _ => (start, u64::from(words.max(1)) * 4),
+        let device = &gpu.0.device;
+        let marks: Vec<_> = found.iter().map(|f| (f.mark, f.room, f.at)).collect();
+        self.probe_pass(encoder, inner, ask.kind(), &marks);
+        let (at, count) = match &ask {
+            Ask::Locate { .. } => (wgsl::PROBE_LOCATE_X, 4),
+            _ => (wgsl::PROBE_WORDS, words.max(1)),
         };
-        let readback = Readback::new(&inner.readbacks, device, encoder, &probe, at, bytes, &self.waker);
+        let probe = self.resources.as_ref().expect("created before queries").probe();
+        let readback = Readback::words(&inner.readbacks, device, encoder, probe, at, count, &self.waker);
         let drew = self.drew();
         self.queries.reading.start(0, readback, Reading { ask, found, drew });
     }
@@ -335,14 +294,14 @@ impl View {
 
 /// The hits in `words` for `found`, decoded against `drew`, the frame they came from.
 fn hits(found: &[Found], words: &[u32], drew: &Drew) -> Vec<Hit> {
-    // Nearest first. Among equals, the mark drawn last comes first, and a port before its marker.
+    // Nearest first. Among equals, the mark drawn last comes first.
     // Then by row and position, so the order never depends on which hit arrived first. Each row
     // appears once, at its nearest hit.
     let mut kept: Vec<(usize, &[u32; wgsl::HIT_WORDS as usize])> = found
         .iter()
         .flat_map(|f| {
             let count = words_at(words, f.at, 1).first().map_or(0, |&n| n.min(f.room));
-            let entries = words_at(words, f.at + 2, count * wgsl::HIT_WORDS);
+            let entries = words_at(words, f.at + 4, count * wgsl::HIT_WORDS);
             entries.as_chunks().0.iter().map(move |entry| (f.mark, entry))
         })
         .collect();

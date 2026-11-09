@@ -20,8 +20,8 @@
 //! | frames       | table name, field name, `u32` rows, run                                      |
 //! | table        | name, ids, `u32` field count; per field: name, `u8` tag, payload             |
 //! | field        | values; a reference's target table name and target ids as values; or samples |
-//! | ids          | `u8` 0 and `u32` count, or `u8` 1 and values: `u64`, `u32` (read as `u64`),  |
-//! |              | or text                                                                      |
+//! | ids          | `u8` 0 and `u32` count, or `u8` 1 and values: `u64`, `u32` (read as `u64`    |
+//! |              | for a table's rows), or text                                                 |
 //! | values       | `u8` storage, `u32` length, data, `u8` has-validity, validity words (`u64`)  |
 //! | samples      | `u32` rows, `u64` first frame, `u64` frame count, `u8` highest level, `u32`  |
 //! |              | run count, runs. Buckets whose eight entries one level below are all present |
@@ -519,8 +519,8 @@ impl Reader<'_> {
         Ok(Column::new(&self.values()?))
     }
 
-    /// Reads ids as values. `u32` ids, sent by writers without 64-bit integers, are widened to
-    /// `u64`, which stores every numeric id.
+    /// Reads a table's row ids as values. `u32` ids, sent by writers without 64-bit integers, are
+    /// widened to `u64`, which the table's id index reads.
     fn id_values(&mut self) -> Result<Values> {
         let values = self.values()?;
         Ok(match values.array {
@@ -545,9 +545,11 @@ impl Reader<'_> {
             let name = self.name()?;
             let field = match self.u8()? {
                 FIELD_VALUES => Field::Values(self.column()?, Version::next()),
+                // A reference keeps `u32` ids as they are: resolved against counted rows, they
+                // serve as their own row numbers.
                 FIELD_REFERENCE => {
                     let to = self.name()?;
-                    Field::Reference(Reference::new(to, Column::new(&self.id_values()?)))
+                    Field::Reference(Reference::new(to, Column::new(&self.values()?)))
                 }
                 FIELD_SAMPLED => Field::Sampled(self.samples().map_err(|e| e.at(&name))?, Version::next()),
                 tag => return Err(malformed(format!("unknown field kind {tag}"))),

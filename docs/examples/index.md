@@ -18,8 +18,6 @@ live in the browser.
 
 [![Great-circle routes between forty of the world's great cities on a globe, with comets flowing along them](../images/globe.png) Globe](globe.md)
 
-[![A microgrid controller as blocks in nested groups, with wires routed port to port and a feedback loop](../images/diagram.png) Diagram](diagram.md)
-
 [![A synthetic network of 480 buses in five concentric rings, comets flowing along its 896 branches](../images/helios.png) Helios](helios.md)
 
 [![Sixty-four filaments in cyan, amber, and coral, twisting around a three-dimensional torus knot](../images/torus.png) Torus silk](torus.md)
@@ -44,7 +42,6 @@ frequency
 rerouting
 fault
 globe
-diagram
 helios
 torus
 terrain

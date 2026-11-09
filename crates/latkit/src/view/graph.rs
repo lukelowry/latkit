@@ -29,7 +29,7 @@ impl View {
             let id = data.table(table)?.ids.id(r as usize)?;
             Some(Row { data: row.data.clone(), table: table.clone(), id })
         };
-        for (i, shown) in self.marks.iter().enumerate() {
+        for shown in &self.marks {
             let style = shown.mark.style();
             let crate::Mark::Edges(edges) = &shown.mark else { continue };
             let Some(table) = data.table(&style.table).filter(|_| style.data == row.data) else { continue };
@@ -47,51 +47,24 @@ impl View {
                 }
                 continue;
             }
-            // A net: its terminals are the vertices whose port references name it.
-            let ports = self.ports_naming(i);
+            // A net: its members are the rows of `members` whose `named` reference names it.
+            let Some((members, named)) = &edges.joins else { continue };
+            let Some(r) = data.table(members).and_then(|t| reference(t, named)).filter(|r| r.to == style.table) else {
+                continue;
+            };
             let net = if style.table == row.table {
                 Some(index)
+            } else if *members == row.table {
+                r.target(index).map(|n| n as usize)
             } else {
-                ports.iter().find_map(|(m, name)| {
-                    let vertices = &self.marks[*m].mark.style().table;
-                    if *vertices != row.table {
-                        return None;
-                    }
-                    reference(data.table(vertices)?, name)?.target(index).map(|n| n as usize)
-                })
+                None
             };
             let Some(net) = net else { continue };
-            for (m, name) in &ports {
-                let vertices = &self.marks[*m].mark.style().table;
-                let Some(r) = data.table(vertices).and_then(|t| reference(t, name)) else { continue };
-                found.extend(r.inverse().of(net).iter().filter_map(|&v| at(vertices, v)).filter(|r| r != row));
-            }
+            found.extend(r.inverse().of(net).iter().filter_map(|&v| at(members, v)).filter(|r| r != row));
         }
         let mut seen = FxHashSet::default();
         found.retain(|r| seen.insert(r.clone()));
         Rows::group(found)
-    }
-
-    /// Each vertex mark's port reference fields that point at net mark `i`'s table, as
-    /// `(mark, field)`.
-    fn ports_naming(&self, i: usize) -> Vec<(usize, Name)> {
-        let style = self.marks[i].mark.style();
-        let Some(data) = self.snapshot(&style.data) else { return Vec::new() };
-        let mut found = Vec::new();
-        for (m, shown) in self.marks.iter().enumerate() {
-            let s = shown.mark.style();
-            let Some(compiled) = &shown.compiled else { continue };
-            if shown.kind() != MarkKind::Vertices || s.data != style.data {
-                continue;
-            }
-            let Some(table) = data.table(&s.table) else { continue };
-            for (name, ..) in &compiled.drawing.ports {
-                if reference(table, name).is_some_and(|r| r.to == style.table) {
-                    found.push((m, name.clone()));
-                }
-            }
-        }
-        found
     }
 
     /// The row `row`'s reference field `field` names.
@@ -112,21 +85,6 @@ impl View {
             _ => false,
         }
     }
-}
-
-/// For each of `marks`, whether faces sum their normals at its rows: whether it is the vertex mark
-/// some face mark's corners attach to.
-pub(super) fn summing(marks: &[Shown]) -> Vec<bool> {
-    let mut summing = vec![false; marks.len()];
-    for shown in marks.iter().filter(|m| m.kind() == MarkKind::Faces) {
-        let Some(compiled) = &shown.compiled else { continue };
-        for end in &compiled.program.ends {
-            if let Some(m) = end_mark(marks, &shown.mark.style().data, &end.table) {
-                summing[m] = true;
-            }
-        }
-    }
-    summing
 }
 
 /// The vertex mark drawing `table` that ends attach to: the unnamed one, or else the first.

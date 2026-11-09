@@ -30,10 +30,20 @@ export function report(list: Listed[], { summaries, exponents }: Verdict): strin
       type Row = [string, (s: Summary) => number, (v: number) => string, number | undefined];
       const rows: Row[] = [
         [steady ? 'cpu ms/frame' : 'ms', (s) => s.time, ms, e?.time],
-        ['gpu ms/frame', (s) => s.gpu, ms, e?.gpu],
+        // A view reports the median GPU time of its last frames measured, which only a steady
+        // phase draws enough frames of its own to set.
+        ...(steady
+          ? [
+              ['cpu95 ms/frame', (s: Summary) => s.tail, ms, undefined] as Row,
+              ['gpu ms/frame', (s: Summary) => s.gpu, ms, e?.gpu] as Row,
+            ]
+          : []),
         ['uploaded', (s) => s.work.uploaded, bytes, e?.uploaded],
         ...(phase === 'load'
-          ? [['resident', (s: Summary) => s.work.resident, bytes, e?.resident] as Row]
+          ? [
+              ['resident', (s: Summary) => s.work.resident, bytes, e?.resident] as Row,
+              ['wasm memory', (s: Summary) => s.work.heap, bytes, e?.heap] as Row,
+            ]
           : []),
       ];
       for (const [label, read, format, grows] of rows) {

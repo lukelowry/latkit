@@ -20,8 +20,7 @@ fn vector(v: DVec3) -> [f32; 4] {
 /// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, at axis
 /// coordinate `at` and `elapsed` seconds on the view's clock. `linear` says the target is sRGB and
 /// encodes color itself, so shaders write linear color. Pointer, probe, and focus words start
-/// empty. Theme lengths are in the space's unit, so in a diagram they scale with the zoom. The halo
-/// and the focus glow are in CSS pixels everywhere.
+/// empty. Theme lengths are in CSS pixels.
 pub(crate) fn frame(
     scene: &Scene,
     projected: &Projected,
@@ -34,15 +33,13 @@ pub(crate) fn frame(
     let (cx, cy) = (split(projected.center[0]), split(projected.center[1]));
     let grid = match &scene.space {
         Space::Plane(plane) => plane.grid,
-        Space::Diagram(diagram) => diagram.grid,
         Space::Earth(_) | Space::Plot(_) => Grid::Off,
     };
     let (grid_kind, grid_pitch) = match grid {
         Grid::Off => (wgsl::GRID_OFF, 1.0),
         Grid::Lines { pitch } => (wgsl::GRID_LINES, pitch),
-        Grid::Dots { pitch, .. } => (wgsl::GRID_DOTS, pitch),
+        Grid::Dots { pitch } => (wgsl::GRID_DOTS, pitch),
     };
-    let unit = if projected.space == wgsl::SPACE_DIAGRAM { projected.px_per_unit[0] as f32 } else { 1.0 };
     let graticule = matches!(&scene.space, Space::Earth(earth) if earth.graticule);
     // The sun's position at the earth's daylight instant, advanced by the shown axis coordinate.
     let (sun, atmosphere) = match &scene.space {
@@ -55,37 +52,41 @@ pub(crate) fn frame(
     // A negative red in the selected color means each row keeps its own color.
     let selected = theme.focus.selected.map_or([-1.0, 0.0, 0.0, 0.9], Color::to_array);
     let mut frame: wgsl::Frame = bytemuck::Zeroable::zeroed();
-    frame.light = vector(projected.light);
     frame.center_hi = [cx.0, cy.0];
     frame.center_lo = [cx.1, cy.1];
+    // Match the shader's f32 center while evaluating this view-wide basis only once.
+    let (latitude_sin, latitude_cos) = (cy.0 + cy.1).to_radians().sin_cos();
+    frame.latitude_sin = latitude_sin;
+    frame.latitude_cos = latitude_cos;
+    frame.globe_radius = latitude_cos.recip();
     frame.pointer = [-1e9, -1e9];
     frame.probe = [-1e9, -1e9];
+    // The hover's probe may find any row.
+    frame.probe_area = [f32::MIN, f32::MIN, f32::MAX, f32::MAX];
+    frame.probe_skip = [wgsl::NONE; 2];
     frame.space = projected.space;
     frame.globe = projected.globe as f32;
     frame.mercator_y = projected.mercator_y as f32;
     frame.elapsed = elapsed as f32;
     frame.glow = theme.focus.glow;
     frame.dim = theme.focus.dim;
-    frame.dash = theme.dash * unit;
+    frame.dash = theme.dash;
     // Comet spacing and length keep their own unit. A stroke converts them to pixels as it draws.
     frame.flow_spacing = theme.flow.spacing.value();
     frame.flow_length = theme.flow.length.value();
-    frame.flow_width = theme.flow.width * unit;
+    frame.flow_width = theme.flow.width;
     frame.flow_unit = match theme.flow.spacing {
-        Length::Space(_) => wgsl::FLOW_LENGTHS,
-        Length::Units(_) => wgsl::FLOW_UNITS,
         Length::Px(_) => wgsl::FLOW_PX,
+        Length::Units(_) => wgsl::FLOW_UNITS,
     };
     frame.bow = theme.edge.bow;
     // Hover is tracked either way. The controls only decide whether it glows.
     let glows = scene.controls.hover;
     frame.grow = if glows { theme.focus.grow } else { 1.0 };
-    frame.shading = theme.shading;
-    frame.arrow = theme.edge.arrow * unit;
+    frame.arrow = theme.edge.arrow;
     frame.halo = theme.text.halo;
-    frame.group_padding = theme.diagram.group_padding * unit;
-    frame.unit = unit;
     frame.zoom = projected.zoom as f32;
+    frame.lane_scale = projected.lane_band().map_or(0.0, |band| (band - frame.zoom).exp2());
     frame.linear = u32::from(linear);
     frame.hover = if glows { theme.focus.hover.to_array() } else { [0.0; 4] };
     frame.selected = selected;
@@ -101,7 +102,6 @@ pub(crate) fn frame(
     frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.earth.night.clamp(0.0, 1.0)]);
     frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
     frame.theme = theme_slots(theme);
-    frame.shadow = theme.diagram.shadow.color.to_array();
     frame
 }
 
@@ -142,20 +142,13 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_TEXT as usize] = theme.text.color.packed();
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
-    slots[wgsl::THEME_GROUP as usize] = theme.diagram.group.packed();
-    slots[wgsl::THEME_OUTLINE as usize] = theme.diagram.outline.map_or(0, Color::packed);
-    slots[wgsl::THEME_CORNER as usize] = theme.diagram.corner.to_bits();
-    slots[wgsl::THEME_PORT_SIZE as usize] = theme.diagram.port_size.to_bits();
-    slots[wgsl::THEME_LIFT as usize] = theme.diagram.shadow.lift.to_bits();
+    slots[wgsl::THEME_CORNER as usize] = theme.vertex.corner.to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
-/// Sets `mark`'s evaluation and easing fields: where the row-block lists of this frame's evaluation
-/// and end pass start, how each word blends, and while it eases, the page tables of its frozen and
+/// Sets `mark`'s easing fields: how each word blends, and while it eases, the page tables of its frozen and
 /// settled words and its progress on `clock`.
 fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
-    mark.block = shown.block;
-    mark.end_block = shown.end_block;
     mark.blends = shown.offsets.blends;
     mark.frozen = wgsl::NONE;
     mark.settled = wgsl::NONE;
@@ -189,26 +182,23 @@ pub(crate) fn mark(
     mark.extras = shown.extras();
     ease(&mut mark, shown, clock);
     mark.focus = shown.offsets.table(Kept::Focus);
-    mark.normals = shown.offsets.table(Kept::Normals);
     mark.domains = shown.domains;
     mark.columns = shown.offsets.columns;
     mark.ranges = shown.offsets.ranges;
     mark.code = shown.offsets.code;
     mark.constants = shown.offsets.constants;
     mark.ends = shown.offsets.ends;
+    [mark.from_state, mark.from_stride] = shown.end_layout(0);
+    [mark.to_state, mark.to_stride] = shown.end_layout(1);
     mark.palette = shown.offsets.palette;
-    mark.port_info = shown.offsets.port_info;
-    mark.ports = shown.port_count();
     mark.mask = shown.dirty;
     mark.remap = shown.remap;
     mark.focused = shown.lit.at;
-    mark.focused_rows = shown.lit.rows;
     mark.pieces = shown.lit.pieces;
     mark.trace = wgsl::NONE;
     mark.per_row = 1;
     mark.list = shown.segments.list.map_or(wgsl::NONE, |list| list.header);
     mark.height_order = shown.height_order.list.map_or(wgsl::NONE, |list| list.header);
-    mark.query = shown.query;
     mark.geometry = wgsl::NONE;
     mark.frozen_geometry = wgsl::NONE;
     mark.lane = wgsl::NONE;
@@ -217,8 +207,8 @@ pub(crate) fn mark(
     [mark.size_min, mark.size_max] = crate::Size::ANY;
     if let Some(slots) = labels.slots(index) {
         mark.runs = slots.runs;
-        mark.wanted = slots.wanted;
-        mark.seen = slots.seen;
+        mark.label_metadata = slots.metadata;
+        mark.label_positions = slots.positions;
     }
     if let Some(compiled) = &shown.compiled {
         let program = &compiled.program;
@@ -228,7 +218,13 @@ pub(crate) fn mark(
         mark.reductions = program.domains.len() as u32;
         mark.units = program.units;
         mark.flags = drawing.flags;
-        mark.trace = drawing.trace;
+        if let Some([records, points, rows, capacity, head]) = shown.tables.trace_layout(shown.offsets.columns) {
+            mark.trace = records;
+            mark.trace_points = points;
+            mark.trace_rows = rows;
+            mark.trace_capacity = capacity;
+            mark.trace_head = head;
+        }
         let markers = &drawing.markers;
         mark.marker = markers.marker;
         mark.shape = markers.shape;
@@ -241,7 +237,6 @@ pub(crate) fn mark(
         if shown.transition.is_some() {
             mark.frozen_geometry = shown.tables.frozen().unwrap_or(wgsl::NONE);
         }
-        mark.port_label_size = drawing.port_label_size;
         [mark.size_min, mark.size_max] = drawing.size_px;
         if let Some(labeling) = &drawing.label {
             mark.label = labeling.extra;

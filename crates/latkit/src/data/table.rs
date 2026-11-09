@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use super::bits::Bits;
-use super::column::Column;
+use super::column::{Column, Page};
 use super::ids::{Ids, Index, RowIds};
 use super::name::{Id, IdRef, Name, PageId, Version};
 use super::samples::Samples;
@@ -164,20 +164,33 @@ impl Reference {
     /// value at a time.
     pub(crate) fn targets(&self) -> Vec<u32> {
         let mut out = Vec::with_capacity(self.rows.len());
+        self.each_targets(|targets| out.extend_from_slice(targets));
+        out
+    }
+
+    /// Calls `take` with each page's target rows, as [`targets`](Reference::targets) gives them,
+    /// without gathering them first. A page of present rows passes its own values.
+    pub(crate) fn each_targets(&self, mut take: impl FnMut(&[u32])) {
         for page in self.rows.pages() {
             let values = &page.values;
             match (&values.array, &values.valid) {
-                (Array::U32(rows), None) => out.extend_from_slice(rows),
+                (Array::U32(rows), None) => take(rows),
                 (Array::U32(rows), Some(valid)) => {
-                    out.extend(rows.iter().enumerate().map(|(i, &t)| if valid.get(i) { t } else { UNWIRED }));
+                    let rows: Vec<u32> =
+                        rows.iter().enumerate().map(|(i, &t)| if valid.get(i) { t } else { UNWIRED }).collect();
+                    take(&rows);
                 }
-                _ => out.extend((0..values.len()).map(|i| match values.get(i) {
-                    Some(Value::Number(n)) => n as u32,
-                    _ => UNWIRED,
-                })),
+                _ => {
+                    let rows: Vec<u32> = (0..values.len())
+                        .map(|i| match values.get(i) {
+                            Some(Value::Number(n)) => n as u32,
+                            _ => UNWIRED,
+                        })
+                        .collect();
+                    take(&rows);
+                }
             }
         }
-        out
     }
 
     /// The rows that reference each target row. Built once by counting the rows per target,
@@ -234,22 +247,36 @@ impl Reference {
                 && r.order == order
                 && (!r.dangling || r.structure == structure)
             {
-                pages.push(rows.values.clone());
+                pages.push(rows.clone());
                 resolved.push(*r);
+                continue;
+            }
+            // Ids that are their own row numbers share their page.
+            if index.names_itself(&page.values) {
+                pages.push(page.clone());
+                resolved.push(Resolved { ids: page.id, order, structure, dangling: false });
                 continue;
             }
             let (rows, dangling) = index.resolve(&target.ids, &page.values, UNWIRED);
             let valid = Bits::from_fn(rows.len(), |i| rows[i] != UNWIRED);
-            pages.push(Values { array: Array::U32(rows.into()), valid: (!valid.all()).then_some(valid) });
+            let values = Values { array: Array::U32(rows.into()), valid: (!valid.all()).then_some(valid) };
+            // A dangling reference may still be dangling after unrelated rows arrive. Preserve
+            // the resolved page's identity when its row numbers did not change.
+            let kept = old.map(|(_, page)| page).filter(|page| {
+                page.values.len() == values.len() && (0..values.len()).all(|i| values.same_row(i, &page.values, i))
+            });
+            pages.push(kept.cloned().unwrap_or_else(|| Page::new(values)));
             resolved.push(Resolved { ids: page.id, order, structure, dangling });
         }
+        let rows = Column::of_pages(pages, &Values::from(Vec::<u32>::new()));
+        let changed = !rows.shares(&self.rows);
         Ok(Reference {
             to: self.to.clone(),
             ids: self.ids.clone(),
-            rows: Column::from_pages(pages, &Values::from(Vec::<u32>::new())),
+            rows,
             resolved: resolved.into(),
-            version: Version::next(),
-            inverse: Arc::default(),
+            version: if changed { Version::next() } else { self.version },
+            inverse: if changed { Arc::default() } else { self.inverse.clone() },
         })
     }
 }

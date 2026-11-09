@@ -37,7 +37,6 @@ export const PIECES = [
   'texas',
   'frequency',
   'globe',
-  'diagram',
   'helios',
   'torus',
   'terrain',

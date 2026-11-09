@@ -261,7 +261,7 @@ fn a_tiled_history_draws_the_same_as_the_whole_dataset() {
 #[test]
 fn a_labeled_still_renders_to_a_file_and_to_stdout() {
     let dir = fixture();
-    let scene = r#"{"space":"diagram","layout":{"layered":{}},"title":"Grid","marks":[{"vertices":["grid","Bus"],"label":"$name"}]}"#;
+    let scene = r#"{"space":"plane","layout":{"layered":{}},"title":"Grid","marks":[{"vertices":["grid","Bus"],"label":"$name"}]}"#;
     std::fs::write(dir.path().join("scene.json"), scene).unwrap();
     std::fs::write(dir.path().join("out.png"), b"replace me").unwrap();
     let args = ["render", "scene.json", "-d", "grid.json", "-o", "out.png", "--size", "127x129", "--transparent"];

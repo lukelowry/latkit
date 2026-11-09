@@ -1,24 +1,23 @@
 //! Jobs: work too large for a frame, handed to the host to run in the background. Jobs lay out
-//! graphs (layered or stress), route wires, triangulate areas, assign edge lanes, group a large
-//! table's rows into tiles, decode vector tiles and GeoJSON, and encode images.
+//! graphs (layered or stress), triangulate areas, assign edge lanes, group a large table's rows
+//! into tiles, decode vector tiles and GeoJSON, and encode images.
 //!
 //! A job is bytes in and bytes out, so a thread, or a worker with its own copy of latkit, can run
-//! it with nothing shared. Layout, route, tile, and GeoJSON jobs return a [`Patch`] of rows by id.
+//! it with nothing shared. Layout, tile, and GeoJSON jobs return a [`Patch`] of rows by id.
 //! Other jobs return their own format: lane words, shape columns, each table's pyramid (order and
 //! tiles), or an encoded image file.
 
 use std::sync::Arc;
 
-use crate::Side;
-use crate::data::{GeometryBuilder, Id, Name, Patch, Table, Value, Values, read_values, values_bytes};
+use crate::data::{
+    GeometryBuilder, Id, Name, Patch, Reference, Table, UNWIRED, Value, Values, read_values, values_bytes,
+};
 use crate::derive::pyramid::{Leveling, Places, Placing};
 use crate::derive::sight::Domain;
 use crate::geo::mvt::Kind as Geometry;
 use crate::geo::shapes::{earth_parts, triangles};
 use crate::geo::tiles::{Decoded, decode};
-use crate::layout::boxes::Boxes;
-use crate::layout::route::{Net, Terminal, route};
-use crate::layout::{layered::layered, levels::Graph, stress::stress};
+use crate::layout::{graph::Graph, layered::layered, stress::stress};
 use crate::tiles::TileKey;
 use crate::wire::{In, Out, codes};
 use crate::{Direction, Layered, Layout};
@@ -35,7 +34,6 @@ pub struct Job(Vec<u8>);
 enum Kind {
     Layered,
     Stress,
-    Routes,
     Shapes,
     Tile,
     GeoJson,
@@ -44,7 +42,7 @@ enum Kind {
     Image,
 }
 
-codes!(Kind { Layered = 1, Stress = 2, Routes = 3, Shapes = 4, Tile = 5, GeoJson = 6, Lanes = 7, Pyramid = 8, Image = 9 });
+codes!(Kind { Layered = 1, Stress = 2, Shapes = 3, Tile = 4, GeoJson = 5, Lanes = 6, Pyramid = 7, Image = 8 });
 
 /// The shapes computed from each row's geometry.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -149,29 +147,13 @@ impl Shaping {
 /// A row in a job's result: its table and id.
 pub(crate) type Key = (Name, Id);
 
-/// Vertices to lay out: each one's size, pinned center if any, group, and how far a group's box
-/// reaches past its members (left, bottom, right, top), plus the links between vertices. `keys`
+/// Vertices to lay out: each one's pinned center if any, plus the links between vertices. `keys`
 /// names the row that receives each vertex's center. Vertices without a key are laid out but not
 /// written. Plane units, y up.
 pub(crate) struct Placement<'a> {
-    pub(crate) sizes: &'a [[f64; 2]],
     pub(crate) pinned: &'a [Option<[f64; 2]>],
-    pub(crate) groups: &'a [Option<u32>],
-    pub(crate) pads: &'a [[f64; 4]],
     pub(crate) links: &'a [[u32; 2]],
     pub(crate) keys: &'a [Option<Key>],
-}
-
-/// Wires to route around `obstacles` and among `groups`. `keys` names the row that receives each
-/// net's route. Routes run beside the already routed `fixed` wires, on tracks `spacing` apart.
-/// Plane units, y up.
-pub(crate) struct Wiring<'a> {
-    pub(crate) obstacles: &'a [[f64; 4]],
-    pub(crate) groups: &'a [[f64; 4]],
-    pub(crate) nets: &'a [Net],
-    pub(crate) keys: &'a [Key],
-    pub(crate) fixed: &'a [Vec<[f64; 2]>],
-    pub(crate) spacing: f64,
 }
 
 impl Job {
@@ -197,7 +179,6 @@ impl Job {
             Kind::Pyramid => return run_pyramid(&mut input).unwrap_or_default(),
             Kind::Shapes => return run_shapes(&mut input).unwrap_or_default(),
             Kind::Layered | Kind::Stress => run_layout(kind, &mut input),
-            Kind::Routes => run_routes(&mut input),
             Kind::Tile => run_tile(&mut input),
             Kind::GeoJson => run_geojson(&mut input),
         };
@@ -207,28 +188,28 @@ impl Job {
     /// A job laying out `placement` with `layout` (layered or stress). Its result sets each keyed
     /// vertex's center as fields `x` and `y`, y up.
     pub(crate) fn layout(layout: &Layout, placement: &Placement<'_>) -> Job {
+        // Room for each vertex's pin and key, which a long table name or text id outgrows, and
+        // each link's ends.
+        let rest = 32 + 48 * placement.pinned.len() + 8 * placement.links.len();
         let mut out = match *layout {
             Layout::Stress(stress) => {
-                let mut out = job(Kind::Stress);
+                let mut out = job(Kind::Stress, rest);
                 out.f64(stress.gap);
                 out
             }
             Layout::Layered(layered) => {
-                let mut out = job(Kind::Layered);
+                let mut out = job(Kind::Layered, rest);
                 out.u32(layered.direction.code());
                 out.f64(layered.gap);
                 out.f64(layered.rank_gap);
                 out
             }
-            Layout::None => unreachable!("a sheet requests a layout only when its scene has one"),
+            Layout::None => unreachable!("places request a layout only when the scene has one"),
         };
-        out.len(placement.sizes.len());
-        for v in 0..placement.sizes.len() {
-            out.pod(&placement.sizes[v]);
+        out.len(placement.pinned.len());
+        for v in 0..placement.pinned.len() {
             out.u32(u32::from(placement.pinned[v].is_some()));
             out.pod(&placement.pinned[v].unwrap_or_default());
-            out.u32(placement.groups[v].unwrap_or(u32::MAX));
-            out.pod(&placement.pads[v]);
             out.u32(u32::from(placement.keys[v].is_some()));
             if let Some(key) = &placement.keys[v] {
                 write_key(&mut out, key);
@@ -239,10 +220,19 @@ impl Job {
         Job(out.0)
     }
 
+    /// Estimated microseconds `layout` takes to place `count` vertices with `links` links.
+    pub(crate) fn layout_cost(layout: &Layout, count: usize, links: usize) -> u64 {
+        match layout {
+            Layout::Stress(_) => crate::layout::stress::cost(count, links),
+            Layout::Layered(_) => crate::layout::layered::cost(count, links),
+            Layout::None => 0,
+        }
+    }
+
     /// A job computing `shaping` for every row of each geometry column in `parts`. Its result holds
     /// each part's shapes, read by [`shapes_answer`].
     pub(crate) fn shapes(shaping: Shaping, parts: &[Values]) -> Job {
-        let mut out = job(Kind::Shapes);
+        let mut out = job(Kind::Shapes, 0);
         out.u32(shaping.code());
         write_columns(&mut out, parts);
         Job(out.0)
@@ -251,7 +241,7 @@ impl Job {
     /// A job decoding tile `key` from `bytes`, optionally gzip-compressed, into rows of `tables`
     /// with their derived shapes. Its result is a patch of those rows.
     pub(crate) fn tile(key: TileKey, tables: &[Decoded], bytes: &[u8]) -> Job {
-        let mut out = job(Kind::Tile);
+        let mut out = job(Kind::Tile, 64 + bytes.len());
         out.u32(u32::from(key.z));
         out.u32(key.x);
         out.u32(key.y);
@@ -272,7 +262,7 @@ impl Job {
     /// A job encoding `image` as a file of `format`. Its result is the file's bytes, or no bytes if
     /// the image cannot be encoded.
     pub fn encode(image: &crate::Image, format: crate::ImageFormat) -> Job {
-        let mut out = job(Kind::Image);
+        let mut out = job(Kind::Image, 12 + image.rgba.len());
         out.u32(format.code());
         out.u32(image.size[0]);
         out.u32(image.size[1]);
@@ -288,20 +278,29 @@ impl Job {
         if !crate::data::geojson(bytes) {
             return None;
         }
-        let mut out = job(Kind::GeoJson);
+        let mut out = job(Kind::GeoJson, 4 + name.len() + bytes.len());
         out.str(name);
         out.bytes(bytes);
         Some(Job(out.0))
     }
 
     /// A job assigning each edge row a lane among the rows joining the same two vertices, from the
-    /// rows' endpoints `from` and `to`. Its result is every row's lane word as a little-endian
-    /// `u32`, or no bytes when no two rows share endpoints.
-    pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Job {
-        let mut out = job(Kind::Lanes);
-        out.len(from.len());
-        out.pod(from);
-        out.pod(to);
+    /// target rows of the rows' endpoints `from` and `to`, references of `rows` rows each. Its
+    /// result is every row's lane word as a little-endian `u32`, or no bytes when no two rows share
+    /// endpoints.
+    pub(crate) fn lanes(rows: usize, from: &Reference, to: &Reference) -> Job {
+        let mut out = job(Kind::Lanes, 4 + 8 * rows);
+        out.len(rows);
+        // Exactly `rows` targets of each end, unwired past a shorter reference's end.
+        for end in [from, to] {
+            let mut left = rows;
+            end.each_targets(|targets| {
+                let n = targets.len().min(left);
+                out.pod(&targets[..n]);
+                left -= n;
+            });
+            out.pod(&vec![UNWIRED; left]);
+        }
         Job(out.0)
     }
 
@@ -309,7 +308,16 @@ impl Job {
     /// once. Its result holds each table's pyramid, read by
     /// [`Pyramid::read`](crate::derive::pyramid::Pyramid::read).
     pub(crate) fn pyramid(leveling: &Leveling) -> Job {
-        let mut out = job(Kind::Pyramid);
+        let size = |table: &Placing| {
+            let places = match &table.places {
+                Places::None => 0,
+                Places::Points(points) => size_of_val(&points[..]),
+                Places::Boxes(boxes) => size_of_val(&boxes[..]),
+            };
+            let ends = table.ends.as_ref().map_or(0, |(_, ends)| 8 + ends.iter().map(|e| 4 * e.len()).sum::<usize>());
+            8 + places + size_of_val(&table.priority[..]) + ends
+        };
+        let mut out = job(Kind::Pyramid, 36 + leveling.tables.iter().map(size).sum::<usize>());
         out.pod(&leveling.domain.words());
         out.len(leveling.tables.len());
         for table in &leveling.tables {
@@ -341,37 +349,12 @@ impl Job {
         }
         Job(out.0)
     }
-
-    /// A job routing `wiring`. Its result sets each keyed row's wire polylines as field `route`.
-    pub(crate) fn routes(wiring: &Wiring<'_>) -> Job {
-        let mut out = job(Kind::Routes);
-        out.f64(wiring.spacing);
-        for boxes in [wiring.obstacles, wiring.groups] {
-            out.len(boxes.len());
-            out.pod(boxes);
-        }
-        out.len(wiring.fixed.len());
-        for line in wiring.fixed {
-            out.len(line.len());
-            out.pod(line.as_slice());
-        }
-        out.len(wiring.nets.len());
-        for (net, key) in wiring.nets.iter().zip(wiring.keys) {
-            write_key(&mut out, key);
-            out.len(net.terminals.len());
-            for terminal in &net.terminals {
-                out.pod(&terminal.at);
-                out.u32(terminal.side.map_or(u32::MAX, Side::code));
-                out.u32(terminal.owner.unwrap_or(u32::MAX));
-            }
-        }
-        Job(out.0)
-    }
 }
 
-/// A job's bytes so far: its kind.
-fn job(kind: Kind) -> Out {
-    let mut out = Out::default();
+/// A job's bytes so far: its kind, with room for the `rest` bytes after it. A large job's input
+/// is written once into room made for all of it, never copied as it grows.
+fn job(kind: Kind, rest: usize) -> Out {
+    let mut out = Out(Vec::with_capacity(4 + rest));
     out.u32(kind.code());
     out
 }
@@ -405,15 +388,11 @@ fn run_layout(kind: Kind, input: &mut In<'_>) -> Option<Patch> {
         Layout::Layered(Layered { direction, gap: input.f64()?, rank_gap: input.f64()? })
     };
     let count = input.u32()? as usize;
-    let (mut sizes, mut pinned, mut groups, mut pads, mut keys) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut pinned, mut keys) = (Vec::new(), Vec::new());
     for _ in 0..count {
-        sizes.push([input.f64()?, input.f64()?]);
         let pin = input.u32()? != 0;
         let at = [input.f64()?, input.f64()?];
         pinned.push(pin.then_some(at));
-        groups.push(Some(input.u32()?).filter(|&g| (g as usize) < count));
-        pads.push([input.f64()?, input.f64()?, input.f64()?, input.f64()?]);
         let keyed = input.u32()? != 0;
         keys.push(if keyed { Some(read_key(input)?) } else { None });
     }
@@ -422,7 +401,7 @@ fn run_layout(kind: Kind, input: &mut In<'_>) -> Option<Patch> {
     if links.iter().flatten().any(|&v| v as usize >= count) {
         return None;
     }
-    let graph = Graph { sizes: &sizes, links: &links, pinned: &pinned, groups: &groups, pads: &pads };
+    let graph = Graph { pinned: &pinned, links: &links };
     let centers = match options {
         Layout::Stress(s) => stress(&graph, s.gap),
         Layout::Layered(l) => layered(&graph, &l),
@@ -435,39 +414,6 @@ fn run_layout(kind: Kind, input: &mut In<'_>) -> Option<Patch> {
         let (x, y): (Vec<f64>, Vec<f64>) = centers.into_iter().map(|c| (c[0], c[1])).unzip();
         table.field("x", x).field("y", y)
     }))
-}
-
-fn run_routes(input: &mut In<'_>) -> Option<Patch> {
-    let spacing = input.f64()?;
-    let mut boxes = || {
-        let count = input.u32()?;
-        (0..count).map(|_| Some([input.f64()?, input.f64()?, input.f64()?, input.f64()?])).collect::<Option<Vec<_>>>()
-    };
-    let (obstacles, groups) = (boxes()?, boxes()?);
-    let count = input.u32()?;
-    let fixed = (0..count)
-        .map(|_| {
-            let points = input.u32()?;
-            (0..points).map(|_| Some([input.f64()?, input.f64()?])).collect::<Option<Vec<_>>>()
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let count = input.u32()?;
-    let (mut nets, mut keys) = (Vec::new(), Vec::new());
-    for _ in 0..count {
-        keys.push(read_key(input)?);
-        let terminals = input.u32()?;
-        let terminals = (0..terminals)
-            .map(|_| {
-                let at = [input.f64()?, input.f64()?];
-                let side = Side::from_code(input.u32()?);
-                let owner = Some(input.u32()?).filter(|&o| (o as usize) < obstacles.len());
-                Some(Terminal { at, side, owner })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        nets.push(Net { terminals });
-    }
-    let routes = route(&Boxes::new(obstacles), &groups, &nets, &fixed, spacing);
-    Some(keyed(&keys, routes, |table, routes| table.field("route", routes)))
 }
 
 /// Reads a shapes job's result: a column per part in the job. `None` if `bytes` are malformed.
@@ -527,7 +473,7 @@ fn run_pyramid(input: &mut In<'_>) -> Option<Vec<u8>> {
         let ends = if has(5) {
             let target = input.u32()?;
             let count = input.u32()?;
-            Some((target, (0..count).map(|_| input.pod::<u32>(n).map(Arc::from)).collect::<Option<Vec<_>>>()?))
+            Some((target, (0..count).map(|_| input.pod::<u32>(n)).collect::<Option<Vec<_>>>()?))
         } else {
             None
         };
@@ -608,50 +554,16 @@ mod tests {
 
     #[test]
     fn layout_jobs_return_the_rows_they_place() {
-        let sizes = [[10.0, 10.0]; 3];
         let pinned = [None, Some([5.0, 5.0]), None];
         let keys = [Some(key("V", 7)), None, Some(key("V", 9))];
-        let placement = Placement {
-            sizes: &sizes,
-            pinned: &pinned,
-            groups: &[None; 3],
-            pads: &[[0.0; 4]; 3],
-            links: &[[0, 1], [1, 2]],
-            keys: &keys,
-        };
+        let links = [[0, 1], [1, 2]];
+        let placement = Placement { pinned: &pinned, links: &links, keys: &keys };
         let answer = Job::from_bytes(Job::layout(&Layout::Layered(Layered::default()), &placement).into_bytes()).run();
-        let ranked = layered(
-            &Graph {
-                sizes: &sizes,
-                links: &[[0, 1], [1, 2]],
-                pinned: &pinned,
-                groups: &[None; 3],
-                pads: &[[0.0; 4]; 3],
-            },
-            &Layered::default(),
-        );
+        let ranked = layered(&Graph { pinned: &pinned, links: &links }, &Layered::default());
         assert_eq!(answered(&answer, "V", 9, "x"), Some(Value::Number(ranked[2][0])));
         assert_eq!(answered(&answer, "V", 7, "y"), Some(Value::Number(ranked[0][1])));
         let stress = Job::layout(&Layout::Stress(crate::Stress::default()), &placement).run();
         assert!(matches!(answered(&stress, "V", 7, "x"), Some(Value::Number(_))), "stress layouts return rows too");
-    }
-
-    #[test]
-    fn route_jobs_return_routed_wires() {
-        let obstacles = [[0.0, 0.0, 10.0, 10.0], [40.0, 0.0, 50.0, 10.0]];
-        let terminal = |x: f64, side, owner| Terminal { at: [x, 5.0], side: Some(side), owner: Some(owner) };
-        let nets = [Net { terminals: vec![terminal(10.0, Side::Right, 0), terminal(40.0, Side::Left, 1)] }];
-        let wiring = Wiring {
-            obstacles: &obstacles,
-            groups: &[],
-            nets: &nets,
-            keys: &[key("Wire", 3)],
-            fixed: &[],
-            spacing: 2.0,
-        };
-        let answer = Job::routes(&wiring).run();
-        let want = route(&Boxes::new(obstacles.to_vec()), &[], &nets, &[], 2.0).swap_remove(0);
-        assert_eq!(answered(&answer, "Wire", 3, "route"), Some(Value::Parts(want)));
     }
 
     #[test]

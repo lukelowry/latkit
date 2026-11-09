@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium, type Browser, type Page } from 'playwright-core';
+import { chromium, firefox, webkit, type Browser, type Page } from 'playwright-core';
 import { createServer } from 'vite';
 
 /** Milliseconds any one step may take before giving up on it. */
@@ -101,62 +101,65 @@ export function chrome(): string {
   );
 }
 
-/** A launched Chrome. */
+/** A launched test browser: Chrome unless launched as another engine. */
 export interface Chrome {
   browser: Browser;
   /**
-   * Closes Chrome, or kills its processes if it has not closed within 5 s. A page stuck on the GPU
-   * never closes normally, and a leftover Chrome would keep the GPU busy during the next one.
+   * Closes the browser, or kills its processes if it has not closed within 5 s. A page stuck on
+   * the GPU never closes normally, and a leftover browser would keep the GPU busy during the next one.
    */
   close(): Promise<void>;
 }
 
-/**
- * Flags that run WebGPU on SwiftShader, which draws on the CPU, so no shader can hang the machine's
- * GPU. They override Chrome's own GPU checks, so they are never passed with a real GPU. On Linux,
- * ANGLE uses SwiftShader too, as GPU-less CI needs. On Windows that flag leaves WebGPU no adapter.
- */
-const SOFTWARE = [
-  '--enable-unsafe-webgpu',
-  '--ignore-gpu-blocklist',
-  ...(process.platform === 'linux' ? ['--use-angle=swiftshader'] : []),
-  '--use-vulkan=swiftshader',
-  '--use-webgpu-adapter=swiftshader',
-  '--enable-unsafe-swiftshader',
-  '--enable-features=Vulkan,WebGPU',
-];
+/** Software WebGL2 for GPU-less CI. Hardware runs never override the driver's blocklist. */
+const SOFTWARE = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
 
-/**
- * Makes a machine with two GPUs draw on the fast one on every launch. Chrome ignores WebGPU's
- * `powerPreference` on Windows and may pick either GPU elsewhere, so times and limit-bound work
- * would otherwise compare two devices.
- */
-const HARDWARE = ['--force_high_performance_gpu'];
+/** Selects the high-performance GPU consistently for comparable measurements, and the backend
+ * Chrome draws WebGL2 with when `LATKIT_ANGLE` names one: `d3d11`, `vulkan`, `gl`, or `metal`.
+ * Each backend reports its own renderer, so the benchmark keeps its times apart. */
+function hardware(): string[] {
+  const angle = process.env.LATKIT_ANGLE;
+  return ['--force_high_performance_gpu', ...(angle ? [`--use-angle=${angle}`] : [])];
+}
 
-/** Launches headless Chrome with the extra `args`. It draws on SwiftShader when `software`, which
- * defaults to true on Linux. */
+/** A browser the gate and the benchmark can drive. */
+export type Engine = 'chromium' | 'firefox' | 'webkit';
+
+/** The engine a script's `--firefox` or `--webkit` flag names. Defaults to Chrome. */
+export function engineOf(argv: readonly string[]): Engine {
+  return argv.includes('--firefox') ? 'firefox' : argv.includes('--webkit') ? 'webkit' : 'chromium';
+}
+
+/** Launches the headless browser `engine` (Chrome by default) with the extra `args`. Chrome draws
+ * on SwiftShader when `software`, which defaults to true on Linux. Firefox and WebKit use their
+ * default renderers and take no Chrome flags. */
 export async function launch(
   args: readonly string[] = [],
   software = process.platform === 'linux',
+  engine: Engine = 'chromium',
 ): Promise<Chrome> {
+  const driver = { chromium, firefox, webkit }[engine];
   const server = await deadline(
-    chromium.launchServer({
-      executablePath: chrome(),
+    driver.launchServer({
       headless: true,
-      args: [...(software ? SOFTWARE : HARDWARE), ...args],
+      ...(engine === 'chromium'
+        ? { executablePath: chrome(), args: [...(software ? SOFTWARE : hardware()), ...args] }
+        : {}),
+      // Headless Firefox blocks WebGL2 on its GPU blocklist unless forced.
+      ...(engine === 'firefox' ? { firefoxUserPrefs: { 'webgl.force-enabled': true } } : {}),
     }),
     STEP,
-    'launch Chrome',
+    `launch ${engine}`,
   );
   // Killing ends the whole process tree, as `taskkill /T /F` does on Windows.
-  const kill = () => deadline(server.kill(), 10_000, 'kill Chrome').catch(() => {});
+  const kill = () => deadline(server.kill(), 10_000, `kill ${engine}`).catch(() => {});
   try {
     const browser = await deadline(
-      chromium.connect(server.wsEndpoint()),
+      driver.connect(server.wsEndpoint()),
       STEP,
-      'connect to Chrome',
+      `connect to ${engine}`,
     );
-    const close = () => deadline(server.close(), 5_000, 'close Chrome').catch(kill);
+    const close = () => deadline(server.close(), 5_000, `close ${engine}`).catch(kill);
     return { browser, close };
   } catch (error) {
     await kill();

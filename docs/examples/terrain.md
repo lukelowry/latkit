@@ -5,7 +5,7 @@
 :class: picture
 ```
 
-Ridged mountains in three dimensions, as faces over a grid of vertices. Each face blends its corners' colors and is lit by normals the GPU computes.
+Ridged mountains in three dimensions, as a wire mesh over a grid of vertices. Edges blend their endpoints' colors.
 
 The `latkit` command line draws this picture from the module below, which builds its datasets
 with `Data` and returns its scene. Run `node docs/gallery/render.ts terrain` to draw it again.

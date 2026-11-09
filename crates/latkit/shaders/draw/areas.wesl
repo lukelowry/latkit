@@ -7,7 +7,7 @@
 import package::lib::types::{SELECTED, HOVERED};
 import package::lib::bind::frame;
 import package::lib::project::culled;
-import package::lib::triangles::{triangle_corner, triangle_shown, corner_clip};
+import package::lib::triangles::{triangle_vertex, triangle_instances, corner_clip};
 import package::lib::focus::focus_of;
 import package::lib::daylight::daylight;
 import package::lib::color::output;
@@ -23,15 +23,21 @@ struct Varyings {
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
     var out: Varyings;
-    let c = triangle_corner(instance, corner);
+    @if(!focused) {
+        if instance >= triangle_instances() {
+            out.clip = culled();
+            return out;
+        }
+    }
+    let c = triangle_vertex(instance, corner);
     out.row = c.row;
-    if !triangle_shown(instance) {
+    if !c.shown {
         out.clip = culled();
         return out;
     }
     out.clip = corner_clip(c);
     out.color = vec4f(c.color.rgb * daylight(c.position.xy), c.color.a);
-    out.focus = focus_of(c.row);
+    @if(focused) { out.focus = focus_of(c.row); }
     return out;
 }
 

@@ -12,19 +12,17 @@ use crate::Color;
 /// by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
 /// names the base and defaults to `dark`. Each option replaces only the base value it sets.
 ///
-/// Lengths are in CSS pixels, or units in a diagram. The grid spacing, the text halo, and the focus
-/// glow are always in
-/// CSS pixels.
+/// Lengths are in CSS pixels, except comet lengths given in position units.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = with_base)]
 pub struct Theme {
     /// The background color.
     pub background: Color,
-    /// The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule.
+    /// The color of a plane's grid, a plot's grid lines, and the earth's graticule.
     pub grid: Color,
-    /// The least distance between the lines (or dots) of a plane's or diagram's grid and of the
-    /// earth's graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten
+    /// The least distance between the lines (or dots) of a plane's grid and of the earth's
+    /// graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten
     /// (and 30° and 90° on the earth), and the finer step fades out as it nears this distance.
     pub grid_spacing: f32,
     /// The color a colormap gives a missing value, such as a row with no value in the field.
@@ -35,8 +33,6 @@ pub struct Theme {
     pub contrast: f32,
     /// The dash period: one dash and one gap of equal length.
     pub dash: f32,
-    /// How much faces darken as they turn away from the camera, from 0 to 1.
-    pub shading: f32,
     /// How labels, axis ticks, and titles look.
     pub text: TextTheme,
     /// Defaults for vertices.
@@ -51,8 +47,6 @@ pub struct Theme {
     pub focus: FocusTheme,
     /// How comets flowing along edges and lines look.
     pub flow: FlowTheme,
-    /// How a diagram's blocks, groups, ports, and wires look.
-    pub diagram: DiagramTheme,
     /// How the earth looks.
     pub earth: EarthTheme,
     /// How a plot looks.
@@ -68,7 +62,7 @@ pub struct TextTheme {
     pub color: Color,
     /// The CSS font family list.
     pub font: Arc<str>,
-    /// The font size, in the space's unit.
+    /// The font size, in CSS pixels.
     pub size: f32,
     /// Width of the background-colored halo around label text, in CSS pixels.
     pub halo: f32,
@@ -81,8 +75,10 @@ pub struct TextTheme {
 pub struct VertexTheme {
     /// The vertex color.
     pub color: Color,
-    /// The vertex radius, in the space's unit.
+    /// The vertex radius, in CSS pixels.
     pub radius: f32,
+    /// The corner radius of block markers, in CSS pixels. A block marker can set its own.
+    pub corner: f32,
 }
 
 /// Defaults for edges, and how parallel edges and arrowheads look.
@@ -91,15 +87,11 @@ pub struct VertexTheme {
 #[schemars(transform = merged)]
 pub struct EdgeTheme {
     /// The edge color. `None` blends the colors of each edge's two vertices, also for rows whose
-    /// own color is missing. With `None`, a diagram's wires and edges without `ends` (nets and
-    /// poles) use the text color.
+    /// own color is missing. With `None`, edges without `ends` (nets and poles) use the text color.
     pub color: Option<Color>,
-    /// The edge width, in the space's unit.
+    /// The edge width, in CSS pixels.
     pub width: f32,
-    /// In a diagram, the distance between edges joining the same two vertices and between parallel
-    /// orthogonal wires. Wires keep twice this distance from blocks where they can.
-    pub spacing: f32,
-    /// Outside a diagram, how far edges joining the same two vertices bow apart. Each lane bows out
+    /// How far edges joining the same two vertices bow apart. Each lane bows out
     /// by this fraction of the edge's length, measured at its middle. Parallel edges spread at most
     /// eight lanes wide, and more lanes pack closer. Bows scale with the zoom.
     pub bow: f32,
@@ -115,7 +107,7 @@ pub struct EdgeTheme {
 pub struct LineTheme {
     /// The line color.
     pub color: Color,
-    /// The line width, in the space's unit.
+    /// The line width, in CSS pixels.
     pub width: f32,
 }
 
@@ -151,8 +143,7 @@ pub struct FocusTheme {
 ///
 /// `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
 /// In position units (degrees on the earth), comets scale with the zoom and stay in place along
-/// their lines. In CSS pixels, they keep their size and speed on screen. A plain number is in the
-/// space's unit.
+/// their lines. In CSS pixels, they keep their size and speed on screen.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
@@ -164,40 +155,8 @@ pub struct FlowTheme {
     pub spacing: Length,
     /// The length of a comet's tail behind its head.
     pub length: Length,
-    /// The width of a comet's head, in the space's unit. A head is never narrower than its stroke.
+    /// The width of a comet's head, in CSS pixels. A head is never narrower than its stroke.
     pub width: f32,
-}
-
-/// How a diagram's blocks, groups, ports, and wires look.
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = merged)]
-pub struct DiagramTheme {
-    /// The fill color of group containers.
-    pub group: Color,
-    /// The color of the one-unit border around blocks and groups. `None` draws no border.
-    pub outline: Option<Color>,
-    /// The corner radius of blocks and groups. A block marker can set its own.
-    pub corner: f32,
-    /// The width of ports.
-    pub port_size: f32,
-    /// The bend radius of orthogonal wires.
-    pub bend: f32,
-    /// The space between a group's members and its border.
-    pub group_padding: f32,
-    /// How blocks and groups cast shadows on the sheet.
-    pub shadow: ShadowTheme,
-}
-
-/// How a diagram's blocks and groups cast shadows on the sheet, for vertex marks with `shadow` on.
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(transform = merged)]
-pub struct ShadowTheme {
-    /// The color a shadow darkens toward. Its alpha sets how dark the shadow is under the block.
-    pub color: Color,
-    /// How far a shadow falls below its block or group. Its edge softens over the same distance.
-    pub lift: f32,
 }
 
 /// How the earth looks.
@@ -222,13 +181,10 @@ pub struct PlotTheme {
     pub playhead: Color,
 }
 
-/// A theme length: a plain number in the space's unit (CSS pixels, or units in a diagram),
-/// `{ "px": n }` in CSS pixels at any zoom, or `{ "units": n }` in position units (degrees on the
-/// earth), which scale with the zoom.
+/// A theme length: a plain number in CSS pixels, the same at any zoom, or `{ "units": n }` in
+/// position units (degrees on the earth), which scale with the zoom.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Length {
-    /// In the space's unit.
-    Space(f32),
     /// CSS pixels.
     Px(f32),
     /// Position units (degrees on the earth).
@@ -239,7 +195,7 @@ impl Length {
     /// The number, in the length's own unit.
     pub(crate) fn value(self) -> f32 {
         match self {
-            Length::Space(v) | Length::Px(v) | Length::Units(v) => v,
+            Length::Px(v) | Length::Units(v) => v,
         }
     }
 
@@ -249,19 +205,12 @@ impl Length {
     }
 }
 
-/// A length's JSON form: a number, `{ "px": n }`, or `{ "units": n }`, with no other keys.
+/// A length's JSON form: a number, or `{ "units": n }` with no other keys.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum LengthForm {
-    Space(f32),
-    Px(PxLength),
+    Px(f32),
     Units(UnitsLength),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PxLength {
-    px: f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -273,8 +222,7 @@ struct UnitsLength {
 impl Serialize for Length {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match *self {
-            Length::Space(v) => LengthForm::Space(v),
-            Length::Px(px) => LengthForm::Px(PxLength { px }),
+            Length::Px(px) => LengthForm::Px(px),
             Length::Units(units) => LengthForm::Units(UnitsLength { units }),
         }
         .serialize(serializer)
@@ -285,11 +233,10 @@ impl<'de> Deserialize<'de> for Length {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Length, D::Error> {
         LengthForm::deserialize(deserializer)
             .map(|form| match form {
-                LengthForm::Space(v) => Length::Space(v),
-                LengthForm::Px(PxLength { px }) => Length::Px(px),
+                LengthForm::Px(px) => Length::Px(px),
                 LengthForm::Units(UnitsLength { units }) => Length::Units(units),
             })
-            .map_err(|_| de::Error::custom("a length must be a number, { px: n }, or { units: n }"))
+            .map_err(|_| de::Error::custom("a length must be a number or { units: n }"))
     }
 }
 
@@ -299,20 +246,16 @@ impl JsonSchema for Length {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        let exactly = |key: &str, description: &str| {
-            serde_json::json!({
-                "type": "object",
-                "properties": { key: { "type": "number", "description": description } },
-                "required": [key],
-                "additionalProperties": false,
-            })
-        };
         schemars::json_schema!({
-            "description": "A length: a number in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
+            "description": "A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
             "anyOf": [
                 { "type": "number" },
-                exactly("px", "CSS pixels, the same at any zoom."),
-                exactly("units", "Position units (degrees on the earth), which grow as the view zooms in."),
+                {
+                    "type": "object",
+                    "properties": { "units": { "type": "number", "description": "Position units (degrees on the earth), which grow as the view zooms in." } },
+                    "required": ["units"],
+                    "additionalProperties": false,
+                },
             ],
         })
     }
@@ -329,15 +272,14 @@ impl Theme {
             missing: hex("#6b7480"),
             contrast: 1.0,
             dash: 8.0,
-            shading: 0.6,
             text: TextTheme {
                 color: hex("#a8b2c2"),
                 font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),
                 size: 11.0,
                 halo: 2.0,
             },
-            vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0 },
-            edge: EdgeTheme { color: None, width: 1.5, spacing: 4.0, bow: 0.12, arrow: 7.0 },
+            vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0, corner: 6.0 },
+            edge: EdgeTheme { color: None, width: 1.5, bow: 0.12, arrow: 7.0 },
             line: LineTheme { color: hex("#7cc4ff"), width: 1.5 },
             area: AreaTheme { color: hex("#2b3d50") },
             focus: FocusTheme {
@@ -349,18 +291,9 @@ impl Theme {
             },
             flow: FlowTheme {
                 color: Color::WHITE.alpha(0.85),
-                spacing: Length::Space(64.0),
-                length: Length::Space(24.0),
+                spacing: Length::Px(64.0),
+                length: Length::Px(24.0),
                 width: 4.0,
-            },
-            diagram: DiagramTheme {
-                group: hex("#18212b"),
-                outline: Some(Color::WHITE.alpha(0.12)),
-                corner: 6.0,
-                port_size: 7.0,
-                bend: 6.0,
-                group_padding: 16.0,
-                shadow: ShadowTheme { color: Color::BLACK.alpha(0.45), lift: 3.0 },
             },
             earth: EarthTheme { ground: hex("#18212b"), atmosphere: hex("#5aa9ff").alpha(0.55), night: 0.3 },
             plot: PlotTheme { playhead: hex("#ffe5d4").alpha(0.8) },
@@ -385,12 +318,6 @@ impl Theme {
                 ..dark.focus
             },
             flow: FlowTheme { color: Color::WHITE.alpha(0.9), ..dark.flow },
-            diagram: DiagramTheme {
-                group: hex("#e8ecf0"),
-                outline: Some(Color::BLACK.alpha(0.14)),
-                shadow: ShadowTheme { color: Color::BLACK.alpha(0.22), ..dark.diagram.shadow },
-                ..dark.diagram
-            },
             earth: EarthTheme { ground: hex("#e8ecf0"), atmosphere: hex("#6cb4ff").alpha(0.45), night: 0.55 },
             plot: PlotTheme { playhead: hex("#e36209").alpha(0.8) },
             ..dark
@@ -435,7 +362,7 @@ impl Serialize for Theme {
     }
 }
 
-/// Merges `options` into `base` object by object. A length object replaces the base's value
+/// Merges `options` into `base` object by object. A length in units replaces the base's value
 /// outright.
 fn over(base: &mut Value, options: Value) {
     match (base, options) {
@@ -448,9 +375,9 @@ fn over(base: &mut Value, options: Value) {
     }
 }
 
-/// Whether `options` is a length object, `{ px }` or `{ units }`.
+/// Whether `options` is a length in units, `{ units }`.
 fn is_length(options: &serde_json::Map<String, Value>) -> bool {
-    options.len() == 1 && (options.contains_key("px") || options.contains_key("units"))
+    options.len() == 1 && options.contains_key("units")
 }
 
 /// Makes every option of a theme group optional in the schema, since each merges over the base.
@@ -497,8 +424,12 @@ mod tests {
         assert_eq!((flow.spacing, flow.length), (Length::Units(40.0), Length::Units(30.0)));
         let back: Theme = theme(&serde_json::to_string(&Theme { flow, ..Theme::dark() }).expect("serializes"));
         assert_eq!(back.flow, flow, "a theme round-trips through JSON");
-        let px = theme(r#"{"flow": {"spacing": {"px": 40}}}"#).flow;
-        assert_eq!(px.spacing, Length::Px(40.0));
+        let px = theme(r#"{"flow": {"spacing": 40}}"#).flow;
+        assert_eq!(px.spacing, Length::Px(40.0), "a plain number is CSS pixels");
+        assert!(
+            serde_json::from_str::<Theme>(r#"{"flow": {"spacing": {"px": 40}}}"#).is_err(),
+            "a plain number is already CSS pixels"
+        );
         assert!(serde_json::from_str::<Theme>(r#"{"radius": 3}"#).is_err(), "radius belongs in the vertex group");
     }
 }

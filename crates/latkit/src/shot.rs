@@ -1,9 +1,9 @@
 //! Shots: pictures of views at their own size.
 //!
 //! A shot draws each view into its panel of the picture, with its own frames and clock, until every
-//! view is complete. One compute pass then composes the panels into the exact bytes the consumer
-//! needs: RGBA rows for an image, or NV12 planes for a video encoder. A buffer copy reads them
-//! back, so no pixel is processed on the CPU.
+//! view is complete. Opaque panels copy directly into their final RGBA rows. Raster passes handle
+//! transparency, uncovered background, and NV12 conversion for a video encoder. A buffer copy
+//! reads the bytes back, so no pixel is processed on the CPU.
 //!
 //! A view draws at one size at a time, so nothing else draws it during a shot. Natively the shot
 //! borrows the view. In a browser, the view's canvas keeps its last frame. A picture draws each
@@ -16,7 +16,7 @@ use std::time::Duration;
 use web_time::Instant;
 
 use crate::gpu::pipelines::{Asked, Variant};
-use crate::gpu::readback::Readback;
+use crate::gpu::readback::{ImagePlane, Readback};
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::{FORMAT, Gpu};
 use crate::panels::Rect;
@@ -208,7 +208,7 @@ impl Shot {
         loop {
             match views.lend(|views| drawing.step(views, time, still))? {
                 Step::Done(readback) => {
-                    let bytes = match drawing.read(&readback).await {
+                    let bytes: Arc<[u8]> = match drawing.read(&readback).await {
                         // The device went before the bytes came back. The views move to a new
                         // device and draw the picture again there.
                         Err(Error::DeviceLost) if movable => continue,
@@ -260,6 +260,7 @@ struct Panel {
     target: wgpu::TextureView,
     size: [u32; 2],
     group: wgpu::BindGroup,
+    origin: [u32; 2],
 }
 
 /// The outcome of one drawing step.
@@ -297,8 +298,7 @@ struct Picture {
     gpu: Gpu,
     panels: Vec<Panel>,
     /// The composed picture's bytes, and their count.
-    buffer: wgpu::Buffer,
-    len: u64,
+    output: Vec<wgpu::Texture>,
     /// Fills the background where no panel draws. Present when the panels may leave gaps.
     fill: Option<wgpu::BindGroup>,
     /// The panels' textures and the composing uniforms, retired with the buffer when the picture
@@ -310,7 +310,9 @@ struct Picture {
 impl Drop for Picture {
     fn drop(&mut self) {
         let retired = self.gpu.0.queue.retired();
-        retired.retire(self.buffer.clone());
+        for texture in self.output.drain(..) {
+            retired.retire(texture);
+        }
         for texture in self.textures.drain(..) {
             retired.retire(texture);
         }
@@ -318,7 +320,7 @@ impl Drop for Picture {
             retired.retire(uniform);
         }
         // In a page, the next animation frame destroys them, even when no view draws then.
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         crate::web::waker(&self.gpu).wake();
     }
 }
@@ -387,33 +389,11 @@ impl Picture {
             ));
         }
         let area = u64::from(width) * u64::from(height);
-        let len = match pixels {
-            Pixels::Rgba => area * 4,
-            Pixels::Nv12 => area * 3 / 2,
-        };
-        if len > limits.max_storage_buffer_binding_size.min(limits.max_buffer_size) {
-            return Err(Error::Limit(
-                format!("a picture of {width}×{height} pixels exceeds this GPU's buffer size limit").into(),
-            ));
-        }
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("latkit shot"),
-            size: len,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
         // Gaps get the first view's background, or stay clear in a transparent picture.
         let background = if shot.transparent { [0.0; 4] } else { views[0].scene().theme.background.to_array() };
         let layout = gpu.0.lock().pipelines.pass_layout(device, Shader::Compose);
-        let uniform = |origin: [u32; 2], size: [u32; 2]| {
-            let compose = wgsl::Compose {
-                origin,
-                size,
-                picture: shot.size,
-                chroma: (area / 4) as u32,
-                alpha: u32::from(shot.transparent),
-                background,
-            };
+        let uniform = |origin: [u32; 2]| {
+            let compose = wgsl::Compose { origin, alpha: u32::from(shot.transparent), padding: 0, background };
             let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("latkit compose"),
                 size: size_of::<wgsl::Compose>() as u64,
@@ -429,7 +409,6 @@ impl Picture {
                 layout: &layout,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(target) },
-                    wgpu::BindGroupEntry { binding: 1, resource: buffer.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
                 ],
             })
@@ -443,24 +422,26 @@ impl Picture {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
             let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let composing = uniform(origin, size);
-            panels.push(Panel { group: group(&target, &composing), target, size });
+            let composing = uniform(origin);
+            panels.push(Panel { group: group(&target, &composing), target, origin, size });
             textures.push(texture);
             uniforms.push(composing);
         }
         let covered: u64 = rects.iter().map(|r| u64::from(r.size[0]) * u64::from(r.size[1])).sum();
         let overlap = rects.iter().enumerate().any(|(i, a)| rects[i + 1..].iter().any(|b| a.overlaps(*b)));
         let fill = (covered < area || overlap).then(|| {
-            let composing = uniform([0, 0], shot.size);
+            let composing = uniform([0, 0]);
             let fill = group(&panels[0].target, &composing);
             uniforms.push(composing);
             fill
         });
-        Ok(Picture { gpu: gpu.clone(), panels, buffer, len, fill, textures, uniforms })
+        Ok(Picture { gpu: gpu.clone(), panels, output: Vec::new(), fill, textures, uniforms })
     }
 }
 
@@ -500,7 +481,7 @@ impl Drawing {
             }
             return Ok(Step::Waiting);
         }
-        let device = picture.gpu.device();
+        let device = gpu.device();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit shot") });
         for (view, panel) in views.iter_mut().zip(&picture.panels) {
             let frame = Frame { target: &panel.target, format: FORMAT, size: panel.size, pixel_ratio: scale, time };
@@ -513,12 +494,42 @@ impl Drawing {
             return Err(error);
         }
         self.check_deadline()?;
-        let composes = picture.composes(self.pixels, &self.waker);
+        // Opaque panels that tile the picture already contain its final RGBA bytes. Copy each
+        // into the readback's rows, avoiding an intermediate full-size texture and render pass.
+        // Check current backgrounds: a video's scenes can change between pictures.
+        let direct = matches!(self.pixels, Pixels::Rgba)
+            && !self.shot.transparent
+            && picture.fill.is_none()
+            && views.iter().all(|view| view.scene().theme.background.to_array()[3] == 1.0);
+        let composes = direct || picture.composes(self.pixels, &self.waker)?;
         let step = if complete && !easing && composes {
-            picture.compose(&mut encoder, self.pixels, self.shot.size);
+            let picture = self.picture.as_mut().expect("the picture being drawn");
+            if !direct {
+                picture.output(self.pixels, self.shot.size);
+                picture.compose(&mut encoder, self.pixels);
+            }
             let inner = picture.gpu.0.lock();
-            let (buffer, len) = (&picture.buffer, picture.len);
-            let readback = Readback::new(&inner.readbacks, device, &mut encoder, buffer, 0, len, &self.waker);
+            let planes = if direct {
+                vec![ImagePlane {
+                    size: self.shot.size,
+                    regions: picture
+                        .panels
+                        .iter()
+                        .zip(&picture.textures)
+                        .map(|(panel, texture)| (panel.origin, texture))
+                        .collect(),
+                }]
+            } else {
+                picture
+                    .output
+                    .iter()
+                    .map(|texture| ImagePlane {
+                        size: [texture.width(), texture.height()],
+                        regions: vec![([0, 0], texture)],
+                    })
+                    .collect()
+            };
+            let readback = Readback::images(&inner.readbacks, device, &mut encoder, &planes, &self.waker);
             drop(inner);
             Step::Done(readback)
         } else if easing {
@@ -526,23 +537,26 @@ impl Drawing {
         } else {
             Step::Waiting
         };
-        picture.gpu.queue().submit([encoder.finish()]);
+        gpu.queue().submit([encoder.finish()]);
         Ok(step)
     }
 
     /// Returns `readback`'s bytes once the GPU has written them. Fails at the deadline or when the
     /// device is lost.
-    pub(crate) async fn read(&self, readback: &Readback) -> Result<Vec<u8>> {
+    pub(crate) async fn read<T: for<'a> From<&'a [u8]> + From<Vec<u8>>>(&self, readback: &Readback) -> Result<T> {
         loop {
             self.check_deadline()?;
             self.finish();
             self.check_deadline()?;
-            if let Some(bytes) = readback.take() {
+            if let Some(bytes) = readback.take_into() {
                 return bytes;
             }
             if self.picture.as_ref().is_some_and(|p| p.gpu.lost()) {
                 return Err(Error::DeviceLost);
             }
+            #[cfg(target_arch = "wasm32")]
+            crate::time::next_task().await;
+            #[cfg(not(target_arch = "wasm32"))]
             self.notify.wait(FRAME).await;
         }
     }
@@ -567,10 +581,12 @@ impl Drawing {
         Ok(())
     }
 
-    /// Natively, polls the device so readbacks map and wake the drawing. A browser maps them
-    /// itself.
-    #[cfg_attr(target_arch = "wasm32", expect(clippy::unused_self, reason = "a browser maps readbacks itself"))]
+    /// Advances readbacks even while an export has borrowed every page view.
     fn finish(&self) {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(picture) = &self.picture {
+            let _ = picture.gpu.device().poll(wgpu::PollType::Poll);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(picture) = &self.picture {
             let remaining = match (self.started, self.shot.deadline) {
@@ -585,48 +601,94 @@ impl Drawing {
 
 /// The compose passes for `pixels`: the background fill and the per-panel pass, plus the pixel
 /// block each thread writes.
-fn composing(pixels: Pixels) -> (Variant, Variant, [u32; 2]) {
-    let pass = |entry| Variant::compute(Shader::Compose, entry);
+fn composing(pixels: Pixels) -> Vec<(Variant, Variant, [u32; 2])> {
+    let pass = |entry| Variant::pass(Shader::Compose, entry, wgpu::TextureFormat::Rgba8Unorm);
     match pixels {
-        Pixels::Rgba => (pass("fill_rgba"), pass("rgba"), [1, 1]),
-        Pixels::Nv12 => (pass("fill_nv12"), pass("nv12"), [4, 2]),
+        Pixels::Rgba => vec![(pass("fill_rgba"), pass("rgba"), [1, 1])],
+        Pixels::Nv12 => vec![(pass("fill_yuv"), pass("yuv"), [4, 1]), (pass("fill_yuv"), pass("yuv"), [4, 2])],
     }
 }
 
 impl Picture {
-    /// Whether the compose pipelines for `pixels` have compiled. The first call requests them all
-    /// together, and `waker` wakes when they finish.
-    fn composes(&self, pixels: Pixels, waker: &Waker) -> bool {
-        let (fill, each, _) = composing(pixels);
-        let needs: Vec<Asked> = self.fill.as_ref().map(|_| fill).into_iter().chain([each]).map(Asked::Shader).collect();
-        let mut inner = self.gpu.0.lock();
-        inner.pipelines.ask(self.gpu.device(), &needs, crate::gpu::pipelines::Urgency::Draw, waker);
-        inner.pipelines.ready(&needs)
+    /// Allocate composition targets only when a picture needs composition or color conversion.
+    fn output(&mut self, pixels: Pixels, [width, height]: [u32; 2]) {
+        if !self.output.is_empty() {
+            return;
+        }
+        let sizes = match pixels {
+            Pixels::Rgba => vec![[width, height]],
+            Pixels::Nv12 => vec![[width / 4, height], [width / 4, height / 2]],
+        };
+        self.output = sizes
+            .into_iter()
+            .map(|[width, height]| {
+                self.gpu.device().create_texture(&wgpu::TextureDescriptor {
+                    label: Some("latkit shot bytes"),
+                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                })
+            })
+            .collect();
     }
 
-    /// Records the passes that compose every panel into the picture's `pixels`. Fills the
-    /// background first where panels may leave gaps.
-    fn compose(&self, encoder: &mut wgpu::CommandEncoder, pixels: Pixels, size: [u32; 2]) {
+    fn composes(&self, pixels: Pixels, waker: &Waker) -> Result<bool> {
+        let needs: Vec<Asked> = composing(pixels)
+            .into_iter()
+            .flat_map(|(fill, each, _)| self.fill.as_ref().map(|_| fill).into_iter().chain([each]))
+            .map(Asked::Shader)
+            .collect();
+        let mut inner = self.gpu.0.lock();
+        inner.pipelines.ask(self.gpu.device(), &needs, crate::gpu::pipelines::Urgency::Draw, waker);
+        if let Some(error) = inner.pipelines.refused(&needs) {
+            return Err(error);
+        }
+        Ok(inner.pipelines.ready(&needs))
+    }
+
+    /// Compose each byte plane in drawing order. The scissor selects a panel's rectangle; pixels
+    /// outside it retain the previous panel or background, including at unaligned RGBA edges.
+    fn compose(&self, encoder: &mut wgpu::CommandEncoder, pixels: Pixels) {
         let device = self.gpu.device();
         let mut inner = self.gpu.0.lock();
-        let (fill, each, block) = composing(pixels);
-        let groups = |size: [u32; 2]| [0, 1].map(|i| size[i].div_ceil(block[i]).div_ceil(16));
-        let mut pass = encoder
-            .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("latkit compose"), timestamp_writes: None });
-        pass.set_bind_group(0, &inner.pipelines.empty, &[]);
-        pass.set_bind_group(1, &inner.pipelines.empty, &[]);
-        if let Some(group) = &self.fill {
-            pass.set_pipeline(&inner.pipelines.compute(device, fill));
-            pass.set_bind_group(2, group, &[]);
-            let [x, y] = groups(size);
-            pass.dispatch_workgroups(x, y, 1);
-        }
-        let pipeline = inner.pipelines.compute(device, each);
-        pass.set_pipeline(&pipeline);
-        for panel in &self.panels {
-            pass.set_bind_group(2, &panel.group, &[]);
-            let [x, y] = groups(panel.size);
-            pass.dispatch_workgroups(x, y, 1);
+        for (plane, ((fill, each, block), output)) in composing(pixels).into_iter().zip(&self.output).enumerate() {
+            let instances = plane as u32..plane as u32 + 1;
+            let target = output.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("latkit compose"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &inner.pipelines.empty, &[]);
+            pass.set_bind_group(1, &inner.pipelines.empty, &[]);
+            if let Some(group) = &self.fill {
+                pass.set_pipeline(&inner.pipelines.render(device, fill));
+                pass.set_bind_group(2, group, &[]);
+                pass.draw(0..3, instances.clone());
+            }
+            pass.set_pipeline(&inner.pipelines.render(device, each));
+            for panel in &self.panels {
+                pass.set_bind_group(2, &panel.group, &[]);
+                pass.set_scissor_rect(
+                    panel.origin[0] / block[0],
+                    panel.origin[1] / block[1],
+                    panel.size[0] / block[0],
+                    panel.size[1] / block[1],
+                );
+                pass.draw(0..3, instances.clone());
+            }
         }
     }
 }

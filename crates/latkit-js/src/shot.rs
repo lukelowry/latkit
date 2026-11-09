@@ -34,8 +34,8 @@ impl Image {
 
     /// The pixels, copied.
     #[wasm_bindgen(getter)]
-    pub fn rgba(&self) -> Vec<u8> {
-        self.0.rgba.to_vec()
+    pub fn rgba(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(self.0.rgba.as_ref())
     }
 
     /// Encodes the image in a worker as a `png`, `jpeg` (at `quality` 1 to 100, default 90), or

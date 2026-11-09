@@ -1,16 +1,16 @@
 // Reading evaluated rows. Each mark keeps its per-row words in pages of `PAGE_ROWS` held rows,
 // listed by the page table at `mark.state`. A row has `mark.stride` kind words, then `mark.extras`
-// extra words (labels, marker inputs). An edge or face mark reads its vertices through the page
+// extra words (labels, marker inputs, trailing texel padding). An edge reads its vertices through the page
 // tables of the vertex marks that draw them, which its ends list.
 
 import package::lib::types::{
-    NONE, PAGE_BITS, PAGE_MASK, END_WORDS, END_STATE, END_STRIDE, END_NORMALS, VERTEX_POSITION, VERTEX_COLOR,
-    VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_DEPTH, VERTEX_RANGE, VERTEX_FLAGS, EDGE_FROM, EDGE_TO,
-    EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_TRAVEL, EDGE_FLAGS, FACE_A, FACE_B, FACE_C, FACE_COLOR, FACE_FLAGS,
+    NONE, PAGE_BITS, PAGE_MASK, VERTEX_POSITION, VERTEX_COLOR,
+    VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_RANGE, VERTEX_FLAGS, EDGE_FROM, EDGE_TO,
+    EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_TRAVEL, EDGE_FLAGS,
     LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_TRAVEL, LINE_FLAGS, AREA_COLOR, AREA_FLAGS, MARK_EDGES, MARK_LINES,
-    NORMAL_WORDS,
 };
-import package::lib::bind::{program, mark, word};
+import package::lib::bind::{program, mark, word, pages};
+import package::lib::words::word_quad;
 
 struct Vertex {
     hi: vec2f,
@@ -19,7 +19,6 @@ struct Vertex {
     status: u32,
     half: vec2f,
     elevation: f32,
-    depth: f32,
     // The range of CSS pixels its marker's half size is clamped to.
     range: vec2f,
     flags: u32,
@@ -32,12 +31,6 @@ struct Edge {
     width: f32,
     flow: f32,
     travel: f32,
-    flags: u32,
-}
-
-struct Face {
-    corners: vec3u,
-    color: u32,
     flags: u32,
 }
 
@@ -74,7 +67,7 @@ fn float_at(at: u32) -> f32 {
 
 // Where `row`'s words start in the pages, given page table `table` and `stride` words per row.
 fn record_at(table: u32, stride: u32, row: u32) -> u32 {
-    return program[table + (row >> PAGE_BITS)] + (row & PAGE_MASK) * stride;
+    return program(table + (row >> PAGE_BITS)) + (row & PAGE_MASK) * stride;
 }
 
 // Where the first kind word of the current mark's `row` lies in the pages.
@@ -88,66 +81,39 @@ fn extra_at(row: u32, w: u32) -> u32 {
 }
 
 fn vertex_at(at: u32) -> Vertex {
-    let p = at + VERTEX_POSITION;
+    // Compiled row widths and arena pages are multiples of four words.
+    let a = word_quad(pages, at);
+    let b = word_quad(pages, at + 4u);
+    let c = word_quad(pages, at + 8u);
     return Vertex(
-        vec2f(float_at(p), float_at(p + 1u)),
-        vec2f(float_at(p + 2u), float_at(p + 3u)),
-        word(at + VERTEX_COLOR),
-        word(at + VERTEX_STATUS),
-        vec2f(float_at(at + VERTEX_HALF), float_at(at + VERTEX_HALF + 1u)),
-        float_at(at + VERTEX_ELEVATION),
-        float_at(at + VERTEX_DEPTH),
-        unpack_range(word(at + VERTEX_RANGE)),
-        word(at + VERTEX_FLAGS),
+        bitcast<vec2f>(a.xy), bitcast<vec2f>(a.zw),
+        b.x, b.y, bitcast<vec2f>(b.zw),
+        bitcast<f32>(c.x), unpack_range(c.y), c.z,
     );
 }
 
 // Vertex `held` of end `end`: a held row of the vertex mark that draws the end's table.
 fn end_vertex(end: u32, held: u32) -> Vertex {
-    let e = mark.ends + END_WORDS * end;
-    return vertex_at(record_at(program[e + END_STATE], program[e + END_STRIDE], held));
+    let table = select(mark.from_state, mark.to_state, end != 0u);
+    let stride = select(mark.from_stride, mark.to_stride, end != 0u);
+    return vertex_at(record_at(table, stride, held));
 }
 
 // Whether an edge's ends `a` and `b`, held rows of the vertex marks its two ends attach to, are the
 // same vertex.
 fn same_vertex(a: u32, b: u32) -> bool {
-    return a == b && program[mark.ends + END_STATE] == program[mark.ends + END_WORDS + END_STATE];
-}
-
-// Where the face normal sum for vertex `held` of end `end` lies, or NONE.
-fn end_normal(end: u32, held: u32) -> u32 {
-    let table = program[mark.ends + END_WORDS * end + END_NORMALS];
-    if table == NONE {
-        return NONE;
-    }
-    return record_at(table, NORMAL_WORDS, held);
+    return a == b && mark.from_state == mark.to_state;
 }
 
 fn edge_at(at: u32) -> Edge {
-    return Edge(
-        word(at + EDGE_FROM),
-        word(at + EDGE_TO),
-        word(at + EDGE_COLOR),
-        float_at(at + EDGE_WIDTH),
-        float_at(at + EDGE_FLOW),
-        float_at(at + EDGE_TRAVEL),
-        word(at + EDGE_FLAGS),
-    );
-}
-
-fn face_at(at: u32) -> Face {
-    let corners = vec3u(word(at + FACE_A), word(at + FACE_B), word(at + FACE_C));
-    return Face(corners, word(at + FACE_COLOR), word(at + FACE_FLAGS));
+    let a = word_quad(pages, at);
+    let b = word_quad(pages, at + 4u);
+    return Edge(a.x, a.y, a.z, bitcast<f32>(a.w), bitcast<f32>(b.x), bitcast<f32>(b.y), b.z);
 }
 
 fn line_at(at: u32) -> Line {
-    return Line(
-        word(at + LINE_COLOR),
-        float_at(at + LINE_WIDTH),
-        float_at(at + LINE_FLOW),
-        float_at(at + LINE_TRAVEL),
-        word(at + LINE_FLAGS),
-    );
+    let a = word_quad(pages, at);
+    return Line(a.x, bitcast<f32>(a.y), bitcast<f32>(a.z), bitcast<f32>(a.w), word(at + LINE_FLAGS));
 }
 
 // The current mark's word indices for a stroke row's comet travel and its flow. NONE for a mark
@@ -161,5 +127,6 @@ fn travel_words() -> vec2u {
 }
 
 fn area_at(at: u32) -> Area {
-    return Area(word(at + AREA_COLOR), word(at + AREA_FLAGS));
+    let a = word_quad(pages, at);
+    return Area(a.x, a.y);
 }

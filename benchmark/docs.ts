@@ -31,7 +31,7 @@ const file =
 const baseline = JSON.parse(fs.readFileSync(file, 'utf8')) as TimeBaseline;
 
 /** Phases that act every frame while the view moves or plays. */
-const MOVING = ['pan', 'zoom', 'move', 'scrub', 'narrow', 'stream'];
+const MOVING = ['pan', 'zoom', 'move', 'scrub', 'narrow', 'stream', 'still'];
 /** Phases that answer the pointer. */
 const PICKING = ['pick', 'hover'];
 

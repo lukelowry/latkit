@@ -3,17 +3,38 @@
 
 pub(crate) mod arena;
 pub(crate) mod atlas;
+pub(crate) mod bounds;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod browser;
 pub(crate) mod colormaps;
 pub(crate) mod dictionary;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod gl;
+#[cfg(all(feature = "wgsl", target_arch = "wasm32"))]
+mod glsl;
 pub(crate) mod grown;
 pub(crate) mod icons;
+pub(crate) mod kernel;
 mod layers;
+pub(crate) mod listing;
+pub(crate) mod order;
 pub(crate) mod packed;
 pub(crate) mod pipelines;
+pub(crate) mod probing;
+#[cfg(any(not(target_arch = "wasm32"), feature = "wgsl"))]
+mod prune;
+pub(crate) mod raster;
 pub(crate) mod readback;
+pub(crate) mod reduce;
 pub(crate) mod retired;
 pub(crate) mod shaders;
 mod specialize;
+pub(crate) mod state;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod store;
+pub(crate) mod texts;
+pub(crate) mod texture;
+pub(crate) mod words;
 pub(crate) mod work;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,9 +53,8 @@ use work::{Counters, Queue, Work};
 use crate::host::Host;
 use crate::{Error, Result};
 
-/// The texture format of canvases and shots, shared so both use one set of pipelines. Every WebGPU
-/// canvas supports it.
-pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+/// The byte format shared by canvases, retained view textures, and shots.
+pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// The GPU device that views draw with. Cheap to clone. Views of one `Gpu` share uploaded data.
 #[derive(Clone)]
@@ -111,6 +131,8 @@ pub(crate) struct Shared {
     /// [`Gpu::work`] reads them.
     pub(crate) counters: Arc<Counters>,
     pub(crate) sampler: wgpu::Sampler,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) browser: Mutex<Option<browser::Browser>>,
     pub(crate) lost: Arc<AtomicBool>,
     /// Errors the device raised outside any error scope, for every view to report.
     pub(crate) raised: Arc<Mutex<Raised>>,
@@ -129,6 +151,11 @@ fn samples_at(pixel_ratio: f32) -> u32 {
 
 pub(crate) struct Inner {
     pub(crate) arena: Arena,
+    pub(crate) state: state::State,
+    pub(crate) listing: listing::Listing,
+    pub(crate) bounds: bounds::Bounds,
+    pub(crate) texts: texts::Texts,
+    pub(crate) probing: probing::Probing,
     /// Piece keys of recently drawn geometry pages.
     pub(crate) pieces: arena::Pieces,
     pub(crate) pipelines: Pipelines,
@@ -245,7 +272,7 @@ pub struct Budget {
     /// per-row state. A table too large for a view's share draws as a paged table, with only the
     /// pages the camera needs, so it always fits. Pages no view draws stay cached in the rest of
     /// the budget, and the least recently drawn are evicted first. Defaults to half the device's
-    /// largest storage buffer, at most 1 GiB. The page pool grows as data needs it and never
+    /// addressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never
     /// shrinks, so set the budget before drawing data. A device without the memory to grow the pool
     /// further lowers the budget to the pool's size.
     pub bytes: u64,
@@ -260,23 +287,32 @@ pub struct Budget {
 const DEFAULT_BYTES: u64 = 1 << 30;
 
 impl Budget {
-    /// The default budget: half the largest storage buffer `device` binds, at most
+    /// The default budget: half the word-texture capacity `device` addresses, at most
     /// `DEFAULT_BYTES`, and 32 MiB uploaded per frame.
     fn of(device: &wgpu::Device) -> Budget {
         let limits = device.limits();
-        let largest = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
+        let largest = u64::from(words::LAYER_WORDS) * u64::from(limits.max_texture_array_layers) * 4;
         Budget { bytes: (largest / 2).min(DEFAULT_BYTES), upload_per_frame: 32 << 20 }
     }
 }
 
 impl Gpu {
-    /// Creates a device on the best adapter: WebGPU in browsers, Vulkan, Metal, or DX12 natively.
+    /// Creates a WebGL2 device in browsers, or the best supported native raster device.
     /// Errors if no adapter or device is available.
     pub async fn new() -> Result<Gpu> {
+        #[cfg(target_arch = "wasm32")]
+        if !store::loaded() {
+            return Err(Error::Unsupported(
+                "latkit's shaders are not loaded: the page hands them over with Browser::set_shaders".into(),
+            ));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY | wgpu::Backends::BROWSER_WEBGPU,
+            backends: if cfg!(target_arch = "wasm32") { wgpu::Backends::GL } else { wgpu::Backends::PRIMARY },
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
+        #[cfg(target_arch = "wasm32")]
+        let (instance, mut browser) = browser::Browser::new()?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -286,13 +322,15 @@ impl Gpu {
             .map_err(|e| Error::Unsupported(format!("no GPU adapter: {e}").into()))?;
         let supported = adapter.limits();
         let limits = wgpu::Limits {
-            max_storage_buffer_binding_size: supported.max_storage_buffer_binding_size,
             max_buffer_size: supported.max_buffer_size,
-            max_storage_buffers_per_shader_stage: supported.max_storage_buffers_per_shader_stage,
-            ..wgpu::Limits::default()
+            max_color_attachment_bytes_per_sample: supported.max_color_attachment_bytes_per_sample.min(64),
+            max_texture_dimension_2d: supported.max_texture_dimension_2d,
+            max_texture_array_layers: supported.max_texture_array_layers,
+            ..wgpu::Limits::downlevel_webgl2_defaults()
         };
         // Timestamp queries, where the adapter supports them, measure each frame's GPU time.
-        let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+        let features =
+            adapter.features() & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("latkit"),
@@ -302,19 +340,13 @@ impl Gpu {
             })
             .await
             .map_err(|e| Error::Unsupported(format!("no GPU device: {e}").into()))?;
-        Ok(Gpu::create(Some(instance), Some(adapter), device, queue))
-    }
-
-    /// Queues, once, the pipelines nearly every scene uses to draw into the page's canvases, so
-    /// views opened later find them compiled. In a browser this runs when the first view opens, and
-    /// these pipelines compile after that view's own draw pipelines. A GPU no view uses compiles
-    /// nothing.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    pub(crate) fn warm(&self) {
-        let pixel_ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32);
-        let samples = self.samples_for(pixel_ratio);
-        let waker = crate::web::waker(self);
-        self.0.lock().pipelines.warm(&self.0.device, &waker, || crate::view::common(FORMAT, samples));
+        let gpu = Gpu::create(Some(instance), Some(adapter), device, queue);
+        #[cfg(target_arch = "wasm32")]
+        {
+            browser.watch(&gpu);
+            *gpu.0.browser.lock().unwrap_or_else(PoisonError::into_inner) = Some(browser);
+        }
+        Ok(gpu)
     }
 
     /// The multisample count of its frames, once set.
@@ -331,12 +363,16 @@ impl Gpu {
     /// Draws with an application-owned device and queue without replacing their callbacks.
     /// Forward device loss and uncaptured errors through [`Gpu::device_events`]. Clone this
     /// `Gpu` to share its caches and budget between views. Errors if the device does not meet
-    /// WebGPU's default limits. In a browser, latkit replaces the device's two pipeline creation
-    /// methods with ones that pass every other call through, so each pipeline it compiles in the
-    /// background is created once.
+    /// the WebGL2 resource limits used by the shared raster algorithms. In a browser, latkit's
+    /// shaders are GLSL translated ahead of time, so the device must be the WebGL2 device of a
+    /// `Gpu` from [`Gpu::new`].
     pub fn from_wgpu(device: wgpu::Device, queue: wgpu::Queue) -> Result<Gpu> {
-        if !wgpu::Limits::default().check_limits(&device.limits()) {
-            return Err(Error::Unsupported("the device does not meet WebGPU's default limits".into()));
+        if !wgpu::Limits::downlevel_webgl2_defaults().check_limits(&device.limits()) {
+            return Err(Error::Unsupported("the device does not meet WebGL2 rendering limits".into()));
+        }
+        #[cfg(target_arch = "wasm32")]
+        if !gl::owns(&device) {
+            return Err(Error::Unsupported("in a browser, latkit draws only on the WebGL2 device of Gpu::new".into()));
         }
         Ok(Gpu::create(None, None, device, queue))
     }
@@ -350,7 +386,7 @@ impl Gpu {
     /// they report it even when nothing else would draw a frame.
     pub(crate) fn raise(&self, error: Error) {
         self.device_events().raise(error);
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         crate::web::waker(self).wake();
     }
 
@@ -391,11 +427,16 @@ impl Gpu {
         let queue = Queue::new(queue, counters.clone());
         #[cfg_attr(
             target_arch = "wasm32",
-            allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the page's single thread")
+            allow(clippy::arc_with_non_send_sync, reason = "browser GPU objects stay on the page's single thread")
         )]
         let shared = Arc::new_cyclic(|gpu| {
             let inner = Inner {
-                arena: Arena::new(&device, budget.bytes),
+                arena: Arena::new(&device, queue.retired(), budget.bytes),
+                state: state::State::new(&device, queue.retired()),
+                listing: listing::Listing::new(&device, queue.retired()),
+                bounds: bounds::Bounds::new(&device, queue.retired()),
+                texts: texts::Texts::new(&device, queue.retired()),
+                probing: probing::Probing::new(&device, queue.retired()),
                 pieces: arena::Pieces::default(),
                 pipelines: Pipelines::new(&device, counters.clone(), gpu.clone()),
                 colormaps: Colormaps::colormaps(&device),
@@ -417,6 +458,8 @@ impl Gpu {
                 queue,
                 counters,
                 sampler,
+                #[cfg(target_arch = "wasm32")]
+                browser: Mutex::new(None),
                 lost,
                 raised,
                 samples: std::sync::OnceLock::new(),
@@ -425,7 +468,7 @@ impl Gpu {
         });
         // In a page, set the multisample count now from the screen's pixel ratio. Every view and
         // canvas of the GPU draws for that screen.
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         if let Some(window) = web_sys::window() {
             let _ = shared.samples.set(samples_at(window.device_pixel_ratio() as f32));
         }
@@ -435,16 +478,16 @@ impl Gpu {
             let loss = events.clone();
             // In a page, a lost device or an error wakes the views, so they report it even when
             // nothing else would draw a frame.
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             let (wake, wake_on_error) = (crate::web::waker(&gpu), crate::web::waker(&gpu));
             gpu.0.device.set_device_lost_callback(move |_, _| {
                 loss.lost();
-                #[cfg(all(feature = "web", target_arch = "wasm32"))]
+                #[cfg(target_arch = "wasm32")]
                 wake.wake_by_ref();
             });
             gpu.0.device.on_uncaptured_error(Arc::new(move |error| {
                 events.error(&error);
-                #[cfg(all(feature = "web", target_arch = "wasm32"))]
+                #[cfg(target_arch = "wasm32")]
                 wake_on_error.wake_by_ref();
             }));
         }
@@ -523,27 +566,17 @@ impl Gpu {
 /// In a page, nothing records once the last view and shot of a `Gpu` are gone, so the pool and the
 /// memory retired go at once, instead of whenever JavaScript collects them. Natively, dropping them
 /// frees them once the GPU is done with them.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 impl Drop for Shared {
     fn drop(&mut self) {
         self.queue.retired().destroy();
-        self.lock().arena.buffer().destroy();
+        self.lock().arena.words().texture().destroy();
     }
 }
 
 impl Shared {
     pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The lock, or `None` if it is held now.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    pub(crate) fn try_lock(&self) -> Option<MutexGuard<'_, Inner>> {
-        match self.inner.try_lock() {
-            Ok(inner) => Some(inner),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
-            Err(std::sync::TryLockError::WouldBlock) => None,
-        }
     }
 }
 

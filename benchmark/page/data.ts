@@ -3,7 +3,7 @@
  * the same work, and linear in size. Each function returns a `Write` that only hands latkit the
  * arrays.
  */
-import { reference, type Values } from 'latkit';
+import { reference, type Fields, type Values } from 'latkit';
 import { congruential } from '../../npm/examples/src/random.ts';
 import type { Write } from './stage.ts';
 
@@ -20,10 +20,14 @@ export function scatter(n: number, seed = 1, named = false): Write {
   return (p) => p.set('Point', { count: n }, fields);
 }
 
+/** The side of the square lattice of about `n` buses. */
+const sideOf = (n: number) => Math.max(2, Math.round(Math.sqrt(n)));
+
 /** About `n` buses in a square lattice over most of the globe, each joined by a line to its
- * neighbours in the next column and the next row. It has a grid's shape at any size. */
-export function lattice(n: number): Write {
-  const side = Math.max(2, Math.round(Math.sqrt(n)));
+ * neighbours in the next column and the next row. It has a grid's shape at any size. With `speeds`,
+ * each line has a `speed` for comets, from -1 to 1. */
+export function lattice(n: number, speeds = false): Write {
+  const side = sideOf(n);
   const count = side * side;
   const [lon, lat, load] = [
     new Float64Array(count),
@@ -48,10 +52,46 @@ export function lattice(n: number): Write {
       to[e++] = i + side;
     }
   }
-  return (p) =>
-    p
-      .set('Bus', { count }, { lon, lat, load })
-      .set('Line', { count: lines }, { from: reference('Bus', from), to: reference('Bus', to) });
+  const fields: Fields = {
+    from: reference('Bus', from),
+    to: reference('Bus', to),
+    ...(speeds && {
+      speed: Float32Array.from({ length: lines }, (_, e) => ((e % 21) - 10) / 10),
+    }),
+  };
+  return (p) => p.set('Bus', { count }, { lon, lat, load }).set('Line', { count: lines }, fields);
+}
+
+/** A value for each bus of `lattice(n)`, by the same row ids: its `load`, from 0 to 1, and its
+ * `size`, a radius from 2 to 6 pixels. */
+export function weather(n: number): Write {
+  const side = sideOf(n);
+  const count = side * side;
+  const load = Float32Array.from({ length: count }, (_, i) => ((i * 7919) % 1000) / 1000);
+  const size = Float32Array.from(load, (v) => 2 + 4 * v);
+  return (p) => p.set('Bus', { count }, { load, size });
+}
+
+/** `n` points in the unit square, a fifth in each of the tables `Shape`, `Gauge`, `Pie`, `Icon`,
+ * and `Custom`, each with values `v` and `w` from 0 to 1. */
+export function markers(n: number): Write {
+  const tables = ['Shape', 'Gauge', 'Pie', 'Icon', 'Custom'];
+  const count = Math.max(1, Math.round(n / tables.length));
+  const next = congruential(7);
+  const each = tables.map((table) => {
+    const [x, y, v, w] = [
+      new Float64Array(count),
+      new Float64Array(count),
+      new Float32Array(count),
+      new Float32Array(count),
+    ];
+    for (let i = 0; i < count; i++) [x[i], y[i], v[i], w[i]] = [next(), next(), next(), next()];
+    return [table, { x, y, v, w }] as const;
+  });
+  return (p) => {
+    for (const [table, fields] of each) p.set(table, { count }, fields);
+    return p;
+  };
 }
 
 /** `n` edges among 16 vertices on a ring, each joining a vertex to the next, so each pair has about
@@ -88,23 +128,23 @@ export function polygons(n: number, sides = 32): Write {
   return (p) => p.set('Region', { count: n }, { rings, v });
 }
 
-/** `n` blocks in binary trees of 64. Each block's output is a net, and its two children's inputs
- * reference that net. */
-export function blocks(n: number): Write {
-  const input = new Array<number | null>(n);
-  const name = new Array<string>(n);
-  for (let i = 0; i < n; i++) {
+/** `n` named nodes without positions in binary trees of 64, each linked to its two children. */
+export function trees(n: number): Write {
+  const name = Array.from({ length: n }, (_, i) => `Node ${i}`);
+  const children = Array.from({ length: n }, (_, i) => i).filter((i) => i % 64 !== 0);
+  const [from, to] = [new Uint32Array(children.length), new Uint32Array(children.length)];
+  children.forEach((i, e) => {
     const k = i % 64;
-    input[i] = k === 0 ? null : i - k + ((k - 1) >> 1);
-    name[i] = `Block ${i}`;
-  }
+    from[e] = i - k + ((k - 1) >> 1);
+    to[e] = i;
+  });
   return (p) =>
     p
-      .set('Net', { count: n }, { k: new Float32Array(n) })
+      .set('Node', { count: n }, { name })
       .set(
-        'Block',
-        { count: n },
-        { name, in: reference('Net', input), out: reference('Net', { count: n }) },
+        'Link',
+        { count: children.length },
+        { from: reference('Node', from), to: reference('Node', to) },
       );
 }
 

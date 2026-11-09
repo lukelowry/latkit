@@ -8,9 +8,9 @@ export default [
   { "space": "earth", "ease": 0 },
   { "space": { "earth": { "projection": "globe" } }, "theme": "light" },
   { "space": "plot" },
-  { "space": "diagram", "layout": "stress" },
+  { "space": "plane", "layout": "stress" },
   { "space": { "plane": { "grid": "off" } } },
-  { "space": { "diagram": { "grid": { "dots": { "pitch": 10, "snap": true } } } }, "layout": { "layered": { "direction": "down", "rankGap": 60 } } },
+  { "space": { "plane": { "grid": { "dots": { "pitch": 10 } } } }, "layout": { "layered": { "direction": "down", "rankGap": 60 } } },
   { "space": { "earth": { "projection": "globe", "graticule": false } }, "theme": { "earth": { "ground": "#203040" } } },
   {
     "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
@@ -74,21 +74,19 @@ export default [
     ],
     "theme": {
       "base": "dark",
-      "vertex": { "radius": 5 },
+      "vertex": { "radius": 5, "corner": 4 },
       "edge": { "color": null },
-      "focus": { "selected": "#ff8800" },
-      "diagram": { "shadow": { "color": "#00000055", "lift": 4 } }
+      "focus": { "selected": "#ff8800" }
     }
   },
   {
     "space": { "plane": { "grid": { "lines": { "pitch": 1 } } } },
     "controls": { "gestures": { "secondary": "none", "shift+primary": "pan", "twist": "turn", "slide": "tilt" }, "pickRadius": 14 },
     "marks": [
-      { "faces": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false },
       { "edges": ["mesh", "Spring"], "ends": ["a", "b"], "color": "#ffffff14" },
       { "vertices": ["mesh", "Vertex"], "position": ["$x", "$y"], "elevation": "$z", "select": false, "drag": true }
     ],
-    "theme": { "shading": 0.7, "text": { "font": "monospace", "size": 12 }, "plot": { "playhead": "#ffe5d4" } }
+    "theme": { "text": { "font": "monospace", "size": 12 }, "plot": { "playhead": "#ffe5d4" } }
   },
   {
     "space": { "plot": { "x": { "label": "Time (s)" } } },
@@ -121,26 +119,17 @@ export default [
       { "vertices": ["grid", "Custom"], "marker": { "wgsl": { "source": "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }", "inputs": ["$load"] } } },
       { "edges": ["grid", "Branch"], "ends": ["from", "to"] }
     ],
-    "theme": { "edge": { "spacing": 5, "arrow": 8 }, "text": { "halo": 2 }, "flow": { "spacing": { "units": 40 }, "length": { "units": 12 } } }
+    "theme": { "edge": { "bow": 0.2, "arrow": 8 }, "text": { "halo": 2 }, "flow": { "spacing": { "units": 40 }, "length": { "units": 12 } } }
   },
   {
-    "space": "diagram",
+    "space": "plane",
     "layout": { "stress": { "gap": 50 } },
     "controls": { "gestures": { "alt+primary": "connect" }, "delete": true },
     "marks": [
-      { "vertices": ["plant", "Area"], "contains": [["Device", "area"]], "label": "$name", "shadow": true },
-      { "edges": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "arrows": true, "width": { "px": 1.5 } },
-      { "edges": ["plant", "Net"], "route": "orthogonal", "arrows": true },
-      {
-        "vertices": ["plant", "Device"],
-        "size": [40, 24],
-        "marker": "block",
-        "ports": [
-          ["input", "left"],
-          ["output", { "side": "right", "order": 0, "label": "out", "shape": "diamond", "output": true }]
-        ]
-      }
+      { "edges": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "arrows": true, "width": 1.5 },
+      { "edges": ["plant", "Net"], "joins": ["Device", "net"], "route": "straight" },
+      { "vertices": ["plant", "Device"], "size": [40, 24], "marker": "block", "label": "$name" }
     ],
-    "theme": { "diagram": { "groupPadding": 16, "portSize": 9, "group": "#1b2530", "shadow": { "color": "#00000040", "lift": 4 } } }
+    "theme": { "vertex": { "corner": 6 } }
   }
 ];

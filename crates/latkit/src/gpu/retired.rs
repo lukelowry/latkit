@@ -7,7 +7,7 @@
 //! dropped at once, and wgpu frees it once no command that uses it remains.
 
 use std::sync::Arc;
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 use std::sync::{Mutex, PoisonError};
 
 use super::work::{Count, Counters};
@@ -53,18 +53,18 @@ impl From<wgpu::Texture> for Gone {
 /// share one list.
 #[derive(Clone)]
 pub(crate) struct Retired {
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     gone: Arc<Mutex<Vec<Gone>>>,
     counters: Arc<Counters>,
 }
 
 impl Retired {
     pub(crate) fn new(counters: Arc<Counters>) -> Retired {
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
-        #[allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the page's single thread")]
+        #[cfg(target_arch = "wasm32")]
+        #[allow(clippy::arc_with_non_send_sync, reason = "WebGL objects stay on the page's single thread")]
         let gone = Arc::new(Mutex::new(Vec::new()));
         Retired {
-            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            #[cfg(target_arch = "wasm32")]
             gone,
             counters,
         }
@@ -74,16 +74,16 @@ impl Retired {
     /// and natively, dropped now. Either way it counts as destroyed.
     pub(crate) fn retire(&self, gone: impl Into<Gone>) {
         let gone = gone.into();
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         self.gone.lock().unwrap_or_else(PoisonError::into_inner).push(gone);
-        #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         self.counters.add(Count::Destroyed, gone.bytes());
     }
 
     /// Destroys everything retired, counted as destroyed. Call it only where no command still
     /// being recorded can use what was retired: after the page's animation frame submits its work,
     /// or between frames.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn destroy(&self) {
         let gone = std::mem::take(&mut *self.gone.lock().unwrap_or_else(PoisonError::into_inner));
         if gone.is_empty() {

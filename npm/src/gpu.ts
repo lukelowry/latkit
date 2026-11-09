@@ -14,12 +14,12 @@ import {
   type Due,
   type Wait,
 } from './internal.js';
-import { firstDevice, load } from './load.js';
+import { firstDevice, load, shadersLoaded } from './load.js';
 import type { Work } from './outputs.js';
 import type { View } from './view.js';
 
 /**
- * A WebGPU device that views draw with. Views on one `Gpu` share its memory and draw together in
+ * A WebGL2 device that views draw with. Views on one `Gpu` share its memory and draw together in
  * each animation frame, so linked views always show the same moment. Views use the first `Gpu`
  * created unless given another, and `View.create` creates one if none exists. When the device is
  * lost, latkit requests a new one once the page is in the foreground, and moves the views, their
@@ -46,14 +46,16 @@ export class Gpu extends Handle {
   }
 
   /**
-   * Requests a WebGPU device. The first call takes the device `load()` requested. Create one before
+   * Requests a WebGL2 device. The first call takes the device `load()` requested. Create one before
    * any view to set its `budget` first, or create another for views that should not share memory
    * with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
-   * when the browser has no WebGPU device.
+   * when the browser has no WebGL2 device, and with an `io` error when the shaders could not be
+   * downloaded. The next call downloads them again.
    */
   static async create(wait: Wait = {}): Promise<Gpu> {
     const until = due(wait);
     await waited(load(), until, 'loading latkit');
+    await waited(shadersLoaded(), until, "loading latkit's shaders");
     const gpu = new Gpu(await requested(firstDevice() ?? wasm().Gpu.create(), until));
     if (!Gpu.#shared || Gpu.#shared.lost) Gpu.#shared = gpu;
     return gpu;
@@ -121,7 +123,7 @@ export class Gpu extends Handle {
 
   /**
    * The GPU memory budget for data, shared by every view on this GPU. See {@link Budget}. Defaults
-   * to half the device's largest storage buffer, at most 1 GiB, with 32 MiB uploaded per frame.
+   * to half the device's addressable word-texture capacity, at most 1 GiB, with 32 MiB uploaded per frame.
    */
   get budget(): Budget {
     return JSON.parse(device(this).budget) as Budget;
@@ -155,12 +157,13 @@ export class Gpu extends Handle {
 
   /**
    * Draws one frame now, at `now` milliseconds on the `requestAnimationFrame` clock. It runs the
-   * frame listeners, then draws every canvas that needs a frame. After the first call the GPU
-   * stops requesting animation frames, so a test or benchmark that steps every frame draws the
-   * same frames on any device.
+   * frame listeners, then draws every canvas that needs a frame. Resolves once the GPU has finished
+   * the frame and its readbacks have arrived. Pipelines may still compile: a view waiting for one
+   * wakes when it lands. After the first call the GPU stops requesting animation frames, so a test
+   * or benchmark that steps every frame draws the same frames on any device.
    */
-  step(now: number): void {
-    device(this).step(now);
+  async step(now: number, wait: Wait = {}): Promise<void> {
+    await waited<void>(device(this).step(now), due(wait), 'drawing a frame');
   }
 
   /**

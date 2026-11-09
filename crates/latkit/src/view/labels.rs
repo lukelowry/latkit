@@ -2,8 +2,8 @@
 //!
 //! In the labels buffer, each labeled mark keeps a run table that maps its text codes to where the
 //! atlas holds each text. Both words are 0 until the text is set. A number label's codes are the
-//! characters it writes, so the GPU writes any number from a few texts. Draws place every label from its
-//! anchor each frame. A label shows when its text is set, its row is visible, and the text fits,
+//! characters it writes, so the GPU writes any number from a few texts. Preparation retains each
+//! label's screen box until its placement inputs change. A label shows when its text is set, its row is visible, and the text fits,
 //! for example inside a block. No label depends on another label or on an earlier frame. A row
 //! whose text is missing has no label.
 //!
@@ -28,16 +28,16 @@ use std::time::Duration;
 use web_time::Instant;
 
 use super::View;
-use super::passes::{dispatch, offset};
+use super::passes::offset;
 use super::sync::Source;
-use super::variants::MarkVariants;
+use super::variants::{MarkVariants, Stage};
 use crate::Name;
 use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
 use crate::gpu::atlas::{self, Glyphs};
-use crate::gpu::pipelines::Variant;
+use crate::gpu::pipelines::Projection;
 use crate::gpu::readback::Readback;
-use crate::gpu::shaders::{self as wgsl, Shader};
+use crate::gpu::shaders as wgsl;
 use crate::host::TextRun;
 
 /// The most texts the host sets per frame, and the most time setting them and building their
@@ -51,6 +51,9 @@ pub(crate) struct Slots {
     pub(crate) runs: u32,
     pub(crate) wanted: u32,
     pub(crate) seen: u32,
+    pub(crate) metadata: u32,
+    pub(crate) positions: u32,
+    rows: u32,
     /// The number of codes its run table and seen bits have space for.
     codes: u32,
 }
@@ -151,7 +154,7 @@ impl View {
     }
 
     /// The text run for code `code` of mark `i`'s label text, at the base size regardless of the
-    /// size it shows at, as a diagram's sheet measures it.
+    /// size it shows at.
     fn run_of(&self, i: usize, code: u32, inner: &mut Inner) -> Option<TextRun> {
         let setting = self.setting(i)?;
         let text = setting.text(code, inner)?;
@@ -237,8 +240,7 @@ impl View {
     /// Writes `code`'s run table entry.
     fn write_words(&self, slots: Slots, code: u32, words: [u32; 2]) {
         if let Some(resources) = &self.resources {
-            let at = u64::from(slots.runs + 2 * code) * 4;
-            self.gpu.0.queue.write_buffer(resources.labels(), at, bytemuck::cast_slice(&words));
+            resources.labels().write(&self.gpu.0.queue, slots.runs + 4 * code, &[words[0], words[1], 0, 0]);
         }
     }
 
@@ -258,19 +260,27 @@ impl View {
         let mut at = 0;
         let codes: Vec<u32> = labeled.iter().map(|&i| self.codes_of(i, inner).next_power_of_two().max(64)).collect();
         for &i in &labeled {
-            slots[i] = Some(Slots { runs: 0, wanted: at, seen: 0, codes: 0 });
-            at += 1 + wgsl::WANTED;
+            let rows = self.marks[i].rows.max(1).next_power_of_two().max(self.labels.slots(i).map_or(0, |s| s.rows));
+            slots[i] = Some(Slots { runs: 0, wanted: at, seen: 0, codes: 0, metadata: 0, positions: 0, rows });
+            at += (1 + wgsl::WANTED).next_multiple_of(4);
         }
         for (&i, &codes) in labeled.iter().zip(&codes) {
             let s = slots[i].as_mut().expect("labeled");
             s.seen = at;
             s.codes = codes;
-            at += codes / 32;
+            at += (codes / 32).next_multiple_of(4);
         }
         for &i in &labeled {
             let s = slots[i].as_mut().expect("labeled");
             s.runs = at;
-            at += 2 * s.codes;
+            at += 4 * s.codes;
+        }
+        for &i in &labeled {
+            let s = slots[i].as_mut().expect("labeled");
+            s.metadata = at;
+            at += 4 * s.rows;
+            s.positions = at;
+            at += 4 * s.rows;
         }
         let settings: Vec<Option<Setting>> =
             (0..self.marks.len()).map(|i| slots[i].and_then(|_| self.setting(i))).collect();
@@ -295,10 +305,6 @@ impl View {
         if inner.atlas.evictions != self.labels.evictions {
             self.labels.evictions = inner.atlas.evictions;
             self.drop_evicted(inner);
-            // Repack port labels so they find their texts where the atlas now holds them.
-            for shown in self.marks.iter_mut().filter(|m| m.port_count() > 0) {
-                shown.packed = false;
-            }
         }
     }
 
@@ -313,9 +319,14 @@ impl View {
         let mut codes: Vec<u32> = written.keys().copied().filter(|&code| code < slots.codes).collect();
         codes.sort_unstable();
         for consecutive in codes.chunk_by(|a, b| *b == *a + 1) {
-            let words: Vec<u32> = consecutive.iter().flat_map(|code| written[code].1.corners()).collect();
-            let at = u64::from(slots.runs + 2 * consecutive[0]) * 4;
-            self.gpu.0.queue.write_buffer(resources.labels(), at, bytemuck::cast_slice(&words));
+            let words: Vec<u32> = consecutive
+                .iter()
+                .flat_map(|code| {
+                    let [a, b] = written[code].1.corners();
+                    [a, b, 0, 0]
+                })
+                .collect();
+            resources.labels().write(&self.gpu.0.queue, slots.runs + 4 * consecutive[0], &words);
         }
     }
 
@@ -328,7 +339,7 @@ impl View {
             written.retain(|&code, (run, glyphs)| {
                 let held = inner.atlas.holds(run, *glyphs);
                 if !held {
-                    cleared.push(slots.runs + 2 * code);
+                    cleared.push(slots.runs + 4 * code);
                 }
                 held
             });
@@ -338,7 +349,7 @@ impl View {
         }
         if let Some(resources) = &self.resources {
             for &at in &cleared {
-                self.gpu.0.queue.write_buffer(resources.labels(), u64::from(at) * 4, bytemuck::cast_slice(&[0_u32; 2]));
+                resources.labels().write(&self.gpu.0.queue, at, &[0; 4]);
             }
         }
         self.labels.changes += 1;
@@ -348,8 +359,14 @@ impl View {
     /// Claims run in every such frame, since that frame's labels show from them. The texts pass
     /// waits while its last readback is in flight, and while a fit is about to move the camera.
     /// Both wait until the text pipelines have compiled.
-    pub(super) fn place_labels(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, eye: &wgsl::Eye) {
-        if !self.texts() {
+    pub(super) fn place_labels(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        eye: &wgsl::Eye,
+        frame: &wgsl::Frame,
+    ) {
+        if !self.can_use(Stage::Text) {
             return;
         }
         let labeled: Vec<(usize, Slots)> =
@@ -358,8 +375,28 @@ impl View {
             return;
         }
         // What the passes read: a color changing every frame moves no label.
-        let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].place_version).collect();
-        let stamp = stamp_of((bytemuck::bytes_of(eye), self.labels.changes, versions));
+        // An edge label also follows the marks supplying its endpoints. Transitions, tile
+        // growth, and hover growth move anchors even when no position channel was re-evaluated.
+        let versions: Vec<_> = self.marks.iter().map(|m| (m.places_drawn(), m.rows, m.reveal.to_bits())).collect();
+        // The eye's matrix is relative to the frame's origin. Panning can change that origin
+        // without changing the matrix, but still moves every label's screen claim.
+        let projection = (
+            frame.center_hi.map(f32::to_bits),
+            frame.center_lo.map(f32::to_bits),
+            frame.space,
+            frame.globe.to_bits(),
+            frame.mercator_y.to_bits(),
+            frame.bow.to_bits(),
+        );
+        let stamp = stamp_of((
+            bytemuck::bytes_of(eye),
+            projection,
+            self.labels.changes,
+            versions,
+            self.scene_version,
+            &self.focus.hovered,
+            frame.grow.to_bits(),
+        ));
         let claim = self.labels.claimed != Some(stamp);
         let gather = self.labels.gathered.due(stamp) && !self.labels.gathered.busy() && !self.fitting.framing();
         if !claim && !gather {
@@ -368,46 +405,58 @@ impl View {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let resources = self.resources.as_mut().expect("created before labels");
-        // The grid spans the view and a margin around it, a word per cell. One more cell each way
-        // covers rounding.
-        let cells =
-            |side: f32| u64::from(((side + 2.0 * wgsl::LABEL_MARGIN * side) / wgsl::LABEL_CELL).ceil() as u32 + 1);
-        let words = cells(eye.size[0]) * cells(eye.size[1]);
-        let grid = resources.label_cells(device, words).clone();
+        let cells = |side: f32| ((side + 2.0 * wgsl::LABEL_MARGIN * side) / wgsl::LABEL_CELL).ceil() as u32 + 1;
+        resources.label_cells(device, eye.size.map(cells));
         let groups = resources.groups(&gpu.0, inner);
-        let group = resources.pass(device, inner, Shader::Texts);
-        let mut run = |encoder: &mut wgpu::CommandEncoder, label: &str, entry: usize| {
-            let mut pass =
-                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(label), timestamp_writes: None });
-            pass.set_bind_group(0, &groups.view, &[]);
-            pass.set_bind_group(2, &group, &[]);
-            // A pipeline for each mark's primitive, which finds its rows' anchors.
-            for &(i, _) in &labeled {
-                let shown = &self.marks[i];
-                pass.set_pipeline(&inner.pipelines.compute(device, MarkVariants::shown(shown).label_passes()[entry]));
-                pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-                dispatch(&mut pass, shown.rows);
-            }
+        let input = |i: usize| crate::gpu::listing::Inputs {
+            pages: inner.arena.words(),
+            lists: resources.lists(),
+            view: &groups.view,
+            mark: &groups.mark,
+            offset: offset(i),
+            path: self.marks[i].path(),
+            projection: Projection::of(&self.scene.space),
+            measured: self.marks[i].measures_paths(),
         };
+        let mut raster =
+            crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines: &mut inner.pipelines, encoder };
         if claim {
-            encoder.clear_buffer(&grid, 0, Some(words * 4));
-            run(encoder, "latkit label claims", 0);
+            for (index, &(i, slots)) in labeled.iter().enumerate() {
+                let rows = self.marks[i].rows;
+                inner.texts.metadata(
+                    &mut raster,
+                    &input(i),
+                    resources.labels(),
+                    MarkVariants::shown(&self.marks[i], &self.scene.space).label_passes()[0],
+                    rows,
+                    [slots.metadata, slots.positions],
+                );
+                crate::gpu::texts::Texts::claim(
+                    &mut raster,
+                    &input(i),
+                    resources.labels(),
+                    resources.cells(),
+                    rows,
+                    index == 0,
+                );
+            }
             self.labels.claimed = Some(stamp);
         }
         if gather {
             self.labels.gathered.mark(stamp);
-            self.forget_asked(encoder, &labeled);
-            run(encoder, "latkit texts", 1);
+            for &(i, slots) in &labeled {
+                let rows = self.marks[i].rows;
+                let numeric = self.labels.settings[i].as_ref().is_some_and(|s| matches!(s.texts, Texts::Number(_)));
+                inner.texts.gather(
+                    &mut raster,
+                    &input(i),
+                    resources.labels(),
+                    resources.cells(),
+                    rows,
+                    crate::gpu::texts::Request { numeric, codes: slots.codes, wanted: slots.wanted, seen: slots.seen },
+                );
+            }
             self.read_gathered(encoder, inner, labeled, stamp);
-        }
-    }
-
-    /// Clears the texts each of `labeled` asked for and saw, before a texts pass asks again.
-    fn forget_asked(&self, encoder: &mut wgpu::CommandEncoder, labeled: &[(usize, Slots)]) {
-        let labels = self.resources.as_ref().expect("created before labels").labels();
-        for &(_, slots) in labeled {
-            encoder.clear_buffer(labels, u64::from(slots.wanted) * 4, Some(4));
-            encoder.clear_buffer(labels, u64::from(slots.seen) * 4, Some(u64::from(slots.codes / 32) * 4));
         }
     }
 
@@ -421,18 +470,16 @@ impl View {
     ) {
         let labels = self.resources.as_ref().expect("created before labels").labels();
         let first = labeled.iter().map(|(_, s)| s.wanted).min().unwrap_or(0);
-        let seen: u64 = labeled.iter().map(|(_, s)| u64::from(s.codes / 32)).sum();
-        let words = labeled.len() as u64 * u64::from(1 + wgsl::WANTED) + seen;
-        let (device, offset) = (&self.gpu.0.device, u64::from(first) * 4);
-        let readback = Readback::new(&inner.readbacks, device, encoder, labels, offset, words * 4, &self.waker);
+        let end = labeled.iter().map(|(_, s)| s.seen + (s.codes / 32).next_multiple_of(4)).max().unwrap_or(first);
+        let readback =
+            Readback::words(&inner.readbacks, &self.gpu.0.device, encoder, labels, first, end - first, &self.waker);
         self.labels.gathered.start(stamp, readback);
         self.labels.asked = labeled;
     }
 }
 
 impl View {
-    /// Draws every labeled mark's labels, then every vertex mark's port labels. `glyphs` holds the
-    /// pass bind groups of their glyph shaders.
+    /// Draws every labeled mark's labels. `glyphs` is the pass bind group of the glyph shader.
     #[allow(clippy::too_many_arguments, reason = "the main pass's draw state")]
     pub(super) fn draw_labels(
         &self,
@@ -442,7 +489,7 @@ impl View {
         format: wgpu::TextureFormat,
         samples: u32,
         groups: &super::resources::Groups,
-        [labels_group, ports_group]: [&wgpu::BindGroup; 2],
+        glyphs: &wgpu::BindGroup,
     ) {
         let device = &self.gpu.0.device;
         for (i, slots) in self.labels.slots.iter().enumerate() {
@@ -454,21 +501,21 @@ impl View {
             let numbered =
                 shown.compiled.as_ref().and_then(|c| c.drawing.label.as_ref()).is_some_and(|l| l.number.is_some());
             let per = if numbered { wgsl::NUMBER_CHARS } else { 1 };
-            pass.set_pipeline(&inner.pipelines.render(device, MarkVariants::shown(shown).glyphs(format, samples)));
-            pass.set_bind_group(2, labels_group, &[]);
+            pass.set_pipeline(
+                &inner.pipelines.render(device, MarkVariants::shown(shown, &self.scene.space).glyphs(format, samples)),
+            );
+            pass.set_bind_group(2, glyphs, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-            drawn.draw(pass, 4, shown.rows * per);
-        }
-        for (i, shown) in self.marks.iter().enumerate() {
-            let labeled =
-                shown.compiled.as_ref().is_some_and(|c| c.drawing.ports.iter().any(|(_, p, _)| p.label.is_some()));
-            if !labeled || !shown.drawable() || shown.rows == 0 {
-                continue;
-            }
-            pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::GlyphsPorts, format, samples)));
-            pass.set_bind_group(2, ports_group, &[]);
-            pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-            drawn.draw(pass, 4, shown.rows * shown.port_count());
+            let grid = self.size.map(|side| {
+                let side = side as f32;
+                ((side + 2.0 * wgsl::LABEL_MARGIN * side) / wgsl::LABEL_CELL).ceil() as u32
+            });
+            let outside = shown.compiled.as_ref().is_some_and(|c| {
+                shown.kind().primitive() != crate::scene::mark::Primitive::Points
+                    || (c.drawing.flags & wgsl::SIZED == 0 && c.drawing.markers.marker != wgsl::MARKER_BLOCK)
+            });
+            let items = if outside { shown.rows.min(grid[0] * grid[1]) } else { shown.rows };
+            drawn.draw(pass, 4, items * per);
         }
     }
 }

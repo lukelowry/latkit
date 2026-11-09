@@ -1,4 +1,4 @@
-/** Terrain: ridged mountains as lit triangles over a grid of vertices, colored by height. */
+/** Terrain: ridged mountains as a wire mesh over a grid of vertices, colored by height. */
 import { Data, field, reference } from 'latkit';
 import type { Picture } from './render.ts';
 
@@ -34,33 +34,37 @@ export default function (): Picture {
   const x = Float32Array.from({ length: n }, (_, i) => xOf(i));
   const y = Float32Array.from({ length: n }, (_, i) => yOf(i));
   const z = Float32Array.from({ length: n }, (_, i) => 150 * height(xOf(i), yOf(i)));
-  const cells = (columns - 1) * (lines - 1);
-  // Two triangles per grid cell. Returns corner `k` (0 to 5) of the cell's triangles as a vertex
-  // row.
-  const corner = (cell: number, k: number) => {
-    const c = cell % (columns - 1);
-    const r = Math.floor(cell / (columns - 1));
-    const at = r * columns + c;
-    return [at, at + 1, at + columns, at + 1, at + columns + 1, at + columns][k]!;
-  };
-  // Corner `k` (0 to 2) of every face. Faces 2c and 2c + 1 are cell c's two triangles.
-  const corners = (k: number) => {
-    const vertex = Uint32Array.from({ length: 2 * cells }, (_, f) =>
-      corner(f >> 1, (f & 1) * 3 + k),
-    );
-    return reference('Vertex', vertex);
-  };
-  const land = new Data('land')
-    .replace('Vertex', { x, y, z })
-    .replace('Face', { a: corners(0), b: corners(1), c: corners(2) });
+  // Horizontal, vertical, and diagonal grid edges, each stored once.
+  const from: number[] = [],
+    to: number[] = [];
+  for (let row = 0; row < lines; row++) {
+    for (let column = 0; column < columns; column++) {
+      const at = row * columns + column;
+      if (column + 1 < columns) {
+        from.push(at);
+        to.push(at + 1);
+      }
+      if (row + 1 < lines) {
+        from.push(at);
+        to.push(at + columns);
+      }
+      if (column + 1 < columns && row + 1 < lines) {
+        from.push(at + 1);
+        to.push(at + columns);
+      }
+    }
+  }
+  const land = new Data('land').replace('Vertex', { x, y, z }).replace('Edge', {
+    from: reference('Vertex', Uint32Array.from(from)),
+    to: reference('Vertex', Uint32Array.from(to)),
+  });
   return {
     scene: {
       space: { plane: { grid: 'off' } },
       ease: 0,
       theme: { background: '#0b0f14' },
       marks: [
-        // The vertices draw nothing themselves: they place the faces' corners, and each face
-        // blends its corners' colors.
+        // Hidden vertices place the wire mesh's endpoints and provide their colors.
         {
           vertices: land.table('Vertex'),
           position: ['$x', '$y'],
@@ -74,7 +78,7 @@ export default function (): Picture {
             })
             .domain(0, 120),
         },
-        { faces: land.table('Face'), corners: ['a', 'b', 'c'], pick: false },
+        { edges: land.table('Edge'), ends: ['from', 'to'], width: 0.65, pick: false },
       ],
     },
     camera: { center: [0, -20, 30], zoom: -0.9, pitch: 56, bearing: 22 },

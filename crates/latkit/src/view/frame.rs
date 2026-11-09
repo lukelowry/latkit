@@ -1,7 +1,7 @@
 //! One frame, in order: tick the clock, settle readbacks, advance the camera, derive tables from
 //! the data, lay out drawings, sync columns, stream uploads, give marks word pages for their rows,
 //! start transitions, pack the program buffer, write focus words and uniforms, then record the
-//! compute, texts, render, probe, and query passes into the caller's encoder. No pass is recorded
+//! row, text, draw, probe, and query raster passes into the caller's encoder. No pass is recorded
 //! before the program buffer is packed, since packing may move a mark's words with copies
 //! recorded in the encoder.
 //!
@@ -15,8 +15,9 @@ use super::marks::Holding;
 use super::resources::{MARK_STRIDE, Resources};
 use super::sync::{Inputs, Rebuilt, Rows, Source, Window};
 use super::transition::{bound, holds_alike, in_place, moved};
+use super::variants::Stage;
 use super::words::Kept;
-use super::{Camera, Event, Frame, View, timer, uniforms};
+use super::{Camera, Event, Frame, View, uniforms};
 use crate::data::Keyed;
 use crate::derive::order::Order;
 use crate::expr::compile::Deps;
@@ -125,17 +126,16 @@ impl View {
         // A legend over a field's whole history shows the domain the layout just wrote.
         self.lay_out_guides(&mut inner);
         let (elapsed, travel) = self.effect_clock();
-        let pages = inner.arena.buffer().clone();
-        self.write_focus(queue, &pages, fresh);
+        self.write_focus(queue, inner.arena.words(), fresh);
         if let Some(rows) = self.focus.take_lit() {
             self.resources.as_mut().expect("created").write_lit(device, queue, &rows);
         }
         let measure = self.measuring();
         // A picture takes no input. Other frames probe and answer queries once their pipelines
         // have compiled.
-        let answers = input && self.answers();
+        let answers = input && self.can_use(Stage::Input);
         let probe = self.probe_point(answers);
-        let layered = self.layered(&inner, frame.format, gpu.samples_for(frame.pixel_ratio));
+        let layered = self.layered();
         let query = self.lay_out_lists(answers, layered);
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
@@ -147,9 +147,8 @@ impl View {
         uniform.pointer = self.pointer.map_or([-1e9, -1e9], |p| p.point);
         uniform.selecting = u32::from(self.focus.lighting);
         uniform.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
-        if let Some(point) = probe {
-            uniform.probe = point;
-            uniform.probe_radius = self.probe_radius();
+        if let Some(probe) = &probe {
+            self.probe_uniform(&mut uniform, probe);
         }
         if let Some((words, _)) = query {
             uniform.query = words;
@@ -158,19 +157,19 @@ impl View {
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
         self.write_uniforms(&uniform, &eye, &sprites);
-        if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
+        if let Some(readback) = self.prepare_rows(encoder, &mut inner, measure.is_some(), travel > 0.0, input) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
-        self.place_labels(encoder, &mut inner, &eye);
+        self.place_labels(encoder, &mut inner, &eye, &uniform);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
         self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
-        if let Some(point) = probe {
+        if let Some(probe) = probe {
             let readback = self.probe(encoder, &mut inner);
-            self.probing(point, readback);
+            self.probing(probe, readback);
         }
         self.run_query(encoder, &mut inner);
         if let Some(timer) = &mut self.timer {
@@ -267,18 +266,17 @@ impl View {
         fresh
     }
 
-    /// Gives every mark word pages for its held rows: state, focus words, and, for a vertex mark
-    /// that faces attach to, the normals the faces sum. Rows in new state pages evaluate from
-    /// scratch. A mark whose pages do not fit in the arena draws nothing until they do. Returns
-    /// whether any focus word pages are new.
+    /// Gives every mark state pages, and focus pages once selection, hover, or a row fit needs
+    /// them. Focus pages then stay allocated to keep later interactions allocation-free. Rows
+    /// in new state pages evaluate from scratch. Returns whether any focus word pages are new.
     fn fit_words(&mut self, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = (&gpu.0.device, &gpu.0.queue);
-        let summing = super::graph::summing(&self.marks);
         let (mut fresh, mut short, mut changed) = (false, false, false);
-        for (shown, summing) in self.marks.iter_mut().zip(summing) {
+        let focus = self.focus.needs_pages();
+        for shown in &mut self.marks {
             let rows = shown.page_rows();
-            for (kept, width) in shown.kept_widths(summing) {
+            for (kept, width) in shown.kept_widths(focus) {
                 let Some(fitted) = shown.words.fit(kept, &rows, width, device, &mut inner.arena) else {
                     short = true;
                     continue;
@@ -369,7 +367,8 @@ impl View {
     /// Takes the results that arrived since the last frame: GPU timing, fits, probes, queries, and
     /// the intents and key steps waiting on picks.
     fn settle(&mut self) {
-        if let Some(ms) = self.timer.as_mut().and_then(timer::Timer::landed) {
+        let device = &self.gpu.0.device;
+        if let Some(ms) = self.timer.as_mut().and_then(|timer| timer.landed(device)) {
             self.stats.gpu_ms = ms;
         }
         self.settle_fit();
@@ -438,7 +437,7 @@ impl View {
         self.derived.tiles.choose(self.planning.plans(), &mut self.choices);
         let paged = self.paged();
         let mut derived = std::mem::take(&mut self.derived);
-        let input = derive::Input { paged: Some(&paged), ..self.derive_input(host.as_deref()) };
+        let input = derive::Input { paged: Some(&paged), ..self.derive_input() };
         if derived.update(&input, &mut jobs) {
             self.changed = true;
         }
@@ -460,20 +459,13 @@ impl View {
         let errors = self.job_errors.clone();
         let jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, 0);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
-        tiles.update(&self.derive_input(host.as_deref()), &asked, &mut inner.tiles, &jobs);
+        tiles.update(&self.derive_input(), &asked, &mut inner.tiles, &jobs);
         self.derived.tiles = tiles;
     }
 
     /// The input derivations read this frame.
-    fn derive_input<'a>(&'a self, host: Option<&'a dyn crate::host::Host>) -> derive::Input<'a> {
-        derive::Input {
-            scene: &self.scene,
-            scene_version: self.scene_version,
-            data: &self.snapshots,
-            host,
-            dragging: self.dragging(),
-            paged: None,
-        }
+    fn derive_input(&self) -> derive::Input<'_> {
+        derive::Input { scene: &self.scene, scene_version: self.scene_version, data: &self.snapshots, paged: None }
     }
 
     /// Lays out the lists buffer: the marks' segment lists, and in `layered` frames their draw
@@ -500,7 +492,7 @@ impl View {
         }
         resources.fit_sprites(device, sprites.len());
         if !sprites.is_empty() {
-            queue.write_buffer(resources.sprites(), 0, bytemuck::cast_slice(sprites));
+            resources.sprites().write(queue, 0, bytemuck::cast_slice(sprites));
         }
     }
 
@@ -523,7 +515,10 @@ impl View {
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
         let mut marks = vec![0_u8; self.marks.len() * MARK_STRIDE as usize];
         for (i, shown) in self.marks.iter().enumerate() {
-            let uniform = uniforms::mark(i, shown, &self.labels, &self.clock);
+            let mut uniform = uniforms::mark(i, shown, &self.labels, &self.clock);
+            if !self.focus.has_words() {
+                uniform.focus = wgsl::NONE;
+            }
             let at = i * MARK_STRIDE as usize;
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(&uniform));
         }
@@ -658,7 +653,7 @@ impl View {
         if rows.len() == had {
             return true;
         }
-        let widths = shown.kept_widths(super::graph::summing(&self.marks)[i]);
+        let widths = shown.kept_widths(self.focus.needs_pages());
         let gpu = self.gpu.clone();
         let shown = &mut self.marks[i];
         widths.into_iter().all(|(kept, width)| {
@@ -730,7 +725,7 @@ impl View {
         if !kept || (shown.begin.is_none() && shown.transition.is_none()) {
             shown.tables.thaw(inner);
         }
-        // If where rows draw changed, bump the versions so normals, labels, and segment lists
+        // If where rows draw changed, bump the versions so labels and segment lists
         // follow. A changed column alone evaluates the channels reading it, which bump them.
         if !alike {
             shown.version += 1;
@@ -777,7 +772,7 @@ impl View {
                 shown.domains = domains;
                 shown.all_dirty();
             }
-            domains += shown.reductions();
+            domains += shown.reductions().next_multiple_of(2);
         }
         u64::from(domains)
     }

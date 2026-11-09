@@ -25,12 +25,10 @@ export type Device =
   | /** A finger. Picks find rows up to 8 CSS pixels farther away. */ 'touch'
   | /** The keyboard. */ 'keyboard';
 
-/** A vertex a connection ends at, and the port the connection meets, if any. */
+/** A vertex a connection ends at. */
 export interface End {
   /** The vertex. */
   row: Row;
-  /** The port, by the reference field naming its net. */
-  port?: string;
 }
 
 /** A failure as JSON, in the same form as the npm package's `LatkitError`. */
@@ -62,16 +60,14 @@ export interface Hit {
   /** The name of the mark that drew it, if the mark has one. It tells apart two marks of one table. */
   mark?: string;
   /**
-   * The row's point nearest the probe, in CSS pixels from the top left: a vertex's or port's middle,
-   * or the nearest point of a stroke or triangle.
+   * The row's point nearest the probe, in CSS pixels from the top left: a vertex's middle, or the
+   * nearest point of a stroke or triangle.
    */
   point: [number, number];
   /** That point in the space's coordinates: x, y, and elevation. */
   position: [number, number, number];
   /** CSS pixels from the probe to the row. */
   distance: number;
-  /** The port hit, if the hit is on a vertex's port. */
-  port?: string;
   /** The sample hit, if the hit is on a line tracing a sampled field. */
   sample?: Sample;
 }
@@ -226,7 +222,7 @@ export type ViewEvent =
         /**
          * The row's new position in the space's coordinates. It is the hit point moved with the pointer
          * since the press, at the depth where the drag started, so a vertex keeps its offset from the
-         * pointer. Snapped to a diagram's grid dots when the grid snaps.
+         * pointer.
          */
         position: [number, number, number];
         /**
@@ -239,8 +235,8 @@ export type ViewEvent =
       };
     }
   | /**
-     * A connection was drawn where an input in `controls.gestures` connects: from a port, from a
-     * vertex with that input, or by dragging an edge's end off it.
+     * A connection was drawn where an input in `controls.gestures` connects: from a vertex with that
+     * input, or by dragging an edge's end off it.
      */ {
       type: 'connect';
       detail: {
@@ -305,9 +301,9 @@ export type ViewEvent =
 /**
  * What a frame still waits on: pipelines the scene draws with, which compile before the view draws
  * anything new (`compiling`); pages uploading, or tables not yet built from them (`data`);
- * layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or
- * not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition
- * starting (`marks`). Empty once the frame is complete.
+ * layouts, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or not yet
+ * set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting
+ * (`marks`). Empty once the frame is complete.
  */
 export type Waiting = ('compiling' | 'data' | 'derived' | 'labels' | 'fit' | 'marks')[];
 
@@ -328,14 +324,11 @@ export interface Work {
   /** Rows whose channels the GPU evaluated. */
   evaluated: number;
   /**
-   * Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows that
-   * changed, plus every row of a page that references a vertex now resident elsewhere.
+   * Edge rows whose endpoints the GPU resolved to resident vertex rows. These are rows that changed,
+   * plus every row of a page that references a vertex now resident elsewhere.
    */
   resolved: number;
-  /**
-   * Bytes of per-row word pages the GPU cleared: pages read before anything writes them, and the
-   * normals that faces sum from scratch.
-   */
+  /** Bytes of per-row word pages the GPU cleared before reading their initial state. */
   cleared: number;
   /**
    * Rows packed into pages of a paged table's draw order. Each page is packed once, the first time a
@@ -355,13 +348,13 @@ export interface Work {
   /** Label texts the host was asked to rasterize. */
   texts: number;
   /**
-   * Pipelines compiled. In a browser, each compiles in the background when a view or shot requests
-   * it ahead of use. Natively, each compiles when first created.
+   * Pipelines compiled. In a browser, a view or shot queues each ahead of use; driver compilation
+   * can still block the browser thread. Natively, each compiles when first created.
    */
   pipelines: number;
   /**
-   * Pipelines not requested ahead of use, compiled when first used. In a browser they compile on the
-   * GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not request.
+   * Pipelines not requested ahead of use, compiled when first used and delaying that frame. Zero
+   * unless a scene uses a pipeline it did not request.
    */
   late: number;
   /**

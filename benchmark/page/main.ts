@@ -9,6 +9,7 @@
  * The runner opens a fresh page for every run, so only the browser's shader cache carries over.
  */
 import { Gpu } from 'latkit';
+import bindings from 'latkit-bindings';
 import { LOAD, scenarios, type Order } from './scenarios.ts';
 import { Stage, type Cost } from './stage.ts';
 
@@ -19,6 +20,7 @@ export interface Listed {
   sizes: readonly number[];
   cold: boolean;
   fetches: boolean;
+  moving: boolean;
   orders: Record<string, Order>;
 }
 
@@ -65,6 +67,7 @@ function list(): Listed[] {
     sizes: s.sizes,
     cold: !!s.cold,
     fetches: !!s.fetches,
+    moving: !!s.moving,
     orders: {
       init: { time: 0 },
       data: { time: 1 },
@@ -83,8 +86,14 @@ async function run(name: string, size: number): Promise<Run> {
   const ms = performance.now() - begun;
   gpu.budget = scenario.budget ?? BUDGET;
   const built = scenario.build(size);
-  const stage = new Stage(gpu, await canvases(scenario.views?.(size) ?? 1), size);
-  const none = { frames: 0, cpu: 0, cpu95: 0, gpu: 0, resident: 0, steady: false };
+  // latkit has loaded its WebAssembly, so this returns that instance rather than making another.
+  const memory = (await bindings()).memory;
+  const heap = () => memory.buffer.byteLength;
+  const stage = new Stage(gpu, await canvases(scenario.views?.(size) ?? 1), size, {
+    moving: scenario.moving,
+    heap,
+  });
+  const none = { frames: 0, cpu: 0, cpu95: 0, gpu: 0, resident: 0, heap: heap(), steady: false };
   // Each phase announces its start, so a page that stops responding shows where it stopped.
   const named = <T>(phase: string, run: () => Promise<T>) => {
     console.debug(`phase ${phase}`);
@@ -121,19 +130,28 @@ async function canvases(n: number): Promise<HTMLCanvasElement[]> {
   return made;
 }
 
-/** Describes the adapter, requested with the options latkit uses, and the Chrome version. */
+/** Describes the browser's high-performance renderer, and the browser, as in
+ * `<renderer> · Chrome <n>`. Times compare only on the same renderer and browser. */
 async function machine(): Promise<string> {
-  interface Adapter {
-    info?: { vendor?: string; architecture?: string; description?: string };
-  }
-  interface Options {
-    powerPreference: 'high-performance';
-  }
-  const gpu = (navigator as { gpu?: { requestAdapter(o: Options): Promise<Adapter | null> } }).gpu;
-  const info = (await gpu?.requestAdapter({ powerPreference: 'high-performance' }))?.info;
-  const chrome = /Chrome\/(\d+)/.exec(navigator.userAgent)?.[1];
-  const adapter = [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(' ');
-  return `${adapter || 'unknown adapter'} · Chrome ${chrome}`;
+  const gl = new OffscreenCanvas(1, 1).getContext('webgl2', {
+    powerPreference: 'high-performance',
+  });
+  const debug = gl?.getExtension('WEBGL_debug_renderer_info');
+  const renderer = gl
+    ? String(gl.getParameter(debug?.UNMASKED_RENDERER_WEBGL ?? gl.RENDERER))
+    : 'unknown renderer';
+  gl?.getExtension('WEBGL_lose_context')?.loseContext();
+  const agent = navigator.userAgent;
+  const [browser, version] = (
+    [
+      ['Firefox', /Firefox\/(\d+)/],
+      ['Chrome', /Chrome\/(\d+)/],
+      ['WebKit', /Version\/(\d+)[\d.]* Safari/],
+    ] as const
+  )
+    .map(([name, pattern]) => [name, pattern.exec(agent)?.[1]] as const)
+    .find(([, version]) => version) ?? ['browser', 'unknown'];
+  return `${renderer} · ${browser} ${version}`;
 }
 
 declare global {

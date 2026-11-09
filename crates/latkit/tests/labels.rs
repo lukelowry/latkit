@@ -2,8 +2,7 @@
 //! fit. Where labels would overlap, the label of the row drawn on top shows. An empty text gives no
 //! label. Only labels that show near the view have their text rasterized, so a dense view settles.
 //! A conditional text labels only the rows it names, a number label writes its value, and a label
-//! keeps showing while its mark gains texts. A diagram's labels scale with the sheet and fade out
-//! once too small to read.
+//! keeps showing while its mark gains texts.
 
 #![cfg(feature = "gpu")]
 
@@ -12,10 +11,10 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{SETTLE, SIZE, at, camera, diagram, errors, frame, gpu, haloless, plain_theme, plane, step};
+use common::{SETTLE, SIZE, at, camera, errors, frame, gpu, haloless, plain_theme, plane, step};
 use latkit::Ids;
 use latkit::host::{Host, Raster, TextRun};
-use latkit::{Camera, Color, Data, Expr, Label, Marker, Scene, Table, Vertices, View, field, when};
+use latkit::{Color, Data, Edges, Expr, Label, Patch, Scene, Table, Vertices, View, field, when};
 
 /// A host that rasterizes text as a solid box, 0.6 × size wide per character and `size` tall.
 struct Boxes;
@@ -95,6 +94,165 @@ fn labels_show_beside_their_rows() {
     let second = at(&pixels, c + 10 + 12, c);
     assert!(first[0] > 200 && first[2] < 60, "the first row's label: {first:?}");
     assert!(second[2] > 200 && second[0] < 60, "the second row's label: {second:?}");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn panning_reclaims_labels_for_rows_entering_the_view() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu, vec![0.0, 500.0]);
+    let c = SIZE / 2;
+    let first = at(&frame(&gpu, &mut view), c + 12, c);
+    assert!(first[0] > 200 && first[2] < 60, "the initial row's label: {first:?}");
+    let latkit::Camera::Map { zoom, pitch, bearing, .. } = camera() else { unreachable!() };
+    view.set_camera(latkit::Camera::Map { center: [500.0, 0.0, 0.0], zoom, pitch, bearing });
+    let entered = at(&frame(&gpu, &mut view), c + 12, c);
+    assert!(entered[2] > 200 && entered[0] < 60, "the entering row's label: {entered:?}");
+    view.set_camera(camera());
+    let returned = at(&frame(&gpu, &mut view), c + 12, c);
+    assert!(returned[0] > 200 && returned[2] < 60, "the returning row's label: {returned:?}");
+}
+
+#[test]
+fn an_edge_label_follows_its_unlabeled_endpoints() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    let data = Data::new("d");
+    data.apply(
+        Patch::new().set(Table::new("V", Ids::count(2)).field("x", vec![-40.0, 40.0]).field("y", vec![-25.0; 2])).set(
+            Table::new("E", Ids::count(1))
+                .reference("from", "V", vec![0_u64])
+                .reference("to", "V", vec![1_u64])
+                .field("name", vec!["abcdef"]),
+        ),
+    )
+    .expect("valid");
+    let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
+    let scene = Scene::new(plane())
+        .theme(haloless())
+        .ease(std::time::Duration::ZERO)
+        .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).pick(false))
+        .draw(Edges::of("d", "E").ends("from", "to").width(1.0).pick(false).label(label));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let c = SIZE / 2;
+    let initial = frame(&gpu, &mut view);
+    assert!(at(&initial, c, c + 25)[0] > 200, "the edge is labeled at its first position");
+    // The edge's own fields are unchanged. Only the mark supplying its endpoints moves.
+    data.apply(Table::new("V", Ids::count(2)).field("y", vec![25.0; 2])).expect("valid");
+    let moved = frame(&gpu, &mut view);
+    let label = at(&moved, c, c - 25);
+    assert!(label[0] > 200 && label[1] < 60, "the label follows its endpoints: {label:?}");
+    assert!(at(&moved, c, c + 25)[0] < 60, "no label remains at the old position");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_label_follows_every_frame_of_its_rows_transition() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    let data = Data::new("d");
+    data.apply(Table::new("V", Ids::count(1)).field("x", vec![-35.0]).field("name", vec!["abc"])).expect("valid");
+    let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
+    let scene = Scene::new(plane()).theme(haloless()).ease(std::time::Duration::from_millis(400)).draw(
+        Vertices::of("d", "V")
+            .position(field("x"), 0.0)
+            .radius(4.0)
+            .color(Color::rgb(0.0, 1.0, 0.0))
+            .pick(false)
+            .label(label),
+    );
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(&gpu, &mut view);
+    data.apply(Table::new("V", Ids::count(1)).field("x", vec![15.0])).expect("valid");
+    let mut positions = Vec::new();
+    for _ in 0..30 {
+        let pixels = step(&gpu, &mut view);
+        let row = |x| at(&pixels, x, SIZE / 2);
+        let marker: Vec<_> = (0..SIZE)
+            .filter(|&x| {
+                let p = row(x);
+                p[1] > 200 && p[0] < 60
+            })
+            .collect();
+        let text = (0..SIZE)
+            .find(|&x| {
+                let p = row(x);
+                p[0] > 200 && p[1] < 60
+            })
+            .expect("the text shows");
+        let center =
+            (marker.first().expect("the marker shows") + marker.last().expect("the marker shows")) as f32 / 2.0;
+        assert!((text as f32 - center - 8.0).abs() < 2.0, "label {text} follows marker {center}");
+        positions.push(center.round() as u32);
+    }
+    positions.dedup();
+    assert!(positions.len() > 5, "the assertion covers intermediate positions: {positions:?}");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn dense_label_draws_keep_the_same_winners_as_a_small_scene() {
+    let Some(gpu) = gpu() else { return };
+    // Enough offscreen rows switch glyph enumeration from rows to collision cells. The visible
+    // rows include an overlap and several labels spanning multiple cells; each winner draws once.
+    let visible = vec![-50.0, -46.0, 10.0, 14.0];
+    let mut sparse = view(&gpu, visible.clone());
+    let expected = frame(&gpu, &mut sparse);
+    let mut many = visible;
+    many.resize(2000, 10_000.0);
+    let mut dense = view(&gpu, many);
+    let actual = frame(&gpu, &mut dense);
+    assert!(actual.iter().zip(&expected).all(|(&a, &b)| common::close(a, b)), "cell enumeration preserves the image");
+    assert_eq!(errors(&mut dense), Vec::new());
+    // Moving the camera changes the first winning cells, including labels clipped by the edge.
+    let latkit::Camera::Map { zoom, pitch, bearing, .. } = camera() else { unreachable!() };
+    for center in [[-30.0, 0.0, 0.0], [20.0, 0.0, 0.0]] {
+        let moved = latkit::Camera::Map { center, zoom, pitch, bearing };
+        sparse.set_camera(moved);
+        dense.set_camera(moved);
+        let expected = frame(&gpu, &mut sparse);
+        let actual = frame(&gpu, &mut dense);
+        assert!(actual.iter().zip(&expected).all(|(&a, &b)| common::close(a, b)), "panned claims preserve the image");
+    }
+}
+
+#[test]
+fn a_label_moves_outward_when_its_hovered_marker_grows() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    let data = Data::new("d");
+    data.apply(Table::new("V", Ids::count(1)).field("name", vec!["abc"])).expect("valid");
+    let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
+    let scene = Scene::new(plane())
+        .theme(haloless())
+        .draw(Vertices::of("d", "V").position(0.0, 0.0).radius(10.0).color(Color::rgb(0.0, 1.0, 0.0)).label(label));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let first = |pixels: &[[u8; 4]]| {
+        (0..SIZE)
+            .find(|&x| {
+                let p = at(pixels, x, SIZE / 2);
+                p[0] > 200 && p[1] < 60
+            })
+            .expect("the text shows")
+    };
+    let normal = first(&frame(&gpu, &mut view));
+    let pointer = |point| latkit::Input::Move {
+        pointer: 1,
+        point,
+        modifiers: latkit::Modifiers::default(),
+        device: latkit::Device::Mouse,
+    };
+    view.input(&pointer([SIZE as f32 / 2.0; 2]), common::now());
+    let hovered = first(&frame(&gpu, &mut view));
+    assert!(hovered > normal, "the growing marker moves its label outward: {normal} -> {hovered}");
+    view.input(&pointer([0.0; 2]), common::now());
+    assert_eq!(first(&frame(&gpu, &mut view)), normal, "the label returns when the hover leaves");
     assert_eq!(errors(&mut view), Vec::new());
 }
 
@@ -252,54 +410,6 @@ fn a_one_row_label_edit_evaluates_one_page() {
     let work = gpu.work() - before;
     assert!(work.evaluated <= 4096, "only one page evaluates: {}", work.evaluated);
     assert_eq!(errors(&mut view), Vec::new());
-}
-
-/// A block in a diagram, 60 by 20 units, labeled in red at size 10, seen at `zoom`.
-fn diagram_block(gpu: &latkit::Gpu, zoom: f64) -> Vec<[u8; 4]> {
-    gpu.set_host(Boxes);
-    let data = Data::new("d");
-    data.apply(
-        Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["abcdef"]),
-    )
-    .expect("valid");
-    let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
-    let scene = Scene::new(diagram()).theme(haloless()).draw(
-        Vertices::of("d", "V")
-            .position(field("x"), field("y"))
-            .size(60.0, 20.0)
-            .marker(Marker::block())
-            .color(Color::rgb(0.0, 1.0, 0.0))
-            .pick(false)
-            .label(label),
-    );
-    let mut view = View::new(gpu, scene);
-    view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
-    view.set_sources([&data]).expect("a source");
-    let pixels = frame(gpu, &mut view);
-    assert_eq!(errors(&mut view), Vec::new());
-    pixels
-}
-
-#[test]
-fn diagram_labels_scale_with_the_sheet() {
-    let Some(gpu) = gpu() else { return };
-    let c = SIZE / 2;
-    let red = |p: [u8; 4]| p[0] > 200 && p[1] < 60;
-    // At zoom 0 the label is 36 by 10 pixels. At zoom 1 it is twice that, still inside its block.
-    let near = diagram_block(&gpu, 0.0);
-    assert!(red(at(&near, c + 15, c)) && !red(at(&near, c + 21, c)), "36 wide at zoom 0");
-    let closer = diagram_block(&gpu, 1.0);
-    assert!(red(at(&closer, c + 33, c)) && !red(at(&closer, c + 39, c)), "72 wide at zoom 1");
-}
-
-#[test]
-fn diagram_labels_fade_once_too_small_to_read() {
-    let Some(gpu) = gpu() else { return };
-    let c = SIZE / 2;
-    // At zoom −2 the text is 2.5 pixels tall, too small to read, so it hides and the block shows.
-    let far = diagram_block(&gpu, -2.0);
-    let middle = at(&far, c, c);
-    assert!(middle[1] > 120 && middle[0] < 60, "only the block: {middle:?}");
 }
 
 #[test]

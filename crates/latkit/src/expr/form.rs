@@ -15,7 +15,6 @@
 //! | `{ "when": [[c, v], …], "otherwise": e }`                    | `when(c).then(v)…otherwise(e)`     |
 //! | `{ "scale": [0, 1], "value": a, "domain": [lo, hi] }`        | `a.scale(..).domain(..)`           |
 //! | `{ "colormap": "viridis", "value": a, "domain": [lo, hi] }`  | `a.colormap(..).domain(..)`        |
-//! | `{ "px": a }` (sizes only)                                   | `px(a)`                            |
 //! | `{ "units": a, "atLeast": 2, "atMost": 20 }` (sizes only)    | `units(a).at_least(..)`            |
 //!
 //! `neg`, `not`, `abs`, `sqrt`, `sin`, `cos`, `floor`, `ln`, and `exp` take one argument. `add`,
@@ -35,7 +34,7 @@ use serde::Deserialize;
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
-use super::{Binary, Color, Colormap, ColormapKind, Expr, Node, Size, State, Stop, Unary, Unit, node};
+use super::{Binary, Color, Colormap, ColormapKind, Expr, Node, Size, State, Stop, Unary, node};
 use crate::Name;
 
 impl<'de> Deserialize<'de> for Expr {
@@ -183,7 +182,6 @@ form! {
     otherwise "otherwise": Expr as value,
     value "value": Expr as value,
     domain "domain": DomainForm,
-    pub(crate) px "px": Expr as value,
     pub(crate) units "units": Expr as value,
     pub(crate) at_least "atLeast": f32,
     pub(crate) at_most "atMost": f32,
@@ -442,17 +440,8 @@ pub(crate) enum All {
     All,
 }
 
-/// A size in CSS pixels, regardless of the space's unit.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "used for its schema only; `Form` reads sizes")]
-#[serde(deny_unknown_fields)]
-struct Px {
-    /// The size, in CSS pixels.
-    px: Expr,
-}
-
-/// A size in position units (degrees on the earth), regardless of the space's unit. It scales with
-/// the zoom. `atLeast` and `atMost` bound it in CSS pixels.
+/// A size in position units (degrees on the earth). It scales with the zoom. `atLeast` and
+/// `atMost` bound it in CSS pixels.
 #[derive(JsonSchema)]
 #[expect(dead_code, reason = "used for its schema only; `Form` reads sizes")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -560,14 +549,10 @@ impl JsonSchema for CallNode {
 impl<'de> Deserialize<'de> for Size {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Size, D::Error> {
         let size = |written: Written| match written {
-            Written::Object(form) if form.px.is_some() => {
-                form.only("a size in CSS pixels", &["px"])?;
-                Ok(Size { expr: form.px.expect("present"), unit: Some(Unit::Px), px: Size::ANY })
-            }
             Written::Object(form) if form.units.is_some() => {
                 form.only("a size in units", &["units", "atLeast", "atMost"])?;
                 let px = [form.at_least.unwrap_or(0.0).max(0.0), form.at_most.unwrap_or(f32::INFINITY)];
-                Ok(Size { expr: form.units.expect("present"), unit: Some(Unit::Units), px })
+                Ok(Size { expr: form.units.expect("present"), units: true, px })
             }
             written => written.expr().map(Size::from),
         };
@@ -582,11 +567,10 @@ impl JsonSchema for Size {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let expr = generator.subschema_for::<Expr>();
-        let px = generator.subschema_for::<Px>();
         let units = generator.subschema_for::<Units>();
         json_schema!({
-            "description": "A size: a value in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
-            "anyOf": [expr, px, units],
+            "description": "A size: a value in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
+            "anyOf": [expr, units],
         })
     }
 }
@@ -794,10 +778,9 @@ mod tests {
         let size = |json: &str| serde_json::from_str::<Size>(json).expect("a size");
         assert_eq!(size("3"), Size::from(3.0));
         assert_eq!(size("\"$r\""), Size::from(field("r")));
-        assert_eq!(size(r#"{"px": 3}"#), crate::px(3.0));
         assert_eq!(size(r#"{"units": 3}"#), crate::units(3.0));
         assert_eq!(size(r#"{"units": 3, "atLeast": 2, "atMost": 20}"#), crate::units(3.0).at_least(2.0).at_most(20.0));
-        assert!(serde_json::from_str::<Size>(r#"{"px": 3, "atLeast": 2}"#).is_err(), "px sizes take no bounds");
+        assert!(serde_json::from_str::<Size>(r#"{"px": 3}"#).is_err(), "a plain value is already CSS pixels");
         let map: Colormap =
             serde_json::from_str(r#"{"kind": "sequential", "colors": ["black", [0.25, "red"], "white"]}"#)
                 .expect("a map");
@@ -829,8 +812,8 @@ mod tests {
             parse(r#"{"colormap": "viridis", "value": null}"#),
             Expr::missing().colormap(Colormap::VIRIDIS).into()
         );
-        let size = serde_json::from_str::<Size>(r#"{"px": null}"#).expect("a size");
-        assert_eq!(size, crate::px(Expr::missing()));
+        let size = serde_json::from_str::<Size>(r#"{"units": null}"#).expect("a size");
+        assert_eq!(size, crate::units(Expr::missing()));
         // An option of a node that is no value stays unset.
         assert_eq!(parse(r#"{"field": "v", "from": null}"#), field("v"));
     }

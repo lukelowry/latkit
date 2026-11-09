@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::{Areas, Edges, Faces, Label, Lines, Vertices};
+use super::{Areas, Edges, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Expr, Format, Name, Result, Size, Space};
@@ -14,8 +14,6 @@ pub enum Mark {
     Vertices(Vertices),
     /// Rows drawn as strokes between two vertices.
     Edges(Edges),
-    /// Rows drawn as triangles between three vertices.
-    Faces(Faces),
     /// Rows drawn as lines along their paths, or on a plot through their samples.
     Lines(Lines),
     /// Rows drawn as the areas their polygons cover.
@@ -30,16 +28,15 @@ impl<'de> serde::Deserialize<'de> for Mark {
         let mut kinds = MarkKind::ALL.into_iter().filter(|kind| form.contains_key(kind.name()));
         let (Some(kind), None) = (kinds.next(), kinds.next()) else {
             return Err(D::Error::custom(
-                "a mark names its dataset and table under exactly one of vertices, edges, faces, lines, or areas",
+                "a mark names its dataset and table under exactly one of vertices, edges, lines, or areas",
             ));
         };
         let form = serde_json::Value::Object(form);
         match kind {
-            MarkKind::Vertices => crate::json::nested(form).map(Mark::Vertices),
-            MarkKind::Edges => crate::json::nested(form).map(Mark::Edges),
-            MarkKind::Faces => crate::json::nested(form).map(Mark::Faces),
-            MarkKind::Lines => crate::json::nested(form).map(Mark::Lines),
-            MarkKind::Areas => crate::json::nested(form).map(Mark::Areas),
+            MarkKind::Vertices => crate::json::nested(&form).map(Mark::Vertices),
+            MarkKind::Edges => crate::json::nested(&form).map(Mark::Edges),
+            MarkKind::Lines => crate::json::nested(&form).map(Mark::Lines),
+            MarkKind::Areas => crate::json::nested(&form).map(Mark::Areas),
         }
     }
 }
@@ -53,7 +50,6 @@ impl schemars::JsonSchema for Mark {
         let kinds = [
             generator.subschema_for::<Vertices>(),
             generator.subschema_for::<Edges>(),
-            generator.subschema_for::<Faces>(),
             generator.subschema_for::<Lines>(),
             generator.subschema_for::<Areas>(),
         ];
@@ -73,12 +69,6 @@ impl From<Vertices> for Mark {
 impl From<Edges> for Mark {
     fn from(mark: Edges) -> Mark {
         Mark::Edges(mark)
-    }
-}
-
-impl From<Faces> for Mark {
-    fn from(mark: Faces) -> Mark {
-        Mark::Faces(mark)
     }
 }
 
@@ -141,15 +131,15 @@ impl Stroke {
         self.width.as_ref().map_or(crate::Size::ANY, |size| size.px)
     }
 
-    /// Compiles the dash, flow, and width channels. A width is in the space's unit unless it names
-    /// its own unit. The theme's width is always in the space's unit.
-    pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords, diagram: bool) -> Result<()> {
+    /// Compiles the dash, flow, and width channels. A width is in CSS pixels unless given in
+    /// position units. The theme's width is in CSS pixels.
+    pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords) -> Result<()> {
         c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH, unset: false })?;
         c.channel("flow", &self.flow, Store::Number { word: words.flow, fallback: None })?;
         let width = |units| Store::Size { word: words.width, units, fallback: Some(words.theme_width) };
         match &self.width {
-            Some(size) => c.channel("width", &size.expr, width(size.in_units(diagram))),
-            None => c.theme("width", words.theme_width, width(diagram)),
+            Some(size) => c.channel("width", &size.expr, width(size.units)),
+            None => c.theme("width", words.theme_width, width(false)),
         }
     }
 }
@@ -191,21 +181,19 @@ impl Style {
 pub(crate) enum MarkKind {
     Vertices,
     Edges,
-    Faces,
     Lines,
     Areas,
 }
 
 impl MarkKind {
-    pub(crate) const ALL: [MarkKind; 5] =
-        [MarkKind::Vertices, MarkKind::Edges, MarkKind::Faces, MarkKind::Lines, MarkKind::Areas];
+    pub(crate) const ALL: [MarkKind; 4] = [MarkKind::Vertices, MarkKind::Edges, MarkKind::Lines, MarkKind::Areas];
 
     /// The primitive its rows draw with.
     pub(crate) fn primitive(self) -> Primitive {
         match self {
             MarkKind::Vertices => Primitive::Points,
             MarkKind::Edges | MarkKind::Lines => Primitive::Strokes,
-            MarkKind::Faces | MarkKind::Areas => Primitive::Triangles,
+            MarkKind::Areas => Primitive::Triangles,
         }
     }
 
@@ -214,7 +202,6 @@ impl MarkKind {
         match self {
             MarkKind::Vertices => wgsl::MARK_VERTICES,
             MarkKind::Edges => wgsl::MARK_EDGES,
-            MarkKind::Faces => wgsl::MARK_FACES,
             MarkKind::Lines => wgsl::MARK_LINES,
             MarkKind::Areas => wgsl::MARK_AREAS,
         }
@@ -225,53 +212,49 @@ impl MarkKind {
         match self {
             MarkKind::Vertices => wgsl::VERTEX_WORDS,
             MarkKind::Edges => wgsl::EDGE_WORDS,
-            MarkKind::Faces => wgsl::FACE_WORDS,
             MarkKind::Lines => wgsl::LINE_WORDS,
             MarkKind::Areas => wgsl::AREA_WORDS,
         }
     }
 
-    /// The shader that draws its rows, and the shader that draws its focused rows. Faces have no
-    /// focus shader, since a face shows focus by its color alone. With `custom`, the shaders for a
-    /// vertex mark's custom marker.
-    pub(crate) fn shaders(self, custom: bool) -> (wgsl::Shader, Option<wgsl::Shader>) {
+    /// The shaders drawing its rows and its focused rows. With `custom`, both draw the
+    /// vertex mark's application-defined marker.
+    pub(crate) fn shaders(self, custom: bool) -> (wgsl::Shader, wgsl::Shader) {
         use wgsl::Shader;
         match self {
-            MarkKind::Vertices if custom => (Shader::PointsCustom, Some(Shader::PointsCustomFocus)),
-            MarkKind::Vertices => (Shader::Points, Some(Shader::PointsFocus)),
-            MarkKind::Edges | MarkKind::Lines => (Shader::Strokes, Some(Shader::StrokesFocus)),
-            MarkKind::Areas => (Shader::Areas, Some(Shader::AreasFocus)),
-            MarkKind::Faces => (Shader::Triangles, None),
+            MarkKind::Vertices if custom => (Shader::PointsCustom, Shader::PointsCustomFocus),
+            MarkKind::Vertices => (Shader::Points, Shader::PointsFocus),
+            MarkKind::Edges | MarkKind::Lines => (Shader::Strokes, Shader::StrokesFocus),
+            MarkKind::Areas => (Shader::Areas, Shader::AreasFocus),
         }
     }
 
     /// The shader that draws its rows' opaque pixels where depth varies, before any pixel blends:
     /// the opaque variant of points and strokes (with `custom`, for a vertex mark's custom marker),
-    /// and the rows of faces, which write their depth, and of areas, which lie on the ground.
+    /// and the rows of areas, which lie on the ground.
     pub(crate) fn opaque_shader(self, custom: bool) -> wgsl::Shader {
         use wgsl::Shader;
         match self {
-            MarkKind::Vertices if custom => Shader::PointsCustomOpaque,
-            MarkKind::Vertices => Shader::PointsOpaque,
-            MarkKind::Edges | MarkKind::Lines => Shader::StrokesOpaque,
-            MarkKind::Faces => Shader::Triangles,
+            MarkKind::Vertices if custom => Shader::PointsCustom,
+            MarkKind::Vertices => Shader::Points,
+            MarkKind::Edges | MarkKind::Lines => Shader::Strokes,
             MarkKind::Areas => Shader::Areas,
         }
     }
 
     /// Whether its opaque shader draws all of its rows, so where depth varies they draw nothing more.
     pub(crate) fn opaque_whole(self) -> bool {
-        matches!(self, MarkKind::Faces | MarkKind::Areas)
+        matches!(self, MarkKind::Areas)
     }
 
-    /// The bounds shader entry point that measures its extents for a fit. `None` for edges and
-    /// faces, since their rows lie between their vertices.
+    /// The bounds shader entry point that measures its extents for a fit. `None` for edges,
+    /// since their rows lie between their vertices.
     pub(crate) fn bounds(self) -> Option<&'static str> {
         match self {
             MarkKind::Vertices => Some("points"),
             MarkKind::Lines => Some("strokes"),
             MarkKind::Areas => Some("areas"),
-            MarkKind::Edges | MarkKind::Faces => None,
+            MarkKind::Edges => None,
         }
     }
 
@@ -280,7 +263,6 @@ impl MarkKind {
         match self {
             MarkKind::Vertices => "vertices",
             MarkKind::Edges => "edges",
-            MarkKind::Faces => "faces",
             MarkKind::Lines => "lines",
             MarkKind::Areas => "areas",
         }
@@ -343,8 +325,7 @@ pub(crate) struct Markers {
 }
 
 /// How a compiled mark's labels draw: the extra word where the label words start, the program
-/// column of the text, and the font size and wrap width in length units (CSS pixels, or units in a
-/// diagram).
+/// column of the text, and the font size and wrap width in CSS pixels.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Labeling {
     pub(crate) extra: u32,
@@ -366,14 +347,7 @@ pub(crate) struct Context<'a> {
 }
 
 impl Context<'_> {
-    /// Whether the space is a diagram, where every length is in units and the sheet positions
-    /// vertices and routes wires.
-    pub(crate) fn diagram(&self) -> bool {
-        matches!(self.space, Space::Diagram(_))
-    }
-
-    /// Whether the scene's layout places vertex rows without a position on a plane or the earth
-    /// (diagrams are not counted).
+    /// Whether the scene's layout places vertex rows without a position on a plane or the earth.
     pub(crate) fn placed(&self) -> bool {
         matches!(self.space, Space::Plane(_) | Space::Earth(_)) && !matches!(self.layout, super::Layout::None)
     }
@@ -393,16 +367,11 @@ pub(crate) struct Drawing {
     /// The program column a line traces, or `NONE`.
     pub(crate) trace: u32,
     /// Program columns, `NONE` when absent. `geometry` holds the points a stroke's path runs
-    /// through (a diagram route, bends, or a line's path) or an area's triangles. `lane` holds each
+    /// through (a net's star, bends, or a line's path) or an area's triangles. `lane` holds each
     /// row's lane among edges joining the same two vertices.
     pub(crate) geometry: u32,
     pub(crate) lane: u32,
     pub(crate) label: Option<Labeling>,
-    /// A vertex mark's ports: the reference field naming each port's nets, the port, and the
-    /// program column that reads the field.
-    pub(crate) ports: Vec<(Name, super::Port, u32)>,
-    /// The font size of a vertex mark's port labels, in length units.
-    pub(crate) port_label_size: f32,
     /// CSS pixel bounds on the mark's size: a vertex's half-size, or a stroke's width.
     pub(crate) size_px: [f32; 2],
 }
@@ -420,8 +389,6 @@ impl Drawing {
             geometry: wgsl::NONE,
             lane: wgsl::NONE,
             label: None,
-            ports: Vec::new(),
-            port_label_size: 0.0,
             size_px: crate::Size::ANY,
         }
     }
@@ -432,7 +399,6 @@ impl Mark {
         match self {
             Mark::Vertices(m) => &m.style,
             Mark::Edges(m) => &m.style,
-            Mark::Faces(m) => &m.style,
             Mark::Lines(m) => &m.style,
             Mark::Areas(m) => &m.style,
         }
@@ -442,7 +408,6 @@ impl Mark {
         match self {
             Mark::Vertices(m) => &mut m.style,
             Mark::Edges(m) => &mut m.style,
-            Mark::Faces(m) => &mut m.style,
             Mark::Lines(m) => &mut m.style,
             Mark::Areas(m) => &mut m.style,
         }
@@ -452,18 +417,17 @@ impl Mark {
         match self {
             Mark::Vertices(_) => MarkKind::Vertices,
             Mark::Edges(_) => MarkKind::Edges,
-            Mark::Faces(_) => MarkKind::Faces,
             Mark::Lines(_) => MarkKind::Lines,
             Mark::Areas(_) => MarkKind::Areas,
         }
     }
 
     /// Whether the pointer hovers, clicks, and picks the mark's rows. `pick` decides when set.
-    /// Otherwise vertices, edges, faces, and plot traces pick, and geometry (areas, and lines along
+    /// Otherwise vertices, edges, and plot traces pick, and geometry (areas, and lines along
     /// paths such as coasts, borders, and roads) does not, so hovering never probes it.
     pub(crate) fn picks(&self) -> bool {
         self.style().interaction.pick.unwrap_or(match self {
-            Mark::Vertices(_) | Mark::Edges(_) | Mark::Faces(_) => true,
+            Mark::Vertices(_) | Mark::Edges(_) => true,
             Mark::Lines(lines) => lines.trace.is_some(),
             Mark::Areas(_) => false,
         })
@@ -484,73 +448,34 @@ impl Mark {
         let stroke = match self {
             Mark::Edges(m) => &m.stroke,
             Mark::Lines(m) => &m.stroke,
-            Mark::Vertices(_) | Mark::Faces(_) | Mark::Areas(_) => return false,
+            Mark::Vertices(_) | Mark::Areas(_) => return false,
         };
         stroke.flow != Stroke::default().flow
     }
 
+    /// Whether strokes need cumulative path lengths for dashes or moving comets.
+    pub(crate) fn measures_paths(&self) -> bool {
+        let stroke = match self {
+            Mark::Edges(m) => &m.stroke,
+            Mark::Lines(m) => &m.stroke,
+            Mark::Vertices(_) | Mark::Areas(_) => return false,
+        };
+        stroke.dash != Stroke::default().dash || stroke.flow != Stroke::default().flow
+    }
+
     /// The path a stroke mark's rows follow, or where a triangle's corners come from: one of the
-    /// `PATH_` codes its pipelines are built for. A net's star and every wire in a diagram follow
-    /// the route the view computes. On a plot a line traces its samples, and elsewhere it
-    /// follows its path field. Faces take their corners from the vertices they join, and vertices
-    /// have no path, so both read `PATH_ENDS`.
+    /// `PATH_` codes its pipelines are built for. A net follows the star the view derives from
+    /// its members. On a plot a line traces its samples, and elsewhere it follows its path field.
+    /// Vertices have no path and use `PATH_ENDS`.
     pub(crate) fn path(&self, space: &Space) -> u32 {
         match self {
             Mark::Edges(e) if e.poles => wgsl::PATH_POLES,
             Mark::Edges(e) if e.joins.is_some() => wgsl::PATH_GEOMETRY,
-            Mark::Edges(_) if matches!(space, Space::Diagram(_)) => wgsl::PATH_GEOMETRY,
+            Mark::Edges(e) if e.bends.is_some() => wgsl::PATH_BENDS,
             Mark::Lines(_) if matches!(space, Space::Plot(_)) => wgsl::PATH_TRACE,
             Mark::Lines(_) | Mark::Areas(_) => wgsl::PATH_GEOMETRY,
-            Mark::Vertices(_) | Mark::Edges(_) | Mark::Faces(_) => wgsl::PATH_ENDS,
+            Mark::Vertices(_) | Mark::Edges(_) => wgsl::PATH_ENDS,
         }
-    }
-
-    /// Resets each option of this mark that its space lacks, and returns each with the reason.
-    /// Outside a diagram: ports, groups, orthogonal routes, and shadows. In a diagram: elevation,
-    /// poles, and joins.
-    pub(crate) fn unplace(&mut self, diagram: bool) -> Vec<(&'static str, &'static str)> {
-        const ONLY: &str = "only a diagram has ports, groups, orthogonal routes, and shadows";
-        let mut reset = Vec::new();
-        match self {
-            Mark::Vertices(v) if diagram => {
-                if v.elevation != Expr::from(0.0) {
-                    v.elevation = 0.0.into();
-                    reset.push(("elevation", "a diagram is flat, so vertices cannot have elevation"));
-                }
-            }
-            Mark::Vertices(v) => {
-                if !v.ports.is_empty() {
-                    v.ports.clear();
-                    reset.push(("ports", ONLY));
-                }
-                if !v.contains.is_empty() {
-                    v.contains.clear();
-                    reset.push(("contains", ONLY));
-                }
-                if v.shadow {
-                    v.shadow = false;
-                    reset.push(("shadow", ONLY));
-                }
-            }
-            Mark::Edges(e) if diagram => {
-                if e.poles {
-                    e.poles = false;
-                    reset.push(("poles", "a diagram is flat, so it cannot have poles"));
-                }
-                if e.joins.is_some() {
-                    e.joins = None;
-                    reset.push(("joins", "in a diagram, nets join vertex ports instead"));
-                }
-            }
-            Mark::Edges(e) => {
-                if e.route == Some(super::Route::Orthogonal) {
-                    e.route = None;
-                    reset.push(("route", ONLY));
-                }
-            }
-            Mark::Faces(_) | Mark::Lines(_) | Mark::Areas(_) => {}
-        }
-        reset
     }
 
     /// Calls `f` with every expression in the mark's options.
@@ -563,7 +488,7 @@ impl Mark {
         let stroke = match self {
             Mark::Edges(m) => Some(&m.stroke),
             Mark::Lines(m) => Some(&m.stroke),
-            Mark::Vertices(_) | Mark::Faces(_) | Mark::Areas(_) => None,
+            Mark::Vertices(_) | Mark::Areas(_) => None,
         };
         if let Some(stroke) = stroke {
             stroke.width.iter().map(|size| &size.expr).chain([&stroke.dash, &stroke.flow]).for_each(&mut *f);
@@ -614,7 +539,6 @@ impl Mark {
         let mut drawing = match self {
             Mark::Vertices(m) => m.compile(compiler, context),
             Mark::Edges(m) => m.compile(compiler, context),
-            Mark::Faces(m) => m.compile(compiler),
             Mark::Lines(m) => m.compile(compiler, context),
             Mark::Areas(m) => m.compile(compiler, context),
         }?;
@@ -624,28 +548,15 @@ impl Mark {
             compiler.check_data("priority", priority)?;
         }
         if let Some(label) = &style.label {
-            // A diagram's sheet writes the text each block shows, cut to fit.
-            let shown = match self {
-                Mark::Vertices(_) if context.diagram() => Some(crate::sheet::shown_label(style.name.as_ref())),
-                _ => None,
-            };
-            compiler.within("label", |c| compile_label(label, shown, c, context, &mut drawing))?;
+            compiler.within("label", |c| compile_label(label, c, context, &mut drawing))?;
         }
         Ok(drawing)
     }
 }
 
-/// Compiles `label`'s text or number and color into extra words after the mark's own. In a diagram
-/// a text reads only data, since the sheet sizes blocks around it, and a vertex mark shows the text
-/// the sheet cut to fit, from derived field `shown`. A number is written on the GPU. A text or
-/// number that does not fit the data shows no label.
-fn compile_label(
-    label: &Label,
-    shown: Option<Name>,
-    c: &mut Compiler<'_>,
-    context: Context<'_>,
-    drawing: &mut Drawing,
-) -> Result<()> {
+/// Compiles `label`'s text or number and color into extra words after the mark's own. A number is
+/// written on the GPU. A text or number that does not fit the data shows no label.
+fn compile_label(label: &Label, c: &mut Compiler<'_>, context: Context<'_>, drawing: &mut Drawing) -> Result<()> {
     let theme = context.theme;
     let extra = drawing.extras;
     let word = |k: u32| drawing.kind.stride() + extra + k;
@@ -666,16 +577,7 @@ fn compile_label(
             c.number("text", &label.text, code)?;
             return Ok(wgsl::NONE);
         }
-        if context.diagram() {
-            c.check_structure("text", [&label.text])?;
-        }
-        match shown {
-            Some(shown) => {
-                c.text_of("text", &label.text)?;
-                c.derived_text("text", shown, code)
-            }
-            None => c.text("text", &label.text, code),
-        }
+        c.text("text", &label.text, code)
     };
     let Some(column) = c.option(text) else { return Ok(()) };
     let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
@@ -817,8 +719,8 @@ macro_rules! mark {
     };
     (@form $key:literal + stroke { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
         $crate::scene::mark::mark!(@struct $key { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {
-            /// Each row's width in CSS pixels, or units in a diagram, unless given with `px` or
-            /// `units`. Defaults to the theme's width.
+            /// Each row's width in CSS pixels, unless given in `units`. Defaults to the theme's
+            /// width.
             width: Option<$crate::Size>,
             /// Whether each row is dashed, using the theme's `dash` period. Defaults to `false`.
             #[serde(default = "crate::scene::mark::no")]
@@ -849,8 +751,7 @@ macro_rules! mark {
             $($(#[$doc])* $(#[schemars(extend("tsType" = $ts))])? #[serde(default $(= $default)?)] $field: $ty,)*
             $($stroke)*
             /// Each row's color: a CSS color, a value through a colormap, or a conditional that
-            /// picks between colors. Defaults to the theme's color for the mark. Faces default to a
-            /// blend of their corners' colors.
+            /// picks between colors. Defaults to the theme's color for the mark.
             color: Option<$crate::Expr>,
             /// Whether each row is drawn and can be picked. Defaults to `true`.
             #[serde(default = "crate::scene::mark::yes")]
@@ -862,7 +763,7 @@ macro_rules! mark {
             /// Distinguishes two marks of the same table across scenes, and names the mark in hits.
             name: Option<$crate::Name>,
             /// Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices,
-            /// edges, faces, and plot traces, and off for geometry: areas, and lines along paths
+            /// edges, and plot traces, and off for geometry: areas, and lines along paths
             /// such as coasts, borders, and roads. Either way, the mark shows which rows are
             /// selected and hovered.
             pick: Option<bool>,
@@ -926,7 +827,6 @@ macro_rules! style_methods {
         impl $mark {
             /// Sets each row's color: a [`Color`](crate::Color), a value through a colormap, or a
             /// conditional that picks between colors. Defaults to the theme's color for the mark.
-            /// Faces default to a blend of their corners' colors.
             #[must_use]
             pub fn color(mut self, color: impl Into<$crate::Expr>) -> Self {
                 self.style.color = Some(color.into());
@@ -958,7 +858,7 @@ macro_rules! style_methods {
             }
 
             /// Sets whether the pointer hovers, clicks, and picks rows. Defaults to on for
-            /// vertices, edges, faces, and plot traces, and off for geometry: areas, and lines
+            /// vertices, edges, and plot traces, and off for geometry: areas, and lines
             /// along paths such as coasts, borders, and roads. Either way, the mark shows which
             /// rows are selected and hovered.
             #[must_use]
@@ -1004,8 +904,7 @@ macro_rules! style_methods {
 macro_rules! stroke_methods {
     ($mark:ty) => {
         impl $mark {
-            /// Sets each row's width in CSS pixels, or units in a diagram, unless given with
-            /// [`px`](crate::px) or [`units`](crate::units).
+            /// Sets each row's width in CSS pixels, unless given in [`units`](crate::units).
             #[must_use]
             pub fn width(mut self, width: impl Into<$crate::Size>) -> Self {
                 self.stroke.width = Some(width.into());

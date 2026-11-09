@@ -18,7 +18,8 @@ pub(crate) const EARTH_STEP: f64 = 2.0;
 /// Triangulates `polygons`, each an outer ring followed by holes, into a point list: the label
 /// anchor first, then three points per triangle. The anchor lies in the polygon with the largest
 /// outer ring. Returns an empty list when there are no triangles. With `earth`, rings are unwrapped
-/// and triangles split along the [`EARTH_STEP`] grid.
+/// and triangles split along the [`EARTH_STEP`] grid. Every triangle coordinate is finite when
+/// stored as `f32`, so GPU draws need only fetch their own corner except at the globe's horizon.
 pub(crate) fn triangles(polygons: &[Vec<Vec<Point>>], earth: bool) -> Vec<Point> {
     let mut out = vec![[f64::NAN; 2]];
     let mut largest: Option<(f64, Vec<Vec<Point>>)> = None;
@@ -37,11 +38,15 @@ pub(crate) fn triangles(polygons: &[Vec<Vec<Point>>], earth: bool) -> Vec<Point>
             }
             points.extend(ring.iter().copied().filter(|p| p[0].is_finite() && p[1].is_finite()));
         }
+        let start = out.len();
         for t in earcut(&points, &holes) {
             let corners = t.map(|i| points[i as usize]);
+            if !corners.iter().flatten().all(|&v| (v as f32).is_finite()) {
+                continue;
+            }
             if earth { split(corners, &mut out) } else { out.extend(corners) }
         }
-        if largest.as_ref().is_none_or(|(a, _)| area > *a) {
+        if out.len() > start && largest.as_ref().is_none_or(|(a, _)| area > *a) {
             largest = Some((area, rings));
         }
     }
@@ -351,6 +356,17 @@ mod tests {
                 ((t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[2][0] - t[0][0]) * (t[1][1] - t[0][1])).abs() / 2.0
             })
             .sum()
+    }
+
+    #[test]
+    fn triangles_never_publish_coordinates_that_overflow_the_gpu_representation() {
+        let too_large = vec![vec![vec![[0.0, 0.0], [1e40, 0.0], [0.0, 1e40]]]];
+        assert_eq!(triangles(&too_large, false), Vec::<Point>::new());
+        let mixed = vec![too_large[0].clone(), vec![square(0.0, 0.0, 10.0)]];
+        let points = triangles(&mixed, false);
+        assert_eq!(points.len(), 7);
+        assert!(points.iter().flatten().all(|&v| (v as f32).is_finite()));
+        assert!((covered(&points) - 100.0).abs() < 1e-9);
     }
 
     #[test]

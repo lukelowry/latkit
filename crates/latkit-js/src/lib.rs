@@ -1,5 +1,5 @@
 //! The WebAssembly binding behind the latkit npm package: data and views in the browser, over
-//! WebGPU.
+//! WebGL2.
 //!
 //! Values cross as bytes or JSON, in the forms `latkit` reads and writes. Patches cross as byte
 //! frames, which the package's TypeScript writes. Scenes, cameras, fits, queries, and rows go in as
@@ -73,10 +73,24 @@ pub fn set_jobs(run: js_sys::Function) {
     latkit::host::Browser::set_jobs(run);
 }
 
-/// Runs a job a view handed to the page, in a worker, and returns the result's bytes.
+/// Translates custom markers' WGSL with `translate`, the package's translator:
+/// `(wgsl: string) => Promise<string>`, resolving to a JSON object of each entry point's GLSL.
+#[wasm_bindgen(js_name = setTranslator)]
+pub fn set_translator(translate: js_sys::Function) {
+    latkit::host::Browser::set_translator(translate);
+}
+
+/// Hands over the shaders the build translated, the bytes of the package's `latkit/shaders` asset.
+#[wasm_bindgen(js_name = setShaders)]
+pub fn set_shaders(bytes: Vec<u8>) -> Result<(), Error> {
+    latkit::host::Browser::set_shaders(bytes).map_err(Error::from)
+}
+
+/// Runs a job a view handed to the page, in a worker, and returns the result's bytes. The job's
+/// bytes come in once, owned, rather than borrowed and copied again.
 #[wasm_bindgen]
-pub fn job(bytes: &[u8]) -> Vec<u8> {
-    latkit::host::Job::from_bytes(bytes.to_vec()).run()
+pub fn job(bytes: Vec<u8>) -> Vec<u8> {
+    latkit::host::Job::from_bytes(bytes).run()
 }
 
 /// The compiled module, for workers to instantiate.

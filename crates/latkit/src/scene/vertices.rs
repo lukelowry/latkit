@@ -1,13 +1,11 @@
-use super::Port;
 use super::mark::{Context, Drawing, GEOMETRY, MarkKind, Style, mark, style_methods};
 use super::marker::Marker;
-use crate::expr::Unit;
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Error, Expr, Kind, Name, Result, Size};
+use crate::{Expr, Kind, Name, Result, Size};
 
 mark!(
-/// Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
+/// Rows drawn as markers: points of a map, nodes of a graph.
 ///
 /// ```
 /// # use latkit::{field, Colormap, Vertices};
@@ -24,29 +22,18 @@ Vertices("vertices") {
     /// `geometry`.
     geometry: Option<Name>,
     /// Height above the ground. On the earth, in degrees of arc like every length there (one is about
-    /// 111 km). Defaults to 0. Not allowed in a diagram, which is flat.
+    /// 111 km). Defaults to 0.
     elevation: Expr = "crate::scene::mark::zero",
-    /// Each row's radius in CSS pixels, or units in a diagram, unless given with `px` or `units`.
-    /// A diagram does not accept `px`. Defaults to the theme's `vertex.radius`.
+    /// Each row's radius in CSS pixels, unless given in `units`. Defaults to the theme's
+    /// `vertex.radius`.
     radius: Option<Size>,
-    /// Each row's width and height, for markers that are not round. In CSS pixels, or units in a
-    /// diagram, unless given with `px` or `units`. A diagram does not accept `px`. In a diagram, a
-    /// block without a size fits its label and ports.
+    /// Each row's width and height, for markers that are not round. In CSS pixels, unless given in
+    /// `units`.
     size: Option<[Size; 2]>,
     /// How each row is drawn. Defaults to an ellipse.
     marker: Marker,
     /// A ring around each row's marker in this color. A missing or transparent color draws no ring.
     ring: Option<Expr>,
-    /// Ports on each row, one for each reference field that names a net. An `edges` mark of the net
-    /// table, without `ends`, draws the nets. Diagrams only.
-    ports: Vec<(Name, Port)> as "[reference: string, port: Port][]",
-    /// Makes each row a group containing, for each `[table, reference]`, the rows of `table` whose
-    /// `reference` field names it, so a group can hold rows of several tables. A group draws as a
-    /// container around its members, with its label as a title in its header. Diagrams only.
-    contains: Vec<(Name, Name)> as "[table: string, reference: string][]",
-    /// Whether each block or group casts a shadow on the sheet, styled by the theme's
-    /// `diagram.shadow`. Defaults to `false`. Diagrams only.
-    shadow: bool,
 });
 
 impl Vertices {
@@ -61,32 +48,7 @@ impl Vertices {
             size: None,
             marker: Marker::default(),
             ring: None,
-            ports: Vec::new(),
-            contains: Vec::new(),
-            shadow: false,
         }
-    }
-
-    /// Adds a port on each row for the net named by the reference field `reference`. It replaces
-    /// any earlier port for that field. An [`Edges`](crate::Edges) mark of the net table, without
-    /// ends, draws the nets. Diagrams only.
-    #[must_use]
-    pub fn port(mut self, reference: impl Into<Name>, port: impl Into<Port>) -> Vertices {
-        let reference = reference.into();
-        self.ports.retain(|(name, _)| *name != reference);
-        self.ports.push((reference, port.into()));
-        self
-    }
-
-    /// Makes each row a group containing the rows of `table` whose `reference` field names it. Call
-    /// it again to add another table. It replaces any earlier reference for `table`. A group draws
-    /// as a container around its members, with its label as a title in its header. Diagrams only.
-    #[must_use]
-    pub fn contains(mut self, table: impl Into<Name>, reference: impl Into<Name>) -> Vertices {
-        let table = table.into();
-        self.contains.retain(|(known, _)| *known != table);
-        self.contains.push((table, reference.into()));
-        self
     }
 
     /// Sets the point field that places rows without a position. Defaults to `geometry`.
@@ -102,33 +64,30 @@ impl Vertices {
     }
 
     /// Sets each row's x and y. Rows without a position are placed by the point field named by
-    /// [`geometry`](Vertices::geometry). The scene's layout places rows that have neither, in a
-    /// diagram or on a plane or the earth.
+    /// [`geometry`](Vertices::geometry). The scene's layout places rows that have neither, on a
+    /// plane or the earth.
     #[must_use]
     pub fn position(mut self, x: impl Into<Expr>, y: impl Into<Expr>) -> Vertices {
         self.position = Some([x.into(), y.into()]);
         self
     }
 
-    /// Sets the height above the ground. On the earth, in degrees of arc like every length there. Not
-    /// allowed in a diagram, which is flat.
+    /// Sets the height above the ground. On the earth, in degrees of arc like every length there.
     #[must_use]
     pub fn elevation(mut self, z: impl Into<Expr>) -> Vertices {
         self.elevation = z.into();
         self
     }
 
-    /// Sets each row's radius in CSS pixels, or units in a diagram, unless given with
-    /// [`px`](crate::px) or [`units`](crate::units). A diagram does not accept `px`.
+    /// Sets each row's radius in CSS pixels, unless given in [`units`](crate::units).
     #[must_use]
     pub fn radius(mut self, radius: impl Into<Size>) -> Vertices {
         self.radius = Some(radius.into());
         self
     }
 
-    /// Sets each row's width and height, for markers that are not round. In CSS pixels, or units
-    /// in a diagram, unless given with [`px`](crate::px) or [`units`](crate::units). A diagram does
-    /// not accept `px`. In a diagram, a block without a size fits its label and ports.
+    /// Sets each row's width and height, for markers that are not round. In CSS pixels, unless
+    /// given in [`units`](crate::units).
     #[must_use]
     pub fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Vertices {
         self.size = Some([width.into(), height.into()]);
@@ -150,36 +109,21 @@ impl Vertices {
         self
     }
 
-    /// Sets whether each block or group casts a shadow on the sheet, styled by the theme's
-    /// [`shadow`](crate::DiagramTheme::shadow). Diagrams only.
-    #[must_use]
-    pub fn shadow(mut self, on: bool) -> Vertices {
-        self.shadow = on;
-        self
-    }
-
     /// Whether its rows may stand above the ground: its elevation is not zero.
     pub(crate) fn raised(&self) -> bool {
         self.elevation != crate::scene::mark::zero()
     }
 
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
-        let group = !self.contains.is_empty();
         let inputs = self.marker.inputs();
         if inputs.len() > 8 {
             return Err(crate::Error::invalid("a marker reads at most eight inputs").at("marker"));
         }
-        let mut flags = if context.diagram() {
-            self.sheet(c, group)?;
-            wgsl::SIZED
-        } else {
-            self.placed(c, context)?
-        };
-        let fallback = if group { wgsl::THEME_GROUP } else { wgsl::THEME_VERTEX };
-        let color = Store::Color { word: wgsl::VERTEX_COLOR, fallback };
+        let mut flags = self.place(c, context)?;
+        let color = Store::Color { word: wgsl::VERTEX_COLOR, fallback: wgsl::THEME_VERTEX };
         match &self.style.color {
             Some(expr) => c.channel("color", expr, color)?,
-            None => c.theme("color", fallback, color)?,
+            None => c.theme("color", wgsl::THEME_VERTEX, color)?,
         }
         let visible = Store::Flag { word: wgsl::VERTEX_FLAGS, bit: wgsl::VISIBLE, unset: true };
         c.channel("visible", &self.style.visible, visible)?;
@@ -191,11 +135,6 @@ impl Vertices {
             let store = Store::Number { word: wgsl::VERTEX_WORDS + i as u32, fallback: None };
             c.within("marker", |c| c.within(i, |c| c.channel(&format!("input{i}"), input, store)))?;
         }
-        let mut ports = Vec::with_capacity(self.ports.len());
-        for (reference, port) in &self.ports {
-            let column = c.bits(reference).map_err(|e| e.at(reference).at("port"))?;
-            ports.push((reference.clone(), port.clone(), column));
-        }
         let mut drawing = Drawing::new(MarkKind::Vertices);
         // The marker's half-size stays within its size's pixel bounds. A `size` bounds the full
         // width, so its bounds are halved.
@@ -205,71 +144,33 @@ impl Vertices {
             (None, None) => crate::Size::ANY,
         };
         drawing.markers = self.marker.markers(0);
-        if group {
-            // A group draws as a rectangle regardless of its marker.
-            flags |= wgsl::GROUP;
-            drawing.markers.marker = wgsl::MARKER_SHAPE;
-            drawing.markers.shape = wgsl::SHAPE_RECTANGLE;
-        }
-        if self.shadow {
-            flags |= wgsl::SHADOW;
-        }
         drawing.flags = flags;
         drawing.extras = inputs.len() as u32;
-        drawing.ports = ports;
-        drawing.port_label_size = 0.8 * context.theme.text.size;
         Ok(drawing)
     }
 
-    /// Compiles positions and sizes in a diagram. The diagram's sheet computes them in units, from
-    /// data only.
-    fn sheet(&self, c: &mut Compiler<'_>, group: bool) -> Result<()> {
-        let mut sizes = self
-            .radius
-            .iter()
-            .map(|size| ("radius", size))
-            .chain(self.size.iter().flatten().map(|size| ("size", size)));
-        if let Some((option, _)) = sizes.find(|(_, size)| size.unit == Some(Unit::Px)) {
-            return Err(Error::invalid("a diagram's blocks are sized in units, not px").at(option));
-        }
-        c.check_structure("position", self.position.iter().flatten())?;
-        c.check_structure("size", self.size.iter().flatten().map(|s| &s.expr))?;
-        c.check_structure("radius", self.radius.iter().map(|s| &s.expr))?;
-        c.derived_position(wgsl::VERTEX_POSITION).map_err(|e| e.at("position"))?;
-        for (k, field) in ["half_x", "half_y"].into_iter().enumerate() {
-            let store = Store::Size { word: wgsl::VERTEX_HALF + k as u32, units: true, fallback: None };
-            c.derived(["width", "height"][k], field, store)?;
-        }
-        if group {
-            c.derived("depth", "depth", Store::Number { word: wgsl::VERTEX_DEPTH, fallback: None })?;
-        }
-        Ok(())
-    }
-
-    /// Compiles positions and sizes outside a diagram. Rows sit at their position, or where the
-    /// scene's layout places them from data only. Their size is their `size`, their radius, or the
-    /// theme's radius. Returns the flags: `SIZED` when rows have a width and a height.
-    fn placed(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<u32> {
-        let at = wgsl::VERTEX_POSITION;
-        if context.placed() {
-            c.check_structure("position", self.position.iter().flatten())?;
-            c.derived_position(at)
-        } else {
-            match &self.position {
-                Some([x, y]) => c.position(x, y, at),
-                None if c.kind(self.point_field()) == Some(Kind::Point) => {
-                    let field = self.point_field();
-                    c.position(&Expr::component(field, 0), &Expr::component(field, 1), at)
-                }
-                None => c.position(&Expr::missing(), &Expr::missing(), at),
+    /// Compiles positions and sizes. Rows sit at their position. With a layout, a row whose data
+    /// gives no position sits where the layout placed it, and the position reads only data, since
+    /// the layout pins rows by it. Their size is their `size`, their radius, or the theme's radius.
+    /// Returns the flags: `SIZED` when rows have a width and a height.
+    fn place(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<u32> {
+        let (at, laid) = (wgsl::VERTEX_POSITION, context.placed());
+        if laid {
+            for expr in self.position.iter().flatten() {
+                c.check_data("position", expr)?;
             }
         }
+        match &self.position {
+            Some([x, y]) => c.position(x, y, at, laid),
+            None if c.kind(self.point_field()) == Some(Kind::Point) => {
+                let field = self.point_field();
+                c.position(&Expr::component(field, 0), &Expr::component(field, 1), at, laid)
+            }
+            None => c.position(&Expr::missing(), &Expr::missing(), at, laid),
+        }
         .map_err(|e| e.at("position"))?;
-        let half = |word: u32, size: &Size| Store::Size {
-            word,
-            units: size.in_units(false),
-            fallback: Some(wgsl::THEME_VERTEX_RADIUS),
-        };
+        let half =
+            |word: u32, size: &Size| Store::Size { word, units: size.units, fallback: Some(wgsl::THEME_VERTEX_RADIUS) };
         let mut flags = 0;
         match (&self.size, &self.radius) {
             (Some([w, h]), _) => {

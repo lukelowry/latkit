@@ -16,6 +16,30 @@ export interface Mesh {
   readonly springs: { readonly a: Uint32Array; readonly b: Uint32Array };
 }
 
+/** Undirected triangle edges, each listed once. The topology is shared by springs and drawing. */
+export function wireframe(faces: Mesh['faces']): Mesh['springs'] {
+  const seen = new Map<number, Set<number>>();
+  const a: number[] = [];
+  const b: number[] = [];
+  const corners = [faces.a, faces.b, faces.c];
+  for (let t = 0; t < faces.a.length; t++) {
+    for (let k = 0; k < 3; k++) {
+      const u = corners[k]![t]!;
+      const v = corners[(k + 1) % 3]![t]!;
+      if (u === v) continue;
+      const lo = Math.min(u, v);
+      const hi = Math.max(u, v);
+      let ends = seen.get(lo);
+      if (!ends) seen.set(lo, (ends = new Set()));
+      if (ends.has(hi)) continue;
+      ends.add(hi);
+      a.push(lo);
+      b.push(hi);
+    }
+  }
+  return { a: Uint32Array.from(a), b: Uint32Array.from(b) };
+}
+
 export async function loadMesh(url: URL, height = 2.4): Promise<Mesh> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`the bunny mesh: HTTP ${response.status}`);
@@ -41,24 +65,11 @@ export async function loadMesh(url: URL, height = 2.4): Promise<Mesh> {
     positions[i] = (positions[i]! - center[i % 3]!) * scale;
   const corner = (k: number) =>
     Uint32Array.from({ length: faces }, (_, t) => triangles[t * 3 + k]!);
-  const seen = new Set<number>();
-  const a: number[] = [];
-  const b: number[] = [];
-  for (let t = 0; t < faces * 3; t += 3) {
-    for (let s = 0; s < 3; s++) {
-      const u = triangles[t + s]!;
-      const v = triangles[t + ((s + 1) % 3)]!;
-      const key = Math.min(u, v) * count + Math.max(u, v);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      a.push(u);
-      b.push(v);
-    }
-  }
+  const topology = { a: corner(0), b: corner(1), c: corner(2) };
   return {
     count,
     positions,
-    faces: { a: corner(0), b: corner(1), c: corner(2) },
-    springs: { a: Uint32Array.from(a), b: Uint32Array.from(b) },
+    faces: topology,
+    springs: wireframe(topology),
   };
 }

@@ -1,11 +1,11 @@
-// Resolves each end of an edge or face row to a held row of the vertex mark that draws the end's
+// Resolves each end of an edge row to a held row of the vertex mark that draws the end's
 // table. A row's ends name places in that table's order, and places stay fixed as the camera moves.
 // Their held rows change as the camera moves, because the vertex mark makes other pages and kept
 // rows resident in its slots. So no channel stores an end's held row. The expression machine's
 // end step resolves it for the rows whose ends changed, and for every row once the vertices moved.
-// It writes end `k` into the row's kind word `k`, which draws, probes, and normals read.
+// It writes end `k` into the row's kind word `k`, which draws and probes read.
 
-import package::lib::types::{NONE, PAGE_BITS, PAGE_MASK, MARK_FACES, END_WORDS, END_STATE, END_SLOTS, END_COLUMN};
+import package::lib::types::{NONE, PAGE_BITS, PAGE_MASK, END_WORDS, END_STATE, END_SLOTS, END_COLUMN};
 import package::lib::bind::{program, mark, pages};
 import package::lib::state::record_at;
 import package::lib::read::bits_value;
@@ -19,16 +19,16 @@ fn held_of(slots: u32, place: u32) -> u32 {
     if slots == NONE || place == NONE {
         return place;
     }
-    let pages = program[slots];
+    let pages = program(slots);
     let page = place >> PAGE_BITS;
     if page < pages {
-        let slot = program[slots + 1u + page];
+        let slot = program(slots + 1u + page);
         if slot != NONE {
             return (slot << PAGE_BITS) | (place & PAGE_MASK);
         }
     }
     let kept = slots + 1u + pages;
-    let buckets = program[kept];
+    let buckets = program(kept);
     if buckets == 0u {
         return NONE;
     }
@@ -36,9 +36,9 @@ fn held_of(slots: u32, place: u32) -> u32 {
     // At most four fifths of the buckets are full, so a probe always reaches an empty bucket.
     for (var probe = 0u; probe < buckets; probe++) {
         let at = kept + 1u + 2u * b;
-        let held = program[at];
+        let held = program(at);
         if held == place {
-            return program[at + 1u];
+            return program(at + 1u);
         }
         if held == NONE {
             return NONE;
@@ -60,19 +60,3 @@ fn home(d: u32, buckets: u32) -> u32 {
     return (h ^ (h >> 16u)) % buckets;
 }
 
-// Writes the held row of each end of the current mark's live row `row`: an edge's two ends, or a
-// face's three corners.
-fn resolve(row: u32) {
-    let at = record_at(mark.state, mark.stride + mark.extras, row);
-    let ends = select(2u, 3u, mark.kind == MARK_FACES);
-    for (var k = 0u; k < ends; k++) {
-        let e = mark.ends + END_WORDS * k;
-        let column = program[e + END_COLUMN];
-        // A pole's end is the row itself, at the same held row.
-        var held = row;
-        if column != NONE {
-            held = held_of(program[e + END_SLOTS], bits_value(column, row));
-        }
-        pages[at + k] = select(held, NONE, program[e + END_STATE] == NONE);
-    }
-}

@@ -13,6 +13,11 @@
 // Builds with `gpu` lint every feature, so they still catch code nothing uses.
 #![cfg_attr(not(feature = "gpu"), allow(dead_code))]
 
+// A browser build draws only through the page: the `web` feature hands latkit its canvas, shaders,
+// and timers.
+#[cfg(all(feature = "gpu", target_arch = "wasm32", not(feature = "web")))]
+compile_error!("in a browser, latkit draws with the `web` feature; use `default-features = false` for data alone");
+
 mod data;
 #[cfg(feature = "gpu")]
 mod derive;
@@ -35,8 +40,6 @@ pub mod resource;
 #[cfg(feature = "gpu")]
 mod scene;
 mod schema;
-#[cfg(feature = "gpu")]
-mod sheet;
 #[cfg(feature = "gpu")]
 mod shot;
 #[cfg(feature = "gpu")]
@@ -62,7 +65,7 @@ pub use data::{Order, Patches, Query, QueryResult, Reading};
 pub use error::{Error, Path, Result, Step};
 pub use expr::{
     Color, Colormap, ColormapKind, Expr, Format, Mapped, Size, Stop, Then, When, elapsed, field, hovered, meters,
-    pointer, px, related, selected, units, when, zoom,
+    pointer, related, selected, units, when, zoom,
 };
 pub use image::{Image, ImageFormat};
 pub use json::from_json;
@@ -75,10 +78,10 @@ pub use {
     gpu::{Budget, DeviceEvents, Gpu, work::Work},
     panels::Panels,
     scene::{
-        Action, AreaTheme, Areas, Axis, Controls, Diagram, DiagramTheme, Direction, Earth, EarthTheme, EdgeTheme,
-        Edges, Faces, FlowTheme, FocusTheme, Gestures, Grid, Interpolation, Label, Layered, Layout, Legend, Length,
-        LineTheme, Lines, Mark, Marker, Motion, Place, Plane, Plot, PlotTheme, Port, Projection, Route, Scene,
-        ShadowTheme, Shape, Side, Space, Stress, TextTheme, Theme, Title, VertexTheme, Vertices,
+        Action, AreaTheme, Areas, Axis, Controls, Direction, Earth, EarthTheme, EdgeTheme, Edges, FlowTheme,
+        FocusTheme, Gestures, Grid, Interpolation, Label, Layered, Layout, Legend, Length, LineTheme, Lines, Mark,
+        Marker, Motion, Place, Plane, Plot, PlotTheme, Projection, Route, Scene, Shape, Space, Stress, TextTheme,
+        Theme, Title, VertexTheme, Vertices,
     },
     shot::{Capture, Shot},
     tiles::Tiles,

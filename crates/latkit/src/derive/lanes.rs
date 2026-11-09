@@ -1,4 +1,4 @@
-//! Lanes of parallel edges, outside diagrams.
+//! Lanes of parallel edges.
 //!
 //! Edges joining the same two vertices form a family. Each edge row gets a lane within its family,
 //! so the strokes bow apart instead of drawing over each other. Lanes depend only on the table's
@@ -65,7 +65,7 @@ impl Derive for Lanes {
                 made.make(stamp, ());
                 changed |= keep(&mut self.tables, key, table, words(&a.targets(), &b.targets()));
             } else {
-                made.start(stamp, jobs.spawn(Job::lanes(&a.targets(), &b.targets())));
+                made.start(stamp, jobs.spawn(Job::lanes(rows, a, b)));
             }
         }
         let before = self.tables.len();
@@ -170,14 +170,6 @@ pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Option<Vec<(f32, u32)>> {
             })
             .collect(),
     )
-}
-
-/// The lane of each of `rows` rows among the rows joining the same two vertices. `ends` gives each
-/// row's endpoints. The sheet spreads straight wires by lane. `None` if no rows share endpoints.
-pub(crate) fn spread(rows: usize, ends: impl Fn(usize) -> Option<[usize; 2]>) -> Option<Vec<f64>> {
-    let (from, to): (Vec<u32>, Vec<u32>) =
-        (0..rows).map(|r| ends(r).map_or((UNWIRED, UNWIRED), |[a, b]| (a as u32, b as u32))).unzip();
-    lanes(&from, &to).map(|lanes| lanes.into_iter().map(|(lane, _)| f64::from(lane)).collect())
 }
 
 #[cfg(test)]

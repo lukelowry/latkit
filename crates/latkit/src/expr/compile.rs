@@ -296,8 +296,10 @@ impl<'a> Compiler<'a> {
         compiled
     }
 
-    /// Compiles a position channel. Plain number fields and point fields keep full precision.
-    pub(crate) fn position(&mut self, x: &Expr, y: &Expr, word: u32) -> Result<()> {
+    /// Compiles a position channel. Plain number fields and point fields keep full precision. With
+    /// `laid`, a row whose data gives no position takes the place the scene's layout gave it, read
+    /// from the derived fields `x` and `y` at full precision.
+    pub(crate) fn position(&mut self, x: &Expr, y: &Expr, word: u32, laid: bool) -> Result<()> {
         let start = self.begin();
         if let (Some(cx), Some(cy)) = (self.plain(x), self.plain(y)) {
             self.deps |= Deps::DATA;
@@ -307,30 +309,13 @@ impl<'a> Compiler<'a> {
             self.coordinate(y).map_err(|e| e.at("y"))?;
             self.op(wgsl::OP_STORE_POSITION, word, 0, 0, 2, 0)?;
         }
+        if laid {
+            let [x, y] =
+                ["x", "y"].map(|name| self.column(ColumnUse { low: true, ..ColumnUse::derived(name, Words::Values) }));
+            self.deps |= Deps::DATA;
+            self.op(wgsl::OP_FILL_POSITION, word, x, y, 0, 0)?;
+        }
         self.close("position", start);
-        Ok(())
-    }
-
-    /// Compiles a position channel that reads each row's derived position (from a diagram's sheet
-    /// or the scene's layout), at full precision.
-    pub(crate) fn derived_position(&mut self, word: u32) -> Result<()> {
-        let start = self.begin();
-        let [x, y] =
-            ["x", "y"].map(|name| self.column(ColumnUse { low: true, ..ColumnUse::derived(name, Words::Values) }));
-        self.deps |= Deps::DATA;
-        self.op(wgsl::OP_POSITION, word, x, y, 0, 0)?;
-        self.close("position", start);
-        Ok(())
-    }
-
-    /// Compiles channel `name` storing the number the view derives as field `field`.
-    pub(crate) fn derived(&mut self, name: &str, field: &str, store: Store) -> Result<()> {
-        let start = self.begin();
-        let column = self.column(ColumnUse::derived(field, Words::Values));
-        self.deps |= Deps::DATA;
-        self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
-        self.store_op(store)?;
-        self.close(name, start);
         Ok(())
     }
 
@@ -349,15 +334,6 @@ impl<'a> Compiler<'a> {
         self.column(ColumnUse::own(field, Words::Path))
     }
 
-    /// The program column of the mark's reference field `name`, read as the rows it references.
-    /// Errors if `name` is not a reference field.
-    pub(crate) fn bits(&mut self, name: &str) -> Result<u32> {
-        if self.fields.kind(None, name) != Some(Kind::Reference) {
-            return Err(invalid("not a reference field"));
-        }
-        Ok(self.column(ColumnUse::own(name, Words::Bits)))
-    }
-
     /// Errors if `expr`, given for option `name`, reads anything but static fields. Options such as
     /// a row's priority are computed on the CPU from the data alone.
     pub(crate) fn check_data(&self, name: &str, expr: &Expr) -> Result<()> {
@@ -365,17 +341,6 @@ impl<'a> Compiler<'a> {
             Some(reason) => Err(invalid(format!("{name} can read only data, not {reason}")).at(name)),
             None => Ok(()),
         }
-    }
-
-    /// Errors if any of `exprs`, given for option `name`, reads anything but static fields. A
-    /// diagram's positions and sizes are its structure, which the sheet computes from data alone.
-    pub(crate) fn check_structure<'e>(&self, name: &str, exprs: impl IntoIterator<Item = &'e Expr>) -> Result<()> {
-        for expr in exprs {
-            if let Some(reason) = self.unstructural(expr) {
-                return Err(invalid(format!("a diagram's {name} can read only data, not {reason}")).at(name));
-            }
-        }
-        Ok(())
     }
 
     /// The first input of `expr` that structure cannot depend on: view state or a sampled field.
@@ -427,22 +392,6 @@ impl<'a> Compiler<'a> {
         let Ok(Some(f)) = text_field(expr, None) else { return true };
         let from = f.from.as_ref();
         !self.fields.empty(from, &f.name) && self.fields.kind(from, &f.name).is_some_and(|kind| kind != Kind::Text)
-    }
-
-    /// Compiles channel `name`, which stores at `word` the dictionary code of derived text field
-    /// `field`, as a diagram's sheet writes its labels. Returns the program column whose dictionary
-    /// decodes the codes.
-    pub(crate) fn derived_text(&mut self, name: &str, field: Name, word: u32) -> Result<u32> {
-        let start = self.begin();
-        let column = self.column(ColumnUse::derived(field, Words::Codes));
-        self.deps |= Deps::DATA;
-        self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
-        self.op(wgsl::OP_STORE_CODE, word, 0, 0, 1, 0)?;
-        self.close(name, start);
-        if let Some(channel) = self.program.channels.last_mut() {
-            channel.eases = false;
-        }
-        Ok(column)
     }
 
     /// Compiles channel `name`, which stores at `word` the dictionary code of text field `expr`.

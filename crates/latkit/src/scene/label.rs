@@ -14,8 +14,7 @@ use crate::{Expr, Format};
 /// Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
 /// its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
 /// is missing or empty has no label, so a `when` that returns the field or missing labels only
-/// some rows. In a diagram, a label scales with the zoom, fades out when too small to read, and
-/// shows wherever it fits its vertex.
+/// some rows.
 ///
 /// ```
 /// # use latkit::{field, when, zoom, Expr, Label, Vertices};
@@ -30,17 +29,15 @@ use crate::{Expr, Format};
 pub struct Label {
     /// The text field to show, a number to write, or a `when` that returns either or missing. A
     /// row whose text is missing or empty has no label. The GPU writes a number each frame, so it
-    /// can follow a sampled field. In a diagram, a text may read only data, since the sheet sizes
-    /// blocks around it, and a number shows where it fits its block.
+    /// can follow a sampled field.
     pub(crate) text: Expr,
-    /// Font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's
-    /// `text.size`.
+    /// Font size in CSS pixels. Defaults to the theme's `text.size`.
     #[serde(default)]
     pub(crate) size: Option<f32>,
     /// Each row's text color. Defaults to the theme's text color.
     #[serde(default)]
     pub(crate) color: Option<Expr>,
-    /// The width at which lines wrap, in CSS pixels, or diagram units in a diagram.
+    /// The width at which lines wrap, in CSS pixels.
     #[serde(default)]
     pub(crate) max_width: Option<f32>,
     /// The CSS font family list for the text. Defaults to the theme's `text.font`.
@@ -109,8 +106,7 @@ impl Label {
         }
     }
 
-    /// Sets the font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's
-    /// text size.
+    /// Sets the font size in CSS pixels. Defaults to the theme's text size.
     #[must_use]
     pub fn size(mut self, size: f32) -> Label {
         self.size = Some(size);
@@ -124,7 +120,7 @@ impl Label {
         self
     }
 
-    /// Sets the width at which lines wrap, in CSS pixels, or diagram units in a diagram.
+    /// Sets the width at which lines wrap, in CSS pixels.
     #[must_use]
     pub fn max_width(mut self, width: f32) -> Label {
         self.max_width = Some(width);

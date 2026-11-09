@@ -23,18 +23,29 @@ What every part of the package shares.
 ### `load()`
 
 {.signature}
-`function load(options?: { wasm?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
+`function load(options?: { wasm?: string | URL | WebAssembly.Module; shaders?: string | URL; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
 
 Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
 load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
-load rejects with an `io` error and can be retried. While the WebAssembly compiles, `load()`
-requests a GPU adapter so the browser starts its GPU process early. Then it requests the first
-device for [`Gpu.create()`](#gpu-create).
+load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
+also downloads the shaders, then creates the first WebGL2 device for [`Gpu.create()`](#gpu-create). Only
+drawing needs the shaders, so a failed download fails `Gpu.create()`, not `load()`.
 
 {#load-wasm .member}
 **`wasm`**`?: string | URL | WebAssembly.Module` [¶](#load-wasm){.headerlink}
 : The URL of this version's `latkit/wasm` asset, or that asset compiled. Defaults to the
   bundled asset.
+
+{#load-shaders .member}
+**`shaders`**`?: string | URL` [¶](#load-shaders){.headerlink}
+: The URL of this version's `latkit/shaders` asset: the shaders translated for WebGL2. Defaults
+  to the bundled asset.
+
+{#load-wgsl .member}
+**`wgsl`**`?: string | URL | WebAssembly.Module` [¶](#load-wgsl){.headerlink}
+: The URL of this version's `latkit/wgsl` asset, the WebAssembly that translates custom
+  markers' WGSL, or that asset compiled. A page loads it the first time it draws a custom
+  marker. Defaults to the bundled asset.
 
 {#load-worker .member}
 **`worker`**`?: string | URL | (() => Worker)` [¶](#load-worker){.headerlink}
@@ -995,20 +1006,6 @@ A conditional's next condition. `then` gives its value.
 **`then`**`(value:` [`ExprInput`](#exprinput)`):` [`Then`](#then) [¶](#next-then){.headerlink}
 : Sets the value where this condition holds.
 
-(px-function)=
-
-### `px()`
-
-{.signature}
-`function px(size: number): { px: number }`
-
-{.signature}
-`function px(size:` [`ExprInput`](#exprinput)`):` [`Px`](#px)
-
-A size in CSS pixels in any space, so it stays the same on screen as the view zooms. `px(1)`
-keeps a diagram's stroke 1 pixel wide at any zoom. Given a number, the result also works as a
-theme length.
-
 (units-function)=
 
 ### `units()`
@@ -1218,8 +1215,7 @@ const view = await View.create(canvas, {
 
 {#view-orbit .member}
 **`orbit`**`: number` [¶](#view-orbit){.headerlink}
-: Degrees per second the camera turns about its center on a map or plane. 0 stops it. A diagram
-  never turns.
+: Degrees per second the camera turns about its center on a map or plane. 0 stops it.
 
 {#view-selection .member}
 **`selection`**`: readonly` [`Rows`](#rows)`[]` [¶](#view-selection){.headerlink}
@@ -1305,8 +1301,8 @@ const view = await View.create(canvas, {
   applies once the rows have their places (their data streamed, any layout placed them, and they
   eased there), a frame or two later when the GPU must measure the extent. With nothing drawn to
   frame, it frames the rows that arrive later. Until a view's first fit applies, it shows only
-  its background. A fit frames a diagram at most at its natural size and the earth at most at
-  zoom 16, which is also where it frames a single point. Resolves to the camera it framed, or to
+  its background. A fit frames the earth at most at zoom 16, which is also where it frames a
+  single point. Resolves to the camera it framed, or to
   `null` when a camera move or another fit replaces it.
 
 {#view-fly .member}
@@ -1328,13 +1324,9 @@ const view = await View.create(canvas, {
   looks past the ground.
 
 {#view-screenof .member}
-**`screenOf`**`(row:` [`Row`](#row)`, options?: { port?: string } &` [`Wait`](#wait)`): Promise<`[`Point`](#point) `| null>` [¶](#view-screenof){.headerlink}
-: Resolves to where `row`, or its port, is on screen once a frame draws the view, or to `null`
-  when no mark draws it in view. A diagram's vertices and ports resolve at once.
-
-  {#view-screenof-port .member}
-  **`port`**`?: string` [¶](#view-screenof-port){.headerlink}
-  : A port of the row, by the reference field naming its net. Only a diagram has ports.
+**`screenOf`**`(row:` [`Row`](#row)`, options?:` [`Wait`](#wait)`): Promise<`[`Point`](#point) `| null>` [¶](#view-screenof){.headerlink}
+: Resolves to where `row` is on screen once a frame draws the view, or to `null` when no mark
+  draws it in view.
 
 {#view-pick .member}
 **`pick`**`(point:` [`Point`](#point)`, options?: { radius?: number } &` [`Wait`](#wait)`): Promise<`[`Hit`](#hit)`[]>` [¶](#view-pick){.headerlink}
@@ -1439,7 +1431,7 @@ and latitude; on a plot, the axis coordinate and the value.
 {.signature}
 `class Gpu extends` [`Handle`](#handle)
 
-A WebGPU device that views draw with. Views on one `Gpu` share its memory and draw together in
+A WebGL2 device that views draw with. Views on one `Gpu` share its memory and draw together in
 each animation frame, so linked views always show the same moment. Views use the first `Gpu`
 created unless given another, and [`View.create`](#view-create) creates one if none exists. When the device is
 lost, latkit requests a new one once the page is in the foreground, and moves the views, their
@@ -1460,7 +1452,7 @@ its views and frame listeners. Other GPUs and datasets stay usable.
 {#gpu-budget .member}
 **`budget`**`:` [`Budget`](#budget) [¶](#gpu-budget){.headerlink}
 : The GPU memory budget for data, shared by every view on this GPU. See [`Budget`](#budget). Defaults
-  to half the device's largest storage buffer, at most 1 GiB, with 32 MiB uploaded per frame.
+  to half the device's addressable word-texture capacity, at most 1 GiB, with 32 MiB uploaded per frame.
 
 {#gpu-work .member}
 `readonly` **`work`**`:` [`Work`](#work) [¶](#gpu-work){.headerlink}
@@ -1481,10 +1473,11 @@ its views and frame listeners. Other GPUs and datasets stay usable.
 
 {#gpu-create .member}
 `static` **`create`**`(wait?:` [`Wait`](#wait)`): Promise<Gpu>` [¶](#gpu-create){.headerlink}
-: Requests a WebGPU device. The first call takes the device [`load()`](#load) requested. Create one before
+: Requests a WebGL2 device. The first call takes the device [`load()`](#load) requested. Create one before
   any view to set its `budget` first, or create another for views that should not share memory
   with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
-  when the browser has no WebGPU device.
+  when the browser has no WebGL2 device, and with an `io` error when the shaders could not be
+  downloaded. The next call downloads them again.
 
 {#gpu-on .member}
 **`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}
@@ -1493,11 +1486,12 @@ its views and frame listeners. Other GPUs and datasets stay usable.
   frame runs on every animation frame. Returns a function that removes the listener.
 
 {#gpu-step .member}
-**`step`**`(now: number): void` [¶](#gpu-step){.headerlink}
+**`step`**`(now: number, wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-step){.headerlink}
 : Draws one frame now, at `now` milliseconds on the `requestAnimationFrame` clock. It runs the
-  frame listeners, then draws every canvas that needs a frame. After the first call the GPU
-  stops requesting animation frames, so a test or benchmark that steps every frame draws the
-  same frames on any device.
+  frame listeners, then draws every canvas that needs a frame. Resolves once the GPU has finished
+  the frame and its readbacks have arrived. Pipelines may still compile: a view waiting for one
+  wakes when it lands. After the first call the GPU stops requesting animation frames, so a test
+  or benchmark that steps every frame draws the same frames on any device.
 
 {#gpu-done .member}
 **`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-done){.headerlink}

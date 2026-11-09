@@ -5,21 +5,23 @@
 //! - `ci <job>`: the steps of one job of `.github/workflows/ci.yml`, which runs each job this way:
 //!   - `format`: Prettier over every file. CI's `format` job has no Rust toolchain, so it runs
 //!     `pnpm format:check` itself.
-//!   - `rust`: formats, lints, tests (with GPU tests required), documents, and packages the crates,
-//!     and checks that `native` stays out of browser builds.
+//!   - `rust`: formats, lints, tests (with GPU tests required), documents, and packages the crates.
+//!     Lints both browser builds: the npm package's, and the driver tests', with `wgsl`.
 //!   - `native-cli`: tests the CLI's native code, which CI runs on Windows, and on macOS when it
 //!     changes.
 //!   - `npm`: builds the npm package with `wasm --dev`, then lints, documents, type-checks, and
 //!     tests it. Runs the browser gate over that build, then `package` and `package-test`.
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`. Checks
 //!   that every shader variant's pipelines compile in Chrome within budget, and that every example
-//!   page draws and responds to the pointer without errors or stalls. On `SwiftShader`, which Linux
-//!   always uses, checks only that every pipeline compiles, since pages and times need a GPU.
+//!   page draws and responds to the pointer without errors or missed frames. On `SwiftShader`,
+//!   which Linux always uses, checks only that every pipeline compiles, since pages and times need
+//!   a GPU. Then checks WebGL2 itself (`gate/webgl2*.ts`): integer scans and sorts against a CPU
+//!   reference, the package's views, exports, and recovery, and the device through the Rust API.
 //! - `bench [--quick] [--only a,b] [--repeats n] [--update] [--software]`: the benchmark
 //!   (`benchmark/`) over a release `wasm`. Runs every scenario at increasing sizes in Chrome while
-//!   the last size stays within budget. Measures each phase's time, GPU time, stalls, and exact
-//!   work, and judges them against their allowed growth with size, the committed work, and this
-//!   machine's times. A lost device stops the sweep. `--quick` runs each scenario once at its
+//!   the last size stays within budget. Measures each phase's time, CPU and GPU time per frame, and
+//!   exact work, and judges them against their allowed growth with size, the committed work, and
+//!   this machine's times. A lost device stops the sweep. `--quick` runs each scenario once at its
 //!   smallest size. See `benchmark/run.ts`.
 //! - `wasm [--dev]`: builds `latkit-js`, binds it with the `wasm-bindgen` CLI version in
 //!   `Cargo.lock`, and compiles the npm wrapper. `--dev` builds faster, without link-time
@@ -133,7 +135,14 @@ fn rust() -> Result {
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"])?;
     cargo(&["clippy", "--locked", "-p", "latkit", "--no-default-features", "--all-targets", "--", "-D", "warnings"])?;
-    cargo(&["clippy", "--locked", "-p", "latkit-js", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"])?;
+    // The browser builds: the npm package's, and the driver tests', whose latkit has `wgsl`. Each
+    // lints alone, since one build would unify their features.
+    for package in [&["-p", "latkit-js", "-p", "latkit-wgsl"][..], &["-p", "latkit-browser-tests"]] {
+        let mut args = vec!["clippy", "--locked"];
+        args.extend(package);
+        args.extend(["--target", "wasm32-unknown-unknown", "--", "-D", "warnings"]);
+        cargo(&args)?;
+    }
     run_with(env!("CARGO"), &["test", "--locked", "--workspace"], &gpu)?;
     run_with(
         env!("CARGO"),
@@ -187,20 +196,37 @@ fn browser() -> Result {
     browser_gate(&wasm(true)?)
 }
 
-/// Runs the browser gate over the linked shaders and `shaders.json` in `shaders`.
+/// Runs the browser gate over the linked shaders and `shaders.json` in `shaders`, then checks WebGL2
+/// itself: the integer scans and sorts against a CPU reference, the package's views, exports, and
+/// recovery, and the WebGL2 device through the Rust API.
 fn browser_gate(shaders: &str) -> Result {
-    run("node", &["npm/examples/gate/gate.ts", shaders])
+    run("node", &["npm/examples/gate/gate.ts", shaders])?;
+    run("node", &["npm/examples/gate/webgl2.ts", shaders, "--integer"])?;
+    run("node", &["npm/examples/gate/webgl2-runtime.ts"])?;
+    run("node", &["npm/examples/gate/webgl2-driver.ts"])
 }
 
 fn wasm(dev: bool) -> Result<String> {
     build_wasm(dev, "npm")
 }
 
-/// Builds the wasm package into `output`. Returns where latkit's build script wrote the linked
-/// shaders and `shaders.json`, the same for every target, which the browser gate reads.
+/// Builds the wasm package into `output`: latkit, and the WGSL translator a page loads when it draws
+/// a custom marker. Returns where latkit's build script wrote the linked shaders and
+/// `shaders.json`, which the browser gate reads.
 fn build_wasm(dev: bool, output: &str) -> Result<String> {
     let profile = if dev { "wasm-dev" } else { "wasm" };
-    let args = ["build", "--locked", "-p", "latkit-js", "--profile", profile, "--target", "wasm32-unknown-unknown"];
+    let args = [
+        "build",
+        "--locked",
+        "-p",
+        "latkit-js",
+        "-p",
+        "latkit-wgsl",
+        "--profile",
+        profile,
+        "--target",
+        "wasm32-unknown-unknown",
+    ];
     eprintln!("$ cargo {}", args.join(" "));
     let built = Command::new(env!("CARGO"))
         .args(args)
@@ -230,10 +256,14 @@ fn build_wasm(dev: bool, output: &str) -> Result<String> {
             installed.trim()
         ));
     }
-    let wasm = format!("target/wasm32-unknown-unknown/{profile}/latkit_js.wasm");
     let pkg = format!("{output}/pkg");
-    let bind = [wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", "latkit"];
-    run("wasm-bindgen", &bind)?;
+    for (crate_name, name) in [("latkit_js", "latkit"), ("latkit_wgsl", "latkit_wgsl")] {
+        let wasm = format!("target/wasm32-unknown-unknown/{profile}/{crate_name}.wasm");
+        run("wasm-bindgen", &[wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", name])?;
+    }
+    // The shaders the build translated, which the page loads beside the WebAssembly.
+    std::fs::copy(std::path::Path::new(&shaders).join("shaders.bin"), root().join(&pkg).join("latkit_shaders.bin"))
+        .map_err(|e| format!("latkit's shader store: {e}"))?;
     run("node", &["npm/build.mjs", "compile", output])?;
     Ok(shaders)
 }

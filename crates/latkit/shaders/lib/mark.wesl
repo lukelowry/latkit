@@ -1,3 +1,4 @@
+import package::lib::project::geographic;
 // Helpers shared by every mark's shaders.
 
 import package::lib::types::{POINTS, SPACE_EARTH};
@@ -10,7 +11,7 @@ override PRIMITIVE: u32 = POINTS;
 // CSS pixels per position unit at the camera's center. On the earth a position unit is a degree,
 // and the eye's scale is per mercator radian.
 fn px_per_length() -> f32 {
-    return eye.px_per_unit.x * select(1.0, radians(1.0), frame.space == SPACE_EARTH);
+    return eye.px_per_unit.x * select(1.0, radians(1.0), geographic());
 }
 
 // `size` in CSS pixels. State word `word` holds position units when the mark measures it in units.

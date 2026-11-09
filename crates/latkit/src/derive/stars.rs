@@ -1,18 +1,18 @@
-//! Stars of nets, outside diagrams.
+//! Stars of nets.
 //!
 //! Each row of an edge mark with `joins` is a net. Its members are the vertex rows whose reference
 //! field names it. The net draws as a star: a segment from the members' centroid to each member, at
-//! the places their vertex mark gives them. Stars are a `route` path field beside the net table,
-//! and the mark draws them like any geometry. They are recomputed only when the data, the scene, or
-//! the layout's places change.
+//! the places their vertex mark gives them. Stars are a `star` path field beside the net table,
+//! and the mark draws them like any geometry. They are recomputed only when what they read
+//! changes: the nets and their members, the members' positions, and the layout's places.
 
 use std::hash::Hash;
 
 use super::graph::{VertexMark, marks, position};
 use super::{Input, Tables, beside, kept, stamp_with};
+use crate::Mark;
 use crate::data::{Field, Name, UNWIRED, Values};
 use crate::expr::cpu::Rows;
-use crate::{Mark, Space};
 
 #[derive(Default)]
 pub(crate) struct Stars {
@@ -25,22 +25,34 @@ impl Stars {
     /// layout's `places` beside its table. Returns whether a table changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, places: &Tables) -> bool {
         let joining = input.scene.marks.iter().any(|m| matches!(m, Mark::Edges(e) if e.joins.is_some()));
-        if matches!(input.scene.space, Space::Diagram(_)) || !joining {
+        if !joining {
             let had = !self.tables.is_empty();
             self.clear();
             return had;
         }
-        let field = |t: &crate::Table, name: &str| t.field_named(name).map(Field::version);
-        let placed: Vec<_> = places.iter().map(|(key, t)| (key, field(t, "x"), field(t, "y"))).collect();
+        let (vertex_marks, _) = marks(input);
         let stamp = stamp_with(|hasher| {
-            (input.scene_version, placed).hash(hasher);
-            input.structure(hasher);
+            input.scene_version.hash(hasher);
+            for mark in &input.scene.marks {
+                let Mark::Edges(edges) = mark else { continue };
+                let Some((members, _)) = &edges.joins else { continue };
+                let data = &edges.style.data;
+                for table in [&edges.style.table, members] {
+                    let rows = input.data(data).and_then(|d| d.table(table));
+                    (table, rows.map(|t| (t.structure, t.order))).hash(hasher);
+                }
+                input.links(edges, &mut |read| read.stamp(hasher));
+                if let Some(vm) = vertex_marks.iter().find(|vm| vm.data.name() == data && vm.table.name() == members) {
+                    input.positions(vm.mark, &mut |read| read.stamp(hasher));
+                }
+                let placed = places.get(&(data.clone(), members.clone()));
+                ["x", "y"].map(|name| placed.and_then(|t| t.field_named(name)).map(Field::version)).hash(hasher);
+            }
         });
         if stamp == self.stamp {
             return false;
         }
         self.stamp = stamp;
-        let (vertex_marks, _) = marks(input);
         let mut tables = Tables::default();
         for mark in &input.scene.marks {
             let Mark::Edges(edges) = mark else { continue };
@@ -70,8 +82,8 @@ impl Stars {
             let stars: Vec<Vec<Vec<[f64; 2]>>> = points.iter().map(|members| star(members)).collect();
             let key = (data.name().clone(), nets.name().clone());
             let before = self.tables.get(&key);
-            let route = kept("route", &Values::from(stars), nets, before);
-            tables.insert(key, beside(nets, [(Name::from("route"), route)]));
+            let star = kept("star", &Values::from(stars), nets, before);
+            tables.insert(key, beside(nets, [(Name::from("star"), star)]));
         }
         self.tables = tables;
         true

@@ -266,6 +266,78 @@ fn dangling_references_resolve_once_the_row_exists() {
 }
 
 #[test]
+fn reference_retries_preserve_unchanged_pages_and_inverse_indices() {
+    use super::column::PAGE_ROWS;
+    use super::table::Field;
+    let data = Data::new("grid");
+    let mut targets = vec![1_u64; PAGE_ROWS + 1];
+    targets[PAGE_ROWS] = 9;
+    data.apply(
+        Patch::new()
+            .set(Table::new("Bus", vec![1_u64]))
+            .set(Table::new("Branch", Ids::count(targets.len() as u32)).reference("to", "Bus", targets)),
+    )
+    .unwrap();
+    let reference = |snapshot: &Snapshot| {
+        let Some(Field::Reference(r)) = snapshot.table("Branch").unwrap().field_named("to") else {
+            panic!("a reference");
+        };
+        r.clone()
+    };
+    let before = reference(&data.snapshot());
+    assert_eq!(before.inverse().of(0).len(), PAGE_ROWS);
+    data.apply(Table::new("Bus", vec![2_u64])).unwrap();
+    let retry = reference(&data.snapshot());
+    assert!(retry.rows.shares(&before.rows));
+    assert_eq!(retry.version, before.version);
+    assert!(std::sync::Arc::ptr_eq(&retry.inverse, &before.inverse));
+    data.apply(Table::new("Bus", vec![9_u64])).unwrap();
+    let connected = reference(&data.snapshot());
+    assert_eq!(connected.rows.pages()[0].id, before.rows.pages()[0].id);
+    assert_ne!(connected.rows.pages()[1].id, before.rows.pages()[1].id);
+    assert_ne!(connected.version, before.version);
+    assert_eq!(connected.inverse().of(2), &[PAGE_ROWS as u32]);
+    assert!(before.inverse().of(2).is_empty(), "the previous snapshot stays unchanged");
+}
+
+#[test]
+fn u32_references_to_counted_rows_are_their_own_rows_until_a_larger_id_arrives() {
+    use super::column::{Column, PAGE_ROWS};
+    use super::table::{Field, Reference, UNWIRED};
+    use super::values::Values;
+    let reference = |data: &Data| {
+        let snapshot = data.snapshot();
+        let Some(Field::Reference(r)) = snapshot.table("Line").unwrap().field_named("to") else {
+            panic!("a reference");
+        };
+        r.clone()
+    };
+    // As writers without 64-bit integers send them: `u32` ids, read back from bytes as they are.
+    let lines = PAGE_ROWS + 3;
+    let ids: Vec<u32> = (0..lines as u32).map(|i| i % 5).collect();
+    let mut table = Table::new("Line", Ids::count(lines as u32));
+    table.insert("to".into(), Field::Reference(Reference::new("Bus".into(), Column::new(&Values::from(ids)))));
+    let patch = Patch::new().set(Table::new("Bus", Ids::count(5))).set(table);
+    let data = Data::new("grid");
+    data.apply(Patch::from_bytes(&patch.to_bytes()).unwrap()).unwrap();
+    let shared = reference(&data);
+    assert!(shared.rows.shares(&shared.ids), "ids below the count are their own rows, with no copy");
+    assert_eq!(shared.target_row(PAGE_ROWS + 2), (PAGE_ROWS as u32 + 2) % 5);
+    // An id past the count names no row yet, so its page resolves on its own.
+    data.apply(Table::new("Line", vec![0_u64]).reference("to", "Bus", vec![7_u64])).unwrap();
+    let dangling = reference(&data);
+    assert_eq!(dangling.target_row(0), UNWIRED);
+    assert_eq!(dangling.rows.pages()[1].id, dangling.ids.pages()[1].id, "the untouched page still shares");
+    data.apply(Table::new("Bus", Ids::count(8))).unwrap();
+    assert_eq!(reference(&data).target_row(0), 7, "until that row arrives");
+    // An id too large for `u32` widens the ids rather than cutting it short.
+    let large = u64::from(u32::MAX) + 2;
+    data.apply(Table::new("Line", vec![1_u64]).reference("to", "Bus", vec![large])).unwrap();
+    assert_eq!(reference(&data).ids.get(1), Some(Value::Number(large as f64)));
+    assert_eq!(reference(&data).ids.get(2), Some(Value::Number(2.0)));
+}
+
+#[test]
 fn inverses_follow_every_change_and_snapshots_keep_theirs() {
     let inverse = |data: &Snapshot, target: usize| {
         let Some(super::table::Field::Reference(r)) = data.table("Branch").and_then(|t| t.field_named("from")) else {

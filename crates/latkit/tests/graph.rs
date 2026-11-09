@@ -1,15 +1,13 @@
 //! Graphs. Edges between the same two vertices bow into lanes, edges bend through the points of a
 //! path field, edges end in arrowheads, and great-circle edges settle while their vertices animate.
-//! In a diagram, nets join the ports of the vertices that reference them, a block grows to fit its
-//! ports and drops its shadow onto the sheet, and orthogonal wires route around blocks. Ports pick
-//! by name, and neighbors follow edges and nets.
+//! Neighbors follow edges and nets.
 
 #![cfg(feature = "gpu")]
 
 mod common;
 
-use common::{SIZE, answer, at, camera, diagram, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Data, Edges, Ids, Patch, Port, Scene, Side, Table, Vertices, View, field};
+use common::{SIZE, answer, at, camera, errors, frame, gpu, plain_theme, plane, step};
+use latkit::{Data, Edges, Ids, Patch, Scene, Table, Vertices, View, field};
 
 const C: u32 = SIZE / 2;
 
@@ -88,104 +86,6 @@ fn edges_bend_through_their_points_and_pick_there() {
 }
 
 #[test]
-fn nets_join_the_ports_that_reference_them() {
-    let Some(gpu) = gpu() else { return };
-    let data = Data::new("graph");
-    data.apply(
-        Patch::new()
-            .set(nodes(vec![-40.0, 40.0, 0.0, 0.0], vec![0.0, 0.0, -40.0, 50.0]).reference(
-                "net",
-                "Net",
-                vec![1_u64, 1, 2, 2],
-            ))
-            .set(Table::new("Net", vec![1_u64, 2])),
-    )
-    .expect("valid");
-    let scene = Scene::new(diagram()).draw(Edges::of("graph", "Net").width(3.0).color(latkit::Color::WHITE)).draw(
-        Vertices::of("graph", "Node").position(field("x"), field("y")).radius(5.0).port("net", Port::new(Side::Top)),
-    );
-    let mut view = view(&gpu, scene, &data);
-    let pixels = frame(&gpu, &mut view);
-    // Net 1 joins the tops of nodes 1 and 2, five units above their centers.
-    assert!(lit(at(&pixels, C, C - 5)), "between the ports");
-    assert!(!lit(at(&pixels, C - 20, C)), "not between the centers");
-    // Net 2 joins node 3, above, to node 4, below, from top to top.
-    assert!(lit(at(&pixels, C, C + 20)), "a net of two runs straight");
-    assert_eq!(errors(&mut view), Vec::new());
-}
-
-#[test]
-fn nets_of_more_than_two_meet_at_a_junction() {
-    let Some(gpu) = gpu() else { return };
-    let data = Data::new("graph");
-    data.apply(
-        Patch::new()
-            .set(nodes(vec![-40.0, 40.0, 0.0], vec![0.0, 0.0, 45.0]).reference("net", "Net", vec![1_u64, 1, 1]))
-            .set(Table::new("Net", vec![1_u64])),
-    )
-    .expect("valid");
-    let scene = Scene::new(diagram())
-        .draw(Edges::of("graph", "Net").width(3.0).color(latkit::Color::WHITE))
-        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(2.0).port("net", Side::Left));
-    let mut view = view(&gpu, scene, &data);
-    let pixels = frame(&gpu, &mut view);
-    // The junction sits at the center of the three ports, 15 units down and 2 left.
-    assert!(lit(at(&pixels, C - 2, C + 15)), "at the junction");
-    assert!(lit(at(&pixels, C - 2, C + 30)), "to the third terminal");
-    assert!(!lit(at(&pixels, C, C - 20)), "nothing above");
-    assert_eq!(errors(&mut view), Vec::new());
-}
-
-#[test]
-fn an_unlabeled_block_makes_room_for_its_ports() {
-    let Some(gpu) = gpu() else { return };
-    let data = Data::new("graph");
-    let mut node = nodes(vec![0.0], vec![0.0]);
-    for port in ["a", "b", "c", "d"] {
-        node = node.reference(port, "Net", vec![None::<u64>]);
-    }
-    data.apply(Patch::new().set(node).set(Table::new("Net", Ids::count(0)))).expect("valid");
-    let block = ["a", "b", "c", "d"]
-        .into_iter()
-        .fold(Vertices::of("graph", "Node").position(field("x"), field("y")), |v, port| v.port(port, Side::Left));
-    let mut view = view(&gpu, Scene::new(diagram()).draw(block), &data);
-    let pixels = frame(&gpu, &mut view);
-    // Four ports one pitch apart down its left side, plus a pitch of margin: about 77 units tall.
-    assert!(lit(at(&pixels, C, C + 30)) && lit(at(&pixels, C, C - 30)), "tall enough for its ports");
-    assert!(!lit(at(&pixels, C, C + 45)), "and no taller");
-    assert_eq!(errors(&mut view), Vec::new());
-}
-
-#[test]
-fn a_block_drops_its_shadow_onto_the_sheet_below_it() {
-    let Some(gpu) = gpu() else { return };
-    let gray = latkit::Color::rgb(0.5, 0.5, 0.5);
-    let plain = plain_theme();
-    let shadow = latkit::ShadowTheme { color: latkit::Color::BLACK.alpha(0.9), lift: 6.0 };
-    let theme = latkit::Theme { background: gray, diagram: latkit::DiagramTheme { shadow, ..plain.diagram }, ..plain };
-    let below = |shadow: bool| {
-        let data = Data::new("graph");
-        data.apply(Patch::new().set(nodes(vec![0.0], vec![0.0]))).expect("valid");
-        let block = Vertices::of("graph", "Node")
-            .position(field("x"), field("y"))
-            .size(40.0, 24.0)
-            .marker(latkit::Marker::Block { corner: None })
-            .color(latkit::Color::WHITE)
-            .shadow(shadow);
-        let mut view = View::new(&gpu, Scene::new(diagram()).draw(block).theme(theme.clone()));
-        view.set_camera(camera());
-        view.set_sources([&data]).expect("a source");
-        let pixels = frame(&gpu, &mut view);
-        assert_eq!(errors(&mut view), Vec::new());
-        // Y points down the sheet. Sample just under the block's bottom edge, 12 units below its
-        // center.
-        at(&pixels, C, C + 15)[0]
-    };
-    let (dropped, bare) = (below(true), below(false));
-    assert!(dropped + 20 < bare, "the shadow darkens the sheet below: {dropped} with, {bare} without");
-}
-
-#[test]
 fn edges_along_great_circles_settle_while_their_vertices_pulse() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
@@ -248,107 +148,6 @@ fn arrows_draw_heads_at_second_ends() {
 }
 
 #[test]
-fn ports_draw_on_their_sides_and_pick_by_name() {
-    let Some(gpu) = gpu() else { return };
-    let data = Data::new("graph");
-    data.apply(
-        Patch::new()
-            .set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0]).reference("in", "Net", vec![1_u64, 1]).reference(
-                "out",
-                "Net",
-                vec![2_u64, 2],
-            ))
-            .set(Table::new("Net", vec![1_u64, 2])),
-    )
-    .expect("valid");
-    let scene = Scene::new(diagram()).draw(
-        Vertices::of("graph", "Node")
-            .position(field("x"), field("y"))
-            .radius(8.0)
-            .color(latkit::Color::WHITE)
-            .port("in", Side::Left)
-            .port("out", Port::output(Side::Right)),
-    );
-    let mut view = view(&gpu, scene, &data);
-    let pixels = frame(&gpu, &mut view);
-    assert!(lit(at(&pixels, C - 50, C)) && lit(at(&pixels, C - 30, C)), "a port on each side");
-    assert!(!lit(at(&pixels, C - 40, C - 11)), "none on top");
-    let pending = view.pick([C as f32 - 50.0, C as f32], 2.0);
-    let hits = answer(&gpu, &mut view, pending);
-    assert_eq!(hits.first().and_then(|h| h.port.as_ref()).map(ToString::to_string).as_deref(), Some("in"));
-    let pending = view.pick([C as f32 + 50.0, C as f32], 2.0);
-    let hits = answer(&gpu, &mut view, pending);
-    assert_eq!(hits.first().and_then(|h| h.port.as_ref()).map(ToString::to_string).as_deref(), Some("out"));
-    assert_eq!(errors(&mut view), Vec::new());
-}
-
-#[test]
-fn orthogonal_routes_run_around_vertices() {
-    let Some(gpu) = gpu() else { return };
-    let data = Data::new("graph");
-    data.apply(Patch::new().set(nodes(vec![-50.0, 50.0, 0.0], vec![0.0, 0.0, 0.0])).set(
-        Table::new("Link", Ids::count(1)).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![2_u64]),
-    ))
-    .expect("valid");
-    let scene = Scene::new(diagram())
-        .draw(
-            Edges::of("graph", "Link")
-                .ends("from", "to")
-                .route(latkit::Route::Orthogonal)
-                .width(2.0)
-                .color(latkit::Color::rgb(0.0, 1.0, 0.0)),
-        )
-        .draw(
-            Vertices::of("graph", "Node")
-                .position(field("x"), field("y"))
-                .size(20.0, 20.0)
-                .marker(latkit::Shape::Rectangle)
-                .color(latkit::Color::rgb(1.0, 0.0, 0.0)),
-        );
-    let mut view = view(&gpu, scene, &data);
-    let pixels = frame(&gpu, &mut view);
-    let green = |y: u32| at(&pixels, C, y)[1] > 120 && at(&pixels, C, y)[0] < 60;
-    // A straight edge would run hidden under node 3. The route goes above or below it.
-    let around = (C - 45..C - 11).chain(C + 11..C + 45).any(green);
-    assert!(around, "around the vertex between");
-    assert_eq!(errors(&mut view), Vec::new());
-}
-
-#[test]
-fn many_routes_route_in_a_job_and_arrive() {
-    let Some(gpu) = gpu() else { return };
-    let links = |n: usize| {
-        let data = Data::new("graph");
-        data.apply(Patch::new().set(nodes(vec![-50.0, 50.0, 0.0], vec![0.0, 0.0, 0.0])).set(
-            Table::new("Link", Ids::count(n as u32)).reference("from", "Node", vec![1_u64; n]).reference(
-                "to",
-                "Node",
-                vec![2_u64; n],
-            ),
-        ))
-        .expect("valid");
-        data
-    };
-    let scene = Scene::new(diagram())
-        .draw(Edges::of("graph", "Link").ends("from", "to").route(latkit::Route::Orthogonal).width(2.0))
-        .draw(
-            Vertices::of("graph", "Node")
-                .position(field("x"), field("y"))
-                .size(20.0, 20.0)
-                .marker(latkit::Shape::Rectangle),
-        );
-    let mut view = view(&gpu, scene, &links(1));
-    frame(&gpu, &mut view);
-    // More wires than one frame routes: they draw as elbows until the job's routes arrive.
-    view.set_sources([links(64)]).expect("a source");
-    for _ in 0..4 {
-        step(&gpu, &mut view);
-    }
-    frame(&gpu, &mut view);
-    assert_eq!(errors(&mut view), Vec::new());
-}
-
-#[test]
 fn neighbors_follow_edges_and_nets() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
@@ -363,10 +162,10 @@ fn neighbors_follow_edges_and_nets() {
             )),
     )
     .expect("valid");
-    let scene = Scene::new(diagram())
+    let scene = Scene::new(plane())
         .draw(Edges::of("graph", "Link").ends("from", "to"))
-        .draw(Edges::of("graph", "Net"))
-        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).port("net", Side::Top));
+        .draw(Edges::of("graph", "Net").joins("Node", "net"))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
     let mut view = view(&gpu, scene, &data);
     frame(&gpu, &mut view);
     let nodes = |ids: &[u64]| vec![latkit::Rows::new("graph", "Node", ids.iter().copied())];

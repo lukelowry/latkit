@@ -18,7 +18,7 @@
         },
         "layout": {
           "$ref": "#/$defs/Layout",
-          "description": "How the view places vertex rows that have no position, such as a diagram's blocks or points\non a plane or the earth. Defaults to `none`."
+          "description": "How the view places vertex rows that have no position, on a plane or the earth. Defaults to\n`none`."
         },
         "theme": {
           "$ref": "#/$defs/Theme",
@@ -56,7 +56,6 @@
           "type": "string",
           "enum": [
             "plane",
-            "diagram",
             "earth",
             "plot"
           ]
@@ -101,24 +100,11 @@
                 "plot"
               ],
               "additionalProperties": false
-            },
-            {
-              "description": "A flat sheet for diagrams: x right and y down, every length in units.",
-              "type": "object",
-              "properties": {
-                "diagram": {
-                  "$ref": "#/$defs/Diagram"
-                }
-              },
-              "required": [
-                "diagram"
-              ],
-              "additionalProperties": false
             }
           ]
         }
       ],
-      "description": "The coordinate space of a scene's positions: a name, or\n`{ plane | diagram | earth | plot: options }`.\n\nThe space sets the unit of lengths that do not name their own. In a diagram it is the diagram\nunit, one CSS pixel at zoom 0. Elsewhere it is the CSS pixel. Only a diagram has ports, groups,\nnets, and orthogonal routes."
+      "description": "The coordinate space of a scene's positions: a name, or `{ plane | earth | plot: options }`."
     },
     "Earth": {
       "type": "object",
@@ -214,10 +200,6 @@
                   "description": "Units between dots.",
                   "type": "number",
                   "format": "double"
-                },
-                "snap": {
-                  "description": "Whether drag positions snap to the dots, in a diagram. Defaults to `false`.",
-                  "type": "boolean"
                 }
               },
               "additionalProperties": false,
@@ -230,10 +212,10 @@
             "dots"
           ],
           "additionalProperties": false,
-          "description": "Dots `pitch` units apart. With `snap`, drags in a diagram snap to them."
+          "description": "Dots `pitch` units apart."
         }
       ],
-      "description": "A plane's or a diagram's grid: `\"off\"`, `{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`."
+      "description": "A plane's grid: `\"off\"`, `{ lines: { pitch } }`, or `{ dots: { pitch } }`."
     },
     "Plot": {
       "type": "object",
@@ -354,17 +336,6 @@
       ],
       "description": "How an axis writes its tick values, or a label its number."
     },
-    "Diagram": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "grid": {
-          "$ref": "#/$defs/Grid",
-          "description": "The grid drawn under the marks. Defaults to dots 20 units apart."
-        }
-      },
-      "description": "A flat sheet for diagrams, seen from straight above. The camera pans and zooms but does not\nturn. Positions are in units with y down, and a unit is a CSS pixel at zoom 0. Sizes, padding,\nports, strokes, text, and the theme's lengths are in units too. Sizes given with `px`, the text\nhalo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole picture.\nOnly a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout places its\nblocks."
-    },
     "Mark": {
       "description": "One table a scene draws. The mark's kind is the key that holds its table, next to its options: `{ vertices: [data, table], radius: 4 }`.",
       "oneOf": [
@@ -373,9 +344,6 @@
         },
         {
           "$ref": "#/$defs/Edges"
-        },
-        {
-          "$ref": "#/$defs/Faces"
         },
         {
           "$ref": "#/$defs/Lines"
@@ -430,7 +398,7 @@
             },
             "elevation": {
               "$ref": "#/$defs/Expr",
-              "description": "Height above the ground. On the earth, in degrees of arc like every length there (one is about\n111 km). Defaults to 0. Not allowed in a diagram, which is flat."
+              "description": "Height above the ground. On the earth, in degrees of arc like every length there (one is about\n111 km). Defaults to 0."
             },
             "radius": {
               "anyOf": [
@@ -441,7 +409,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Each row's radius in CSS pixels, or units in a diagram, unless given with `px` or `units`.\nA diagram does not accept `px`. Defaults to the theme's `vertex.radius`."
+              "description": "Each row's radius in CSS pixels, unless given in `units`. Defaults to the theme's\n`vertex.radius`."
             },
             "size": {
               "type": [
@@ -453,7 +421,7 @@
               },
               "minItems": 2,
               "maxItems": 2,
-              "description": "Each row's width and height, for markers that are not round. In CSS pixels, or units in a\ndiagram, unless given with `px` or `units`. A diagram does not accept `px`. In a diagram, a\nblock without a size fits its label and ports."
+              "description": "Each row's width and height, for markers that are not round. In CSS pixels, unless given in\n`units`."
             },
             "marker": {
               "$ref": "#/$defs/Marker",
@@ -469,46 +437,6 @@
                 }
               ],
               "description": "A ring around each row's marker in this color. A missing or transparent color draws no ring."
-            },
-            "ports": {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "prefixItems": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "$ref": "#/$defs/Port"
-                  }
-                ],
-                "minItems": 2,
-                "maxItems": 2
-              },
-              "description": "Ports on each row, one for each reference field that names a net. An `edges` mark of the net\ntable, without `ends`, draws the nets. Diagrams only.",
-              "tsType": "[reference: string, port: Port][]"
-            },
-            "contains": {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "prefixItems": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "string"
-                  }
-                ],
-                "minItems": 2,
-                "maxItems": 2
-              },
-              "description": "Makes each row a group containing, for each `[table, reference]`, the rows of `table` whose\n`reference` field names it, so a group can hold rows of several tables. A group draws as a\ncontainer around its members, with its label as a title in its header. Diagrams only.",
-              "tsType": "[table: string, reference: string][]"
-            },
-            "shadow": {
-              "type": "boolean",
-              "description": "Whether each block or group casts a shadow on the sheet, styled by the theme's\n`diagram.shadow`. Defaults to `false`. Diagrams only."
             }
           },
           "required": [
@@ -517,7 +445,7 @@
         }
       ],
       "unevaluatedProperties": false,
-      "description": "Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram."
+      "description": "Rows drawn as markers: points of a map, nodes of a graph."
     },
     "Expr": {
       "$ref": "#/$defs/ExprNode",
@@ -1525,32 +1453,15 @@
       ]
     },
     "Size": {
-      "description": "A size: a value in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
+      "description": "A size: a value in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
       "anyOf": [
         {
           "$ref": "#/$defs/Expr"
         },
         {
-          "$ref": "#/$defs/Px"
-        },
-        {
           "$ref": "#/$defs/Units"
         }
       ]
-    },
-    "Px": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "px": {
-          "$ref": "#/$defs/Expr",
-          "description": "The size, in CSS pixels."
-        }
-      },
-      "required": [
-        "px"
-      ],
-      "description": "A size in CSS pixels, regardless of the space's unit."
     },
     "Units": {
       "type": "object",
@@ -1582,7 +1493,7 @@
       "required": [
         "units"
       ],
-      "description": "A size in position units (degrees on the earth), regardless of the space's unit. It scales with\nthe zoom. `atLeast` and `atMost` bound it in CSS pixels."
+      "description": "A size in position units (degrees on the earth). It scales with the zoom. `atLeast` and\n`atMost` bound it in CSS pixels."
     },
     "Marker": {
       "anyOf": [
@@ -1612,14 +1523,14 @@
               "additionalProperties": false
             },
             {
-              "description": "A rectangle with rounded corners that holds its label inside, like a diagram's blocks.",
+              "description": "A rectangle with rounded corners that holds its label inside.",
               "type": "object",
               "properties": {
                 "block": {
                   "type": "object",
                   "properties": {
                     "corner": {
-                      "description": "Corner radius in CSS pixels, or units in a diagram. Defaults to the theme's\n`diagram.corner`.",
+                      "description": "Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`.",
                       "type": [
                         "number",
                         "null"
@@ -1826,82 +1737,6 @@
       ],
       "description": "An image of RGBA texels: straight alpha, sRGB, rows top to bottom."
     },
-    "Port": {
-      "anyOf": [
-        {
-          "type": "string",
-          "enum": [
-            "left",
-            "right",
-            "top",
-            "bottom"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "side": {
-              "description": "The side of the marker it sits on.",
-              "$ref": "#/$defs/Side"
-            },
-            "order": {
-              "description": "Its position among the ports on its side, counted from the top or left. Ports without an\n`order` follow those with one, in declaration order.",
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "uint32",
-              "minimum": 0
-            },
-            "label": {
-              "description": "Its name, drawn beside it inside the marker.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "shape": {
-              "description": "Its shape. Defaults to an ellipse.",
-              "$ref": "#/$defs/Shape"
-            },
-            "output": {
-              "description": "Whether it is an output, which drives its net. Defaults to `false` (an input).",
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "side"
-          ]
-        }
-      ],
-      "description": "A port on one side of a vertex's marker, where a net connects: a side name, or options. The\nvertex names the net in a reference field. An output drives its net: layouts rank a net from its\noutputs, and the net's arrows point away from them.\n\n```\n# use latkit::{Port, Side, Vertices};\nlet pumps = Vertices::of(\"plant\", \"Pump\").port(\"in\", Side::Left).port(\"out\", Port::output(Side::Right));\n```"
-    },
-    "Side": {
-      "oneOf": [
-        {
-          "type": "string",
-          "const": "left",
-          "description": "The left side."
-        },
-        {
-          "type": "string",
-          "const": "right",
-          "description": "The right side."
-        },
-        {
-          "type": "string",
-          "const": "top",
-          "description": "The top."
-        },
-        {
-          "type": "string",
-          "const": "bottom",
-          "description": "The bottom."
-        }
-      ],
-      "description": "A side of a marker."
-    },
     "Label": {
       "anyOf": [
         {
@@ -1911,11 +1746,11 @@
           "type": "object",
           "properties": {
             "text": {
-              "description": "The text field to show, a number to write, or a `when` that returns either or missing. A\nrow whose text is missing or empty has no label. The GPU writes a number each frame, so it\ncan follow a sampled field. In a diagram, a text may read only data, since the sheet sizes\nblocks around it, and a number shows where it fits its block.",
+              "description": "The text field to show, a number to write, or a `when` that returns either or missing. A\nrow whose text is missing or empty has no label. The GPU writes a number each frame, so it\ncan follow a sampled field.",
               "$ref": "#/$defs/Expr"
             },
             "size": {
-              "description": "Font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's\n`text.size`.",
+              "description": "Font size in CSS pixels. Defaults to the theme's `text.size`.",
               "type": [
                 "number",
                 "null"
@@ -1934,7 +1769,7 @@
               ]
             },
             "maxWidth": {
-              "description": "The width at which lines wrap, in CSS pixels, or diagram units in a diagram.",
+              "description": "The width at which lines wrap, in CSS pixels.",
               "type": [
                 "number",
                 "null"
@@ -1976,7 +1811,7 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible and its text fits, for\nexample inside a block.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows. In a diagram, a label scales with the zoom, fades out when too small to read, and\nshows wherever it fits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible and its text fits, for\nexample inside a block.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
     },
     "Legend": {
       "anyOf": [
@@ -2075,7 +1910,7 @@
               "type": "null"
             }
           ],
-          "description": "Each row's color: a CSS color, a value through a colormap, or a conditional that\npicks between colors. Defaults to the theme's color for the mark. Faces default to a\nblend of their corners' colors."
+          "description": "Each row's color: a CSS color, a value through a colormap, or a conditional that\npicks between colors. Defaults to the theme's color for the mark."
         },
         "visible": {
           "$ref": "#/$defs/Expr",
@@ -2104,7 +1939,7 @@
             "boolean",
             "null"
           ],
-          "description": "Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices,\nedges, faces, and plot traces, and off for geometry: areas, and lines along paths\nsuch as coasts, borders, and roads. Either way, the mark shows which rows are\nselected and hovered."
+          "description": "Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices,\nedges, and plot traces, and off for geometry: areas, and lines along paths\nsuch as coasts, borders, and roads. Either way, the mark shows which rows are\nselected and hovered."
         },
         "select": {
           "type": "boolean",
@@ -2199,11 +2034,11 @@
                   "type": "null"
                 }
               ],
-              "description": "How each row runs between its ends. Defaults to geodesic on the earth and straight\nelsewhere. `orthogonal` routes around blocks with rounded bends, in diagrams only."
+              "description": "How each row runs between its ends. Defaults to geodesic on the earth and straight\nelsewhere."
             },
             "arrows": {
               "type": "boolean",
-              "description": "Whether each row has an arrowhead at its second end. A net has one at each input it\nreaches. Defaults to `false`."
+              "description": "Whether each row has an arrowhead at its second end. Defaults to `false`."
             },
             "poles": {
               "type": "boolean",
@@ -2234,7 +2069,7 @@
         }
       ],
       "unevaluatedProperties": false,
-      "description": "Rows drawn as strokes between two vertices named by reference fields: branches, links, wires. In a diagram, a row without ends is a net. It joins every vertex port whose reference field names it."
+      "description": "Rows drawn as strokes between two vertices named by reference fields: branches, links, wires. A row can instead stand as a pole on its own vertex, or join many vertices as a net."
     },
     "Route": {
       "oneOf": [
@@ -2247,11 +2082,6 @@
           "type": "string",
           "const": "geodesic",
           "description": "Along the great circle, on the earth."
-        },
-        {
-          "type": "string",
-          "const": "orthogonal",
-          "description": "Horizontal and vertical runs around vertices that leave and enter at their sides, with\nrounded bends. Diagrams only."
         }
       ],
       "description": "How an edge runs between its ends."
@@ -2269,7 +2099,7 @@
               "type": "null"
             }
           ],
-          "description": "Each row's width in CSS pixels, or units in a diagram, unless given with `px` or\n`units`. Defaults to the theme's width."
+          "description": "Each row's width in CSS pixels, unless given in `units`. Defaults to the theme's\nwidth."
         },
         "dash": {
           "$ref": "#/$defs/Expr",
@@ -2280,52 +2110,6 @@
           "description": "The speed of comets along each row, per second, in the unit of the theme's `flow`\nlengths. Negative speeds flow backward. 0 draws no comets. Defaults to 0. When the\nspeed changes, comets continue from where they are."
         }
       }
-    },
-    "Faces": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/MarkOptions"
-        },
-        {
-          "type": "object",
-          "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
-          "properties": {
-            "faces": {
-              "type": "array",
-              "prefixItems": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "string"
-                }
-              ],
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "The dataset and table drawn, `[data, table]`.",
-              "tsType": "TableInput"
-            },
-            "corners": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "string"
-              },
-              "minItems": 3,
-              "maxItems": 3,
-              "description": "The reference fields naming each row's three vertices. Required. Without a color, a face\nblends the colors of its corners.",
-              "tsType": "[a: string, b: string, c: string]"
-            }
-          },
-          "required": [
-            "faces"
-          ]
-        }
-      ],
-      "unevaluatedProperties": false,
-      "description": "Rows drawn as triangles between three vertices named by reference fields: meshes, surfaces, and fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from above shows its exact colors."
     },
     "Lines": {
       "allOf": [
@@ -2482,7 +2266,7 @@
           ]
         }
       ],
-      "description": "How the view places vertex rows that have no position: a name, or\n`{ stress | layered: options }`. In a diagram it places blocks. On a plane or the earth it\nplaces points among the rows they link to. Gaps are in position units: diagram units, plane\nunits, or degrees on the earth.\n\nA placed row keeps its place. Rows added later are placed around the others, and\n[`View::arrange`](crate::View::arrange) lays out every row again."
+      "description": "How the view places vertex rows that have no position: a name, or\n`{ stress | layered: options }`. On a plane or the earth it places points among the rows they\nlink to, by edges or nets. Gaps are in position units: plane units, or degrees on the earth.\n\nA placed row keeps its place. Rows added later are placed around the others, and\n[`View::arrange`](crate::View::arrange) lays out every row again."
     },
     "Stress": {
       "type": "object",
@@ -2516,7 +2300,7 @@
           "description": "Distance between ranks, in position units. Defaults to 80."
         }
       },
-      "description": "Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their\noutputs."
+      "description": "Layered drawing: vertices in ranks, with edges pointing along `direction`."
     },
     "Direction": {
       "oneOf": [
@@ -2561,12 +2345,12 @@
               "tsType": "Color"
             },
             "grid": {
-              "description": "The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule.",
+              "description": "The color of a plane's grid, a plot's grid lines, and the earth's graticule.",
               "type": "string",
               "tsType": "Color"
             },
             "gridSpacing": {
-              "description": "The least distance between the lines (or dots) of a plane's or diagram's grid and of the\nearth's graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten\n(and 30° and 90° on the earth), and the finer step fades out as it nears this distance.",
+              "description": "The least distance between the lines (or dots) of a plane's grid and of the earth's\ngraticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten\n(and 30° and 90° on the earth), and the finer step fades out as it nears this distance.",
               "type": "number",
               "format": "float"
             },
@@ -2582,11 +2366,6 @@
             },
             "dash": {
               "description": "The dash period: one dash and one gap of equal length.",
-              "type": "number",
-              "format": "float"
-            },
-            "shading": {
-              "description": "How much faces darken as they turn away from the camera, from 0 to 1.",
               "type": "number",
               "format": "float"
             },
@@ -2618,10 +2397,6 @@
               "description": "How comets flowing along edges and lines look.",
               "$ref": "#/$defs/FlowTheme"
             },
-            "diagram": {
-              "description": "How a diagram's blocks, groups, ports, and wires look.",
-              "$ref": "#/$defs/DiagramTheme"
-            },
             "earth": {
               "description": "How the earth looks.",
               "$ref": "#/$defs/EarthTheme"
@@ -2641,7 +2416,7 @@
           "additionalProperties": false
         }
       ],
-      "description": "Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped\nby subject: a base theme's name (`\"dark\"` or `\"light\"`), or options that change a base. `base`\nnames the base and defaults to `dark`. Each option replaces only the base value it sets.\n\nLengths are in CSS pixels, or units in a diagram. The grid spacing, the text halo, and the focus\nglow are always in\nCSS pixels."
+      "description": "Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped\nby subject: a base theme's name (`\"dark\"` or `\"light\"`), or options that change a base. `base`\nnames the base and defaults to `dark`. Each option replaces only the base value it sets.\n\nLengths are in CSS pixels, except comet lengths given in position units."
     },
     "TextTheme": {
       "type": "object",
@@ -2659,7 +2434,7 @@
         "size": {
           "type": "number",
           "format": "float",
-          "description": "The font size, in the space's unit."
+          "description": "The font size, in CSS pixels."
         },
         "halo": {
           "type": "number",
@@ -2681,7 +2456,12 @@
         "radius": {
           "type": "number",
           "format": "float",
-          "description": "The vertex radius, in the space's unit."
+          "description": "The vertex radius, in CSS pixels."
+        },
+        "corner": {
+          "type": "number",
+          "format": "float",
+          "description": "The corner radius of block markers, in CSS pixels. A block marker can set its own."
         }
       },
       "description": "Defaults for vertices."
@@ -2691,7 +2471,7 @@
       "additionalProperties": false,
       "properties": {
         "color": {
-          "description": "The edge color. `None` blends the colors of each edge's two vertices, also for rows whose\nown color is missing. With `None`, a diagram's wires and edges without `ends` (nets and\npoles) use the text color.",
+          "description": "The edge color. `None` blends the colors of each edge's two vertices, also for rows whose\nown color is missing. With `None`, edges without `ends` (nets and poles) use the text color.",
           "tsType": "Color",
           "type": [
             "string",
@@ -2701,17 +2481,12 @@
         "width": {
           "type": "number",
           "format": "float",
-          "description": "The edge width, in the space's unit."
-        },
-        "spacing": {
-          "type": "number",
-          "format": "float",
-          "description": "In a diagram, the distance between edges joining the same two vertices and between parallel\northogonal wires. Wires keep twice this distance from blocks where they can."
+          "description": "The edge width, in CSS pixels."
         },
         "bow": {
           "type": "number",
           "format": "float",
-          "description": "Outside a diagram, how far edges joining the same two vertices bow apart. Each lane bows out\nby this fraction of the edge's length, measured at its middle. Parallel edges spread at most\neight lanes wide, and more lanes pack closer. Bows scale with the zoom."
+          "description": "How far edges joining the same two vertices bow apart. Each lane bows out\nby this fraction of the edge's length, measured at its middle. Parallel edges spread at most\neight lanes wide, and more lanes pack closer. Bows scale with the zoom."
         },
         "arrow": {
           "type": "number",
@@ -2733,7 +2508,7 @@
         "width": {
           "type": "number",
           "format": "float",
-          "description": "The line width, in the space's unit."
+          "description": "The line width, in CSS pixels."
         }
       },
       "description": "Defaults for lines."
@@ -2805,29 +2580,16 @@
         "width": {
           "type": "number",
           "format": "float",
-          "description": "The width of a comet's head, in the space's unit. A head is never narrower than its stroke."
+          "description": "The width of a comet's head, in CSS pixels. A head is never narrower than its stroke."
         }
       },
-      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen. A plain number is in the\nspace's unit."
+      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen."
     },
     "Length": {
-      "description": "A length: a number in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }` is position units (degrees on the earth), which grow as the view zooms in.",
+      "description": "A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
       "anyOf": [
         {
           "type": "number"
-        },
-        {
-          "type": "object",
-          "properties": {
-            "px": {
-              "type": "number",
-              "description": "CSS pixels, the same at any zoom."
-            }
-          },
-          "required": [
-            "px"
-          ],
-          "additionalProperties": false
         },
         {
           "type": "object",
@@ -2843,67 +2605,6 @@
           "additionalProperties": false
         }
       ]
-    },
-    "DiagramTheme": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "group": {
-          "description": "The fill color of group containers.",
-          "tsType": "Color",
-          "type": "string"
-        },
-        "outline": {
-          "description": "The color of the one-unit border around blocks and groups. `None` draws no border.",
-          "tsType": "Color",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "corner": {
-          "type": "number",
-          "format": "float",
-          "description": "The corner radius of blocks and groups. A block marker can set its own."
-        },
-        "portSize": {
-          "type": "number",
-          "format": "float",
-          "description": "The width of ports."
-        },
-        "bend": {
-          "type": "number",
-          "format": "float",
-          "description": "The bend radius of orthogonal wires."
-        },
-        "groupPadding": {
-          "type": "number",
-          "format": "float",
-          "description": "The space between a group's members and its border."
-        },
-        "shadow": {
-          "$ref": "#/$defs/ShadowTheme",
-          "description": "How blocks and groups cast shadows on the sheet."
-        }
-      },
-      "description": "How a diagram's blocks, groups, ports, and wires look."
-    },
-    "ShadowTheme": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "color": {
-          "description": "The color a shadow darkens toward. Its alpha sets how dark the shadow is under the block.",
-          "tsType": "Color",
-          "type": "string"
-        },
-        "lift": {
-          "type": "number",
-          "format": "float",
-          "description": "How far a shadow falls below its block or group. Its edge softens over the same distance."
-        }
-      },
-      "description": "How a diagram's blocks and groups cast shadows on the sheet, for vertex marks with `shadow` on."
     },
     "EarthTheme": {
       "type": "object",
@@ -3012,7 +2713,7 @@
         {
           "type": "string",
           "const": "turn",
-          "description": "Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, in\na diagram or on a plot, it pans instead."
+          "description": "Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, on\na plot, it pans instead."
         },
         {
           "type": "string",
@@ -3042,7 +2743,7 @@
         {
           "type": "string",
           "const": "connect",
-          "description": "Draws a connection from the vertex or port pressed, or drags an edge's end off its vertex,\nreported as [`Event::Connect`](crate::Event). Once any input connects, a drag from a port or\nan edge's end connects whatever its input. Elsewhere it pans."
+          "description": "Draws a connection from the vertex pressed, or drags an edge's end off its vertex, reported\nas [`Event::Connect`](crate::Event). Once any input connects, a drag from an edge's end\nconnects whatever its input. Elsewhere it pans."
         },
         {
           "type": "string",
@@ -3823,7 +3524,7 @@
                   "maxItems": 3
                 }
               ],
-              "description": "On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is\na degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON,\n`[x, y]` is shorthand for elevation 0."
+              "description": "On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is\na degree of arc, about 111 km). On a plane, x, y, and elevation. In JSON,\n`[x, y]` is shorthand for elevation 0."
             },
             "zoom": {
               "type": "number",
@@ -3833,12 +3534,12 @@
             "pitch": {
               "type": "number",
               "format": "double",
-              "description": "Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking\nstraight down, elevation only decides which rows show on top, and each row draws over\nits ground position. Rows rise into view over the first 10° of tilt."
+              "description": "Tilt in degrees from looking straight down, up to 75. Looking\nstraight down, elevation only decides which rows show on top, and each row draws over\nits ground position. Rows rise into view over the first 10° of tilt."
             },
             "bearing": {
               "type": "number",
               "format": "double",
-              "description": "Degrees clockwise from north, or from up on a plane. Ignored in a diagram."
+              "description": "Degrees clockwise from north, or from up on a plane."
             }
           },
           "required": [
@@ -3847,7 +3548,7 @@
             "pitch",
             "bearing"
           ],
-          "description": "A camera over the earth, a plane, or a diagram: the point it looks at and turns about, its\nzoom, its tilt, and its rotation. A diagram is always seen from straight above, upright."
+          "description": "A camera over the earth or a plane: the point it looks at and turns about, its zoom, its\ntilt, and its rotation."
         },
         {
           "type": "object",
@@ -4062,7 +3763,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\nlargest storage buffer, at most 1 GiB. The page pool grows as data needs it and never\nshrinks, so set the budget before drawing data. A device without the memory to grow the pool\nfurther lowers the budget to the pool's size."
+          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\naddressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never\nshrinks, so set the budget before drawing data. A device without the memory to grow the pool\nfurther lowers the budget to the pool's size."
         },
         "uploadPerFrame": {
           "type": "integer",
@@ -4270,7 +3971,7 @@
                   "$ref": "#/outputs/Hit"
                 },
                 "position": {
-                  "description": "The row's new position in the space's coordinates. It is the hit point moved with the\npointer since the press, at the depth where the drag started, so a vertex keeps its\noffset from the pointer. Snapped to a diagram's grid dots when the grid snaps.",
+                  "description": "The row's new position in the space's coordinates. It is the hit point moved with the\npointer since the press, at the depth where the drag started, so a vertex keeps its\noffset from the pointer.",
                   "type": "array",
                   "items": {
                     "type": "number",
@@ -4366,7 +4067,7 @@
             "type",
             "detail"
           ],
-          "description": "A connection was drawn where an input in [`Controls::gestures`](crate::Controls) connects:\nfrom a port, from a vertex with that input, or by dragging an edge's end off it."
+          "description": "A connection was drawn where an input in [`Controls::gestures`](crate::Controls) connects:\nfrom a vertex with that input, or by dragging an edge's end off it."
         },
         {
           "type": "object",
@@ -4595,7 +4296,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "The row's point nearest the probe, in CSS pixels from the top left: a vertex's or port's\nmiddle, or the nearest point of a stroke or triangle."
+          "description": "The row's point nearest the probe, in CSS pixels from the top left: a vertex's middle, or\nthe nearest point of a stroke or triangle."
         },
         "position": {
           "type": "array",
@@ -4611,13 +4312,6 @@
           "type": "number",
           "format": "float",
           "description": "CSS pixels from the probe to the row."
-        },
-        "port": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The port hit, if the hit is on a vertex's port."
         },
         "sample": {
           "anyOf": [
@@ -4812,19 +4506,12 @@
         "row": {
           "$ref": "#/outputs/Row",
           "description": "The vertex."
-        },
-        "port": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The port, by the reference field naming its net."
         }
       },
       "required": [
         "row"
       ],
-      "description": "A vertex a connection ends at, and the port the connection meets, if any."
+      "description": "A vertex a connection ends at."
     },
     "Rows": {
       "type": "object",
@@ -4879,7 +4566,7 @@
                   "maxItems": 3
                 }
               ],
-              "description": "On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is\na degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON,\n`[x, y]` is shorthand for elevation 0."
+              "description": "On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is\na degree of arc, about 111 km). On a plane, x, y, and elevation. In JSON,\n`[x, y]` is shorthand for elevation 0."
             },
             "zoom": {
               "type": "number",
@@ -4889,12 +4576,12 @@
             "pitch": {
               "type": "number",
               "format": "double",
-              "description": "Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking\nstraight down, elevation only decides which rows show on top, and each row draws over\nits ground position. Rows rise into view over the first 10° of tilt."
+              "description": "Tilt in degrees from looking straight down, up to 75. Looking\nstraight down, elevation only decides which rows show on top, and each row draws over\nits ground position. Rows rise into view over the first 10° of tilt."
             },
             "bearing": {
               "type": "number",
               "format": "double",
-              "description": "Degrees clockwise from north, or from up on a plane. Ignored in a diagram."
+              "description": "Degrees clockwise from north, or from up on a plane."
             }
           },
           "required": [
@@ -4903,7 +4590,7 @@
             "pitch",
             "bearing"
           ],
-          "description": "A camera over the earth, a plane, or a diagram: the point it looks at and turns about, its\nzoom, its tilt, and its rotation. A diagram is always seen from straight above, upright."
+          "description": "A camera over the earth or a plane: the point it looks at and turns about, its zoom, its\ntilt, and its rotation."
         },
         {
           "type": "object",
@@ -4943,7 +4630,7 @@
       "description": "Where a view looks."
     },
     "Waiting": {
-      "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
+      "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
       "type": "array",
       "items": {
         "enum": [
@@ -5086,13 +4773,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows\nthat changed, plus every row of a page that references a vertex now resident elsewhere."
+          "description": "Edge rows whose endpoints the GPU resolved to resident vertex rows. These are rows\nthat changed, plus every row of a page that references a vertex now resident elsewhere."
         },
         "cleared": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Bytes of per-row word pages the GPU cleared: pages read before anything writes them, and the\nnormals that faces sum from scratch."
+          "description": "Bytes of per-row word pages the GPU cleared before reading their initial state."
         },
         "packed": {
           "type": "integer",
@@ -5122,13 +4809,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Pipelines compiled. In a browser, each compiles in the background when a view or shot\nrequests it ahead of use. Natively, each compiles when first created."
+          "description": "Pipelines compiled. In a browser, a view or shot queues each ahead of use; driver\ncompilation can still block the browser thread. Natively, each compiles when first created."
         },
         "late": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Pipelines not requested ahead of use, compiled when first used. In a browser they compile\non the GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not\nrequest."
+          "description": "Pipelines not requested ahead of use, compiled when first used and delaying that frame.\nZero unless a scene uses a pipeline it did not request."
         },
         "destroyed": {
           "type": "integer",
@@ -5326,7 +5013,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\nlargest storage buffer, at most 1 GiB. The page pool grows as data needs it and never\nshrinks, so set the budget before drawing data. A device without the memory to grow the pool\nfurther lowers the budget to the pool's size."
+          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\naddressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never\nshrinks, so set the budget before drawing data. A device without the memory to grow the pool\nfurther lowers the budget to the pool's size."
         },
         "uploadPerFrame": {
           "type": "integer",

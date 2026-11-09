@@ -262,8 +262,7 @@ impl View {
         let mut plans = Plans::default();
         let mut costs: Keyed<(Name, Name), Cost> = Keyed::default();
         let mut shared: FxHashMap<u64, (f64, f64)> = FxHashMap::default();
-        let summing = super::graph::summing(&self.marks);
-        for (shown, summing) in self.marks.iter().zip(summing) {
+        for shown in &self.marks {
             let style = shown.mark.style();
             let Some(table) = self.snapshot(&style.data).and_then(|d| d.table(&style.table)) else { continue };
             let key = (style.data.clone(), style.table.clone());
@@ -280,7 +279,7 @@ impl View {
             }
             let cost =
                 costs.entry(key).or_insert(Cost { rows: table.len(), per_page: 0.0, geometry: 0.0, traced: 0.0 });
-            cost.per_page += page_bytes(shown, easing, summing);
+            cost.per_page += page_bytes(shown, easing);
             cost.geometry += geometry_bytes(shown, table);
             cost.traced += traced_bytes(shown, table);
             for (piece, bytes) in self.shared_pages(shown, table) {
@@ -318,7 +317,7 @@ impl View {
         pieces
     }
 
-    /// Whether table `key` holds edges or faces whose endpoints lie in a paged table.
+    /// Whether table `key` holds edges whose endpoints lie in a paged table.
     fn ends_tiled(&self, key: &(Name, Name), plans: &Plans) -> bool {
         let Place::Ends(fields) = &plans[key].place else { return false };
         let Some(table) = self.snapshot(&key.0).and_then(|d| d.table(&key.1)) else { return false };
@@ -341,7 +340,6 @@ fn place_of(mark: &Mark, table: &Table) -> Place {
             None => Place::Nowhere,
         },
         Mark::Edges(e) => e.ends.as_ref().map_or(Place::Nowhere, |(a, b)| Place::Ends(vec![a.clone(), b.clone()])),
-        Mark::Faces(f) => f.corners.as_ref().map_or(Place::Nowhere, |c| Place::Ends(c.to_vec())),
         Mark::Lines(_) | Mark::Areas(_) => match geometry_of(mark) {
             Some(field) if table.kind(&field).and_then(Kind::depth).is_some() => Place::Geometry(field),
             _ => Place::Nowhere,
@@ -369,14 +367,15 @@ fn column_page_bytes(low: bool) -> f64 {
 }
 
 /// Bytes a page of `shown`'s rows takes, as the arena allocates them: a page of each column it
-/// reads, plus each kind of word page it keeps (with the normals faces are `summing` at its rows),
+/// reads, plus each kind of word page it keeps,
 /// and when `easing`, a transition's frozen and settled words.
-fn page_bytes(shown: &Shown, easing: bool, summing: bool) -> f64 {
+fn page_bytes(shown: &Shown, easing: bool) -> f64 {
     let Some(compiled) = &shown.compiled else { return 0.0 };
     let columns: f64 =
         compiled.program.columns.iter().filter(|c| c.words != Words::Path).map(|c| column_page_bytes(c.low)).sum();
+    // Reserve room for the first interaction even while its focus pages are still lazy.
     let kept: f64 =
-        shown.kept_widths(summing).iter().filter(|&&(_, width)| width > 0).map(|&(_, width)| block_bytes(width)).sum();
+        shown.kept_widths(true).iter().filter(|&&(_, width)| width > 0).map(|&(_, width)| block_bytes(width)).sum();
     let eased = if easing { 2.0 * block_bytes(shown.width()) } else { 0.0 };
     columns + kept + eased
 }

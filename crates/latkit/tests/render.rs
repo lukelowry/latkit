@@ -6,9 +6,127 @@ mod common;
 
 use common::{SIZE, answer, at, camera, close, frame, gpu, green_edges, plain_theme, plane, step};
 use latkit::{
-    Axis, Button, Camera, Color, Colormap, Data, Device, Earth, Edges, Event, Faces, Ids, Input, Lines, Modifiers,
-    Patch, Phase, Plot, Scene, Table, Theme, Vertices, View, field,
+    Axis, Button, Camera, Color, Colormap, Data, Device, Earth, Edges, Event, Ids, Input, Lines, Modifiers, Patch,
+    Phase, Plot, Scene, Table, Theme, Vertices, View, field,
 };
+
+#[test]
+fn changing_projection_draws_and_picks_like_a_fresh_view() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    data.apply(Table::new("Node", Ids::count(3)).field("x", vec![0.0, 35.0, 150.0]).field("y", vec![0.0, 20.0, 0.0]))
+        .unwrap();
+    let make = |projection| {
+        Scene::new(Earth::default().projection(projection))
+            .theme(plain_theme())
+            .ease(std::time::Duration::ZERO)
+            .draw(Vertices::of("d", "Node").position(field("x"), field("y")).radius(5.0).color(Color::WHITE))
+    };
+    let mut changed = View::new(&gpu, make(latkit::Projection::Mercator));
+    changed.set_sources([&data]).unwrap();
+    let mut before = None;
+    for projection in [latkit::Projection::Mercator, latkit::Projection::Globe, latkit::Projection::Mercator] {
+        let scene = make(projection);
+        changed.set_scene(scene.clone());
+        let camera = Camera::Map { center: [0.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 };
+        changed.set_camera(camera);
+        let pixels = frame(&gpu, &mut changed);
+        let mut fresh = View::new(&gpu, scene);
+        fresh.set_sources([&data]).unwrap();
+        fresh.set_camera(camera);
+        let expected = frame(&gpu, &mut fresh);
+        assert!(pixels.iter().zip(&expected).all(|(&a, &b)| close(a, b)), "{projection:?}");
+        if let Some(previous) = &before {
+            assert_ne!(&pixels, previous, "changing projection changes the picture");
+        }
+        before = Some(pixels);
+        let center = SIZE as f32 / 2.0;
+        let pending = changed.pick([center, center], 2.0);
+        let hits = answer(&gpu, &mut changed, pending);
+        assert_eq!(hits[0].row, latkit::Row::new("d", "Node", 0_u64));
+        assert_eq!(common::errors(&mut changed), Vec::new());
+    }
+}
+
+#[test]
+fn area_triangles_across_geometry_pieces_follow_geometry_and_color_edits() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(
+        latkit::Areas::of("d", "Region")
+            .color(latkit::when(field("red")).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(Color::WHITE)),
+    );
+    let mut view = View::new(&gpu, scene);
+    view.set_sources([&data]).unwrap();
+    view.set_camera(camera());
+    // More than 4,096 triangulated points force triangles across physical geometry pieces.
+    for shift in [0.0, 14.0, -14.0] {
+        let ring: Vec<_> = (0..=1800)
+            .map(|i| {
+                let angle = f64::from(i) * std::f64::consts::TAU / 1800.0;
+                [shift + 40.0 * angle.cos(), 40.0 * angle.sin()]
+            })
+            .collect();
+        data.apply(Table::new("Region", [7_u64]).field("geometry", vec![vec![ring]])).unwrap();
+        for red in [false, true] {
+            data.apply(Table::new("Region", [7_u64]).field("red", vec![red])).unwrap();
+            let pixels = common::settle(&gpu, &mut view);
+            let color = if red { [255, 0, 0, 255] } else { [255; 4] };
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    let distance = (f64::from(x) + 0.5 - f64::from(SIZE) / 2.0 - shift)
+                        .hypot(f64::from(y) + 0.5 - f64::from(SIZE) / 2.0);
+                    if distance < 38.0 {
+                        assert!(close(at(&pixels, x, y), color), "inside at {x}, {y}, shift {shift}");
+                    } else if distance > 42.0 {
+                        assert!(close(at(&pixels, x, y), [0, 0, 0, 255]), "outside at {x}, {y}, shift {shift}");
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(common::errors(&mut view), Vec::new());
+}
+
+#[test]
+fn lane_plans_keep_exact_pixels_when_panning_and_crossing_zoom_bands() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    let rows = 1024;
+    data.apply(
+        Patch::new()
+            .set(Table::new("Node", Ids::count(2)).field("x", vec![-55.0, 55.0]).field("y", vec![0.0, 0.0]))
+            .set(
+                Table::new("Link", Ids::count(rows))
+                    .reference("from", "Node", vec![0_u64; rows as usize])
+                    .reference("to", "Node", vec![1_u64; rows as usize])
+                    .field("red", (0..rows).map(|i| i % 3 == 0).collect::<Vec<_>>()),
+            ),
+    )
+    .unwrap();
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .ease(std::time::Duration::ZERO)
+        .draw(Edges::of("d", "Link").ends("from", "to").width(1.0).color(
+            latkit::when(field("red")).then(Color::rgba(1.0, 0.0, 0.0, 0.5)).otherwise(Color::rgba(0.0, 0.0, 1.0, 0.5)),
+        ))
+        .draw(Vertices::of("d", "Node").position(field("x"), field("y")).radius(2.0));
+    let mut moved = View::new(&gpu, scene.clone());
+    moved.set_sources([&data]).unwrap();
+    for (zoom, x, bearing) in
+        [(-0.9, 0.0, 0.0), (-0.1, 20.0, 30.0), (0.1, -20.0, -20.0), (0.8, 0.0, 0.0), (-0.5, 0.0, 0.0)]
+    {
+        let camera = Camera::Map { center: [x, 0.0, 0.0], zoom, pitch: 0.0, bearing };
+        moved.set_camera(camera);
+        let actual = frame(&gpu, &mut moved);
+        let mut fresh = View::new(&gpu, scene.clone());
+        fresh.set_sources([&data]).unwrap();
+        fresh.set_camera(camera);
+        let expected = frame(&gpu, &mut fresh);
+        assert!(actual.iter().zip(&expected).all(|(&a, &b)| close(a, b)), "zoom {zoom}, center {x}");
+        assert!(actual.iter().filter(|p| p[0] > 32 || p[2] > 32).count() > 200, "the lanes draw");
+    }
+}
 
 #[test]
 fn vertices_draw_at_their_positions_in_their_colors() {
@@ -109,7 +227,7 @@ fn an_option_that_does_not_fit_draws_as_if_unset_until_its_data_arrives() {
 }
 
 #[test]
-fn a_stroke_in_pixels_keeps_its_width_as_a_diagram_zooms() {
+fn a_stroke_in_units_scales_with_the_zoom_and_one_in_pixels_does_not() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(
@@ -123,7 +241,7 @@ fn a_stroke_in_pixels_keeps_its_width_as_a_diagram_zooms() {
     )
     .expect("valid");
     let thickness = |width: latkit::Size| {
-        let scene = Scene::new(common::diagram())
+        let scene = Scene::new(common::plane())
             .theme(green_edges())
             .draw(Edges::of("graph", "Link").ends("from", "to").width(width))
             .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).size(8.0, 8.0));
@@ -133,7 +251,7 @@ fn a_stroke_in_pixels_keeps_its_width_as_a_diagram_zooms() {
         let pixels = frame(&gpu, &mut view);
         (0..SIZE).filter(|&y| at(&pixels, SIZE / 2, y)[1] > 128).count()
     };
-    let (px, units) = (thickness(latkit::px(2.0)), thickness(2.0.into()));
+    let (px, units) = (thickness(2.0.into()), thickness(latkit::units(2.0)));
     assert!((1..=3).contains(&px), "a 2 px width stays 2 pixels at zoom 1: {px}");
     assert!((4..=5).contains(&units), "a 2-unit width is 4 pixels at zoom 1: {units}");
 }
@@ -613,7 +731,7 @@ fn sampled_fields_read_at_the_shown_coordinate() {
 }
 
 #[test]
-fn faces_blend_their_corners_and_hide_vertices_behind_them() {
+fn opaque_markers_hide_vertices_below_and_show_vertices_above() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("mesh");
     data.apply(
@@ -629,26 +747,36 @@ fn faces_blend_their_corners_and_hide_vertices_behind_them() {
                 Table::new("Face", Ids::count(1))
                     .reference("a", "Vertex", vec![0_u64])
                     .reference("b", "Vertex", vec![1_u64])
-                    .reference("c", "Vertex", vec![2_u64]),
+                    .reference("c", "Vertex", vec![2_u64])
+                    .field("geometry", vec![vec![vec![[-40.0, -30.0], [40.0, -30.0], [0.0, 40.0], [-40.0, -30.0]]]]),
             ),
     )
     .expect("valid");
     let red = Color::rgb(1.0, 0.0, 0.0);
     let blue = Color::rgb(0.0, 0.0, 1.0);
-    let scene = Scene::new(plane()).theme(plain_theme()).draw(Faces::of("mesh", "Face").corners("a", "b", "c")).draw(
-        Vertices::of("mesh", "Vertex")
-            .position(field("x"), field("y"))
-            .elevation(field("z"))
-            .radius(4.0)
-            .color(latkit::when(field("hue").gt(0.5)).then(blue).otherwise(red)),
-    );
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(
+            Vertices::of("mesh", "Face")
+                .position(0.0, 0.0)
+                .elevation(-50.0)
+                .radius(40.0)
+                .color(Color::rgb(1.0, 0.0, 0.0)),
+        )
+        .draw(
+            Vertices::of("mesh", "Vertex")
+                .position(field("x"), field("y"))
+                .elevation(field("z"))
+                .radius(4.0)
+                .color(latkit::when(field("hue").gt(0.5)).then(blue).otherwise(red)),
+        );
     let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     let center = SIZE / 2;
-    assert!(close(at(&pixels, center - 10, center + 10), [255, 0, 0, 255]), "a face seen from above shows its color");
-    assert!(close(at(&pixels, center, center), [255, 0, 0, 255]), "the vertex below the face is hidden");
+    assert!(close(at(&pixels, center - 10, center + 10), [255, 0, 0, 255]), "an opaque marker shows its color");
+    assert!(close(at(&pixels, center, center), [255, 0, 0, 255]), "the vertex below the opaque marker is hidden");
     assert!(close(at(&pixels, center + 20, center), [0, 0, 255, 255]), "the vertex above it shows");
 }
 
@@ -737,6 +865,49 @@ fn lines_traced_in_priority_order_draw_their_whole_span() {
     // not only those near the shown coordinate at its start.
     for x in [center - 40, center, center + 40] {
         assert!(close(at(&pixels, x, center), [255, 0, 0, 255]), "at {x}: {:?}", at(&pixels, x, center));
+    }
+}
+
+#[test]
+fn trace_bounds_include_last_points_and_ignore_missing_hidden_and_unfitted_rows() {
+    let Some(gpu) = gpu() else { return };
+    let rows = 4097_u32;
+    let data = Data::new("signals");
+    data.apply(
+        Table::new("Signal", Ids::count(rows))
+            .field("shown", (0..rows).map(|r| r == 0 || r == rows - 1).collect::<Vec<_>>()),
+    )
+    .unwrap();
+    for t in 0..7 {
+        let mut values = vec![1e9; rows as usize];
+        values[0] = match t {
+            0 => f64::NAN,
+            1 => -3.0,
+            _ => 2.0,
+        };
+        values[rows as usize - 1] = match t {
+            5 => f64::NAN,
+            6 => 13.0,
+            _ => 4.0,
+        };
+        data.apply(Patch::new().append("Signal", [f64::from(t)], [("v", values)])).unwrap();
+    }
+    let axis = Axis { grid: false, hidden: true, ..Axis::default() };
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis })
+        .ease(std::time::Duration::ZERO)
+        .draw(Lines::of("signals", "Signal").trace("v").visible(field("shown")));
+    let mut view = View::new(&gpu, scene);
+    view.set_sources([&data]).unwrap();
+    for (fit, middle) in [
+        (latkit::Fit::All, 5.0),
+        (latkit::Fit::Rows(vec![latkit::Rows::new("signals", "Signal", [u64::from(rows - 1)])]), 8.5),
+    ] {
+        view.fit(fit);
+        frame(&gpu, &mut view);
+        let center = view.position([SIZE as f32 * 0.5; 2]).unwrap();
+        assert!((center[1] - middle).abs() < 1e-4, "exact finite bounds: {center:?}");
+        let Camera::Plot { x, .. } = *view.camera() else { panic!("plot camera") };
+        assert_eq!(x, [0.0, 6.0]);
     }
 }
 
@@ -841,7 +1012,7 @@ fn a_missing_dataset_is_waited_for_and_a_missing_table_fails() {
 }
 
 #[test]
-fn hover_skips_vertices_hidden_behind_faces() {
+fn hover_skips_vertices_hidden_below_opaque_markers() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("mesh");
     data.apply(
@@ -856,13 +1027,21 @@ fn hover_skips_vertices_hidden_behind_faces() {
                 Table::new("Face", Ids::count(1))
                     .reference("a", "Vertex", vec![0_u64])
                     .reference("b", "Vertex", vec![1_u64])
-                    .reference("c", "Vertex", vec![2_u64]),
+                    .reference("c", "Vertex", vec![2_u64])
+                    .field("geometry", vec![vec![vec![[-40.0, -30.0], [40.0, -30.0], [0.0, 40.0], [-40.0, -30.0]]]]),
             ),
     )
     .expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
+        .draw(
+            Vertices::of("mesh", "Face")
+                .position(0.0, 0.0)
+                .elevation(-50.0)
+                .radius(40.0)
+                .color(Color::rgb(1.0, 0.0, 0.0))
+                .pick(false),
+        )
         .draw(
             Vertices::of("mesh", "Vertex")
                 .position(field("x"), field("y"))
@@ -882,9 +1061,9 @@ fn hover_skips_vertices_hidden_behind_faces() {
         view.events().filter_map(|e| if let Event::Hovered { hit, .. } = e { Some(hit) } else { None }).last()
     };
     let above = hover(&mut view, [center + 20.0, center]).expect("a hover event");
-    assert_eq!(above.map(|hit| hit.row.id), Some(4_u64.into()), "the vertex above the face");
+    assert_eq!(above.map(|hit| hit.row.id), Some(4_u64.into()), "the vertex above the opaque marker");
     let below = hover(&mut view, [center, center]).expect("a hover event");
-    assert_eq!(below, None, "the vertex below the face is hidden");
+    assert_eq!(below, None, "the vertex below the opaque marker is hidden");
 }
 
 #[test]
@@ -895,23 +1074,27 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
         [[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [-1.0, 0.0, 1.0], [0.0, -1.0, 1.0], [0.0, 0.0, 2.0]];
     let faces = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1], [5, 2, 1], [5, 3, 2], [5, 4, 3], [5, 1, 4]];
     let column = |k: usize| corners.iter().map(|c| c[k]).collect::<Vec<_>>();
-    let corner = |k: usize| faces.iter().map(|f| f[k] as u64).collect::<Vec<_>>();
+    let edges: std::collections::BTreeSet<[u64; 2]> = faces
+        .iter()
+        .flat_map(|f| [[f[0], f[1]], [f[1], f[2]], [f[2], f[0]]])
+        .map(|[a, b]| [a.min(b) as u64, a.max(b) as u64])
+        .collect();
+    let corner = |k: usize| edges.iter().map(|e| e[k]).collect::<Vec<_>>();
     let data = Data::new("mesh");
     data.apply(
         Patch::new()
             .set(Table::new("Vertex", Ids::count(6)))
-            .set(
-                Table::new("Face", Ids::count(8))
-                    .reference("a", "Vertex", corner(0))
-                    .reference("b", "Vertex", corner(1))
-                    .reference("c", "Vertex", corner(2)),
-            )
+            .set(Table::new("Edge", Ids::count(edges.len() as u32)).reference("a", "Vertex", corner(0)).reference(
+                "b",
+                "Vertex",
+                corner(1),
+            ))
             .append("Vertex", [0.0], [("x", column(0)), ("y", column(1)), ("z", column(2))]),
     )
     .expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
+        .draw(Edges::of("mesh", "Edge").ends("a", "b").width(0.7).pick(false))
         .draw(
             Vertices::of("mesh", "Vertex")
                 .position(field("x"), field("y"))
@@ -959,7 +1142,7 @@ fn long_histories_draw_from_their_levels_of_detail() {
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(2.0));
-    let mut view = View::new(&gpu, scene);
+    let mut view = View::new(&gpu, scene.clone());
     view.set_camera(Camera::Plot { x: [0.0, 20_000.0], y: Some([0.0, 1.0]) });
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -970,6 +1153,17 @@ fn long_histories_draw_from_their_levels_of_detail() {
     assert!(at(&pixels, base[0].round() as u32, base[1].round() as u32)[0] > 150, "and the level line draws");
     let stats = view.stats();
     assert_eq!(stats.rows, 1);
+    // Reusing circular records through overlapping windows and changes of detail must draw
+    // exactly what a fresh view draws, including windows that no longer contain the spike.
+    for x in [[1000.0, 19_000.0], [9000.0, 11_000.0], [12_000.0, 19_000.0], [0.0, 20_000.0]] {
+        let camera = Camera::Plot { x, y: Some([0.0, 1.0]) };
+        view.set_camera(camera);
+        let reused = frame(&gpu, &mut view);
+        let mut fresh = View::new(&gpu, scene.clone());
+        fresh.set_camera(camera);
+        fresh.set_sources([&data]).expect("a source");
+        assert_eq!(reused, frame(&gpu, &mut fresh), "reused trace records at {x:?}");
+    }
 }
 
 #[test]
@@ -1030,7 +1224,7 @@ fn comets(gpu: &latkit::Gpu, units: bool, speed: Option<f64>) -> View {
 }
 
 fn comets_scene(units: bool, speed: Option<f64>) -> Scene {
-    let length = |v| if units { latkit::Length::Units(v) } else { latkit::Length::Space(v) };
+    let length = |v| if units { latkit::Length::Units(v) } else { latkit::Length::Px(v) };
     let flow =
         latkit::FlowTheme { color: Color::rgb(1.0, 0.0, 0.0), spacing: length(30.0), length: length(8.0), width: 8.0 };
     let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25));
@@ -1106,8 +1300,8 @@ fn comets_follow_their_rows_when_rows_move_without_easing() {
         .expect("valid");
     let flow = latkit::FlowTheme {
         color: Color::rgb(1.0, 0.0, 0.0),
-        spacing: latkit::Length::Space(30.0),
-        length: latkit::Length::Space(8.0),
+        spacing: latkit::Length::Px(30.0),
+        length: latkit::Length::Px(8.0),
         width: 8.0,
     };
     let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25)).flow(field("speed"));
@@ -1538,7 +1732,7 @@ fn poles_stand_from_each_vertex_down_to_the_ground() {
 }
 
 #[test]
-fn nets_outside_a_diagram_join_their_members_as_stars() {
+fn nets_join_their_members_as_stars() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("d");
     data.apply(

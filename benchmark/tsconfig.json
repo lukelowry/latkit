@@ -11,7 +11,8 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["node"],
-    "lib": ["ES2024", "DOM", "DOM.Iterable", "ESNext.Disposable"]
+    "lib": ["ES2024", "DOM", "DOM.Iterable", "ESNext.Disposable"],
+    "paths": { "latkit-bindings": ["../npm/pkg/latkit.d.ts"] }
   },
   "include": ["*.ts", "page"]
 }

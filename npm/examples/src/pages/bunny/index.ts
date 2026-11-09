@@ -1,13 +1,13 @@
 /**
  * A soft bunny made of springs, in a room. Hop, squash, poke, fling, or pop it, then replay or scrub
  * its history: every frame of every vertex is recorded, and the views read it back at the
- * timeline's time. Faces darken as they turn from the light, above soft contact shadows drawn by a
- * custom WGSL marker. A plot traces the bunny's height and speed.
+ * timeline's time. The wireframe follows those vertices, above soft contact shadows drawn by a
+ * custom marker. A plot traces the bunny's height and speed.
  */
 import { Data, field, reference, units, type Scene } from 'latkit';
 import { choice, page } from '../../shell/page.js';
 import { Body, ROOM, STEP } from './body.js';
-import { loadMesh } from './mesh.js';
+import { loadMesh, wireframe } from './mesh.js';
 
 /** Simulated seconds between recorded frames, whatever the display's refresh rate, and the
  * seconds the plot shows. */
@@ -51,6 +51,7 @@ export default page({
     const mesh = await loadMesh(new URL('./stanford-bunny.bin', import.meta.url));
     const body = new Body(mesh);
     const { burst } = body;
+    const chunkEdges = wireframe(burst.faces);
     const pieces = burst.chunks.length;
     // The mesh, its pieces once popped, and the room are set once. Each recorded frame then
     // appends every vertex, the shadows, and the body as a whole.
@@ -61,16 +62,10 @@ export default page({
         a: reference('Vertex', mesh.springs.a),
         b: reference('Vertex', mesh.springs.b),
       })
-      .set('Face', {
-        a: reference('Vertex', mesh.faces.a),
-        b: reference('Vertex', mesh.faces.b),
-        c: reference('Vertex', mesh.faces.c),
-      })
       .set('ChunkVertex', { count: burst.count })
-      .set('ChunkFace', {
-        a: reference('ChunkVertex', burst.faces.a),
-        b: reference('ChunkVertex', burst.faces.b),
-        c: reference('ChunkVertex', burst.faces.c),
+      .set('ChunkEdge', {
+        a: reference('ChunkVertex', chunkEdges.a),
+        b: reference('ChunkVertex', chunkEdges.b),
       })
       .set('Corner', { x: [-ROOM, ROOM, ROOM, -ROOM], y: [-ROOM, -ROOM, ROOM, ROOM] })
       .set('Wall', {
@@ -90,7 +85,6 @@ export default page({
           base: 'dark',
           background: '#101214',
           grid: '#ffffff1c',
-          shading: 0.7,
           vertex: { radius: 0 },
         },
         controls: { pickRadius: 14 },
@@ -117,10 +111,11 @@ export default page({
             width: 1.5,
             pick: false,
           },
-          // Faces without a color blend their corners' colors.
+          // Edges share the animated vertices, including their speed/stress colors.
           {
-            faces: data.table(popped ? 'ChunkFace' : 'Face'),
-            corners: ['a', 'b', 'c'],
+            edges: data.table(popped ? 'ChunkEdge' : 'Spring'),
+            ends: ['a', 'b'],
+            width: 1,
             pick: false,
           },
           {
@@ -265,7 +260,7 @@ export default page({
       }
     });
     detail(
-      `${mesh.count.toLocaleString()} vertices · ${mesh.springs.a.length.toLocaleString()} springs · ${mesh.faces.a.length.toLocaleString()} faces`,
+      `${mesh.count.toLocaleString()} vertices · ${mesh.springs.a.length.toLocaleString()} wireframe edges`,
     );
     body.drop(true);
     record();

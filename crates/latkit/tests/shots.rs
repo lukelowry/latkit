@@ -10,8 +10,7 @@ use std::time::Duration;
 
 use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Areas, Color, Data, Edges, Faces, Fit, Ids, Image, Label, Lines, Patch, Scene, Shot, Table, Theme, Vertices, View,
-    field,
+    Areas, Color, Data, Edges, Fit, Ids, Image, Label, Lines, Patch, Scene, Shot, Table, Theme, Vertices, View, field,
 };
 
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -63,17 +62,12 @@ fn every_kind_of_mark_draws_with_the_pipelines_it_requested() {
         .field("name", vec!["a", "b", "c"]);
     let link =
         Table::new("Link", vec![1_u64]).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![2_u64]);
-    let face = Table::new("Face", vec![1_u64])
-        .reference("a", "Node", vec![1_u64])
-        .reference("b", "Node", vec![2_u64])
-        .reference("c", "Node", vec![3_u64]);
     let zone = Table::new("Zone", vec![1_u64]).field("geometry", vec![square]);
-    data.apply(Patch::new().set(nodes).set(link).set(face).set(zone)).expect("valid");
+    data.apply(Patch::new().set(nodes).set(link).set(zone)).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Areas::of("graph", "Zone"))
         .draw(Lines::of("graph", "Zone"))
-        .draw(Faces::of("graph", "Face").corners("a", "b", "c"))
         .draw(Edges::of("graph", "Link").ends("from", "to"))
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).label(Label::new(field("name"))));
     let mut view = view(&gpu, scene, &data);
@@ -119,6 +113,30 @@ fn panels_compose_side_by_side() {
 }
 
 #[test]
+fn opaque_panels_copy_exact_rows_at_unaligned_origins() {
+    let Some(gpu) = gpu() else { return };
+    let (red_scene, red) = dot(7.0, Color::rgb(1.0, 0.0, 0.0));
+    let (green_scene, green) = dot(-4.0, Color::rgb(0.0, 1.0, 0.0));
+    let (blue_scene, blue) = dot(11.0, Color::rgb(0.0, 0.0, 1.0));
+    let mut top = view(&gpu, red_scene, &red);
+    let mut left = view(&gpu, green_scene, &green);
+    let mut right = view(&gpu, blue_scene, &blue);
+    let shot = Shot::new([257, 131]).panels([[0.0, 0.0, 1.0, 0.5], [0.0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]]);
+    let image = pollster::block_on(shot.image(&mut [&mut top, &mut left, &mut right])).expect("tiled picture");
+    for (view, origin, size) in
+        [(&mut top, [0, 0], [257, 66]), (&mut left, [0, 66], [129, 65]), (&mut right, [129, 66], [128, 65])]
+    {
+        let panel = pollster::block_on(Shot::new(size).image(&mut [view])).expect("individual panel");
+        for y in 0..size[1] {
+            for x in 0..size[0] {
+                assert_eq!(pixel(&image, origin[0] + x, origin[1] + y), pixel(&panel, x, y));
+            }
+        }
+    }
+    assert_eq!(gpu.work().late, 0);
+}
+
+#[test]
 fn a_transparent_picture_keeps_its_alpha() {
     let Some(gpu) = gpu() else { return };
     let (scene, data) = dot(0.0, Color::rgb(1.0, 0.0, 0.0));
@@ -129,6 +147,20 @@ fn a_transparent_picture_keeps_its_alpha() {
     assert!(close(pixel(&image, SIZE / 2, SIZE / 2), RED), "{:?}", pixel(&image, SIZE / 2, SIZE / 2));
     let png = Image::from_png(&image.encode(latkit::ImageFormat::Png).expect("written")).expect("a PNG");
     assert_eq!(png, image);
+}
+
+#[test]
+fn an_opaque_picture_of_a_translucent_background_still_has_opaque_bytes() {
+    let Some(gpu) = gpu() else { return };
+    let (scene, data) = dot(0.0, Color::rgb(1.0, 0.0, 0.0));
+    let scene = scene.theme(Theme { background: Color::rgba(0.0, 0.0, 1.0, 0.5), ..plain_theme() });
+    let mut view = view(&gpu, scene, &data);
+    let shown = frame(&gpu, &mut view);
+    let image = pollster::block_on(Shot::new([SIZE, SIZE]).image(&mut [&mut view])).expect("a picture");
+    let mut background = at(&shown, 3, 3);
+    background[3] = 255;
+    assert!(close(pixel(&image, 3, 3), background));
+    assert!(close(pixel(&image, SIZE / 2, SIZE / 2), RED));
 }
 
 #[test]
@@ -176,9 +208,12 @@ fn timeouts_and_font_errors_return_the_view_without_a_partial_image() {
     assert!(!view.lent());
     gpu.set_host(BrokenText);
     let data = Data::new("labels");
-    data.apply(Table::new("Node", Ids::count(1)).field("name", vec!["Hello"])).unwrap();
-    let scene = Scene::new(latkit::Diagram::default())
-        .draw(Vertices::of("labels", "Node").label(latkit::Label::new(field("name"))));
+    data.apply(
+        Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["Hello"]),
+    )
+    .unwrap();
+    let scene = Scene::new(plane())
+        .draw(Vertices::of("labels", "Node").position(field("x"), field("y")).label(latkit::Label::new(field("name"))));
     view.set_scene(scene);
     view.set_sources([&data]).expect("a source");
     let error = pollster::block_on(Shot::new([128, 128]).image(&mut [&mut view])).unwrap_err();

@@ -8,21 +8,22 @@
 //! `Native`. It loads fonts on first use, runs jobs and reads files on a worker pool, and encodes
 //! H.264 with Media Foundation on Windows. It needs no window or network client.
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 mod browser;
 mod job;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod native;
-#[cfg(any(test, all(feature = "web", target_arch = "wasm32")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 mod queue;
 
 use std::sync::Arc;
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub use browser::Browser;
+#[cfg(all(target_arch = "wasm32", not(feature = "wgsl")))]
+pub(crate) use browser::translate;
 pub use job::Job;
 pub(crate) use job::Placement;
-pub(crate) use job::Wiring;
 pub(crate) use job::{Key, Shaping, shapes_answer};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use native::Native;
@@ -62,12 +63,6 @@ pub trait Host: Send + Sync + 'static {
     /// Rasterizes `run` to a coverage mask. Errors if its font is unavailable or rasterization
     /// fails.
     fn rasterize(&self, run: &TextRun) -> Result<Raster>;
-
-    /// The width and height of `run` once rasterized, in pixels. The default implementation
-    /// rasterizes it.
-    fn measure(&self, run: &TextRun) -> Result<[f32; 2]> {
-        self.rasterize(run).map(|raster| raster.size.map(|v| v as f32))
-    }
 
     /// Runs `job` in the background, resolving to the result of [`Job::run`]. The default
     /// implementation runs it immediately on the calling thread.
@@ -121,8 +116,8 @@ pub struct Raster {
 /// How many times fonts finished loading in the browser. Text set before a font loaded is set again
 /// in it. Natively it stays 0, since fonts load before any text is set.
 pub(crate) fn fonts() -> u64 {
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     return browser::fonts();
-    #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     0
 }

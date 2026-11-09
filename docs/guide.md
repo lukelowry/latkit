@@ -170,12 +170,11 @@ The [scene types](reference/types.md#scene) document every option and its defaul
 
 ### Spaces
 
-| Space       | Positions                                                             |
-| ----------- | --------------------------------------------------------------------- |
-| `'plane'`   | plane units with elevation; the camera turns and tilts                |
-| `'earth'`   | longitude and latitude in degrees, on a map or a globe                |
-| `'plot'`    | the axis coordinate across, values up                                 |
-| `'diagram'` | a flat sheet, y down, sizes in position units; ports, groups, layouts |
+| Space     | Positions                                              |
+| --------- | ------------------------------------------------------ |
+| `'plane'` | plane units with elevation; the camera turns and tilts |
+| `'earth'` | longitude and latitude in degrees, on a map or a globe |
+| `'plot'`  | the axis coordinate across, values up                  |
 
 Write a space as an object to give it options: `{ earth: { projection: 'globe' } }`,
 `{ plane: { grid: { lines: { pitch: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes.
@@ -185,7 +184,7 @@ Write a space as an object to give it options: `{ earth: { projection: 'globe' }
 A mark's kind key holds the table it draws: `{ vertices: grid.table('Bus') }`. A view loads every
 dataset its marks draw from. `JSON.stringify` writes a table as `[data, table]`, the form the
 command line reads, where `data` names one of the view's `sources`. The pointer hovers and clicks
-vertices, edges, faces, and a plot's traces. Set `pick: true` to make areas and lines respond too.
+vertices, edges, and a plot's traces. Set `pick: true` to make areas and lines respond too.
 Either way, every mark shows which of its rows are selected and hovered.
 
 | Mark       | Draws each row as                                                        |
@@ -194,17 +193,12 @@ Either way, every mark shows which of its rows are selected and hovered.
 | `edges`    | a stroke between the two rows its `ends` fields reference                |
 | `lines`    | a stroke along a path field; on a plot, a sampled field traced over time |
 | `areas`    | the area a polygon field covers                                          |
-| `faces`    | a triangle between three vertices                                        |
 
-`flow` animates comets along a stroke. In a diagram, vertices are blocks with `ports`, and each row
-is one block however many marks draw it. A vertices mark with `contains: [[table, reference], …]`
-draws each row as a group around the rows of those tables that reference it. An edges mark without
-`ends` draws each row as a net that joins the ports that reference it, and a net with one port
-draws a short stub.
+`flow` animates comets along a stroke. An edges mark with `joins: [table, reference]` draws each
+row as a net: a star from the center of the vertex rows whose `reference` names it out to each one.
 
 `label` shows a text field beside each row, inside a block, or along a stroke, when the row is
-visible and the text fits. In a diagram, a label wider than its block or group ends in "…". Labels
-never overlap. Where two would, the row drawn on top keeps its
+visible and the text fits. Labels never overlap. Where two would, the row drawn on top keeps its
 label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit.
 A row whose text is missing has no label, so a `when` that picks between the field and `null`
 labels only some rows, as in the scene above. A number label is written on the GPU each frame, so it
@@ -218,7 +212,7 @@ through a colormap or a conditional. `null` is a missing value, and an option th
 missing takes the theme's value.
 
 ```ts
-import { field, when, selected, zoom, units, px } from 'latkit';
+import { field, when, selected, zoom, units } from 'latkit';
 
 field('load').div(field('capacity')).clamp(0, 1); // arithmetic and comparisons
 field('vm').colormap('balance').domain(0.95, 1.05); // a color through a colormap
@@ -228,12 +222,11 @@ field('rating').fallback(100); // another value where one is missing
 when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10')); // colors
 when(zoom().ge(6)).then(field('name')).otherwise(null); // a label's text, from zoom 6 on
 units('$radius', { atLeast: 2 }); // a size in position units, kept within pixels
-px(3); // a size in CSS pixels, however the view zooms
 field('vm').from(weather.table('Station')); // read from another dataset, joined by id
 ```
 
-Sizes are in CSS pixels, or in position units in a diagram. Wrap a size in `px()` or `units()` to
-choose its unit. State expressions read the view: `selected()`, `hovered()`, `related()` (one
+Sizes are in CSS pixels. Wrap a size in `units()` to give it in position units, which scale with
+the zoom. State expressions read the view: `selected()`, `hovered()`, `related()` (one
 reference from a selected or hovered row), `pointer()`, `elapsed()`, and `zoom()`. `colormaps()`
 lists the colormap catalog with each map's colors, and `colormapCss(map)` returns a colormap as a
 CSS gradient, for legends drawn in HTML.
@@ -246,8 +239,8 @@ CSS gradient, for legends drawn in HTML.
   hovers. `gestures` binds each input to what it does, as in
   `{ gestures: { wheel: 'pan', 'control+wheel': 'zoom', 'shift+primary': 'box' } }`. `'inspect'`
   leaves the camera to your application, and `'none'` suits a still picture.
-- `layout` places vertex rows that have no position: `'stress'` or `'layered'`. A row keeps its
-  place once laid out.
+- `layout` places vertex rows that have no position among the rows they link to by edges or nets:
+  `'stress'` or `'layered'`. A row keeps its place once laid out.
 
 ## Views
 
@@ -293,8 +286,8 @@ edges. A globe zooms out until it spans a third of the view. After a fit of any 
 near the area the fit framed ([`View.camera`](reference/api.md#view)).
 
 A fit applies once the rows have their places, and until the first one applies the view shows only
-its background. A fit frames a diagram at most at its natural size and the earth at most at street
-scale, and one with nothing to frame waits for rows.
+its background. A fit frames the earth at most at street scale, and one with nothing to frame waits
+for rows.
 
 ### Events
 
@@ -355,7 +348,7 @@ of one GPU share the budget. A view that needs less than an even split gets all 
 other views divide the rest. A table too large for its view's share is split into pages, and the
 view draws only the pages on screen. A patch re-evaluates only the pages it wrote.
 
-The budget defaults to half the device's largest storage buffer, at most 1 GiB. GPU memory that
+The budget defaults to half the device's addressable word-texture capacity, at most 1 GiB. GPU memory that
 latkit replaces, or that a closed view or a finished picture leaves behind, is freed by the next
 frame rather than whenever the browser collects it. A device without the memory to grow the data
 further is given up, and the views move to a new one with the budget lowered to what it gave.
@@ -500,33 +493,47 @@ The Rust library is the `latkit` crate.
 | ----------------------------------- | ------------------------------ | -------------------------------- | ---------------------------- |
 | Scenes, expressions, patch builders | `latkit`, no WebAssembly       | `latkit`, no WebAssembly         | JSON inputs                  |
 | Data and queries                    | WASM, no GPU required          | WASM with a compiled module      | Available without a GPU      |
-| Rendering                           | WebGPU in a secure context     | Use the CLI for native rendering | Vulkan, Metal, DX12          |
+| Rendering                           | WebGL2 enabled in the browser  | Use the CLI for native rendering | Vulkan, Metal, DX12          |
 | File/URL slices                     | Browser fetch and CORS         | Supply data directly             | Local paths and `file:` URLs |
 | H.264 MP4                           | WebCodecs Constrained Baseline | Use the CLI                      | Windows Media Foundation     |
 
-Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, and worker from the
-same package version. WebGPU needs HTTPS or localhost, and a supported device.
+Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, shaders, and worker
+from the same package version: latkit refuses shaders from another version. Rendering requires an
+enabled WebGL2 context. WebCodecs video export requires HTTPS or localhost.
 
 ### Assets and workers
 
-By default, `load()` finds the WASM and worker files next to the installed modules. With Vite or
-another bundler that supports URL imports, pass their URLs. This also works when the app is
-deployed under a nested path:
+The package has four assets besides its modules:
+
+- `latkit/wasm`: the WebAssembly.
+- `latkit/shaders`: the shaders, translated for WebGL2 when the package was built. `load()`
+  downloads them while the WebAssembly compiles, wherever a canvas is available. Only drawing needs
+  them, so if the download fails, `Gpu.create()` rejects with an `io` error and the next call
+  downloads them again.
+- `latkit/wgsl`: the WebAssembly that translates custom markers' WGSL. A page loads it the first
+  time it draws a custom marker.
+- `latkit/worker`: a standalone classic worker that runs jobs.
+
+By default, `load()` finds each next to the installed modules. With Vite or another bundler that
+supports URL imports, pass their URLs. This also works when the app is deployed under a nested
+path:
 
 ```ts
 import { load } from 'latkit';
+import shadersUrl from 'latkit/shaders?url';
 import wasmUrl from 'latkit/wasm?url';
+import wgslUrl from 'latkit/wgsl?url';
 import workerUrl from 'latkit/worker?url';
 
-await load({ wasm: wasmUrl, worker: workerUrl });
+await load({ wasm: wasmUrl, shaders: shadersUrl, wgsl: wgslUrl, worker: workerUrl });
 ```
 
-`latkit/worker` is a standalone classic worker. A worker URL on another origin, such as a CDN,
-starts through a Blob URL on the page's origin. Workers start when needed and stop after 30 idle
-seconds. Where workers are unavailable, jobs run on the calling
-thread. Your Content Security Policy must allow the WASM asset and data origins in `connect-src`,
-WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), and the worker URL in
-`worker-src` (with `blob:` for one on another origin).
+A worker URL on another origin, such as a CDN, starts through a Blob URL on the page's origin.
+Workers start when needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on
+the calling thread. Your Content Security Policy must allow the WASM, shaders, and data origins in
+`connect-src`, WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), the
+package's modules in `script-src` (the WGSL translator is imported when first used), and the
+worker URL in `worker-src` (with `blob:` for one on another origin).
 
 ### Server-side builders and data
 
@@ -563,7 +570,8 @@ let restored = Data::read(&saved, Reading::default()).await?;
 `Data::read` and `Patch::read` take a `Reading`: the dataset's name, the base its slices are
 relative to, and the `resource::Fetch` that fetches them. Every rendering `Host` is also a `Fetch`.
 Enable `gpu` for scenes, views, and wgpu rendering. `native` adds system fonts, jobs, files, and
-Windows H.264, and `web` adds browser integration for the WASM target.
+Windows H.264, and `web` adds browser integration for the WASM target. `wgsl` adds a WGSL compiler
+to the browser build, for custom markers without the npm package's translator.
 
 ### Share an existing device
 

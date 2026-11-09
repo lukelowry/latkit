@@ -11,9 +11,10 @@
  * On SwiftShader (`--software`, and always on Linux) the CPU draws, slower than any budget, so the
  * gate only checks that every pipeline compiles. Pages and times are judged only on a GPU.
  *
- * Usage: `node gate/gate.ts <dir holding shaders.json> [--software] [page...]`, which
+ * Usage: `node gate/gate.ts <dir holding shaders.json> [--software] [--shaders] [page...]`, which
  * `cargo xtask browser` runs. Naming pages visits only those and skips timing the shaders. Chrome
- * is `$LATKIT_CHROME`, or else the newest Chromium that Playwright installed.
+ * is `$LATKIT_CHROME`, or else the newest Chromium that Playwright installed. `--shaders` runs
+ * only the complete pipeline timing gate, with the same per-pipeline budget.
  */
 
 import fs from 'node:fs';
@@ -23,15 +24,15 @@ import type { Page } from 'playwright-core';
 import { STEP, deadline, errorsOf, launch, serve, type Chrome } from './browser.ts';
 import { quantile } from './quantile.ts';
 
-/** Maximum milliseconds Chrome may take to compile one pipeline cold. The slowest takes about
- * 0.35 s. A view opens no sooner than its slowest pipeline. The others compile in parallel. */
+/** Maximum milliseconds Chrome may take to compile one pipeline cold. The same budget applies to every
+ * translated shader; changing the graphics API does not relax the startup target. */
 const COMPILE_BUDGET = 800;
 /** Maximum milliseconds from opening a page cold to its views' first frames. A first frame draws
- * everything its scene uses. Every pipeline compiles in parallel, off Chrome's GPU thread. */
+ * everything its scene uses. Requested pipelines compile before their first use. */
 const FIRST_FRAME_BUDGET = 1000;
 /** Maximum consecutive display frames a page may miss while it opens or under the pointer. The
  * machine sets the display rate: 60 Hz on a panel, 32 Hz over Remote Desktop, where single vblanks
- * slip. Nothing compiles on Chrome's GPU thread, so no frame waits on latkit. Pipelines compiled at
+ * slip. Pipeline compilation and drawing must both fit the responsiveness target. Pipelines compiled at
  * first use are counted separately, as `work.late`. */
 const MISSED = 1;
 /** Milliseconds between display frames beyond which the gate logs what the views were doing. */
@@ -60,22 +61,21 @@ const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, 
 const examples = path.dirname(here);
 const args = process.argv.slice(2);
 const software = args.includes('--software') || process.platform === 'linux';
+const shadersOnly = args.includes('--shaders');
 
-/** A shader module listed in shaders.json: a shader variant specialized as latkit's pipelines use
- * it. `append` is source added after the file's own. */
+/** Generated modules and each translated entry's GLSL ES 3.00 source. */
 interface Module {
   file: string;
-  draws: boolean;
-  compute: string[];
-  append: string;
 }
-
-/** One pipeline to time in the page. */
+interface Entry {
+  file: string;
+  entry: string;
+  stage: 'Vertex' | 'Fragment';
+}
 interface Pipeline {
   label: string;
-  code: string;
-  draws: boolean;
-  entry: string;
+  vertex: string;
+  fragment: string;
 }
 
 interface Timing {
@@ -87,28 +87,30 @@ interface Timing {
 /** Launches Chrome without its shader disk cache, so every pipeline compiles cold, as on a first
  * visit. */
 function cold(): Promise<Chrome> {
-  return launch(['--disable-gpu-shader-disk-cache'], software);
+  return launch(['--disable-webgpu', '--disable-gpu-shader-disk-cache'], software);
 }
 
-/** Lists the pipelines of the modules in `dir`: one per compute entry point, or one draw. Like
- * latkit's, they pass no pipeline constants. */
+/** Reads only the current manifest, so stale files from earlier builds never enter the gate. */
 function pipelines(dir: string): Pipeline[] {
   const modules = JSON.parse(fs.readFileSync(path.join(dir, 'shaders.json'), 'utf8')) as Module[];
   return modules.flatMap((module) => {
-    const code = `${fs.readFileSync(path.join(dir, module.file), 'utf8')}\n${module.append}`;
-    const name = module.file.replace(/\.wgsl$/, '');
-    const entries = module.draws ? ['vertex'] : module.compute;
-    return entries.map((entry) => ({
-      label: module.draws ? name : `${name} ${entry}`,
-      code,
-      draws: module.draws,
-      entry,
-    }));
+    const entries = JSON.parse(
+      fs.readFileSync(path.join(dir, `${module.file}.glsl.json`), 'utf8'),
+    ) as Entry[];
+    const vertex = entries.find((entry) => entry.stage === 'Vertex');
+    if (!vertex) throw new Error(`${module.file}: no vertex entry`);
+    const read = (entry: Entry) => fs.readFileSync(path.join(dir, entry.file), 'utf8');
+    return entries
+      .filter((entry) => entry.stage === 'Fragment')
+      .map((entry) => ({
+        label: `${module.file} ${entry.entry}`,
+        vertex: read(vertex),
+        fragment: read(entry),
+      }));
   });
 }
 
-/** Runs in the page. Creates each pipeline cold, sequentially, and times it. Only its source
- * reaches the page, so it must be self-contained. */
+/** Compiles and links the actual translated shaders on a fresh WebGL2 context. */
 async function time({
   pipelines,
   step,
@@ -116,72 +118,50 @@ async function time({
   pipelines: Pipeline[];
   step: number;
 }): Promise<Timing[]> {
-  interface Device {
-    createShaderModule(descriptor: { code: string }): unknown;
-    createComputePipelineAsync(descriptor: unknown): Promise<unknown>;
-    createRenderPipelineAsync(descriptor: unknown): Promise<unknown>;
-  }
-  interface Adapter {
-    limits: Record<string, number>;
-    requestDevice(descriptor: unknown): Promise<Device>;
-  }
-  const gpu = (
-    navigator as unknown as { gpu: { requestAdapter(o: unknown): Promise<Adapter | null> } }
-  ).gpu;
-  const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
-  if (!adapter) throw new Error('no WebGPU adapter');
-  const limits = adapter.limits;
-  const device = await adapter.requestDevice({
-    requiredLimits: {
-      maxStorageBufferBindingSize: limits.maxStorageBufferBindingSize,
-      maxBufferSize: limits.maxBufferSize,
-      maxStorageBuffersPerShaderStage: limits.maxStorageBuffersPerShaderStage,
-    },
+  const gl = new OffscreenCanvas(1, 1).getContext('webgl2', {
+    antialias: false,
+    powerPreference: 'high-performance',
   });
+  if (!gl) throw new Error('no WebGL2 context');
+  const shaders = new Map<string, WebGLShader>();
+  const compile = (source: string, kind: number) => {
+    const cached = shaders.get(source);
+    if (cached) return cached;
+    const shader = gl.createShader(kind)!;
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      throw new Error(gl.getShaderInfoLog(shader) ?? 'shader compilation failed');
+    shaders.set(source, shader);
+    return shader;
+  };
   const timings: Timing[] = [];
-  const modules = new Map<string, unknown>();
   for (const pipeline of pipelines) {
-    let module = modules.get(pipeline.code);
-    if (!module)
-      modules.set(pipeline.code, (module = device.createShaderModule({ code: pipeline.code })));
-    // Like latkit's draw pipelines, these test against depth, which the backdrop writes.
-    const made = pipeline.draws
-      ? device.createRenderPipelineAsync({
-          layout: 'auto',
-          vertex: { module, entryPoint: 'vertex' },
-          fragment: {
-            module,
-            entryPoint: 'fragment',
-            targets: [{ format: 'rgba8unorm' }],
-          },
-          primitive: { topology: 'triangle-list' },
-          depthStencil: {
-            format: 'depth32float',
-            depthWriteEnabled: true,
-            depthCompare: 'greater-equal',
-          },
-        })
-      : device.createComputePipelineAsync({
-          layout: 'auto',
-          compute: { module, entryPoint: pipeline.entry },
-        });
     const started = performance.now();
+    const program = gl.createProgram()!;
     try {
-      await Promise.race([
-        made,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`no pipeline after ${step} ms`)), step),
-        ),
-      ]);
-      timings.push({ label: pipeline.label, ms: performance.now() - started });
+      gl.attachShader(program, compile(pipeline.vertex, gl.VERTEX_SHADER));
+      gl.attachShader(program, compile(pipeline.fragment, gl.FRAGMENT_SHADER));
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+        throw new Error(gl.getProgramInfoLog(program) ?? 'program linking failed');
+      const ms = performance.now() - started;
+      timings.push({
+        label: pipeline.label,
+        ms,
+        ...(ms > step ? { error: `compilation exceeded ${step} ms` } : {}),
+      });
     } catch (error) {
       timings.push({
         label: pipeline.label,
         ms: performance.now() - started,
         error: String(error).slice(0, 300),
       });
+    } finally {
+      gl.deleteProgram(program);
     }
   }
+  shaders.forEach((shader) => gl.deleteShader(shader));
   return timings;
 }
 
@@ -504,15 +484,19 @@ async function suite(only: string[]): Promise<string[]> {
   }
 }
 
-const [dir, ...only] = args.filter((arg) => arg !== '--software');
+const [dir, ...only] = args.filter((arg) => arg !== '--software' && arg !== '--shaders');
 if (!dir) {
-  console.error('usage: node gate/gate.ts <dir holding shaders.json> [--software] [page...]');
+  console.error(
+    'usage: node gate/gate.ts <dir holding shaders.json> [--software] [--shaders] [page...]',
+  );
   process.exit(2);
 }
 if (software)
   console.log('SwiftShader draws on the CPU, so the gate only checks that pipelines compile');
 const shaders =
-  only.length && !software ? [] : (await compileBudget(dir)).map((f) => `shaders: ${f}`);
-const failures = [...shaders, ...(software ? [] : await suite(only))];
+  only.length && !software && !shadersOnly
+    ? []
+    : (await compileBudget(dir)).map((f) => `shaders: ${f}`);
+const failures = [...shaders, ...(software || shadersOnly ? [] : await suite(only))];
 for (const failure of failures) console.error(`FAIL ${failure}`);
 process.exit(failures.length ? 1 : 0);

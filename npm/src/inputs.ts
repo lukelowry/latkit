@@ -7,8 +7,8 @@ import type { Color, ExprInput } from './scene.js';
 export type Action =
   | /** Moves the camera with the pointer. */ 'pan'
   | /**
-     * Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, in a
-     * diagram or on a plot, it pans instead.
+     * Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, on a
+     * plot, it pans instead.
      */ 'turn'
   | /**
      * Tilts a map or plane about the point pressed, keeping its bearing. Where the camera cannot turn,
@@ -22,9 +22,9 @@ export type Action =
      * click there moves it too. Elsewhere it pans.
      */ 'scrub'
   | /**
-     * Draws a connection from the vertex or port pressed, or drags an edge's end off its vertex,
-     * reported as a `'connect'` event. Once any input connects, a drag from a port or an edge's end
-     * connects whatever its input. Elsewhere it pans.
+     * Draws a connection from the vertex pressed, or drags an edge's end off its vertex, reported as a
+     * `'connect'` event. Once any input connects, a drag from an edge's end connects whatever its
+     * input. Elsewhere it pans.
      */ 'connect'
   | /** Nothing. */ 'none';
 
@@ -92,10 +92,10 @@ export interface Budget {
    * GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's per-row
    * state. A table too large for a view's share draws as a paged table, with only the pages the
    * camera needs, so it always fits. Pages no view draws stay cached in the rest of the budget, and
-   * the least recently drawn are evicted first. Defaults to half the device's largest storage
-   * buffer, at most 1 GiB. The page pool grows as data needs it and never shrinks, so set the budget
-   * before drawing data. A device without the memory to grow the pool further lowers the budget to
-   * the pool's size.
+   * the least recently drawn are evicted first. Defaults to half the device's addressable
+   * word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never shrinks, so
+   * set the budget before drawing data. A device without the memory to grow the pool further lowers
+   * the budget to the pool's size.
    */
   bytes: number;
   /**
@@ -233,24 +233,24 @@ export type CallNode =
 /** Where a view looks. */
 export type Camera =
   /**
-   * A camera over the earth, a plane, or a diagram: the point it looks at and turns about, its zoom,
-   * its tilt, and its rotation. A diagram is always seen from straight above, upright.
+   * A camera over the earth or a plane: the point it looks at and turns about, its zoom, its tilt,
+   * and its rotation.
    */ | {
       /**
        * On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is a
-       * degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON, `[x, y]` is
-       * shorthand for elevation 0.
+       * degree of arc, about 111 km). On a plane, x, y, and elevation. In JSON, `[x, y]` is shorthand
+       * for elevation 0.
        */
       center: [number, number] | [number, number, number];
       /** The web mercator zoom level on the earth. Elsewhere, log₂ of CSS pixels per unit. */
       zoom: number;
       /**
-       * Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking straight
-       * down, elevation only decides which rows show on top, and each row draws over its ground
-       * position. Rows rise into view over the first 10° of tilt.
+       * Tilt in degrees from looking straight down, up to 75. Looking straight down, elevation only
+       * decides which rows show on top, and each row draws over its ground position. Rows rise into view
+       * over the first 10° of tilt.
        */
       pitch: number;
-      /** Degrees clockwise from north, or from up on a plane. Ignored in a diagram. */
+      /** Degrees clockwise from north, or from up on a plane. */
       bearing: number;
     }
   | /** A plot camera: the x range shown, and the value range, or `null` to fit the values in view. */ {
@@ -420,37 +420,6 @@ export interface CustomColormap {
   categories?: string[];
 }
 
-/**
- * A flat sheet for diagrams, seen from straight above. The camera pans and zooms but does not
- * turn. Positions are in units with y down, and a unit is a CSS pixel at zoom 0. Sizes, padding,
- * ports, strokes, text, and the theme's lengths are in units too. Sizes given with `px`, the text
- * halo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole picture.
- * Only a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout places its
- * blocks.
- */
-export interface Diagram {
-  /** The grid drawn under the marks. Defaults to dots 20 units apart. */
-  grid?: Grid;
-}
-
-/** How a diagram's blocks, groups, ports, and wires look. */
-export interface DiagramTheme {
-  /** The fill color of group containers. */
-  group?: Color;
-  /** The color of the one-unit border around blocks and groups. `null` draws no border. */
-  outline?: Color | null;
-  /** The corner radius of blocks and groups. A block marker can set its own. */
-  corner?: number;
-  /** The width of ports. */
-  portSize?: number;
-  /** The bend radius of orthogonal wires. */
-  bend?: number;
-  /** The space between a group's members and its border. */
-  groupPadding?: number;
-  /** How blocks and groups cast shadows on the sheet. */
-  shadow?: ShadowTheme;
-}
-
 /** A direction on screen. */
 export type Direction =
   | /** Toward the right. */ 'right'
@@ -502,21 +471,15 @@ export interface EarthTheme {
 export interface EdgeTheme {
   /**
    * The edge color. `null` blends the colors of each edge's two vertices, also for rows whose own
-   * color is missing. With `null`, a diagram's wires and edges without `ends` (nets and poles) use
-   * the text color.
+   * color is missing. With `null`, edges without `ends` (nets and poles) use the text color.
    */
   color?: Color | null;
-  /** The edge width, in the space's unit. */
+  /** The edge width, in CSS pixels. */
   width?: number;
   /**
-   * In a diagram, the distance between edges joining the same two vertices and between parallel
-   * orthogonal wires. Wires keep twice this distance from blocks where they can.
-   */
-  spacing?: number;
-  /**
-   * Outside a diagram, how far edges joining the same two vertices bow apart. Each lane bows out by
-   * this fraction of the edge's length, measured at its middle. Parallel edges spread at most eight
-   * lanes wide, and more lanes pack closer. Bows scale with the zoom.
+   * How far edges joining the same two vertices bow apart. Each lane bows out by this fraction of
+   * the edge's length, measured at its middle. Parallel edges spread at most eight lanes wide, and
+   * more lanes pack closer. Bows scale with the zoom.
    */
   bow?: number;
   /** How far an arrowhead extends beyond the edge's width. A head's length is this plus the width. */
@@ -524,9 +487,8 @@ export interface EdgeTheme {
 }
 
 /**
- * Rows drawn as strokes between two vertices named by reference fields: branches, links, wires. In
- * a diagram, a row without ends is a net. It joins every vertex port whose reference field names
- * it.
+ * Rows drawn as strokes between two vertices named by reference fields: branches, links, wires. A
+ * row can instead stand as a pole on its own vertex, or join many vertices as a net.
  */
 export interface Edges extends MarkOptions, StrokeOptions {
   /** The dataset and table drawn, `[data, table]`. */
@@ -535,15 +497,9 @@ export interface Edges extends MarkOptions, StrokeOptions {
   ends?: [from: string, to: string] | null;
   /** A path field whose points each row passes through between its ends. */
   bends?: string | null;
-  /**
-   * How each row runs between its ends. Defaults to geodesic on the earth and straight elsewhere.
-   * `orthogonal` routes around blocks with rounded bends, in diagrams only.
-   */
+  /** How each row runs between its ends. Defaults to geodesic on the earth and straight elsewhere. */
   route?: Route | null;
-  /**
-   * Whether each row has an arrowhead at its second end. A net has one at each input it reaches.
-   * Defaults to `false`.
-   */
+  /** Whether each row has an arrowhead at its second end. Defaults to `false`. */
   arrows?: boolean;
   /**
    * Draws each row as a pole from its own vertex down to the ground, on a plane or the earth. Poles
@@ -596,21 +552,6 @@ export type ExprNode =
   | CallNode;
 
 /**
- * Rows drawn as triangles between three vertices named by reference fields: meshes, surfaces, and
- * fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from
- * above shows its exact colors.
- */
-export interface Faces extends MarkOptions {
-  /** The dataset and table drawn, `[data, table]`. */
-  faces: TableInput;
-  /**
-   * The reference fields naming each row's three vertices. Required. Without a color, a face blends
-   * the colors of its corners.
-   */
-  corners?: [a: string, b: string, c: string] | null;
-}
-
-/**
  * A field's value in each row, from the mark's own table. With `from`, it reads another dataset's
  * table, joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
  */
@@ -660,8 +601,7 @@ export type Fit =
  *
  * `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
  * In position units (degrees on the earth), comets scale with the zoom and stay in place along
- * their lines. In CSS pixels, they keep their size and speed on screen. A plain number is in the
- * space's unit.
+ * their lines. In CSS pixels, they keep their size and speed on screen.
  */
 export interface FlowTheme {
   /**
@@ -673,7 +613,7 @@ export interface FlowTheme {
   spacing?: Length;
   /** The length of a comet's tail behind its head. */
   length?: Length;
-  /** The width of a comet's head, in the space's unit. A head is never narrower than its stroke. */
+  /** The width of a comet's head, in CSS pixels. A head is never narrower than its stroke. */
   width?: number;
 }
 
@@ -707,7 +647,7 @@ export type Gestures = {
   [name: string]: Action;
 };
 
-/** A plane's or a diagram's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`. */
+/** A plane's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch } }`. */
 export type Grid =
   | /** No grid. */ 'off'
   | {
@@ -718,12 +658,10 @@ export type Grid =
       };
     }
   | {
-      /** Dots `pitch` units apart. With `snap`, drags in a diagram snap to them. */
+      /** Dots `pitch` units apart. */
       dots: {
         /** Units between dots. */
         pitch: number;
-        /** Whether drag positions snap to the dots, in a diagram. Defaults to `false`. */
-        snap?: boolean;
       };
     };
 
@@ -761,8 +699,7 @@ export type Interpolation =
  * Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
  * its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
  * is missing or empty has no label, so a `when` that returns the field or missing labels only some
- * rows. In a diagram, a label scales with the zoom, fades out when too small to read, and shows
- * wherever it fits its vertex.
+ * rows.
  */
 export type Label =
   | ExprInput
@@ -770,15 +707,14 @@ export type Label =
       /**
        * The text field to show, a number to write, or a `when` that returns either or missing. A row
        * whose text is missing or empty has no label. The GPU writes a number each frame, so it can
-       * follow a sampled field. In a diagram, a text may read only data, since the sheet sizes blocks
-       * around it, and a number shows where it fits its block.
+       * follow a sampled field.
        */
       text: ExprInput;
-      /** Font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's `text.size`. */
+      /** Font size in CSS pixels. Defaults to the theme's `text.size`. */
       size?: number | null;
       /** Each row's text color. Defaults to the theme's text color. */
       color?: ExprInput | null;
-      /** The width at which lines wrap, in CSS pixels, or diagram units in a diagram. */
+      /** The width at which lines wrap, in CSS pixels. */
       maxWidth?: number | null;
       /** The CSS font family list for the text. Defaults to the theme's `text.font`. */
       font?: string | null;
@@ -793,10 +729,7 @@ export type Label =
       unit?: string | null;
     };
 
-/**
- * Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their
- * outputs.
- */
+/** Layered drawing: vertices in ranks, with edges pointing along `direction`. */
 export interface Layered {
   /** The direction edges point. Defaults to `right`. */
   direction?: Direction;
@@ -808,9 +741,8 @@ export interface Layered {
 
 /**
  * How the view places vertex rows that have no position: a name, or
- * `{ stress | layered: options }`. In a diagram it places blocks. On a plane or the earth it
- * places points among the rows they link to. Gaps are in position units: diagram units, plane
- * units, or degrees on the earth.
+ * `{ stress | layered: options }`. On a plane or the earth it places points among the rows they
+ * link to, by edges or nets. Gaps are in position units: plane units, or degrees on the earth.
  *
  * A placed row keeps its place. Rows added later are placed around the others, and `view.arrange`
  * lays out every row again.
@@ -848,15 +780,11 @@ export type Legend =
     };
 
 /**
- * A length: a number in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels.
- * `{ units }` is position units (degrees on the earth), which grow as the view zooms in.
+ * A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which
+ * grow as the view zooms in.
  */
 export type Length =
   | number
-  | {
-      /** CSS pixels, the same at any zoom. */
-      px: number;
-    }
   | {
       /** Position units (degrees on the earth), which grow as the view zooms in. */
       units: number;
@@ -866,7 +794,7 @@ export type Length =
 export interface LineTheme {
   /** The line color. */
   color?: Color;
-  /** The line width, in the space's unit. */
+  /** The line width, in CSS pixels. */
   width?: number;
 }
 
@@ -896,14 +824,13 @@ export interface Lines extends MarkOptions, StrokeOptions {
  * One table a scene draws. The mark's kind is the key that holds its table, next to its options:
  * `{ vertices: [data, table], radius: 4 }`.
  */
-export type Mark = Vertices | Edges | Faces | Lines | Areas;
+export type Mark = Vertices | Edges | Lines | Areas;
 
 /** The options every mark has. */
 export interface MarkOptions {
   /**
    * Each row's color: a CSS color, a value through a colormap, or a conditional that picks between
-   * colors. Defaults to the theme's color for the mark. Faces default to a blend of their corners'
-   * colors.
+   * colors. Defaults to the theme's color for the mark.
    */
   color?: ExprInput | null;
   /** Whether each row is drawn and can be picked. Defaults to `true`. */
@@ -916,9 +843,9 @@ export interface MarkOptions {
   /** Distinguishes two marks of the same table across scenes, and names the mark in hits. */
   name?: string | null;
   /**
-   * Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, faces,
-   * and plot traces, and off for geometry: areas, and lines along paths such as coasts, borders, and
-   * roads. Either way, the mark shows which rows are selected and hovered.
+   * Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, and plot
+   * traces, and off for geometry: areas, and lines along paths such as coasts, borders, and roads.
+   * Either way, the mark shows which rows are selected and hovered.
    */
   pick?: boolean | null;
   /** Whether clicking a row selects it. Defaults to `true`. */
@@ -949,9 +876,9 @@ export type Marker =
       shape: Shape;
     }
   | {
-      /** A rectangle with rounded corners that holds its label inside, like a diagram's blocks. */
+      /** A rectangle with rounded corners that holds its label inside. */
       block: {
-        /** Corner radius in CSS pixels, or units in a diagram. Defaults to the theme's `diagram.corner`. */
+        /** Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`. */
         corner?: number | null;
       };
     }
@@ -1048,40 +975,8 @@ export interface PlotTheme {
   playhead?: Color;
 }
 
-/**
- * A port on one side of a vertex's marker, where a net connects: a side name, or options. The
- * vertex names the net in a reference field. An output drives its net: layouts rank a net from its
- * outputs, and the net's arrows point away from them.
- */
-export type Port =
-  | 'left'
-  | 'right'
-  | 'top'
-  | 'bottom'
-  | {
-      /** The side of the marker it sits on. */
-      side: Side;
-      /**
-       * Its position among the ports on its side, counted from the top or left. Ports without an `order`
-       * follow those with one, in declaration order.
-       */
-      order?: number | null;
-      /** Its name, drawn beside it inside the marker. */
-      label?: string | null;
-      /** Its shape. Defaults to an ellipse. */
-      shape?: Shape;
-      /** Whether it is an output, which drives its net. Defaults to `false` (an input). */
-      output?: boolean;
-    };
-
 /** How the earth is projected. */
 export type Projection = /** Web mercator. */ 'mercator' | /** A sphere. */ 'globe';
-
-/** A size in CSS pixels, regardless of the space's unit. */
-export interface Px {
-  /** The size, in CSS pixels. */
-  px: ExprInput;
-}
 
 /** The rows of a table to read back, run through the expressions marks draw with. */
 export interface Query {
@@ -1118,11 +1013,7 @@ export interface Query {
 /** How an edge runs between its ends. */
 export type Route =
   | /** A straight line on screen. */ 'straight'
-  | /** Along the great circle, on the earth. */ 'geodesic'
-  | /**
-     * Horizontal and vertical runs around vertices that leave and enter at their sides, with rounded
-     * bends. Diagrams only.
-     */ 'orthogonal';
+  | /** Along the great circle, on the earth. */ 'geodesic';
 
 /**
  * One row, identified by dataset name, table name, and id. It stays valid across any change that
@@ -1177,8 +1068,8 @@ export interface Scene {
   /** The marks, in drawing order: each draws over the marks before it. */
   marks?: Mark[];
   /**
-   * How the view places vertex rows that have no position, such as a diagram's blocks or points on a
-   * plane or the earth. Defaults to `none`.
+   * How the view places vertex rows that have no position, on a plane or the earth. Defaults to
+   * `none`.
    */
   layout?: Layout;
   /** Default colors and sizes, and the look of text, focus, and each space. Defaults to `dark`. */
@@ -1191,14 +1082,6 @@ export interface Scene {
   title?: Title | null;
 }
 
-/** How a diagram's blocks and groups cast shadows on the sheet, for vertex marks with `shadow` on. */
-export interface ShadowTheme {
-  /** The color a shadow darkens toward. Its alpha sets how dark the shadow is under the block. */
-  color?: Color;
-  /** How far a shadow falls below its block or group. Its edge softens over the same distance. */
-  lift?: number;
-}
-
 /** A marker's outline. */
 export type Shape =
   | /** An ellipse: a circle when its width and height are equal. */ 'ellipse'
@@ -1206,30 +1089,15 @@ export type Shape =
   | /** A rectangle with rounded corners. */ 'rounded'
   | /** A diamond. */ 'diamond';
 
-/** A side of a marker. */
-export type Side =
-  | /** The left side. */ 'left'
-  | /** The right side. */ 'right'
-  | /** The top. */ 'top'
-  | /** The bottom. */ 'bottom';
-
 /**
- * A size: a value in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }`
- * is position units (degrees on the earth), which grow as the view zooms in.
+ * A size: a value in CSS pixels, or `{ units }` in position units (degrees on the earth), which
+ * grow as the view zooms in.
  */
-export type Size = ExprInput | Px | Units;
+export type Size = ExprInput | Units;
 
-/**
- * The coordinate space of a scene's positions: a name, or
- * `{ plane | diagram | earth | plot: options }`.
- *
- * The space sets the unit of lengths that do not name their own. In a diagram it is the diagram
- * unit, one CSS pixel at zoom 0. Elsewhere it is the CSS pixel. Only a diagram has ports, groups,
- * nets, and orthogonal routes.
- */
+/** The coordinate space of a scene's positions: a name, or `{ plane | earth | plot: options }`. */
 export type Space =
   | 'plane'
-  | 'diagram'
   | 'earth'
   | 'plot'
   | {
@@ -1243,10 +1111,6 @@ export type Space =
   | {
       /** The data's axis horizontally and values vertically. */
       plot: Plot;
-    }
-  | {
-      /** A flat sheet for diagrams: x right and y down, every length in units. */
-      diagram: Diagram;
     };
 
 /**
@@ -1273,10 +1137,7 @@ export interface Stress {
 
 /** The options of marks drawn as strokes: edges and lines. */
 export interface StrokeOptions {
-  /**
-   * Each row's width in CSS pixels, or units in a diagram, unless given with `px` or `units`.
-   * Defaults to the theme's width.
-   */
+  /** Each row's width in CSS pixels, unless given in `units`. Defaults to the theme's width. */
   width?: Size | null;
   /** Whether each row is dashed, using the theme's `dash` period. Defaults to `false`. */
   dash?: ExprInput;
@@ -1294,7 +1155,7 @@ export interface TextTheme {
   color?: Color;
   /** The CSS font family list. */
   font?: string;
-  /** The font size, in the space's unit. */
+  /** The font size, in CSS pixels. */
   size?: number;
   /** Width of the background-colored halo around label text, in CSS pixels. */
   halo?: number;
@@ -1305,8 +1166,7 @@ export interface TextTheme {
  * by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
  * names the base and defaults to `dark`. Each option replaces only the base value it sets.
  *
- * Lengths are in CSS pixels, or units in a diagram. The grid spacing, the text halo, and the focus
- * glow are always in CSS pixels.
+ * Lengths are in CSS pixels, except comet lengths given in position units.
  */
 export type Theme =
   | 'dark'
@@ -1314,12 +1174,12 @@ export type Theme =
   | {
       /** The background color. */
       background?: Color;
-      /** The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule. */
+      /** The color of a plane's grid, a plot's grid lines, and the earth's graticule. */
       grid?: Color;
       /**
-       * The least distance between the lines (or dots) of a plane's or diagram's grid and of the earth's
-       * graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten (and 30° and
-       * 90° on the earth), and the finer step fades out as it nears this distance.
+       * The least distance between the lines (or dots) of a plane's grid and of the earth's graticule,
+       * in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten (and 30° and 90° on the
+       * earth), and the finer step fades out as it nears this distance.
        */
       gridSpacing?: number;
       /** The color a colormap gives a missing value, such as a row with no value in the field. */
@@ -1332,8 +1192,6 @@ export type Theme =
       contrast?: number;
       /** The dash period: one dash and one gap of equal length. */
       dash?: number;
-      /** How much faces darken as they turn away from the camera, from 0 to 1. */
-      shading?: number;
       /** How labels, axis ticks, and titles look. */
       text?: TextTheme;
       /** Defaults for vertices. */
@@ -1348,8 +1206,6 @@ export type Theme =
       focus?: FocusTheme;
       /** How comets flowing along edges and lines look. */
       flow?: FlowTheme;
-      /** How a diagram's blocks, groups, ports, and wires look. */
-      diagram?: DiagramTheme;
       /** How the earth looks. */
       earth?: EarthTheme;
       /** How a plot looks. */
@@ -1374,8 +1230,8 @@ export type Title =
     };
 
 /**
- * A size in position units (degrees on the earth), regardless of the space's unit. It scales with
- * the zoom. `atLeast` and `atMost` bound it in CSS pixels.
+ * A size in position units (degrees on the earth). It scales with the zoom. `atLeast` and `atMost`
+ * bound it in CSS pixels.
  */
 export interface Units {
   /** The size, in position units. */
@@ -1390,11 +1246,13 @@ export interface Units {
 export interface VertexTheme {
   /** The vertex color. */
   color?: Color;
-  /** The vertex radius, in the space's unit. */
+  /** The vertex radius, in CSS pixels. */
   radius?: number;
+  /** The corner radius of block markers, in CSS pixels. A block marker can set its own. */
+  corner?: number;
 }
 
-/** Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram. */
+/** Rows drawn as markers: points of a map, nodes of a graph. */
 export interface Vertices extends MarkOptions {
   /** The dataset and table drawn, `[data, table]`. */
   vertices: TableInput;
@@ -1410,40 +1268,23 @@ export interface Vertices extends MarkOptions {
   geometry?: string | null;
   /**
    * Height above the ground. On the earth, in degrees of arc like every length there (one is about
-   * 111 km). Defaults to 0. Not allowed in a diagram, which is flat.
+   * 111 km). Defaults to 0.
    */
   elevation?: ExprInput;
   /**
-   * Each row's radius in CSS pixels, or units in a diagram, unless given with `px` or `units`. A
-   * diagram does not accept `px`. Defaults to the theme's `vertex.radius`.
+   * Each row's radius in CSS pixels, unless given in `units`. Defaults to the theme's
+   * `vertex.radius`.
    */
   radius?: Size | null;
   /**
-   * Each row's width and height, for markers that are not round. In CSS pixels, or units in a
-   * diagram, unless given with `px` or `units`. A diagram does not accept `px`. In a diagram, a
-   * block without a size fits its label and ports.
+   * Each row's width and height, for markers that are not round. In CSS pixels, unless given in
+   * `units`.
    */
   size?: [Size, Size] | null;
   /** How each row is drawn. Defaults to an ellipse. */
   marker?: Marker;
   /** A ring around each row's marker in this color. A missing or transparent color draws no ring. */
   ring?: ExprInput | null;
-  /**
-   * Ports on each row, one for each reference field that names a net. An `edges` mark of the net
-   * table, without `ends`, draws the nets. Diagrams only.
-   */
-  ports?: [reference: string, port: Port][];
-  /**
-   * Makes each row a group containing, for each `[table, reference]`, the rows of `table` whose
-   * `reference` field names it, so a group can hold rows of several tables. A group draws as a
-   * container around its members, with its label as a title in its header. Diagrams only.
-   */
-  contains?: [table: string, reference: string][];
-  /**
-   * Whether each block or group casts a shadow on the sheet, styled by the theme's `diagram.shadow`.
-   * Defaults to `false`. Diagrams only.
-   */
-  shadow?: boolean;
 }
 
 /** The value of the first case whose condition holds, else `otherwise`. */

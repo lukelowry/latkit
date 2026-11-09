@@ -3,14 +3,13 @@
 //! The controls' `gestures` say what each input does: a drag with each button and modifier keys,
 //! the wheel, and two fingers that pinch, twist, or slide. A press decides once the pointer moves a
 //! few pixels. A box, to select or to zoom, starts whatever lies under the press. A turn or tilt
-//! turns a map or plane, and pans where the camera cannot turn. Otherwise, on a port or an edge's
-//! end the press connects when any input connects, on a row of a draggable mark it drags the row,
+//! turns a map or plane, and pans where the camera cannot turn. Otherwise, on an edge's end the
+//! press connects when any input connects, on a row of a draggable mark it drags the row,
 //! and elsewhere it does its input's action. A press that does not move clicks. With Shift,
 //! Control, or Meta it toggles its row in the selection. With cycling on, clicking again where
 //! nothing moved selects the next row under the point. A secondary press opens a menu when it does
 //! not move, as does a touch or pen held still. A middle press only drags, and never clicks. Keys
-//! step. A diagram never turns, and its drags snap to its grid when the grid snaps. Every camera
-//! move is about the point under the pointer and goes through the rig, which lets a released drag
+//! step. Every camera move is about the point under the pointer and goes through the rig, which lets a released drag
 //! coast and keeps the camera within its zoom and pan limits.
 //!
 //! The point under a press comes from the latest probe if it was taken where the press is,
@@ -32,10 +31,11 @@ use super::View;
 use super::event::{Awaited, Cursor, End, Event, Fit, Hit, Phase, Trigger};
 use super::input::{Button, Device, Input, Key, Modifiers};
 use super::marks::Shown;
-use super::probe::{Answer, Probed, near};
+use super::probe::{Answer, Probed, Step, near};
+use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
 use crate::scene::{Action, Control, Gestures as Inputs};
-use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space, Value};
+use crate::{Camera, Pending, Row, Rows, Scene, Space, Value};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
@@ -171,31 +171,19 @@ pub(crate) struct Gestures {
     moved: Option<f64>,
 }
 
-/// The rows the keys step through. Holds the hits of a pick around the view's middle, nearest
-/// first, as drawn in the frame it was taken in. Also holds the index stepped to, which keeps the
-/// hover until the pointer acts, and keys pressed while the pick was pending.
+/// The keys' stepping: the row they point at, which keeps the hover until the pointer acts, the
+/// step being found, and keys pressed while it is.
 #[derive(Default)]
 pub(crate) struct Stepping {
-    /// The rows last picked. `None` until the keys first step.
-    rows: Option<Vec<Hit>>,
-    picking: Option<Pending<Vec<Hit>>>,
-    /// Whether the rows match where the current frame draws them.
-    fresh: bool,
-    pub(crate) at: Option<usize>,
+    pub(crate) at: Option<Hit>,
+    finding: Option<Finding>,
     queued: Vec<(Key, Modifiers)>,
 }
 
-impl Stepping {
-    /// Marks the rows stale after the frame changed, so they are picked again before an arrow
-    /// steps.
-    pub(crate) fn stale(&mut self) {
-        self.fresh = false;
-    }
-
-    /// The row the keys point at.
-    fn row(&self) -> Option<&Hit> {
-        self.rows.as_ref().zip(self.at).and_then(|(rows, i)| rows.get(i))
-    }
+/// A step the GPU is finding: the key that asked for it, and the modifiers held.
+struct Finding {
+    key: Key,
+    modifiers: Modifiers,
 }
 
 impl Gestures {
@@ -473,7 +461,7 @@ impl View {
         let pointers =
             pointer.is_none_or(|p| self.gestures.now.holds(p)) && !matches!(self.gestures.now, Gesture::Idle);
         let keys = &self.gestures.keys;
-        let keys = pointer.is_none() && (keys.at.is_some() || keys.picking.is_some() || !keys.queued.is_empty());
+        let keys = pointer.is_none() && (keys.at.is_some() || keys.finding.is_some() || !keys.queued.is_empty());
         if !pointers && !keys {
             return false;
         }
@@ -486,8 +474,9 @@ impl View {
         }
         if keys {
             let pointed = self.gestures.keys.at.is_some();
-            // Dropping a pending pick cancels its query.
+            // A step not yet probed is dropped, and the answer of one in flight goes unused.
             self.gestures.keys = Stepping::default();
+            self.probing.step = None;
             if pointed {
                 self.hover(None, Trigger { point: self.middle(), device: Device::Keyboard, ..Trigger::default() });
             }
@@ -530,10 +519,10 @@ impl View {
         }
     }
 
-    /// Hovers `hit`, reporting a change when the row, its port, or the traced sample differs. A
+    /// Hovers `hit`, reporting a change when the row or the traced sample differs. A
     /// row the application hovered stays until the pointer or keys hover a row, or leave one.
     fn hover(&mut self, hit: Option<Hit>, trigger: Trigger) {
-        let spot = hit.as_ref().map(|h| (h.row.clone(), h.port.clone(), h.sample.map(|s| s.frame)));
+        let spot = hit.as_ref().map(|h| (h.row.clone(), h.sample.map(|s| s.frame)));
         if spot == self.focus.spot {
             return;
         }
@@ -592,7 +581,7 @@ impl View {
             && let Some((from, edge, anchor)) =
                 answer.hit.as_ref().and_then(|probed| self.connect_from(probed, action == Action::Connect))
         {
-            let locating = anchor.is_none().then(|| self.screen_of(&from.row, None));
+            let locating = anchor.is_none().then(|| self.screen_of(&from.row));
             self.gestures.now = Gesture::Connect { pointer, from, edge, anchor, locating, to };
             return;
         }
@@ -697,8 +686,7 @@ impl View {
     }
 
     /// Reports where the dragged row goes. With the pointer at `trigger`, the hit point moves with
-    /// it from the press, at the depth where the drag started, snapped to a diagram's grid dots
-    /// when the grid snaps. A cancel writes back what the row's position fields held, missing
+    /// it from the press, at the depth where the drag started. A cancel writes back what the row's position fields held, missing
     /// values included, however the camera has moved since. It reports the row where those
     /// fields placed it, or where it was drawn when they held nothing.
     fn drag(&mut self, phase: Phase, trigger: Trigger) {
@@ -712,15 +700,7 @@ impl View {
             _ => {
                 let view = self.projected();
                 let at = [trigger.point[0] + grab[0], trigger.point[1] + grab[1]];
-                let mut position = view.position(view.unproject(at.map(f64::from), f64::from(probed.depth)));
-                if let Space::Diagram(diagram) = &self.scene.space
-                    && let Grid::Dots { pitch, snap: true } = diagram.grid
-                    && pitch > 0.0
-                {
-                    for v in &mut position[..2] {
-                        *v = (*v / pitch).round() * pitch;
-                    }
-                }
+                let position = view.position(view.unproject(at.map(f64::from), f64::from(probed.depth)));
                 (position, Some([Some(position[0]), Some(position[1])]))
             }
         };
@@ -764,10 +744,7 @@ impl View {
     /// finger dragging does something here (an input, a draggable mark, or a connection),
     /// `pan-x pan-y` when only two fingers do, so one finger scrolls the page, and otherwise
     /// `manipulation`, so the page pans and zooms.
-    #[cfg_attr(
-        not(all(feature = "web", target_arch = "wasm32")),
-        expect(dead_code, reason = "only a page hands touch input to the view")
-    )]
+    #[cfg_attr(not(target_arch = "wasm32"), expect(dead_code, reason = "only a page hands touch input to the view"))]
     pub(crate) fn touch_action(&self) -> &'static str {
         let inputs = &self.scene.controls.gestures;
         let still = Modifiers::default();
@@ -786,7 +763,7 @@ impl View {
         matches!(self.scene.space, Space::Plot(_))
     }
 
-    /// Whether any input connects, so a press on a port or an edge's end connects too.
+    /// Whether any input connects, so a press on an edge's end connects too.
     fn connects(&self) -> bool {
         self.scene.controls.gestures.any(Action::Connect)
     }
@@ -796,9 +773,9 @@ impl View {
         matches!(self.gestures.now, Gesture::Drag { .. })
     }
 
-    /// Whether the camera can turn: a map camera, never in a diagram.
+    /// Whether the camera can turn: a map camera.
     fn turns(&self) -> bool {
-        matches!(self.camera, Camera::Map { .. }) && !matches!(self.scene.space, Space::Diagram(_))
+        matches!(self.camera, Camera::Map { .. })
     }
 
     /// Whether clicking a row of mark `mark` selects it.
@@ -806,22 +783,20 @@ impl View {
         self.scene.marks.get(mark).is_some_and(|m| m.style().interaction.select)
     }
 
-    /// Where a connection starts from what a press hit: at a port, at a vertex when the press's
-    /// input `connects`, or, for an edge with ends, at the end that stays (the end pressed nearer
+    /// Where a connection starts from what a press hit: at a vertex when the press's input
+    /// `connects`, or, for an edge with ends, at the end that stays (the end pressed nearer
     /// detaches). Also returns the edge, and the start's screen point when known.
     fn connect_from(&self, probed: &Probed, connects: bool) -> Option<(End, Option<Row>, Option<[f32; 2]>)> {
         let hit = &probed.hit;
         let shown = self.marks.get(hit.index)?;
         match shown.kind() {
-            MarkKind::Vertices if hit.port.is_some() || connects => {
-                Some((End { row: hit.row.clone(), port: hit.port.clone() }, None, Some(hit.point)))
-            }
+            MarkKind::Vertices if connects => Some((End { row: hit.row.clone() }, None, Some(hit.point))),
             MarkKind::Edges => {
                 let crate::Mark::Edges(edges) = &shown.mark else { return None };
                 let (first, second) = edges.ends.as_ref()?;
                 let stays = if probed.end == 0 { second } else { first };
                 let row = self.referenced(&hit.row, stays)?;
-                Some((End { row, port: None }, Some(hit.row.clone()), None))
+                Some((End { row }, Some(hit.row.clone()), None))
             }
             _ => None,
         }
@@ -849,7 +824,6 @@ impl View {
         let mut events = std::mem::take(&mut self.events);
         events.settle(|hits, awaited| self.finish(hits, awaited));
         self.events = events;
-        self.settle_keys();
         self.held_long();
     }
 
@@ -862,7 +836,7 @@ impl View {
                 let vertex = |hit: &&Hit| {
                     self.marks.get(hit.index).is_some_and(|m| m.kind() == MarkKind::Vertices) && hit.row != from.row
                 };
-                let to = hits.iter().find(vertex).map(|hit| End { row: hit.row.clone(), port: hit.port.clone() });
+                let to = hits.iter().find(vertex).map(|hit| End { row: hit.row.clone() });
                 Event::Connect { from, to, edge, trigger }
             }
             Awaited::Cycle { after, trigger } => {
@@ -922,7 +896,7 @@ impl View {
 
     fn key(&mut self, key: Key, modifiers: Modifiers) -> bool {
         let controls = self.scene.controls;
-        let stepped = self.gestures.keys.row().cloned();
+        let stepped = self.gestures.keys.at.clone();
         let point =
             stepped.as_ref().map(|hit| hit.point).or(self.pointer.map(|p| p.point)).unwrap_or_else(|| self.middle());
         let trigger = Trigger { point, modifiers, device: Device::Keyboard };
@@ -961,9 +935,14 @@ impl View {
             }
             _ => {}
         }
-        if !controls.keyboard {
-            return false;
-        }
+        controls.keyboard && self.camera_by_key(key, trigger)
+    }
+
+    /// Moves the camera as `key` does, in the ways some input does: an arrow pans, or with Shift
+    /// turns, plus and minus zoom, and Home frames everything. Escape clears the selection. Returns
+    /// whether the key was used.
+    fn camera_by_key(&mut self, key: Key, trigger: Trigger) -> bool {
+        let (controls, modifiers) = (self.scene.controls, trigger.modifiers);
         let anchor = match self.camera {
             Camera::Map { center, .. } => center,
             Camera::Plot { .. } => {
@@ -998,62 +977,70 @@ impl View {
     }
 
     /// Steps the row the keys point at: Tab to the row nearest the view's middle, an arrow to the
-    /// nearest row in its direction. The view is one stop in the page's tab order: Tab steps to a
-    /// row once, and the next Tab or any Shift+Tab is not used, so focus leaves the view. Tab uses
-    /// the rows as last picked and waits only for the first pick. An arrow waits for rows picked
-    /// where the current frame draws them. Returns whether the key was used.
+    /// nearest row within 45° of its direction from where the row they point at lies now. The GPU
+    /// finds the row over the next frames, reading back only that row however many are in view.
+    /// Keys pressed meanwhile wait, then step from it. The view is one stop in the page's tab
+    /// order: Tab steps to a row once, and the next Tab or any Shift+Tab is not used, so focus
+    /// leaves the view. Returns whether the key was used.
     fn step(&mut self, key: Key, modifiers: Modifiers) -> bool {
+        let keys = &self.gestures.keys;
         let tab = key == Key::Tab;
-        let entering = self.gestures.keys.queued.iter().any(|(queued, _)| *queued == Key::Tab);
-        if tab && (modifiers.shift || entering || self.gestures.keys.at.is_some()) {
+        let entering = keys.finding.as_ref().is_some_and(|f| f.key == Key::Tab);
+        if tab && (modifiers.shift || entering || keys.at.is_some()) {
             if self.gestures.keys.at.take().is_some() {
                 self.hover(None, Trigger { point: self.middle(), modifiers, device: Device::Keyboard });
             }
             return false;
         }
-        if !self.gestures.keys.fresh && self.gestures.keys.picking.is_none() {
-            if !self.marks.iter().any(Shown::probed) {
-                return false;
-            }
-            let [left, top, right, bottom] = self.area();
-            let picking = self.hits(self.middle(), ((right - left).hypot(bottom - top) / 2.0) as f32);
-            self.gestures.keys.picking = Some(picking);
-        }
-        let keys = &self.gestures.keys;
-        if keys.rows.is_none() || (!tab && !keys.fresh) {
+        if keys.finding.is_some() {
             self.gestures.keys.queued.push((key, modifiers));
             return true;
         }
-        let rows = keys.rows.as_deref().unwrap_or_default();
-        let next = match (key, keys.at) {
-            (Key::Tab, _) => (!rows.is_empty()).then_some(0),
-            (arrow, Some(i)) => toward(rows, i, arrow),
-            (_, None) => None,
+        let way = match key {
+            Key::Tab => None,
+            Key::Left => Some([-1.0, 0.0]),
+            Key::Right => Some([1.0, 0.0]),
+            Key::Up => Some([0.0, -1.0]),
+            Key::Down => Some([0.0, 1.0]),
+            _ => return false,
         };
-        let Some(next) = next else { return false };
-        let hit = rows[next].clone();
-        self.gestures.keys.at = Some(next);
-        self.hover(Some(hit.clone()), Trigger { point: hit.point, modifiers, device: Device::Keyboard });
+        if !self.marks.iter().any(Shown::probed) || (way.is_some() && keys.at.is_none()) {
+            return false;
+        }
+        // An arrow starts where the row the keys point at lies now, which its position gives, and
+        // passes over it. Tab starts from the middle of the view.
+        let step = match &self.gestures.keys.at {
+            Some(hit) => {
+                let view = self.projected();
+                let now = view.screen(view.world(hit.position)).map_or(hit.point, |s| [s[0] as f32, s[1] as f32]);
+                let held = self.held_of(hit.index, &hit.row);
+                let skip = held.map_or([wgsl::NONE; 2], |held| [hit.index as u32, held]);
+                Step { start: now, way: way.unwrap_or_default(), skip }
+            }
+            None => Step { start: self.middle(), way: [0.0; 2], skip: [wgsl::NONE; 2] },
+        };
+        self.probing.step = Some(step);
+        self.gestures.keys.finding = Some(Finding { key, modifiers });
+        self.wake();
         true
     }
 
-    /// Takes the keys' rows once their pick resolves, and steps the keys that waited for them.
-    fn settle_keys(&mut self) {
-        let Some(rows) = self.gestures.keys.picking.as_ref().and_then(Pending::take) else { return };
-        // The keys pass over rows that a title, a legend, or a plot's axes hide.
-        let rows: Vec<Hit> = rows.unwrap_or_default().into_iter().filter(|hit| self.marks_show_at(hit.point)).collect();
-        let keys = &mut self.gestures.keys;
-        let held = keys.row().map(|hit| hit.row.clone());
-        // The row stepped to keeps its position among the newly picked rows.
-        keys.at = held.as_ref().and_then(|row| rows.iter().position(|hit| hit.row == *row));
-        keys.rows = Some(rows);
-        keys.picking = None;
-        keys.fresh = true;
-        let queued = std::mem::take(&mut keys.queued);
-        if held.is_some() && self.gestures.keys.at.is_none() {
-            self.hover(None, Trigger { point: self.middle(), device: Device::Keyboard, ..Trigger::default() });
+    /// Hovers `hit`, the row a keys' step found, then steps the keys pressed meanwhile. An arrow
+    /// that finds no row that way moves the camera instead, as it does with no row pointed at.
+    pub(super) fn stepped(&mut self, hit: Option<Hit>) {
+        let Some(Finding { key, modifiers }) = self.gestures.keys.finding.take() else { return };
+        match hit {
+            Some(hit) => {
+                self.gestures.keys.at = Some(hit.clone());
+                self.hover(Some(hit.clone()), Trigger { point: hit.point, modifiers, device: Device::Keyboard });
+            }
+            None if key != Key::Tab => {
+                let point = self.gestures.keys.at.as_ref().map_or_else(|| self.middle(), |hit| hit.point);
+                self.camera_by_key(key, Trigger { point, modifiers, device: Device::Keyboard });
+            }
+            None => {}
         }
-        for (key, modifiers) in queued {
+        for (key, modifiers) in std::mem::take(&mut self.gestures.keys.queued) {
             self.step(key, modifiers);
         }
     }
@@ -1063,29 +1050,4 @@ impl View {
         let [left, top, right, bottom] = self.area();
         [left.midpoint(right) as f32, top.midpoint(bottom) as f32]
     }
-}
-
-/// The row of `rows` nearest row `i` within 45° of the arrow's direction from it.
-fn toward(rows: &[Hit], i: usize, arrow: Key) -> Option<usize> {
-    let way = match arrow {
-        Key::Left => [-1.0, 0.0],
-        Key::Right => [1.0, 0.0],
-        Key::Up => [0.0, -1.0],
-        Key::Down => [0.0, 1.0],
-        _ => return None,
-    };
-    let from = rows.get(i)?.point;
-    let offset = |hit: &Hit| [hit.point[0] - from[0], hit.point[1] - from[1]];
-    let distance = |hit: &Hit| {
-        let [dx, dy] = offset(hit);
-        dx.hypot(dy)
-    };
-    rows.iter()
-        .enumerate()
-        .filter(|&(j, hit)| {
-            let [dx, dy] = offset(hit);
-            j != i && dx * way[0] + dy * way[1] > distance(hit) * std::f32::consts::FRAC_1_SQRT_2
-        })
-        .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
-        .map(|(j, _)| j)
 }

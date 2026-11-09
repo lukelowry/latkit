@@ -1,4 +1,4 @@
-//! GPU memory for pages: one pool of 128 Ki-word chunks in a single storage buffer. The buffer
+//! GPU memory for pages: one pool of 128 Ki-word chunks in an integer texture array. The texture
 //! doubles as it fills, up to the budget. It holds uploaded data pages, and the per-row word pages
 //! that each view's marks keep and the GPU writes.
 //!
@@ -19,14 +19,14 @@
 //!
 //! A per-row word page is a block of its own. It is cleared when handed out if it is read before
 //! anything writes it, and freed only once the frame that released it is done. The pool grows only
-//! before a frame records writes to the pages, since growing copies the buffer. A block that finds
+//! before a frame records writes to the pages, since growing copies the texture. A block that finds
 //! no space after that waits for the next frame. A reservation grows the pool once for all its
-//! missing pages, and the buffer it replaces is retired, so its memory is freed once the GPU is
+//! missing pages, and the texture it replaces is retired, so its memory is freed once the GPU is
 //! done with it.
 //!
-//! A device without the memory refuses a larger buffer. Natively it says so at once, and the pool
-//! keeps its buffer and grows no further. In a browser it says so a frame or so later, once the
-//! pool has moved into the refused buffer and lost its pages, and the `Gpu` gives up the device.
+//! A device without the memory refuses a larger texture. Natively it says so at once, and the pool
+//! keeps its texture and grows no further. In a browser it says so a frame or so later, once the
+//! pool has moved into the refused texture and lost its pages, and the `Gpu` gives up the device.
 //! Either way the budget is lowered to the pool's size, so a new device stays within it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -36,7 +36,7 @@ use std::task::{Context, Poll, Waker};
 
 use rustc_hash::{FxBuildHasher, FxHasher};
 
-use crate::data::{AxisPage, FRAME_PAGE_WORDS, FramePage, PageId, Value, Values};
+use crate::data::{FRAME_PAGE_WORDS, FramePage, PageId, Value, Values};
 use crate::expr::compile::Words;
 use crate::gpu::pipelines::Check;
 use crate::gpu::shaders::{MISSING, NONE, POINT_BITS};
@@ -129,8 +129,6 @@ pub(crate) enum Content {
     Values { values: Values, words: Words, low: bool },
     /// A page of samples. A page that an append opened grows, and only its new tail uploads.
     Frames(FramePage),
-    /// A page of axis positions for a level's entries. It grows like a page of samples.
-    Axis(AxisPage),
     /// Words computed on the CPU: text codes, join rows, a geometry's pieces.
     Computed(Vec<u32>),
 }
@@ -141,7 +139,6 @@ impl Content {
         let len = match self {
             Content::Values { values, .. } => values.len(),
             Content::Frames(page) => page.read(<[f32]>::len),
-            Content::Axis(page) => page.words_len(),
             Content::Computed(words) => words.len(),
         };
         debug_assert!(len <= CHUNK_WORDS as usize, "no page is larger than a chunk");
@@ -155,7 +152,6 @@ impl Content {
             Content::Frames(page) => {
                 page.read(|values| values[from.min(values.len())..].iter().map(|v| v.to_bits()).collect())
             }
-            Content::Axis(page) => page.words(from),
             Content::Computed(words) => words[from.min(words.len())..].to_vec(),
         }
     }
@@ -165,7 +161,6 @@ impl Content {
     fn class(&self, words: u32) -> usize {
         match self {
             Content::Frames(page) if page.grows() => class_of(FRAME_PAGE_WORDS as u32),
-            Content::Axis(page) if page.grows() => class_of(FRAME_PAGE_WORDS as u32),
             _ => class_of(words),
         }
     }
@@ -308,10 +303,12 @@ struct Block {
 struct Chunk {
     live: u32,
     free: [u64; FREE_WORDS],
+    /// Words below this high-water mark may have been written, even after recarving.
+    used: u32,
 }
 
 impl Chunk {
-    const FREE: Chunk = Chunk { live: 0, free: [0; FREE_WORDS] };
+    const FREE: Chunk = Chunk { live: 0, free: [0; FREE_WORDS], used: 0 };
 
     /// Takes a free block, returning its slot.
     fn take(&mut self) -> u32 {
@@ -324,7 +321,8 @@ impl Chunk {
 }
 
 pub(crate) struct Arena {
-    buffer: wgpu::Buffer,
+    words: super::words::Words,
+    zero: super::words::Words,
     chunks: Vec<Chunk>,
     /// Most chunks the pool may grow to.
     limit: u32,
@@ -362,11 +360,12 @@ pub(crate) struct Arena {
 
 impl Arena {
     /// A pool that grows to at most `bytes`, within what the device can bind.
-    pub(crate) fn new(device: &wgpu::Device, bytes: u64) -> Arena {
+    pub(crate) fn new(device: &wgpu::Device, retired: &super::retired::Retired, bytes: u64) -> Arena {
         let limit = limit_of(device, bytes);
         let chunks = INITIAL_CHUNKS.min(limit);
         Arena {
-            buffer: create(device, chunks),
+            words: create(device, retired, chunks),
+            zero: super::words::Words::allocated(device, retired, "latkit clear page", u64::from(CHUNK_WORDS)),
             chunks: vec![Chunk::FREE; chunks as usize],
             limit,
             generation: 0,
@@ -440,7 +439,7 @@ impl Arena {
                 continue;
             }
             let class = ask.content.as_ref().map(|content| content.class(content.len().max(ask.need)));
-            let Some(offset) = class.and_then(|class| self.allocate(device, queue, class)) else {
+            let Some((offset, _)) = class.and_then(|class| self.allocate(device, queue, class)) else {
                 room = false;
                 break;
             };
@@ -474,12 +473,13 @@ impl Arena {
     }
 
     /// Allocates a separate block of `words` for a per-row word page. With `cleared`, the next
-    /// [`clear`](Arena::clear) zeroes it. Returns `None` if the pool has no space now. The next
+    /// [`clear`](Arena::clear) zeroes reused storage. New texture storage already contains zero
+    /// on every backend. Returns `None` if the pool has no space now. The next
     /// frame then grows it.
     pub(crate) fn block(&mut self, device: &wgpu::Device, queue: &Queue, words: u32, cleared: bool) -> Option<u32> {
         let class = class_of(words);
-        let offset = self.allocate(device, queue, class)?;
-        if cleared {
+        let (offset, used) = self.allocate(device, queue, class)?;
+        if cleared && used {
             self.cleared.push((offset, class));
         }
         Some(offset)
@@ -500,7 +500,8 @@ impl Arena {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit clear") });
         for (offset, class) in self.cleared.drain(..) {
-            queue.clear_buffer(&mut encoder, &self.buffer, u64::from(offset) * 4, u64::from(class_words(class)) * 4);
+            self.zero.copy_to(&mut encoder, 0, &self.words, offset, class_words(class));
+            queue.cleared(u64::from(class_words(class)) * 4);
         }
         queue.submit([encoder.finish()]);
     }
@@ -511,8 +512,15 @@ impl Arena {
         self.writing = true;
     }
 
-    pub(crate) fn buffer(&self) -> &wgpu::Buffer {
-        &self.buffer
+    pub(crate) fn words(&self) -> &super::words::Words {
+        &self.words
+    }
+
+    pub(crate) fn clear_words(&self, queue: &Queue, encoder: &mut wgpu::CommandEncoder, at: u32, words: u32) {
+        for from in (0..words).step_by(CHUNK_WORDS as usize) {
+            self.zero.copy_to(encoder, 0, &self.words, at + from, (words - from).min(CHUNK_WORDS));
+        }
+        queue.cleared(u64::from(words) * 4);
     }
 
     /// Whether the pool has grown as far as the budget lets it.
@@ -635,11 +643,12 @@ impl Arena {
             let Some(content) = self.contents.remove(&key) else { continue };
             let Some(block) = self.blocks.get_mut(&key) else { continue };
             let (offset, written) = (block.offset, block.written);
-            let tail = content.words(written as usize);
-            block.written = written + tail.len() as u32;
+            let aligned = written / 4 * 4;
+            let tail = content.words(aligned as usize);
+            block.written = aligned + tail.len() as u32;
             if !tail.is_empty() {
                 bytes += tail.len() as u64 * 4;
-                writes.push((offset + written, tail));
+                writes.push((offset + aligned, tail));
             }
         }
         // Adjacent pages, such as a column's, upload in one write.
@@ -653,13 +662,13 @@ impl Arena {
                 }
                 _ => {
                     if let Some((start, joined, pages)) = run.replace((at, words, 1)) {
-                        queue.upload(&self.buffer, u64::from(start) * 4, bytemuck::cast_slice(&joined), pages);
+                        self.words.upload(queue, start, &joined, pages);
                     }
                 }
             }
         }
         if let Some((start, joined, pages)) = run {
-            queue.upload(&self.buffer, u64::from(start) * 4, bytemuck::cast_slice(&joined), pages);
+            self.words.upload(queue, start, &joined, pages);
         }
         bytes
     }
@@ -671,7 +680,7 @@ impl Arena {
         chunk.free[slot as usize / 64] |= 1 << (slot % 64);
         chunk.live -= 1;
         if chunk.live == 0 {
-            *chunk = Chunk::FREE;
+            *chunk = Chunk { used: chunk.used, ..Chunk::FREE };
             self.partial[class].remove(&k);
             self.free.insert(k);
         } else {
@@ -684,16 +693,19 @@ impl Arena {
     /// free chunk, growing the pool (only before this frame writes the pages), then evicting least
     /// recently used unpinned blocks of any size. Returns `None` when every remaining block is
     /// pinned or a per-row block. The next frame then grows the pool by the shortfall.
-    fn allocate(&mut self, device: &wgpu::Device, queue: &Queue, class: usize) -> Option<u32> {
+    fn allocate(&mut self, device: &wgpu::Device, queue: &Queue, class: usize) -> Option<(u32, bool)> {
         loop {
             if let Some(&k) = self.partial[class].first() {
                 let chunk = &mut self.chunks[k as usize];
                 let slot = chunk.take();
+                let start = slot * class_words(class);
+                let used = start < chunk.used;
+                chunk.used = chunk.used.max(start + class_words(class));
                 if chunk.live == slots(class) {
                     self.partial[class].remove(&k);
                 }
                 self.resident += u64::from(class_words(class)) * 4;
-                return Some(k * CHUNK_WORDS + slot * class_words(class));
+                return Some((k * CHUNK_WORDS + start, used));
             }
             if let Some(k) = self.free.pop_first() {
                 let slots = slots(class);
@@ -702,7 +714,7 @@ impl Arena {
                     let bits = slots.saturating_sub(w as u32 * 64).min(64);
                     *word = if bits == 64 { u64::MAX } else { (1 << bits) - 1 };
                 }
-                self.chunks[k as usize] = Chunk { live: 0, free };
+                self.chunks[k as usize] = Chunk { live: 0, free, used: self.chunks[k as usize].used };
                 self.partial[class].insert(k);
                 continue;
             }
@@ -729,12 +741,12 @@ impl Arena {
             return false;
         }
         let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let buffer = create(device, chunks);
+        let words = create(device, queue.retired(), chunks);
         let mut answer: Check = Box::pin(scope.pop());
         let bytes = u64::from(before) * CHUNK_BYTES;
         match answer.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
             Poll::Ready(Some(_)) => {
-                queue.retired().retire(buffer);
+                drop(words);
                 self.limit = before;
                 self.refused = Some(bytes);
                 return false;
@@ -744,9 +756,9 @@ impl Arena {
         }
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit arena") });
-        encoder.copy_buffer_to_buffer(&self.buffer, 0, &buffer, 0, self.buffer.size());
+        self.words.copy_to(&mut encoder, 0, &words, 0, before * CHUNK_WORDS);
         queue.submit([encoder.finish()]);
-        queue.retired().retire(std::mem::replace(&mut self.buffer, buffer));
+        self.words = words;
         self.chunks.resize(chunks as usize, Chunk::FREE);
         self.free.extend(before..chunks);
         self.generation += 1;
@@ -758,17 +770,12 @@ impl Arena {
 /// `INITIAL_CHUNKS`.
 fn limit_of(device: &wgpu::Device, bytes: u64) -> u32 {
     let limits = device.limits();
-    let bytes = bytes.min(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
+    let bytes = bytes.min(u64::from(super::words::LAYER_WORDS) * u64::from(limits.max_texture_array_layers) * 4);
     ((bytes / CHUNK_BYTES).min(u64::from(u32::MAX / CHUNK_WORDS)) as u32).max(INITIAL_CHUNKS)
 }
 
-fn create(device: &wgpu::Device, chunks: u32) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("latkit pages"),
-        size: u64::from(chunks) * CHUNK_BYTES,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    })
+fn create(device: &wgpu::Device, retired: &super::retired::Retired, chunks: u32) -> super::words::Words {
+    super::words::Words::allocated(device, retired, "latkit pages", u64::from(chunks) * u64::from(CHUNK_WORDS))
 }
 
 #[cfg(test)]
@@ -788,6 +795,71 @@ mod tests {
     }
 
     #[test]
+    fn untouched_blocks_are_zero_and_recarved_blocks_are_cleared() {
+        let gpu = match pollster::block_on(crate::Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let mut arena = Arena::new(device, queue.retired(), 64 << 20);
+        let read = |arena: &Arena| {
+            let output = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 1024,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            encoder.copy_texture_to_buffer(
+                arena.words.texture().as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &output,
+                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(1024), rows_per_image: None },
+                },
+                wgpu::Extent3d { width: 64, height: 1, depth_or_array_layers: 1 },
+            );
+            queue.submit([encoder.finish()]);
+            let (sent, received) = std::sync::mpsc::channel();
+            output.slice(..).map_async(wgpu::MapMode::Read, move |result| sent.send(result).unwrap());
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(std::time::Duration::from_secs(10)),
+                })
+                .unwrap();
+            received.recv().unwrap().unwrap();
+            output.slice(..).get_mapped_range().unwrap().to_vec()
+        };
+        let before = gpu.work().cleared;
+        let first = arena.block(device, queue, 128, true).unwrap();
+        assert_eq!(first, 0);
+        arena.clear(device, queue);
+        assert_eq!(gpu.work().cleared, before, "untouched storage requires no explicit copy of zeros");
+        assert!(read(&arena).iter().all(|&byte| byte == 0));
+        arena.words.write(queue, first, &[u32::MAX; 128]);
+        arena.free(first, 128);
+        arena.begin_frame(device, queue);
+        // Recarving must retain the dirty extent, including when the new class is smaller.
+        let a = arena.block(device, queue, 64, true).unwrap();
+        let b = arena.block(device, queue, 64, true).unwrap();
+        let c = arena.block(device, queue, 64, true).unwrap();
+        assert_eq!([a, b, c], [0, 64, 128]);
+        arena.clear(device, queue);
+        assert_eq!(gpu.work().cleared - before, 128 * 4, "only the two reused blocks need clears");
+        assert!(read(&arena).iter().all(|&byte| byte == 0));
+        arena.words.write(queue, c, &[u32::MAX; 64]);
+        for block in [a, b, c] {
+            arena.free(block, 64);
+        }
+        arena.begin_frame(device, queue);
+        assert_eq!(arena.block(device, queue, 256, true), Some(0));
+        arena.clear(device, queue);
+        assert_eq!(gpu.work().cleared - before, (128 + 256) * 4);
+        assert!(read(&arena).iter().all(|&byte| byte == 0), "a larger recarved block cannot expose old data");
+    }
+
+    #[test]
     fn a_reservation_grows_the_pool_once_and_retires_the_buffer_it_replaces() {
         let gpu = match pollster::block_on(crate::Gpu::new()) {
             Ok(gpu) => gpu,
@@ -795,7 +867,7 @@ mod tests {
             Err(_) => return,
         };
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        let mut arena = Arena::new(device, 64 << 20);
+        let mut arena = Arena::new(device, queue.retired(), 64 << 20);
         // Twenty pages of a whole chunk each, for a pool of eight chunks.
         let page = || Ask {
             key: PageKey::of(PageId::next(), Words::Values, false),
@@ -803,11 +875,14 @@ mod tests {
             content: Some(Content::Computed(vec![0; CHUNK_WORDS as usize])),
         };
         let mut asks: Vec<Ask> = (0..20).map(|_| page()).collect();
+        let texture = arena.words.texture();
+        let allocated =
+            u64::from(texture.width()) * u64::from(texture.height()) * u64::from(texture.depth_or_array_layers()) * 16;
         let destroyed = gpu.work().destroyed;
         assert!(arena.reserve(device, queue, &mut asks));
         assert_eq!((arena.generation, arena.chunks.len()), (1, 20), "the pool grew once, to fit them all");
         let freed = gpu.work().destroyed - destroyed;
-        assert_eq!(freed, u64::from(INITIAL_CHUNKS) * CHUNK_BYTES, "the buffer it replaced is destroyed");
+        assert_eq!(freed, allocated, "the entire replaced texture allocation is destroyed");
     }
 
     #[test]

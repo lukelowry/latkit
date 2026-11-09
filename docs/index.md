@@ -2,7 +2,7 @@
 
 :::{container} lede
 latkit is a GPU-accelerated visualization library for large networks, such as power grids. It
-renders interactive views in the browser with WebGPU, and images and video from the command line.
+renders interactive views in the browser with WebGL2, and images and video from the command line.
 :::
 
 :::{container} plot
@@ -52,11 +52,11 @@ datasets and drawing need. `View.create()` and `Data.read()` call it for you.
 {doc}`examples/globe`
 : Routes along great circles on a globe, with comets flowing along them.
 
-{doc}`examples/diagram`
-: Blocks in nested groups, laid out and wired port to port.
+{doc}`examples/helios`
+: 480 buses in five concentric rings, with comets flowing along every branch.
 
 {doc}`examples/terrain`
-: 112,000 lit faces in three dimensions.
+: A wire mesh of mountain ridges in three dimensions.
 
 {doc}`examples/clifford`
 : 260,000 translucent points of a strange attractor.

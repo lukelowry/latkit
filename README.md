@@ -12,7 +12,7 @@
 
 <p align="center">
   A GPU-accelerated visualization library for large networks, such as power grids:<br>
-  interactive views in the browser with WebGPU, and images and video from the command line.
+  interactive views in the browser with WebGL2, and images and video from the command line.
 </p>
 
 <p align="center">
@@ -112,7 +112,7 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
   <a href="https://latkit.readthedocs.io/en/latest/examples/texas.html"><img src="docs/images/texas.png" width="32%" alt="Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/frequency.html"><img src="docs/images/frequency.png" width="32%" alt="The speed of 1,456 machines over ten seconds after a fault. Machines near the fault are bright and swing hardest, and far ones are dark"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/globe.html"><img src="docs/images/globe.png" width="32%" alt="Great-circle routes between forty of the world's great cities on a globe, with comets flowing along them"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/diagram.html"><img src="docs/images/diagram.png" width="32%" alt="A microgrid controller as blocks in nested groups, with wires routed port to port and a feedback loop"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/helios.html"><img src="docs/images/helios.png" width="32%" alt="A synthetic network of 480 buses in five concentric rings, comets flowing along its 896 branches"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/torus.html"><img src="docs/images/torus.png" width="32%" alt="Sixty-four filaments in cyan, amber, and coral, twisting around a three-dimensional torus knot"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/clifford.html"><img src="docs/images/clifford.png" width="32%" alt="A Clifford strange attractor of 260,000 translucent points, colored by the direction of each step"></a>
 </p>

@@ -31,8 +31,8 @@ read, or that the scene can't use, draws as if unset, and views list why in thei
 
 {#scene-layout .member}
 **`layout`**`?:` [`Layout`](#layout) [¶](#scene-layout){.headerlink}
-: How the view places vertex rows that have no position, such as a diagram's blocks or points on a
-  plane or the earth. Defaults to `none`.
+: How the view places vertex rows that have no position, on a plane or the earth. Defaults to
+  `none`.
 
 {#scene-theme .member}
 **`theme`**`?:` [`Theme`](#theme) [¶](#scene-theme){.headerlink}
@@ -120,14 +120,9 @@ stack in scene order, the title first.
 ### `Space`
 
 {.signature}
-`type Space = 'plane' | 'diagram' | 'earth' | 'plot' | { earth:` [`Earth`](#earth) `} | { plane:` [`Plane`](#plane) `} | { plot:` [`Plot`](#plot) `} | { diagram:` [`Diagram`](#diagram) `}`
+`type Space = 'plane' | 'earth' | 'plot' | { earth:` [`Earth`](#earth) `} | { plane:` [`Plane`](#plane) `} | { plot:` [`Plot`](#plot) `}`
 
-The coordinate space of a scene's positions: a name, or
-`{ plane | diagram | earth | plot: options }`.
-
-The space sets the unit of lengths that do not name their own. In a diagram it is the diagram
-unit, one CSS pixel at zoom 0. Elsewhere it is the CSS pixel. Only a diagram has ports, groups,
-nets, and orthogonal routes.
+The coordinate space of a scene's positions: a name, or `{ plane | earth | plot: options }`.
 
 {#space-earth .member}
 `{` **`earth`**`:` [`Earth`](#earth) `}` [¶](#space-earth){.headerlink}
@@ -140,10 +135,6 @@ nets, and orthogonal routes.
 {#space-plot .member}
 `{` **`plot`**`:` [`Plot`](#plot) `}` [¶](#space-plot){.headerlink}
 : The data's axis horizontally and values vertically.
-
-{#space-diagram .member}
-`{` **`diagram`**`:` [`Diagram`](#diagram) `}` [¶](#space-diagram){.headerlink}
-: A flat sheet for diagrams: x right and y down, every length in units.
 
 (plane)=
 
@@ -209,24 +200,6 @@ How the earth is projected.
 {#projection-globe .member}
 **`'globe'`** [¶](#projection-globe){.headerlink}
 : A sphere.
-
-(diagram)=
-
-### `Diagram`
-
-{.signature}
-`interface Diagram`
-
-A flat sheet for diagrams, seen from straight above. The camera pans and zooms but does not
-turn. Positions are in units with y down, and a unit is a CSS pixel at zoom 0. Sizes, padding,
-ports, strokes, text, and the theme's lengths are in units too. Sizes given with `px`, the text
-halo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole picture.
-Only a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout places its
-blocks.
-
-{#diagram-grid .member}
-**`grid`**`?:` [`Grid`](#grid) [¶](#diagram-grid){.headerlink}
-: The grid drawn under the marks. Defaults to dots 20 units apart.
 
 (plot)=
 
@@ -325,7 +298,7 @@ How an axis writes its tick values, or a label its number.
 {.signature}
 `type Grid = 'off' | { lines: { … } } | { dots: { … } }`
 
-A plane's or a diagram's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`.
+A plane's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch } }`.
 
 {#grid-off .member}
 **`'off'`** [¶](#grid-off){.headerlink}
@@ -340,16 +313,12 @@ A plane's or a diagram's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pi
   : Units between lines.
 
 {#grid-dots .member}
-`{` **`dots`**`: { pitch: number; snap?: boolean } }` [¶](#grid-dots){.headerlink}
-: Dots `pitch` units apart. With `snap`, drags in a diagram snap to them.
+`{` **`dots`**`: { pitch: number } }` [¶](#grid-dots){.headerlink}
+: Dots `pitch` units apart.
 
   {#grid-dots-pitch .member}
   **`pitch`**`: number` [¶](#grid-dots-pitch){.headerlink}
   : Units between dots.
-
-  {#grid-dots-snap .member}
-  **`snap`**`?: boolean` [¶](#grid-dots-snap){.headerlink}
-  : Whether drag positions snap to the dots, in a diagram. Defaults to `false`.
 
 (controls)=
 
@@ -443,8 +412,8 @@ What an input does. See [`controls.gestures`](#controls-gestures).
 
 {#action-turn .member}
 **`'turn'`** [¶](#action-turn){.headerlink}
-: Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, in a
-  diagram or on a plot, it pans instead.
+: Turns a map or plane about the point pressed, and tilts it. Where the camera cannot turn, on a
+  plot, it pans instead.
 
 {#action-tilt .member}
 **`'tilt'`** [¶](#action-tilt){.headerlink}
@@ -470,9 +439,9 @@ What an input does. See [`controls.gestures`](#controls-gestures).
 
 {#action-connect .member}
 **`'connect'`** [¶](#action-connect){.headerlink}
-: Draws a connection from the vertex or port pressed, or drags an edge's end off its vertex,
-  reported as a `'connect'` event. Once any input connects, a drag from a port or an edge's end
-  connects whatever its input. Elsewhere it pans.
+: Draws a connection from the vertex pressed, or drags an edge's end off its vertex, reported as a
+  `'connect'` event. Once any input connects, a drag from an edge's end connects whatever its
+  input. Elsewhere it pans.
 
 {#action-none .member}
 **`'none'`** [¶](#action-none){.headerlink}
@@ -508,9 +477,8 @@ How much a view animates on its own.
 `type Layout = 'none' | 'stress' | 'layered' | { stress:` [`Stress`](#stress) `} | { layered:` [`Layered`](#layered) `}`
 
 How the view places vertex rows that have no position: a name, or
-`{ stress | layered: options }`. In a diagram it places blocks. On a plane or the earth it
-places points among the rows they link to. Gaps are in position units: diagram units, plane
-units, or degrees on the earth.
+`{ stress | layered: options }`. On a plane or the earth it places points among the rows they
+link to, by edges or nets. Gaps are in position units: plane units, or degrees on the earth.
 
 A placed row keeps its place. Rows added later are placed around the others, and [`view.arrange`](#view-arrange)
 lays out every row again.
@@ -530,8 +498,7 @@ lays out every row again.
 {.signature}
 `interface Layered`
 
-Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their
-outputs.
+Layered drawing: vertices in ranks, with edges pointing along `direction`.
 
 {#layered-direction .member}
 **`direction`**`?:` [`Direction`](#direction) [¶](#layered-direction){.headerlink}
@@ -615,10 +582,10 @@ How much GPU memory latkit uses.
 : GPU memory in bytes for the data all views of the [`Gpu`](#gpu) draw: its pages and each view's per-row
   state. A table too large for a view's share draws as a paged table, with only the pages the
   camera needs, so it always fits. Pages no view draws stay cached in the rest of the budget, and
-  the least recently drawn are evicted first. Defaults to half the device's largest storage
-  buffer, at most 1 GiB. The page pool grows as data needs it and never shrinks, so set the budget
-  before drawing data. A device without the memory to grow the pool further lowers the budget to
-  the pool's size.
+  the least recently drawn are evicted first. Defaults to half the device's addressable
+  word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never shrinks, so
+  set the budget before drawing data. A device without the memory to grow the pool further lowers
+  the budget to the pool's size.
 
 {#budget-uploadperframe .member}
 **`uploadPerFrame`**`: number` [¶](#budget-uploadperframe){.headerlink}
@@ -640,8 +607,7 @@ Default colors and sizes for marks, and the look of text, focus, comets, and eac
 by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
 names the base and defaults to `dark`. Each option replaces only the base value it sets.
 
-Lengths are in CSS pixels, or units in a diagram. The grid spacing, the text halo, and the focus
-glow are always in CSS pixels.
+Lengths are in CSS pixels, except comet lengths given in position units.
 
 {#theme-background .member}
 **`background`**`?:` [`Color`](#color) [¶](#theme-background){.headerlink}
@@ -649,13 +615,13 @@ glow are always in CSS pixels.
 
 {#theme-grid .member}
 **`grid`**`?:` [`Color`](#color) [¶](#theme-grid){.headerlink}
-: The color of a plane's or diagram's grid, a plot's grid lines, and the earth's graticule.
+: The color of a plane's grid, a plot's grid lines, and the earth's graticule.
 
 {#theme-gridspacing .member}
 **`gridSpacing`**`?: number` [¶](#theme-gridspacing){.headerlink}
-: The least distance between the lines (or dots) of a plane's or diagram's grid and of the earth's
-  graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten (and 30° and
-  90° on the earth), and the finer step fades out as it nears this distance.
+: The least distance between the lines (or dots) of a plane's grid and of the earth's graticule,
+  in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten (and 30° and 90° on the
+  earth), and the finer step fades out as it nears this distance.
 
 {#theme-missing .member}
 **`missing`**`?:` [`Color`](#color) [¶](#theme-missing){.headerlink}
@@ -670,10 +636,6 @@ glow are always in CSS pixels.
 {#theme-dash .member}
 **`dash`**`?: number` [¶](#theme-dash){.headerlink}
 : The dash period: one dash and one gap of equal length.
-
-{#theme-shading .member}
-**`shading`**`?: number` [¶](#theme-shading){.headerlink}
-: How much faces darken as they turn away from the camera, from 0 to 1.
 
 {#theme-text .member}
 **`text`**`?:` [`TextTheme`](#texttheme) [¶](#theme-text){.headerlink}
@@ -702,10 +664,6 @@ glow are always in CSS pixels.
 {#theme-flow .member}
 **`flow`**`?:` [`FlowTheme`](#flowtheme) [¶](#theme-flow){.headerlink}
 : How comets flowing along edges and lines look.
-
-{#theme-diagram .member}
-**`diagram`**`?:` [`DiagramTheme`](#diagramtheme) [¶](#theme-diagram){.headerlink}
-: How a diagram's blocks, groups, ports, and wires look.
 
 {#theme-earth .member}
 **`earth`**`?:` [`EarthTheme`](#earththeme) [¶](#theme-earth){.headerlink}
@@ -738,7 +696,7 @@ How labels, axis ticks, and titles look.
 
 {#texttheme-size .member}
 **`size`**`?: number` [¶](#texttheme-size){.headerlink}
-: The font size, in the space's unit.
+: The font size, in CSS pixels.
 
 {#texttheme-halo .member}
 **`halo`**`?: number` [¶](#texttheme-halo){.headerlink}
@@ -759,7 +717,11 @@ Defaults for vertices.
 
 {#vertextheme-radius .member}
 **`radius`**`?: number` [¶](#vertextheme-radius){.headerlink}
-: The vertex radius, in the space's unit.
+: The vertex radius, in CSS pixels.
+
+{#vertextheme-corner .member}
+**`corner`**`?: number` [¶](#vertextheme-corner){.headerlink}
+: The corner radius of block markers, in CSS pixels. A block marker can set its own.
 
 (edgetheme)=
 
@@ -773,23 +735,17 @@ Defaults for edges, and how parallel edges and arrowheads look.
 {#edgetheme-color .member}
 **`color`**`?:` [`Color`](#color) `| null` [¶](#edgetheme-color){.headerlink}
 : The edge color. `null` blends the colors of each edge's two vertices, also for rows whose own
-  color is missing. With `null`, a diagram's wires and edges without `ends` (nets and poles) use
-  the text color.
+  color is missing. With `null`, edges without `ends` (nets and poles) use the text color.
 
 {#edgetheme-width .member}
 **`width`**`?: number` [¶](#edgetheme-width){.headerlink}
-: The edge width, in the space's unit.
-
-{#edgetheme-spacing .member}
-**`spacing`**`?: number` [¶](#edgetheme-spacing){.headerlink}
-: In a diagram, the distance between edges joining the same two vertices and between parallel
-  orthogonal wires. Wires keep twice this distance from blocks where they can.
+: The edge width, in CSS pixels.
 
 {#edgetheme-bow .member}
 **`bow`**`?: number` [¶](#edgetheme-bow){.headerlink}
-: Outside a diagram, how far edges joining the same two vertices bow apart. Each lane bows out by
-  this fraction of the edge's length, measured at its middle. Parallel edges spread at most eight
-  lanes wide, and more lanes pack closer. Bows scale with the zoom.
+: How far edges joining the same two vertices bow apart. Each lane bows out by this fraction of
+  the edge's length, measured at its middle. Parallel edges spread at most eight lanes wide, and
+  more lanes pack closer. Bows scale with the zoom.
 
 {#edgetheme-arrow .member}
 **`arrow`**`?: number` [¶](#edgetheme-arrow){.headerlink}
@@ -810,7 +766,7 @@ Defaults for lines.
 
 {#linetheme-width .member}
 **`width`**`?: number` [¶](#linetheme-width){.headerlink}
-: The line width, in the space's unit.
+: The line width, in CSS pixels.
 
 (areatheme)=
 
@@ -837,8 +793,7 @@ tail that thins and fades.
 
 `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
 In position units (degrees on the earth), comets scale with the zoom and stay in place along
-their lines. In CSS pixels, they keep their size and speed on screen. A plain number is in the
-space's unit.
+their lines. In CSS pixels, they keep their size and speed on screen.
 
 {#flowtheme-color .member}
 **`color`**`?:` [`Color`](#color) [¶](#flowtheme-color){.headerlink}
@@ -855,7 +810,7 @@ space's unit.
 
 {#flowtheme-width .member}
 **`width`**`?: number` [¶](#flowtheme-width){.headerlink}
-: The width of a comet's head, in the space's unit. A head is never narrower than its stroke.
+: The width of a comet's head, in CSS pixels. A head is never narrower than its stroke.
 
 (focustheme)=
 
@@ -885,60 +840,6 @@ How hovered and selected rows glow, and how rows outside a selection dim.
 {#focustheme-grow .member}
 **`grow`**`?: number` [¶](#focustheme-grow){.headerlink}
 : The scale factor for a hovered vertex sized in CSS pixels. Vertices sized in units only glow.
-
-(diagramtheme)=
-
-### `DiagramTheme`
-
-{.signature}
-`interface DiagramTheme`
-
-How a diagram's blocks, groups, ports, and wires look.
-
-{#diagramtheme-group .member}
-**`group`**`?:` [`Color`](#color) [¶](#diagramtheme-group){.headerlink}
-: The fill color of group containers.
-
-{#diagramtheme-outline .member}
-**`outline`**`?:` [`Color`](#color) `| null` [¶](#diagramtheme-outline){.headerlink}
-: The color of the one-unit border around blocks and groups. `null` draws no border.
-
-{#diagramtheme-corner .member}
-**`corner`**`?: number` [¶](#diagramtheme-corner){.headerlink}
-: The corner radius of blocks and groups. A block marker can set its own.
-
-{#diagramtheme-portsize .member}
-**`portSize`**`?: number` [¶](#diagramtheme-portsize){.headerlink}
-: The width of ports.
-
-{#diagramtheme-bend .member}
-**`bend`**`?: number` [¶](#diagramtheme-bend){.headerlink}
-: The bend radius of orthogonal wires.
-
-{#diagramtheme-grouppadding .member}
-**`groupPadding`**`?: number` [¶](#diagramtheme-grouppadding){.headerlink}
-: The space between a group's members and its border.
-
-{#diagramtheme-shadow .member}
-**`shadow`**`?:` [`ShadowTheme`](#shadowtheme) [¶](#diagramtheme-shadow){.headerlink}
-: How blocks and groups cast shadows on the sheet.
-
-(shadowtheme)=
-
-### `ShadowTheme`
-
-{.signature}
-`interface ShadowTheme`
-
-How a diagram's blocks and groups cast shadows on the sheet, for vertex marks with `shadow` on.
-
-{#shadowtheme-color .member}
-**`color`**`?:` [`Color`](#color) [¶](#shadowtheme-color){.headerlink}
-: The color a shadow darkens toward. Its alpha sets how dark the shadow is under the block.
-
-{#shadowtheme-lift .member}
-**`lift`**`?: number` [¶](#shadowtheme-lift){.headerlink}
-: How far a shadow falls below its block or group. Its edge softens over the same distance.
 
 (earththeme)=
 
@@ -979,14 +880,10 @@ How a plot looks.
 ### `Length`
 
 {.signature}
-`type Length = number | { px: number } | { units: number }`
+`type Length = number | { units: number }`
 
-A length: a number in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels.
-`{ units }` is position units (degrees on the earth), which grow as the view zooms in.
-
-{#length-px .member}
-`{` **`px`**`: number }` [¶](#length-px){.headerlink}
-: CSS pixels, the same at any zoom.
+A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which
+grow as the view zooms in.
 
 {#length-units .member}
 `{` **`units`**`: number }` [¶](#length-units){.headerlink}
@@ -1001,7 +898,7 @@ The marks that draw a scene's tables.
 ### `Mark`
 
 {.signature}
-`type Mark =` [`Vertices`](#vertices) `|` [`Edges`](#edges) `|` [`Faces`](#faces) `|` [`Lines`](#lines) `|` [`Areas`](#areas)
+`type Mark =` [`Vertices`](#vertices) `|` [`Edges`](#edges) `|` [`Lines`](#lines) `|` [`Areas`](#areas)
 
 One table a scene draws. The mark's kind is the key that holds its table, next to its options:
 `{ vertices: [data, table], radius: 4 }`.
@@ -1018,8 +915,7 @@ The options every mark has.
 {#markoptions-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#markoptions-color){.headerlink}
 : Each row's color: a CSS color, a value through a colormap, or a conditional that picks between
-  colors. Defaults to the theme's color for the mark. Faces default to a blend of their corners'
-  colors.
+  colors. Defaults to the theme's color for the mark.
 
 {#markoptions-visible .member}
 **`visible`**`?:` [`ExprInput`](#exprinput) [¶](#markoptions-visible){.headerlink}
@@ -1036,9 +932,9 @@ The options every mark has.
 
 {#markoptions-pick .member}
 **`pick`**`?: boolean | null` [¶](#markoptions-pick){.headerlink}
-: Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, faces,
-  and plot traces, and off for geometry: areas, and lines along paths such as coasts, borders, and
-  roads. Either way, the mark shows which rows are selected and hovered.
+: Whether the pointer hovers, clicks, and picks rows. Defaults to on for vertices, edges, and plot
+  traces, and off for geometry: areas, and lines along paths such as coasts, borders, and roads.
+  Either way, the mark shows which rows are selected and hovered.
 
 {#markoptions-select .member}
 **`select`**`?: boolean` [¶](#markoptions-select){.headerlink}
@@ -1068,8 +964,7 @@ The options of marks drawn as strokes: edges and lines.
 
 {#strokeoptions-width .member}
 **`width`**`?:` [`Size`](#size) `| null` [¶](#strokeoptions-width){.headerlink}
-: Each row's width in CSS pixels, or units in a diagram, unless given with `px` or `units`.
-  Defaults to the theme's width.
+: Each row's width in CSS pixels, unless given in `units`. Defaults to the theme's width.
 
 {#strokeoptions-dash .member}
 **`dash`**`?:` [`ExprInput`](#exprinput) [¶](#strokeoptions-dash){.headerlink}
@@ -1088,7 +983,7 @@ The options of marks drawn as strokes: edges and lines.
 {.signature}
 `interface Vertices extends` [`MarkOptions`](#markoptions)
 
-Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
+Rows drawn as markers: points of a map, nodes of a graph.
 
 {#vertices-vertices .member}
 **`vertices`**`:` [`TableInput`](#tableinput) [¶](#vertices-vertices){.headerlink}
@@ -1107,18 +1002,17 @@ Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
 {#vertices-elevation .member}
 **`elevation`**`?:` [`ExprInput`](#exprinput) [¶](#vertices-elevation){.headerlink}
 : Height above the ground. On the earth, in degrees of arc like every length there (one is about
-  111 km). Defaults to 0. Not allowed in a diagram, which is flat.
+  111 km). Defaults to 0.
 
 {#vertices-radius .member}
 **`radius`**`?:` [`Size`](#size) `| null` [¶](#vertices-radius){.headerlink}
-: Each row's radius in CSS pixels, or units in a diagram, unless given with `px` or `units`. A
-  diagram does not accept `px`. Defaults to the theme's `vertex.radius`.
+: Each row's radius in CSS pixels, unless given in `units`. Defaults to the theme's
+  `vertex.radius`.
 
 {#vertices-size .member}
 **`size`**`?: [`[`Size`](#size)`,` [`Size`](#size)`] | null` [¶](#vertices-size){.headerlink}
-: Each row's width and height, for markers that are not round. In CSS pixels, or units in a
-  diagram, unless given with `px` or `units`. A diagram does not accept `px`. In a diagram, a
-  block without a size fits its label and ports.
+: Each row's width and height, for markers that are not round. In CSS pixels, unless given in
+  `units`.
 
 {#vertices-marker .member}
 **`marker`**`?:` [`Marker`](#marker) [¶](#vertices-marker){.headerlink}
@@ -1128,22 +1022,6 @@ Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
 **`ring`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#vertices-ring){.headerlink}
 : A ring around each row's marker in this color. A missing or transparent color draws no ring.
 
-{#vertices-ports .member}
-**`ports`**`?: [reference: string, port:` [`Port`](#port)`][]` [¶](#vertices-ports){.headerlink}
-: Ports on each row, one for each reference field that names a net. An `edges` mark of the net
-  table, without `ends`, draws the nets. Diagrams only.
-
-{#vertices-contains .member}
-**`contains`**`?: [table: string, reference: string][]` [¶](#vertices-contains){.headerlink}
-: Makes each row a group containing, for each `[table, reference]`, the rows of `table` whose
-  `reference` field names it, so a group can hold rows of several tables. A group draws as a
-  container around its members, with its label as a title in its header. Diagrams only.
-
-{#vertices-shadow .member}
-**`shadow`**`?: boolean` [¶](#vertices-shadow){.headerlink}
-: Whether each block or group casts a shadow on the sheet, styled by the theme's `diagram.shadow`.
-  Defaults to `false`. Diagrams only.
-
 (edges)=
 
 ### `Edges`
@@ -1151,9 +1029,8 @@ Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
 {.signature}
 `interface Edges extends` [`MarkOptions`](#markoptions)`,` [`StrokeOptions`](#strokeoptions)
 
-Rows drawn as strokes between two vertices named by reference fields: branches, links, wires. In
-a diagram, a row without ends is a net. It joins every vertex port whose reference field names
-it.
+Rows drawn as strokes between two vertices named by reference fields: branches, links, wires. A
+row can instead stand as a pole on its own vertex, or join many vertices as a net.
 
 {#edges-edges .member}
 **`edges`**`:` [`TableInput`](#tableinput) [¶](#edges-edges){.headerlink}
@@ -1170,12 +1047,10 @@ it.
 {#edges-route .member}
 **`route`**`?:` [`Route`](#route) `| null` [¶](#edges-route){.headerlink}
 : How each row runs between its ends. Defaults to geodesic on the earth and straight elsewhere.
-  `orthogonal` routes around blocks with rounded bends, in diagrams only.
 
 {#edges-arrows .member}
 **`arrows`**`?: boolean` [¶](#edges-arrows){.headerlink}
-: Whether each row has an arrowhead at its second end. A net has one at each input it reaches.
-  Defaults to `false`.
+: Whether each row has an arrowhead at its second end. Defaults to `false`.
 
 {#edges-poles .member}
 **`poles`**`?: boolean` [¶](#edges-poles){.headerlink}
@@ -1237,26 +1112,6 @@ areas, add a [`Lines`](#lines) mark of the same table. It draws their rings.
 : The polygon field each row fills. It holds one polygon's rings or several polygons. Defaults to
   the field named `geometry`.
 
-(faces)=
-
-### `Faces`
-
-{.signature}
-`interface Faces extends` [`MarkOptions`](#markoptions)
-
-Rows drawn as triangles between three vertices named by reference fields: meshes, surfaces, and
-fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from
-above shows its exact colors.
-
-{#faces-faces .member}
-**`faces`**`:` [`TableInput`](#tableinput) [¶](#faces-faces){.headerlink}
-: The dataset and table drawn, `[data, table]`.
-
-{#faces-corners .member}
-**`corners`**`?: [a: string, b: string, c: string] | null` [¶](#faces-corners){.headerlink}
-: The reference fields naming each row's three vertices. Required. Without a color, a face blends
-  the colors of its corners.
-
 (marker)=
 
 ### `Marker`
@@ -1273,11 +1128,11 @@ How a vertex is drawn: a shape's name, `"block"`, or
 
 {#marker-block .member}
 `{` **`block`**`: { corner?: number | null } }` [¶](#marker-block){.headerlink}
-: A rectangle with rounded corners that holds its label inside, like a diagram's blocks.
+: A rectangle with rounded corners that holds its label inside.
 
   {#marker-block-corner .member}
   **`corner`**`?: number | null` [¶](#marker-block-corner){.headerlink}
-  : Corner radius in CSS pixels, or units in a diagram. Defaults to the theme's `diagram.corner`.
+  : Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`.
 
 {#marker-gauge .member}
 `{` **`gauge`**`: { fill:` [`ExprInput`](#exprinput)`; shape?:` [`Shape`](#shape) `} }` [¶](#marker-gauge){.headerlink}
@@ -1375,69 +1230,12 @@ An image of RGBA texels: straight alpha, sRGB, rows top to bottom.
 **`rgba`**`: number[]` [¶](#bitmap-rgba){.headerlink}
 : `size[0] * size[1] * 4` bytes.
 
-(port)=
-
-### `Port`
-
-{.signature}
-`type Port = 'left' | 'right' | 'top' | 'bottom' | { … }`
-
-A port on one side of a vertex's marker, where a net connects: a side name, or options. The
-vertex names the net in a reference field. An output drives its net: layouts rank a net from its
-outputs, and the net's arrows point away from them.
-
-{#port-side .member}
-**`side`**`:` [`Side`](#side) [¶](#port-side){.headerlink}
-: The side of the marker it sits on.
-
-{#port-order .member}
-**`order`**`?: number | null` [¶](#port-order){.headerlink}
-: Its position among the ports on its side, counted from the top or left. Ports without an `order`
-  follow those with one, in declaration order.
-
-{#port-label .member}
-**`label`**`?: string | null` [¶](#port-label){.headerlink}
-: Its name, drawn beside it inside the marker.
-
-{#port-shape .member}
-**`shape`**`?:` [`Shape`](#shape) [¶](#port-shape){.headerlink}
-: Its shape. Defaults to an ellipse.
-
-{#port-output .member}
-**`output`**`?: boolean` [¶](#port-output){.headerlink}
-: Whether it is an output, which drives its net. Defaults to `false` (an input).
-
-(side)=
-
-### `Side`
-
-{.signature}
-`type Side = 'left' | 'right' | 'top' | 'bottom'`
-
-A side of a marker.
-
-{#side-left .member}
-**`'left'`** [¶](#side-left){.headerlink}
-: The left side.
-
-{#side-right .member}
-**`'right'`** [¶](#side-right){.headerlink}
-: The right side.
-
-{#side-top .member}
-**`'top'`** [¶](#side-top){.headerlink}
-: The top.
-
-{#side-bottom .member}
-**`'bottom'`** [¶](#side-bottom){.headerlink}
-: The bottom.
-
 (route)=
 
 ### `Route`
 
 {.signature}
-`type Route = 'straight' | 'geodesic' | 'orthogonal'`
+`type Route = 'straight' | 'geodesic'`
 
 How an edge runs between its ends.
 
@@ -1448,11 +1246,6 @@ How an edge runs between its ends.
 {#route-geodesic .member}
 **`'geodesic'`** [¶](#route-geodesic){.headerlink}
 : Along the great circle, on the earth.
-
-{#route-orthogonal .member}
-**`'orthogonal'`** [¶](#route-orthogonal){.headerlink}
-: Horizontal and vertical runs around vertices that leave and enter at their sides, with rounded
-  bends. Diagrams only.
 
 (interpolation)=
 
@@ -1490,19 +1283,17 @@ example inside a block.
 Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
 its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
 is missing or empty has no label, so a `when` that returns the field or missing labels only some
-rows. In a diagram, a label scales with the zoom, fades out when too small to read, and shows
-wherever it fits its vertex.
+rows.
 
 {#label-text .member}
 **`text`**`:` [`ExprInput`](#exprinput) [¶](#label-text){.headerlink}
 : The text field to show, a number to write, or a `when` that returns either or missing. A row
   whose text is missing or empty has no label. The GPU writes a number each frame, so it can
-  follow a sampled field. In a diagram, a text may read only data, since the sheet sizes blocks
-  around it, and a number shows where it fits its block.
+  follow a sampled field.
 
 {#label-size .member}
 **`size`**`?: number | null` [¶](#label-size){.headerlink}
-: Font size in CSS pixels, or diagram units in a diagram. Defaults to the theme's `text.size`.
+: Font size in CSS pixels. Defaults to the theme's `text.size`.
 
 {#label-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#label-color){.headerlink}
@@ -1510,7 +1301,7 @@ wherever it fits its vertex.
 
 {#label-maxwidth .member}
 **`maxWidth`**`?: number | null` [¶](#label-maxwidth){.headerlink}
-: The width at which lines wrap, in CSS pixels, or diagram units in a diagram.
+: The width at which lines wrap, in CSS pixels.
 
 {#label-font .member}
 **`font`**`?: string | null` [¶](#label-font){.headerlink}
@@ -1560,23 +1351,10 @@ On the left or right, a bar stands upright beside the marks. Elsewhere it lies f
 ### `Size`
 
 {.signature}
-`type Size =` [`ExprInput`](#exprinput) `|` [`Px`](#px) `|` [`Units`](#units)
+`type Size =` [`ExprInput`](#exprinput) `|` [`Units`](#units)
 
-A size: a value in CSS pixels, or units in a diagram. `{ px }` is always CSS pixels. `{ units }`
-is position units (degrees on the earth), which grow as the view zooms in.
-
-(px)=
-
-### `Px`
-
-{.signature}
-`interface Px`
-
-A size in CSS pixels, regardless of the space's unit.
-
-{#px-px .member}
-**`px`**`:` [`ExprInput`](#exprinput) [¶](#px-px){.headerlink}
-: The size, in CSS pixels.
+A size: a value in CSS pixels, or `{ units }` in position units (degrees on the earth), which
+grow as the view zooms in.
 
 (units)=
 
@@ -1585,8 +1363,8 @@ A size in CSS pixels, regardless of the space's unit.
 {.signature}
 `interface Units`
 
-A size in position units (degrees on the earth), regardless of the space's unit. It scales with
-the zoom. `atLeast` and `atMost` bound it in CSS pixels.
+A size in position units (degrees on the earth). It scales with the zoom. `atLeast` and `atMost`
+bound it in CSS pixels.
 
 {#units-units .member}
 **`units`**`:` [`ExprInput`](#exprinput) [¶](#units-units){.headerlink}
@@ -1999,14 +1777,14 @@ report.
 
 Where a view looks.
 
-A camera over the earth, a plane, or a diagram: the point it looks at and turns about, its zoom,
-its tilt, and its rotation. A diagram is always seen from straight above, upright.
+A camera over the earth or a plane: the point it looks at and turns about, its zoom, its tilt,
+and its rotation.
 
 {#camera-center .member}
 **`center`**`: [number, number] | [number, number, number]` [¶](#camera-center){.headerlink}
 : On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is a
-  degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON, `[x, y]` is
-  shorthand for elevation 0.
+  degree of arc, about 111 km). On a plane, x, y, and elevation. In JSON, `[x, y]` is shorthand
+  for elevation 0.
 
 {#camera-zoom .member}
 **`zoom`**`: number` [¶](#camera-zoom){.headerlink}
@@ -2014,13 +1792,13 @@ its tilt, and its rotation. A diagram is always seen from straight above, uprigh
 
 {#camera-pitch .member}
 **`pitch`**`: number` [¶](#camera-pitch){.headerlink}
-: Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking straight
-  down, elevation only decides which rows show on top, and each row draws over its ground
-  position. Rows rise into view over the first 10° of tilt.
+: Tilt in degrees from looking straight down, up to 75. Looking straight down, elevation only
+  decides which rows show on top, and each row draws over its ground position. Rows rise into view
+  over the first 10° of tilt.
 
 {#camera-bearing .member}
 **`bearing`**`: number` [¶](#camera-bearing){.headerlink}
-: Degrees clockwise from north, or from up on a plane. Ignored in a diagram.
+: Degrees clockwise from north, or from up on a plane.
 
 A plot camera: the x range shown, and the value range, or `null` to fit the values in view.
 
@@ -2232,7 +2010,7 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
   **`position`**`: [number, number, number]` [¶](#viewevent-drag-position){.headerlink}
   : The row's new position in the space's coordinates. It is the hit point moved with the pointer
     since the press, at the depth where the drag started, so a vertex keeps its offset from the
-    pointer. Snapped to a diagram's grid dots when the grid snaps.
+    pointer.
 
   {#viewevent-drag-patch .member}
   **`patch`**`:` [`Patch`](#patch) `| null` [¶](#viewevent-drag-patch){.headerlink}
@@ -2245,8 +2023,8 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 
 {#viewevent-connect .member}
 **`'connect'`** [¶](#viewevent-connect){.headerlink}
-: A connection was drawn where an input in [`controls.gestures`](#controls-gestures) connects: from a port, from a
-  vertex with that input, or by dragging an edge's end off it.
+: A connection was drawn where an input in [`controls.gestures`](#controls-gestures) connects: from a vertex with that
+  input, or by dragging an edge's end off it.
 
   {#viewevent-connect-from .member}
   **`from`**`:` [`End`](#end) [¶](#viewevent-connect-from){.headerlink}
@@ -2343,8 +2121,8 @@ A row under a point, as the frame drew it.
 
 {#hit-point .member}
 **`point`**`: [number, number]` [¶](#hit-point){.headerlink}
-: The row's point nearest the probe, in CSS pixels from the top left: a vertex's or port's middle,
-  or the nearest point of a stroke or triangle.
+: The row's point nearest the probe, in CSS pixels from the top left: a vertex's middle, or the
+  nearest point of a stroke or triangle.
 
 {#hit-position .member}
 **`position`**`: [number, number, number]` [¶](#hit-position){.headerlink}
@@ -2353,10 +2131,6 @@ A row under a point, as the frame drew it.
 {#hit-distance .member}
 **`distance`**`: number` [¶](#hit-distance){.headerlink}
 : CSS pixels from the probe to the row.
-
-{#hit-port .member}
-**`port`**`?: string` [¶](#hit-port){.headerlink}
-: The port hit, if the hit is on a vertex's port.
 
 {#hit-sample .member}
 **`sample`**`?:` [`Sample`](#sample) [¶](#hit-sample){.headerlink}
@@ -2369,15 +2143,11 @@ A row under a point, as the frame drew it.
 {.signature}
 `interface End`
 
-A vertex a connection ends at, and the port the connection meets, if any.
+A vertex a connection ends at.
 
 {#end-row .member}
 **`row`**`:` [`Row`](#row) [¶](#end-row){.headerlink}
 : The vertex.
-
-{#end-port .member}
-**`port`**`?: string` [¶](#end-port){.headerlink}
-: The port, by the reference field naming its net.
 
 (failure)=
 
@@ -2703,9 +2473,9 @@ Counters describing a view's frames.
 
 What a frame still waits on: pipelines the scene draws with, which compile before the view draws
 anything new (`compiling`); pages uploading, or tables not yet built from them (`data`);
-layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or
-not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition
-starting (`marks`). Empty once the frame is complete.
+layouts, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or not yet
+set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting
+(`marks`). Empty once the frame is complete.
 
 (work)=
 
@@ -2736,13 +2506,12 @@ between them.
 
 {#work-resolved .member}
 **`resolved`**`: number` [¶](#work-resolved){.headerlink}
-: Edge and face rows whose endpoints the GPU resolved to resident vertex rows. These are rows that
-  changed, plus every row of a page that references a vertex now resident elsewhere.
+: Edge rows whose endpoints the GPU resolved to resident vertex rows. These are rows that changed,
+  plus every row of a page that references a vertex now resident elsewhere.
 
 {#work-cleared .member}
 **`cleared`**`: number` [¶](#work-cleared){.headerlink}
-: Bytes of per-row word pages the GPU cleared: pages read before anything writes them, and the
-  normals that faces sum from scratch.
+: Bytes of per-row word pages the GPU cleared before reading their initial state.
 
 {#work-packed .member}
 **`packed`**`: number` [¶](#work-packed){.headerlink}
@@ -2765,13 +2534,13 @@ between them.
 
 {#work-pipelines .member}
 **`pipelines`**`: number` [¶](#work-pipelines){.headerlink}
-: Pipelines compiled. In a browser, each compiles in the background when a view or shot requests
-  it ahead of use. Natively, each compiles when first created.
+: Pipelines compiled. In a browser, a view or shot queues each ahead of use; driver compilation
+  can still block the browser thread. Natively, each compiles when first created.
 
 {#work-late .member}
 **`late`**`: number` [¶](#work-late){.headerlink}
-: Pipelines not requested ahead of use, compiled when first used. In a browser they compile on the
-  GPU's thread and delay frames. Zero unless a scene uses a pipeline it did not request.
+: Pipelines not requested ahead of use, compiled when first used and delaying that frame. Zero
+  unless a scene uses a pipeline it did not request.
 
 {#work-destroyed .member}
 **`destroyed`**`: number` [¶](#work-destroyed){.headerlink}

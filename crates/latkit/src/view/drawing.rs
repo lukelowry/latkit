@@ -372,6 +372,16 @@ impl Drawing {
         Holds::of(self.slots.get(s).copied().unwrap_or(wgsl::NONE))
     }
 
+    /// The occupied prefix of a slot. Stable slot addresses reserve a whole page, but the
+    /// final source page and kept endpoints often use only a few of its rows.
+    pub(crate) fn filled(&self, s: usize) -> u32 {
+        match self.holds(s) {
+            Holds::Free => 0,
+            Holds::Page(page) => self.order.len().saturating_sub(page * PAGE_ROWS).min(PAGE_ROWS),
+            Holds::Kept(_) => self.kept_places(s).len() as u32,
+        }
+    }
+
     /// The order places of the rows in slot `s`, `NONE` for empty positions.
     pub(crate) fn places(&self, s: usize) -> Vec<u32> {
         match self.holds(s) {

@@ -24,6 +24,7 @@ mod program;
 mod query;
 mod resources;
 mod rig;
+mod state;
 mod sync;
 mod timer;
 mod transition;
@@ -41,8 +42,6 @@ pub(crate) use camera::Projected;
 pub use event::{Arrange, Cursor, End, Event, Fit, Hit, Phase, Sample, Stats, Trigger, Waiting};
 pub use input::{Button, Device, Input, Key, Modifiers};
 pub(crate) use resources::DEPTH;
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
-pub(crate) use variants::common;
 pub(crate) use wake::Signal;
 
 use camera::Area;
@@ -56,8 +55,9 @@ use probe::Probing;
 use program::Regions;
 use resources::Resources;
 use rig::Rig;
+use variants::{Stage, StageSet};
 
-use crate::derive::{Derivations, Derived};
+use crate::derive::Derivations;
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
 use crate::{Error, Gpu, Name, Patch, Pending, Result, Row, Rows, Scene, Snapshot, Source, Space};
@@ -157,6 +157,7 @@ pub struct View {
     /// clones of the waker.
     signal: Arc<wake::Signal>,
     waker: Waker,
+    compile_waker: Waker,
     resources: Option<Resources>,
     /// Each mark's word range in the program buffer.
     regions: Regions,
@@ -175,23 +176,18 @@ pub struct View {
     waiting: Waiting,
     /// The pipelines requested for each target the frames draw into.
     asked: Vec<variants::Asking>,
-    /// While the draw pipelines compile, how many compiles had finished at the last check. The view
-    /// draws nothing new until they all finish, and sleeps until the next one finishes.
+    /// The stages whose pipelines had not all landed at the last check. Frames do without them, and
+    /// draw nothing new without the draw stage.
+    unready: StageSet,
+    /// While a stage the view asked for compiles, how many compiles had finished at the last check.
+    /// The view sleeps until the next one finishes.
     compiling: Option<u64>,
-    /// The same, while the pipelines for lit rows, probes, and queries compile. Meanwhile frames
-    /// draw without lit rows, and probes and queries wait.
-    answering: Option<u64>,
-    /// The same, while the text pipelines compile. Meanwhile frames draw without labels, glyphs,
-    /// and the overlay.
-    texting: Option<u64>,
     /// Callers waiting for the arrangement in progress.
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Callers waiting for a complete frame.
     completing: Vec<crate::Resolver<()>>,
     /// Whether the platform requests reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
-    /// The stamp of the inputs the face normals were last summed from.
-    normals: Derived<()>,
     /// Measures the GPU time of frames, where the device supports it.
     timer: Option<timer::Timer>,
     focus: Focus,
@@ -267,6 +263,7 @@ impl View {
             effect_time: f64::NAN,
             events: Events::default(),
             waker: Waker::from(signal.clone()),
+            compile_waker: signal.compilation(),
             signal,
             resources: None,
             regions: Regions::default(),
@@ -278,13 +275,11 @@ impl View {
             job_errors,
             waiting: Waiting::default(),
             asked: Vec::new(),
+            unready: StageSet::default(),
             compiling: None,
-            answering: None,
-            texting: None,
             arranging: Vec::new(),
             completing: Vec::new(),
             reduced_motion: false,
-            normals: Derived::default(),
             timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
             focus: Focus::default(),
             probing: Probing::default(),
@@ -300,10 +295,6 @@ impl View {
             stats: Stats::default(),
         };
         view.set_scene(scene);
-        // Queue the pipelines nearly every scene uses, so later views find them compiled. They
-        // compile once this view's draw pipelines are ready.
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
-        gpu.warm();
         // Until its first frame, the view reports all the work that frame would wait on, including
         // its pipelines, which only a frame checks.
         view.waiting = Waiting { compiling: true, ..view.under_way() };
@@ -468,23 +459,18 @@ impl View {
             self.rig.bounds = None;
             self.rig.hold();
         }
-        if matches!(scene.space, Space::Diagram(_)) {
-            self.rig.orbit = 0.0;
-        }
         self.scene = scene;
         self.scene_version += 1;
-        // Request the new scene's pipelines again. They compile while its data syncs and its sheet
-        // is arranged. Pipelines shared with the old scene are already compiled.
+        // Request the new scene's pipelines again. They compile while its data syncs and its layout
+        // places its rows. Pipelines shared with the old scene are already compiled.
         self.asked.clear();
+        self.unready = StageSet::default();
         self.compiling = None;
-        self.answering = None;
-        self.texting = None;
         // If the GPU's sample count is known, start compiling now. Otherwise the first frame asks.
         if let Some(samples) = gpu.samples() {
             self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
         }
         self.focus.dirty = true;
-        self.gestures.keys.stale();
         self.invalidate();
     }
 
@@ -616,9 +602,8 @@ impl View {
                 }
             }
         }
-        // Rows may have moved under the focus and the keyboard-stepped hover.
+        // Rows may have moved under the focus.
         self.focus.dirty = true;
-        self.gestures.keys.stale();
         self.fitting.plot_due = true;
     }
 
@@ -757,8 +742,8 @@ impl View {
         view.ground(point.map(f64::from)).map(|w| view.position(w))
     }
 
-    /// Runs the scene's layout again on the vertex `rows` names: a diagram's blocks, or the points
-    /// on a plane or the earth, without a position or all of them. Without this call, laid-out
+    /// Runs the scene's layout again on the vertex `rows` names: the points on a plane or the
+    /// earth without a position, or all of them. Without this call, laid-out
     /// positions persist and rows added later are placed around them.
     ///
     /// Once the layout finishes, resolves to one patch per dataset. Each patch writes the laid-out
@@ -768,7 +753,7 @@ impl View {
     pub fn arrange(&mut self, rows: Arrange) -> Pending<Vec<Patch>> {
         let (pending, resolver) = Pending::new();
         self.arranging.push(resolver);
-        self.derived.arrange(matches!(self.scene.space, Space::Diagram(_)), rows);
+        self.derived.arrange(rows);
         self.wake();
         pending
     }
@@ -802,11 +787,9 @@ impl View {
         self.rig.orbit
     }
 
-    /// Turns the camera about its center at `degrees_per_second`. Zero stops it. A diagram never
-    /// turns.
+    /// Turns the camera about its center at `degrees_per_second`. Zero stops it.
     pub fn set_orbit(&mut self, degrees_per_second: f64) {
-        let turns = degrees_per_second.is_finite() && !matches!(self.scene.space, Space::Diagram(_));
-        self.rig.orbit = if turns { degrees_per_second } else { 0.0 };
+        self.rig.orbit = if degrees_per_second.is_finite() { degrees_per_second } else { 0.0 };
         self.wake();
     }
 
@@ -886,8 +869,8 @@ impl View {
     /// Whether the last frame drew everything the data, scene, and camera describe, with no
     /// placeholder for pending work. A frame is incomplete while a pipeline it draws with compiles,
     /// a changed page waits to upload, a tile shows its ancestor, a large table shows an even
-    /// sample of its rows, a row keeps its old position until a layout arrives, a wire shows an
-    /// elbow until its route arrives, an area shows its previous triangles, a label shows its
+    /// sample of its rows, a row keeps its old position until a layout arrives, an area shows its
+    /// previous triangles, a label shows its
     /// estimated size, or a fit is due. Shots and videos wait until it is true.
     /// [`waiting`](View::waiting) lists what is pending.
     pub fn complete(&self) -> bool {
@@ -963,8 +946,9 @@ impl View {
     /// The first call for a target requests every pipeline the scene uses, draw pipelines first. In
     /// a browser they compile in parallel off the GPU thread, and each one that finishes wakes the
     /// view. Until the draw pipelines are ready, the view draws nothing new, so a canvas keeps
-    /// showing the last frame. Until the rest are ready, frames omit text and lit rows, and probes
-    /// and queries wait. Natively the view can always draw. [`render`](View::render) checks this
+    /// showing the last frame. Until each other stage is ready, frames do without it: text, easing,
+    /// the glow of lit rows, and layers where depth varies. Probes and queries wait for theirs.
+    /// Natively the view can always draw. [`render`](View::render) checks this
     /// itself and records nothing until it is true.
     pub fn ready(&mut self, format: wgpu::TextureFormat, pixel_ratio: f32) -> bool {
         self.ready_for(format, pixel_ratio, true)
@@ -977,9 +961,8 @@ impl View {
         let samples = gpu.samples_for(pixel_ratio);
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
-        let draws = self.pipelines_ready(&mut inner, format, samples, input);
-        let answers = self.answers_ready(&inner);
-        let texts = self.texts_ready(&inner);
+        let at = self.ask(&mut inner, (format, samples), input);
+        let (unready, asked) = self.unready(&inner, at);
         let landed = inner.pipelines.landed();
         let refused = if inner.pipelines.refusing() { self.refusal(&inner) } else { None };
         drop(inner);
@@ -993,46 +976,67 @@ impl View {
                 }
             }
             self.refused = Some(error);
+            self.unready = unready.with(Stage::Draw);
             self.compiling = Some(landed);
             return false;
         }
         self.refused = None;
-        self.compiling = (!draws).then_some(landed);
-        self.answering = (!answers).then_some(landed);
-        self.texting = (!texts).then_some(landed);
-        let compiling = self.compiling.is_some() || self.answering.is_some() || self.texting.is_some();
+        self.unready = unready;
+        self.compiling = (asked != StageSet::default()).then_some(landed);
+        let compiling = unready.meets(self.used());
         if self.waiting.compiling != compiling {
             self.waiting.compiling = compiling;
             self.events.tell(Event::Waiting(self.waiting));
         }
-        draws
+        !unready.has(Stage::Draw)
     }
 
-    /// Whether probes and queries can run: the probe, query, and lit-row pipelines are compiled.
-    fn answers(&self) -> bool {
-        self.answering.is_none()
+    /// Whether frames can use `stage`: its pipelines had all landed at the last check.
+    fn can_use(&self, stage: Stage) -> bool {
+        !self.unready.has(stage)
     }
 
-    /// Whether frames draw text: the label, glyph, and overlay pipelines are compiled.
-    fn texts(&self) -> bool {
-        self.texting.is_none()
+    /// The stages frames draw with now: the marks and any text, transitions while rows ease, the
+    /// glow while a row is lit, and layers while depth varies. Never input: probes and queries draw
+    /// nothing, so a view is complete without them.
+    fn used(&self) -> StageSet {
+        let mut used = StageSet::default().with(Stage::Draw).with(Stage::Text);
+        if self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some()) {
+            used = used.with(Stage::Changes);
+        }
+        if self.marks.iter().any(|m| m.lit.rows > 0) {
+            used = used.with(Stage::Lit);
+        }
+        if self.deep() {
+            used = used.with(Stage::Layers);
+        }
+        used
     }
 
     /// Whether the draw pipelines are still compiling. The view draws nothing new until they have
     /// all finished.
-    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn compiling(&self) -> bool {
-        self.compiling.is_some()
+        !self.can_use(Stage::Draw)
     }
 
     /// Whether a new frame would differ from the last one: something changed, animates, or streams
     /// in, or pending work arrived. While the view only waits, it needs no frame. The work it waits
     /// on wakes it.
     pub fn needs_render(&self) -> bool {
-        let landed = || self.gpu.0.lock().pipelines.landed();
+        let compiled = || {
+            self.compiling.is_some_and(|seen| {
+                let inner = self.gpu.0.lock();
+                inner.pipelines.landed() != seen
+                    && (self.unready.meets(self.used())
+                        || self.probing.due()
+                        || self.queries.due()
+                        || inner.pipelines.refusing())
+            })
+        };
         // While draw pipelines compile, the view draws nothing new. Each finished compile wakes it.
-        if let Some(seen) = self.compiling {
-            return landed() != seen;
+        if !self.can_use(Stage::Draw) {
+            return compiled();
         }
         // Self-driven motion counts only while motion is enabled: under reduced motion, orbits,
         // comets, and `elapsed()` hold still.
@@ -1045,14 +1049,16 @@ impl View {
             || self.rig.easing()
             || (self.rig.orbit != 0.0 && moves)
             || (self.fitting.due() && !self.limited)
-            // Probes and queries wait for their pipelines, which wake the view as they compile.
-            || (self.answers() && (self.probing.due() || self.queries.due()))
-            || self.answering.is_some_and(|seen| landed() != seen)
-            || self.texting.is_some_and(|seen| landed() != seen)
+            // Probes and queries wait for their pipelines, and each finished compile wakes the
+            // view while a stage it asked for compiles.
+            || (self.can_use(Stage::Input) && (self.probing.due() || self.queries.due()))
+            || compiled()
             || self.fading()
             // A mark evaluates once its columns are synced. Until then, the pages they wait for
             // wake the view.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
+            // Heights that changed within `lists::RESORT` of the last sort sort in a later frame.
+            || self.marks.iter().any(|m| m.height_order.stale())
             || (moves && self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME))))
             || (moves && self.flowing())
             || self.gpu.0.lock().arena.uploading()
@@ -1064,7 +1070,7 @@ impl View {
     /// pressed long enough to open a menu. A loop that draws on demand, like a canvas, draws while
     /// this is true. A video repeats its last frame rather than draw frames that only check.
     pub fn wants_frame(&self) -> bool {
-        self.needs_render() || (self.compiling.is_none() && self.holding())
+        self.needs_render() || (self.can_use(Stage::Draw) && self.holding())
     }
 
     /// Whether comets travel along some mark's rows: a flowing mark is drawable, and the theme's
@@ -1082,7 +1088,7 @@ impl View {
         self.gpu.0.lock().arena.uploading()
             || self.room != frame::Room::Found
             || (self.fitting.due() && !self.limited)
-            || (input && self.answers() && (self.probing.due() || self.queries.due()))
+            || (input && self.can_use(Stage::Input) && (self.probing.due() || self.queries.due()))
             || self.derived.tiles.pending()
             || self.marks.iter().any(|m| m.begin.is_some())
             || self.guides.retry
@@ -1104,10 +1110,7 @@ impl View {
             m.compiled.is_some() || m.failed() || self.snapshot(data).is_some() || self.derived.tiles.owns(data)
         };
         Waiting {
-            compiling: self.asked.is_empty()
-                || self.compiling.is_some()
-                || self.answering.is_some()
-                || self.texting.is_some(),
+            compiling: self.asked.is_empty() || self.unready.meets(self.used()),
             data: !self.marks.iter().all(given)
                 || marks().any(|m| !m.tables.synced())
                 || self.staged.values().any(|s| !s.is_empty()),
@@ -1225,7 +1228,7 @@ impl Drop for View {
         }
         // Its buffers and textures are retired as its resources drop. In a page, the next animation
         // frame destroys them, even when no view draws then.
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         crate::web::waker(&self.gpu).wake();
     }
 }

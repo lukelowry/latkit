@@ -71,6 +71,7 @@ pub(crate) fn key(values: &Values, i: usize) -> Option<IdRef<'_>> {
     }
     match &values.array {
         Array::U64(v) => Some(IdRef::Number(v[i])),
+        Array::U32(v) => Some(IdRef::Number(u64::from(v[i]))),
         Array::Text(v) => Some(IdRef::Text(v.get(i))),
         _ => None,
     }
@@ -363,35 +364,66 @@ impl Index {
     /// plus whether any present id named no row. Picks one loop for the storage of the ids and rows
     /// up front, so it does not match storage per id.
     pub(crate) fn resolve(&self, rows: &RowIds, ids: &Values, unwired: u32) -> (Vec<u32>, bool) {
-        let valid = |i: usize| ids.valid.as_ref().is_none_or(|v| v.get(i));
         let mut dangling = false;
-        let mut found = |row: Option<usize>| {
-            dangling |= row.is_none();
-            row.map_or(unwired, |r| r as u32)
-        };
-        let resolved = match (self, &ids.array, rows.numbers()) {
-            (Index::Identity(count), Array::U64(v), _) => {
-                let count = u64::from(*count);
-                v.iter()
-                    .enumerate()
-                    .map(|(i, &n)| if valid(i) { found((n < count).then_some(n as usize)) } else { unwired })
-                    .collect()
-            }
-            (Index::Table(table), Array::U64(v), Some(pages)) => {
-                let id = |r: u32| pages[r as usize >> PAGE_BITS][r as usize & PAGE_MASK];
-                v.iter()
-                    .enumerate()
-                    .map(|(i, &n)| {
-                        if !valid(i) {
-                            return unwired;
-                        }
-                        found(table.find(hash(IdRef::Number(n)), |&r| id(r) == n).map(|&r| r as usize))
+        let resolved = match &ids.array {
+            Array::U64(v) => self.numbered(rows, v.iter().copied(), ids, unwired, &mut dangling),
+            Array::U32(v) => self.numbered(rows, v.iter().map(|&n| u64::from(n)), ids, unwired, &mut dangling),
+            _ => (0..ids.len())
+                .map(|i| {
+                    key(ids, i).map_or(unwired, |key| {
+                        let row = self.get(rows, key);
+                        dangling |= row.is_none();
+                        row.map_or(unwired, |r| r as u32)
                     })
-                    .collect()
-            }
-            _ => (0..ids.len()).map(|i| key(ids, i).map_or(unwired, |key| found(self.get(rows, key)))).collect(),
+                })
+                .collect(),
         };
         (resolved, dangling)
+    }
+
+    /// The rows numeric `numbers`, the values of `ids` in order, name, as [`resolve`] gives them.
+    ///
+    /// [`resolve`]: Index::resolve
+    fn numbered(
+        &self,
+        rows: &RowIds,
+        numbers: impl Iterator<Item = u64>,
+        ids: &Values,
+        unwired: u32,
+        dangling: &mut bool,
+    ) -> Vec<u32> {
+        let valid = |i: usize| ids.valid.as_ref().is_none_or(|v| v.get(i));
+        let mut found = |row: Option<usize>| {
+            *dangling |= row.is_none();
+            row.map_or(unwired, |r| r as u32)
+        };
+        let numbers = numbers.enumerate();
+        match (self, rows.numbers()) {
+            (Index::Identity(count), _) => {
+                let count = u64::from(*count);
+                numbers
+                    .map(|(i, n)| if valid(i) { found((n < count).then_some(n as usize)) } else { unwired })
+                    .collect()
+            }
+            (Index::Table(table), Some(pages)) => {
+                let id = |r: u32| pages[r as usize >> PAGE_BITS][r as usize & PAGE_MASK];
+                let row = |n: u64| table.find(hash(IdRef::Number(n)), |&r| id(r) == n).map(|&r| r as usize);
+                numbers.map(|(i, n)| if valid(i) { found(row(n)) } else { unwired }).collect()
+            }
+            (Index::Table(_), None) => {
+                numbers.map(|(i, n)| if valid(i) { found(self.get(rows, IdRef::Number(n))) } else { unwired }).collect()
+            }
+        }
+    }
+
+    /// Whether every one of `ids` is present and already the row it names: a number below the
+    /// count of counted rows, stored as row numbers are (`u32`). Their page then serves as its own
+    /// resolved rows, with no copy.
+    pub(crate) fn names_itself(&self, ids: &Values) -> bool {
+        match (self, &ids.array, &ids.valid) {
+            (Index::Identity(count), Array::U32(v), None) => v.iter().all(|&id| id < *count),
+            _ => false,
+        }
     }
 
     /// The row with id `key`. A numeric id can also be given as its decimal text, which is how ids

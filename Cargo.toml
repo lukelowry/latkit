@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "xtask"]
+members = ["crates/*", "xtask", "npm/examples/gate/driver"]
 default-members = ["crates/latkit"]
 resolver = "3"
 
@@ -20,8 +20,9 @@ thiserror = "2"
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
 rustc-hash = "2"
 
-# Match Gpu::new: primary native backends and browser WebGPU, without unused GLES.
-wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl", "webgpu"] }
+# One raster design: native graphics backends and browser WebGL2. Each crate adds the backends and
+# shader languages it needs.
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot"] }
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.34"
 web-time = "1"

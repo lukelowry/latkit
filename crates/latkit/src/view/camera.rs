@@ -10,22 +10,22 @@ use crate::gpu::shaders as wgsl;
 #[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum Camera {
-    /// A camera over the earth, a plane, or a diagram: the point it looks at and turns about, its
-    /// zoom, its tilt, and its rotation. A diagram is always seen from straight above, upright.
+    /// A camera over the earth or a plane: the point it looks at and turns about, its zoom, its
+    /// tilt, and its rotation.
     Map {
         /// On the earth, longitude, latitude, and elevation, all in degrees (a degree of elevation is
-        /// a degree of arc, about 111 km). On a plane or a diagram, x, y, and elevation. In JSON,
+        /// a degree of arc, about 111 km). On a plane, x, y, and elevation. In JSON,
         /// `[x, y]` is shorthand for elevation 0.
         #[serde(with = "center")]
         #[schemars(with = "center::Center")]
         center: [f64; 3],
         /// The web mercator zoom level on the earth. Elsewhere, log₂ of CSS pixels per unit.
         zoom: f64,
-        /// Tilt in degrees from looking straight down, up to 75. Ignored in a diagram. Looking
+        /// Tilt in degrees from looking straight down, up to 75. Looking
         /// straight down, elevation only decides which rows show on top, and each row draws over
         /// its ground position. Rows rise into view over the first 10° of tilt.
         pitch: f64,
-        /// Degrees clockwise from north, or from up on a plane. Ignored in a diagram.
+        /// Degrees clockwise from north, or from up on a plane.
         bearing: f64,
     },
     /// A plot camera: the x range shown, and the value range, or `None` to fit the values in view.
@@ -78,11 +78,10 @@ fn parallax(pitch: f64) -> f64 {
 }
 const MAX_ZOOM: f64 = 24.0;
 
-/// The closest zoom a fit frames in `space`: a diagram at its natural size, where a unit is a CSS
-/// pixel, and the earth at a neighborhood's scale. A plane has no natural scale.
+/// The closest zoom a fit frames in `space`: the earth at a neighborhood's scale. A plane has no
+/// natural scale.
 fn closest_fit(space: &Space) -> Option<f64> {
     match space {
-        Space::Diagram(_) => Some(0.0),
         Space::Earth(_) => Some(16.0),
         Space::Plane(_) | Space::Plot(_) => None,
     }
@@ -128,7 +127,7 @@ impl Bounds {
 /// frames. Its center stays where, seen from above, the world's edges stay outside that area.
 /// Along an axis where the world is no wider than the area, the center stays on the world's middle.
 /// The globe zooms out until it spans a third of the area's shorter side, and its longitude wraps.
-/// A plane, a diagram, and a plot set no limits. Fits limit the zoom to 3 levels out past the
+/// A plane and a plot set no limits. Fits limit the zoom to 3 levels out past the
 /// widest fit and 8 in past the closest. They keep the center within one box size of the framed
 /// box, or half a view at the widest fit's zoom for a smaller box, and its elevation within the
 /// box's. Where the space and the fits disagree, the space wins.
@@ -184,9 +183,7 @@ impl Camera {
     pub(crate) fn default_for(space: &Space) -> Camera {
         match space {
             Space::Earth(_) => Camera::Map { center: [0.0, 20.0, 0.0], zoom: 1.5, pitch: 0.0, bearing: 0.0 },
-            Space::Plane(_) | Space::Diagram(_) => {
-                Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 }
-            }
+            Space::Plane(_) => Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 },
             Space::Plot(_) => Camera::Plot { x: [0.0, 1.0], y: None },
         }
     }
@@ -195,8 +192,7 @@ impl Camera {
     pub fn fits(&self, space: &Space) -> bool {
         matches!(
             (self, space),
-            (Camera::Map { .. }, Space::Earth(_) | Space::Plane(_) | Space::Diagram(_))
-                | (Camera::Plot { .. }, Space::Plot(_))
+            (Camera::Map { .. }, Space::Earth(_) | Space::Plane(_)) | (Camera::Plot { .. }, Space::Plot(_))
         )
     }
 
@@ -268,12 +264,9 @@ impl Camera {
     }
 
     /// The camera turned by `degrees` of bearing and pitch about `anchor`, which keeps its screen
-    /// position. Pitch stays within `0..=MAX_PITCH`. A diagram never turns.
+    /// position. Pitch stays within `0..=MAX_PITCH`.
     pub(crate) fn turned(&self, view: &Projected, anchor: [f64; 3], degrees: [f64; 2]) -> Camera {
         let Camera::Map { center, zoom, pitch, bearing } = *self else { return *self };
-        if view.space == wgsl::SPACE_DIAGRAM {
-            return *self;
-        }
         let to_pitch = (pitch + degrees[1]).clamp(0.0, MAX_PITCH);
         let to_bearing = (bearing + degrees[0]).rem_euclid(360.0);
         if view.globe >= 0.5 {
@@ -411,7 +404,7 @@ impl Camera {
                 let center = [min[0].midpoint(max[0]), latitude(y0.midpoint(y1)), height];
                 capped(Camera::Map { center, zoom, pitch, bearing }.framed(space, min, max, size, area, room))
             }
-            Space::Plane(_) | Space::Diagram(_) => {
+            Space::Plane(_) => {
                 let dx = (max[0] - min[0]).max(1e-9);
                 let dy = (max[1] - min[1]).max(1e-9);
                 let zoom = (room[0] / dx).min(room[1] / dy).log2().clamp(-MAX_ZOOM, MAX_ZOOM);
@@ -473,9 +466,8 @@ fn wrap(lon: f64) -> f64 {
 pub(crate) struct Projected {
     pub(crate) clip_from_world: DMat4,
     pub(crate) world_from_clip: DMat4,
-    /// The camera's position, and the direction toward the key light.
+    /// The camera's position.
     pub(crate) eye: DVec3,
-    pub(crate) light: DVec3,
     pub(crate) center: [f64; 3],
     pub(crate) px_per_unit: [f64; 2],
     /// The camera's zoom: the web mercator level on the earth, log₂ pixels per unit elsewhere.
@@ -490,6 +482,14 @@ pub(crate) struct Projected {
 }
 
 impl Projected {
+    /// A conservative lane-density band on a flat plane. At zero tilt and ground-centered depth,
+    /// translation and rotation preserve screen distances, and a zoom octave changes them by two.
+    /// Other projections continue to plan against their exact camera.
+    pub(crate) fn lane_band(&self) -> Option<f32> {
+        (self.space == wgsl::SPACE_PLANE && self.parallax == 0.0 && self.center[2] == 0.0)
+            .then(|| (self.zoom as f32).ceil())
+    }
+
     /// How far the earth is morphed onto the globe: 1 for the globe projection, otherwise 0.
     pub(crate) fn globe_of(space: &Space) -> f64 {
         match space {
@@ -514,10 +514,6 @@ impl Projected {
                 let px = zoom.exp2();
                 (center, [px, px], pitch, bearing, wgsl::SPACE_PLANE)
             }
-            (Space::Diagram(_), Camera::Map { center, zoom, .. }) => {
-                let px = zoom.exp2();
-                (center, [px, px], 0.0, 0.0, wgsl::SPACE_DIAGRAM)
-            }
             (_, Camera::Plot { x, y }) => {
                 let y = y.unwrap_or([0.0, 1.0]);
                 let px = [room[0] / (x[1] - x[0]).abs().max(1e-12), room[1] / (y[1] - y[0]).abs().max(1e-12)];
@@ -529,25 +525,21 @@ impl Projected {
         let pitch = pitch.clamp(0.0, MAX_PITCH);
         // Reversed depth: the near plane maps to 1 and the far plane to 0.
         let projection = perspective(FOV, w / h, distance * 100.0, distance * 0.01);
-        // A diagram's y runs down the screen.
-        let up = if space_code == wgsl::SPACE_DIAGRAM { -px_per_unit[1] } else { px_per_unit[1] };
         let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -distance))
             * DMat4::from_rotation_x(-pitch.to_radians())
             * DMat4::from_rotation_z(bearing.to_radians())
-            * DMat4::from_scale(DVec3::new(px_per_unit[0], up, px_per_unit[0]))
+            * DMat4::from_scale(DVec3::new(px_per_unit[0], px_per_unit[1], px_per_unit[0]))
             * DMat4::from_translation(DVec3::new(0.0, 0.0, -height(space_code, center[2])));
         let middle = [area[0].midpoint(area[2]) / w * 2.0 - 1.0, 1.0 - area[1].midpoint(area[3]) / h * 2.0];
         let offset = DMat4::from_cols(DVec4::X, DVec4::Y, DVec4::Z, DVec4::new(middle[0], middle[1], 0.0, 1.0));
         let clip_from_world = offset * projection * view;
         let world_from_view = view.inverse();
         let eye = world_from_view.transform_point3(DVec3::ZERO);
-        let light = world_from_view.transform_vector3(DVec3::new(-0.4, 0.8, 1.0)).normalize_or_zero();
         let mercator = if space_code == wgsl::SPACE_EARTH { mercator::y(center[1]) } else { 0.0 };
         Projected {
             clip_from_world,
             world_from_clip: clip_from_world.inverse(),
             eye,
-            light,
             center,
             px_per_unit,
             zoom: px_per_unit[0].max(1e-300).log2()
@@ -771,7 +763,7 @@ impl Projected {
     }
 }
 
-/// A right-handed perspective projection onto WebGPU's clip space, depth `0..=1` from `near` to
+/// A right-handed perspective projection onto wgpu's clip space, depth `0..=1` from `near` to
 /// `far`. Passing the far distance as `near` reverses depth.
 fn perspective(fov: f64, aspect: f64, near: f64, far: f64) -> DMat4 {
     let f = 1.0 / (0.5 * fov).tan();
@@ -811,7 +803,7 @@ pub(crate) fn split(x: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Diagram, Earth, Plane, Projection};
+    use crate::{Earth, Plane, Projection};
 
     const SIZE: [f64; 2] = [800.0, 600.0];
     const AREA: Area = [0.0, 0.0, 800.0, 600.0];
@@ -843,18 +835,6 @@ mod tests {
         let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
         assert!(near(to_screen(&view, [10.0, 20.0, 0.0]), [400.0, 300.0]));
         assert!(near(to_screen(&view, [11.0, 21.0, 0.0]), [402.0, 298.0]), "two pixels per unit, y up");
-    }
-
-    #[test]
-    fn a_diagram_runs_y_down_and_never_turns() {
-        let space = Space::Diagram(crate::Diagram::default());
-        let camera = Camera::Map { center: [10.0, 20.0, 0.0], zoom: 1.0, pitch: 40.0, bearing: 30.0 };
-        let view = Projected::new(&space, &camera, SIZE, AREA, 0.0);
-        assert!(near(to_screen(&view, [10.0, 20.0, 0.0]), [400.0, 300.0]));
-        assert!(near(to_screen(&view, [11.0, 21.0, 0.0]), [402.0, 302.0]), "two pixels per unit, y down, upright");
-        assert_eq!(camera.turned(&view, [0.0; 3], [20.0, 10.0]), camera);
-        let back = view.position(view.ground([402.0, 302.0]).expect("the sheet"));
-        assert!((back[0] - 11.0).abs() < 1e-9 && (back[1] - 21.0).abs() < 1e-9, "{back:?}");
     }
 
     #[test]
@@ -1101,15 +1081,9 @@ mod tests {
     }
 
     #[test]
-    fn a_fit_frames_a_diagram_at_most_at_natural_size_and_a_point_at_its_space_scale() {
+    fn a_fit_frames_a_point_at_its_space_scale() {
         let area = [0.0, 0.0, SIZE[0], SIZE[1]];
         let start = Camera::Map { center: [0.0; 3], zoom: 1.5, pitch: 0.0, bearing: 0.0 };
-        let Camera::Map { zoom, .. } =
-            start.framing(&Space::Diagram(Diagram::default()), [0.0; 3], [10.0, 10.0, 0.0], SIZE, area, 0.0)
-        else {
-            panic!("a map camera")
-        };
-        assert_eq!(zoom, 0.0, "a small diagram frames at its natural size");
         let Camera::Map { zoom, center, .. } =
             start.framing(&flat(), [10.0, 20.0, 0.0], [10.0, 20.0, 0.0], SIZE, area, 0.0)
         else {
