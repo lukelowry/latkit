@@ -17,8 +17,11 @@ pub(super) struct Queue {
     pub(super) state: Rc<State>,
     pub(super) submitted: Cell<u64>,
 }
+/// Each call that gives the GPU work notes it in [`Waits::issued`], so the next wait makes a fence
+/// of its own rather than joining an older one.
 impl QueueInterface for Queue {
     fn write_buffer(&self, buffer: &DispatchBuffer, offset: u64, data: &[u8]) {
+        Waits::issued(&self.state);
         buffer.as_custom::<Buffer>().unwrap().write(offset, data);
     }
     fn create_staging_buffer(&self, size: wgpu::BufferSize) -> Option<DispatchQueueWriteBuffer> {
@@ -37,6 +40,7 @@ impl QueueInterface for Queue {
         layout: wgpu::TexelCopyBufferLayout,
         size: wgpu::Extent3d,
     ) {
+        Waits::issued(&self.state);
         upload(&self.state.gl, Source::Bytes(data), layout, &Image::new(texture), size);
     }
     fn copy_external_image_to_texture(
@@ -48,6 +52,7 @@ impl QueueInterface for Queue {
         report_to(&self.state, "copy external images");
     }
     fn submit(&self, command_buffers: &mut dyn Iterator<Item = DispatchCommandBuffer>) -> u64 {
+        Waits::issued(&self.state);
         for buffer in command_buffers {
             for command in buffer.as_custom::<Commands>().unwrap().0.borrow_mut().drain(..) {
                 command.run(&self.state.gl);

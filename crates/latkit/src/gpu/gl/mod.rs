@@ -53,11 +53,31 @@ pub(crate) fn array_texture(device: &wgpu::Device, desc: &wgpu::TextureDescripto
     wgpu::Texture::from_custom(texture, desc)
 }
 
-pub(crate) fn present(source: &wgpu::Texture, canvas: &super::browser::Canvas) -> crate::Result<()> {
-    let texture = source
-        .as_custom::<resource::Texture>()
-        .ok_or_else(|| crate::Error::Unsupported("presentation texture belongs to another GPU".into()))?;
-    blit(texture, canvas)
+/// Presents `source` in `sink` through `canvas`, the context's own canvas, as `show` does.
+pub(crate) fn present(
+    queue: &wgpu::Queue,
+    source: &wgpu::Texture,
+    canvas: &super::browser::Canvas,
+    sink: &super::browser::Sink,
+) -> crate::Result<()> {
+    let other = || crate::Error::Unsupported("presentation texture belongs to another GPU".into());
+    let texture = source.as_custom::<resource::Texture>().ok_or_else(other)?;
+    let queue = queue.as_custom::<queue::Queue>().ok_or_else(other)?;
+    show(&queue.state, texture, canvas, sink)
+}
+
+/// Blits `texture` to `canvas`, fences the frame, then copies it into `sink`. The fence comes
+/// before the copy so a wait after the frame can join it (see [`waits`]).
+fn show(
+    state: &device::State,
+    texture: &resource::Texture,
+    canvas: &super::browser::Canvas,
+    sink: &super::browser::Sink,
+) -> crate::Result<()> {
+    blit(texture, canvas)?;
+    waits::Waits::presented(state);
+    let size = texture.0.size;
+    sink.copy(canvas, [size.width, size.height])
 }
 
 fn blit(texture: &resource::Texture, canvas: &super::browser::Canvas) -> crate::Result<()> {

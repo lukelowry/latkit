@@ -1495,8 +1495,9 @@ its views and frame listeners. Other GPUs and datasets stay usable.
 
 {#gpu-done .member}
 **`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-done){.headerlink}
-: Resolves once the GPU has finished its submitted work, every readback has arrived, and every
-  pipeline a view or shot requested has compiled. A frame stepped after that uses all of them.
+: Resolves once the GPU has finished the work submitted before the call, with the readbacks it
+  copies, and every pipeline a view or shot requested has compiled. A frame stepped after that
+  uses all of them.
 
 {#gpu-landed .member}
 **`landed`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-landed){.headerlink}

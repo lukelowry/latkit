@@ -1,7 +1,8 @@
-/** Exercises the public package on real WebGL2: unequal canvases, exact hits, exports, and loss. */
+/** Exercises the public package on real WebGL2: unequal canvases, exact hits, exports, prompt
+ * waits, and loss. Use `--webkit` or `--firefox` to check another browser. */
 import path from 'node:path';
 import type { Gpu, View } from 'latkit';
-import { deadline, errorsOf, launch, serve, STEP } from './browser.ts';
+import { deadline, engineOf, errorsOf, launch, serve, STEP } from './browser.ts';
 
 declare global {
   interface Window {
@@ -12,7 +13,11 @@ declare global {
 
 const root = path.resolve(import.meta.dirname, '..');
 const server = await serve(root, 5234, 'WebGL2 runtime verification');
-const chrome = await launch(['--disable-webgpu'], process.argv.includes('--software') || undefined);
+const chrome = await launch(
+  ['--disable-webgpu'],
+  process.argv.includes('--software') || undefined,
+  engineOf(process.argv),
+);
 try {
   const page = await chrome.browser.newPage({ viewport: { width: 900, height: 700 } });
   const errors = errorsOf(page);
@@ -25,11 +30,15 @@ try {
   await page.addInitScript((html) => {
     Object.defineProperty(navigator, 'gpu', { value: undefined });
     window.webglContexts = [];
-    for (const prototype of [HTMLCanvasElement.prototype, OffscreenCanvas.prototype]) {
+    // WebKit on Windows has no OffscreenCanvas.
+    const prototypes: (HTMLCanvasElement | OffscreenCanvas)[] = [HTMLCanvasElement.prototype];
+    if (typeof OffscreenCanvas === 'function') prototypes.push(OffscreenCanvas.prototype);
+    for (const prototype of prototypes) {
       const original = prototype.getContext;
       Object.defineProperty(prototype, 'getContext', {
         value: function (...args: unknown[]) {
-          if (html && this instanceof OffscreenCanvas) return null;
+          if (html && typeof OffscreenCanvas === 'function' && this instanceof OffscreenCanvas)
+            return null;
           const context: unknown = Reflect.apply(original, this, args);
           if (args[0] === 'webgl2' && context)
             window.webglContexts.push(context as WebGL2RenderingContext);
@@ -120,6 +129,14 @@ try {
           seen.push(pixel);
         }
       };
+      // A wait on an idle page, with nothing drawn since the last frame, ends with the GPU's work.
+      // WebKit reported a fence made after the page copied the canvas as unsignaled for about 8 s.
+      await Promise.all(views.map((view) => view.done()));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const idle = performance.now();
+      await gpu.done();
+      const waited = performance.now() - idle;
+      if (waited > 500) throw new Error(`a wait for the idle GPU took ${Math.round(waited)} ms`);
       await verify();
       // Focus pages begin with the first interaction. Clearing selection and hover must
       // restore every pixel, including channels and depth shared by subsequent exports.
@@ -206,6 +223,7 @@ try {
   console.log(JSON.stringify(result, null, 2));
   const worker = await deadline(
     page.evaluate(async (module) => {
+      if (typeof OffscreenCanvas !== 'function') return { skipped: 'no OffscreenCanvas' };
       const url = new URL(module, location.href).href;
       const script = `
         import { Gpu, Data, View, Shot } from ${JSON.stringify(url)};

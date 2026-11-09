@@ -182,6 +182,7 @@ impl SurfaceInterface for Surface {
     fn get_current_texture(&self) -> (Option<DispatchTexture>, wgpu::SurfaceStatus, DispatchSurfaceOutputDetail) {
         let texture = self.texture.borrow().as_ref().expect("configured surface").clone();
         let detail = DispatchSurfaceOutputDetail::custom(Output {
+            device: self.device.clone(),
             texture: texture.clone(),
             source: self.source.clone(),
             sink: self.sink.clone(),
@@ -195,6 +196,7 @@ impl SurfaceInterface for Surface {
 }
 #[derive(Debug)]
 pub(super) struct Output {
+    device: Device,
     texture: Texture,
     source: Canvas,
     sink: Sink,
@@ -206,8 +208,7 @@ impl SurfaceOutputDetailInterface for Output {
 impl Output {
     pub(super) fn present(&self) {
         let size = self.texture.0.size;
-        super::blit(&self.texture, &self.source).expect("WebGL2 surface presentation");
         self.sink.resize([size.width, size.height]);
-        self.sink.copy(&self.source, [size.width, size.height]).expect("canvas presentation");
+        super::show(&self.device.0, &self.texture, &self.source, &self.sink).expect("WebGL2 surface presentation");
     }
 }
