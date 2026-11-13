@@ -5,10 +5,7 @@ time from creating the view until it has drawn everything. **Frame** and **GPU**
 and GPU milliseconds per frame in the scenario's slowest phase with a moving view. **Pick** is the
 time to answer a pick or hover. `cargo xtask bench` runs every scenario at increasing sizes and
 checks it against the committed baselines. `node benchmark/docs.ts` writes this table from those
-baselines.
-
-The committed measurements are the original renderer's comparison baseline. They have not been
-replaced with WebGL2 results; the migration must be measured against them before claiming parity.
+baselines, measured with WebGL2 through ANGLE on Direct3D 11.
 
 ```{csv-table}
 :file: _static/performance.csv

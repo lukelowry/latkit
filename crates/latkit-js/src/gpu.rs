@@ -26,10 +26,9 @@ impl Gpu {
         Ok(telling(latkit::View::new(&self.0, json("scene", scene)?), tell))
     }
 
-    /// Destroys the device, as a browser does when it loses one, so its views move to a new device.
-    /// For tests of that move.
+    /// Loses the device, as a GPU reset does, so its views move to a new device.
     pub fn lose(&self) {
-        self.0.device().destroy();
+        self.0.lose();
     }
 
     /// Creates a canvas showing `views` in `target`, each at its four fractions of `at`. `target`

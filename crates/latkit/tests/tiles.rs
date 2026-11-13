@@ -310,7 +310,10 @@ fn time_tiles_the_app_fetches_refresh_as_frames_are_recorded() {
     record(0..100);
     write();
     let served = files.clone();
+    let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+    let asking = asked.clone();
     let tiles = Tiles::new("signals", "frames.json").fetch(move |request: &Request| {
+        asking.lock().expect("unpoisoned").push(request.url.to_string());
         let file = served.lock().expect("unpoisoned").get(&*request.url).cloned();
         Pending::ready(file.ok_or_else(|| latkit::Error::Io("no such file".into())))
     });
@@ -329,6 +332,48 @@ fn time_tiles_the_app_fetches_refresh_as_frames_are_recorded() {
     tiles.refresh();
     let after = last();
     assert!((240.0..250.0).contains(&after), "the frames the refreshed index lists, up to {after}");
+    let asked = asked.lock().expect("unpoisoned").clone();
+    let count = |path: &str| asked.iter().filter(|url| *url == path).count();
+    assert_eq!((count("frames.json"), count("base.latk")), (2, 1), "a refresh keeps the base: {asked:?}");
+}
+
+#[test]
+fn tiles_at_one_url_fetched_two_ways_draw_their_own_files() {
+    let Some(gpu) = gpu() else { return };
+    let written = |frames: u32| {
+        let data = Data::new("signals");
+        let base = Patch::new().axis("time", "s").set(Table::new("Signal", Ids::count(1)));
+        data.apply(base.clone()).expect("valid");
+        let times: Vec<f64> = (0..frames).map(f64::from).collect();
+        data.apply(Patch::new().append("Signal", &times, [("v", vec![0.5; times.len()])])).expect("frames");
+        let mut files = BTreeMap::new();
+        data.snapshot()
+            .to_tiles(64, |path, bytes| {
+                files.insert(path.to_owned(), bytes.to_vec());
+                Ok(())
+            })
+            .expect("tiles");
+        // A server may write the base as a patch that names no dataset: views name it.
+        files.insert("base.latk".to_owned(), base.to_bytes());
+        Tiles::new("signals", "frames.json").fetch(move |request: &Request| {
+            let file = files.get(&*request.url).cloned();
+            Pending::ready(file.ok_or_else(|| latkit::Error::Io("no such file".into())))
+        })
+    };
+    let scene = Scene::new(Plot::default()).theme(plain_theme()).draw(Lines::of("signals", "Signal").trace("v"));
+    let open = |tiles: Tiles| {
+        let mut view = View::new(&gpu, scene.clone());
+        view.set_sources([tiles]).expect("a source");
+        view.set_camera(Camera::Plot { x: [0.0, 300.0], y: Some([0.0, 1.0]) });
+        frame(&gpu, &mut view);
+        view
+    };
+    let last = |view: &View| view.snapshot("signals").and_then(|data| data.describe().span).map_or(0.0, |[_, l]| l);
+    // Both views draw at once, so they would share one source if tiles were told apart by URL alone.
+    let long = open(written(200));
+    let short = open(written(40));
+    assert!((190.0..200.0).contains(&last(&long)), "the long history, up to {}", last(&long));
+    assert!((30.0..40.0).contains(&last(&short)), "the short history, up to {}", last(&short));
 }
 
 #[test]

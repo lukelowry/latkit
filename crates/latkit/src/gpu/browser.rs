@@ -1,7 +1,7 @@
 //! A shared WebGL2 context. Views render into retained textures; presentation copies through the
 //! context's canvas into each public canvas, keeping all data and caches on one GPU context.
-use crate::{Error, Gpu, Result};
-use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+use crate::{Error, Result};
+use wasm_bindgen::{JsCast, JsValue};
 
 #[derive(Clone, Debug)]
 pub(crate) enum Canvas {
@@ -138,9 +138,9 @@ impl Sink {
     }
 }
 
+/// The shared canvas a GPU draws through. Its WebGL2 device reports the context's loss.
 pub(crate) struct Browser {
     canvas: Canvas,
-    lost: Option<Closure<dyn FnMut(web_sys::Event)>>,
 }
 
 impl Browser {
@@ -186,31 +186,12 @@ impl Browser {
         // Size the canvas now, while the GPU process has nothing queued (see Canvas::reserve).
         canvas.reserve(screen(&context));
         let instance = super::gl::instance(context)?;
-        Ok((instance, Self { canvas, lost: None }))
-    }
-
-    pub(crate) fn watch(&mut self, gpu: &Gpu) {
-        let events = gpu.device_events();
-        let wake = crate::web::waker(gpu);
-        let lost = Closure::new(move |event: web_sys::Event| {
-            event.prevent_default();
-            events.lost();
-            wake.wake_by_ref();
-        });
-        let _ = self.target().add_event_listener_with_callback("webglcontextlost", lost.as_ref().unchecked_ref());
-        self.lost = Some(lost);
+        Ok((instance, Self { canvas }))
     }
 
     /// Makes room on the shared canvas for a view's texture of `size`, when the texture is made.
     pub(crate) fn reserve(&self, size: [u32; 2]) {
         self.canvas.reserve(size);
-    }
-
-    fn target(&self) -> &web_sys::EventTarget {
-        match &self.canvas {
-            Canvas::Element(c) => c.as_ref(),
-            Canvas::Offscreen(c) => c.as_ref(),
-        }
     }
 
     /// Blits the retained texture to the shared canvas, then copies its visible region into `sink`.
@@ -233,13 +214,4 @@ fn screen(gl: &web_sys::WebGl2RenderingContext) -> [u32; 2] {
         Some([side(screen.width().ok()?), side(screen.height().ok()?)])
     });
     screen.unwrap_or([1, 1]).map(|side| side.min(limit))
-}
-
-impl Drop for Browser {
-    fn drop(&mut self) {
-        if let Some(lost) = &self.lost {
-            let _ =
-                self.target().remove_event_listener_with_callback("webglcontextlost", lost.as_ref().unchecked_ref());
-        }
-    }
 }

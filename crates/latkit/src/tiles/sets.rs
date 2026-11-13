@@ -66,8 +66,8 @@ struct TileSet {
     drawing: Option<Drawing>,
     /// Whether the dataset changed since it was last taken.
     changed: bool,
-    /// Whether a failure was reported. A failed source reports it once.
-    told: bool,
+    /// The failure the set last reported. A source reports each failure once.
+    told: Option<Error>,
     /// Whether a piece the view wanted at the last update showed a placeholder: an ancestor, or
     /// nothing.
     standing_in: bool,
@@ -81,7 +81,7 @@ impl TileSet {
             tiles,
             drawing: None,
             changed: false,
-            told: false,
+            told: None,
             standing_in: true,
         }
     }
@@ -163,7 +163,7 @@ impl TileSets {
             let kept = *set.tiles.name != *name;
             if !kept {
                 set.tiles.refreshes.views.unwatch(set.id);
-                cache.release(&set.tiles.url, set.id);
+                cache.release(&set.tiles, set.id);
             }
             kept
         });
@@ -174,7 +174,7 @@ impl TileSets {
         self.changed.clear();
         for set in self.sets.drain(..) {
             set.tiles.refreshes.views.unwatch(set.id);
-            cache.release(&set.tiles.url, set.id);
+            cache.release(&set.tiles, set.id);
         }
     }
 
@@ -193,7 +193,7 @@ impl TileSets {
     /// The number of pieces drawn across all sources, and the number being fetched or decoded.
     pub(crate) fn counts(&self, cache: &Cache) -> [u64; 2] {
         let drawn = self.sets.iter().map(|set| set.drawn() as u64).sum();
-        let loading = self.sets.iter().map(|set| cache.under_way(&set.tiles.url) as u64).sum();
+        let loading = self.sets.iter().map(|set| cache.under_way(&set.tiles) as u64).sum();
         [drawn, loading]
     }
 
@@ -245,10 +245,10 @@ impl TileSets {
     pub(crate) fn update(&mut self, input: &Input<'_>, asked: &Asked<'_>, cache: &mut Cache, jobs: &Jobs<'_>) {
         for set in &mut self.sets {
             if let Some(error) = set.update(input, asked, cache, jobs)
-                && !set.told
+                && set.told.as_ref() != Some(&error)
             {
-                set.told = true;
-                self.errors.push(error.within(&set.tiles.name));
+                self.errors.push(error.clone().within(&set.tiles.name));
+                set.told = Some(error);
             }
             if std::mem::take(&mut set.changed) {
                 self.changed.retain(|data| data.name() != set.data.name());

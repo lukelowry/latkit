@@ -88,7 +88,10 @@ view.sources = [new Tiles('grid', 'history/frames.json')]; // in place of the da
 
 A line that traces a field fetches the spans in its plot window, at the detail it draws. Other
 marks fetch the frames around `view.at`. While a span loads, the view draws the coarser span that
-covers it. In Rust, `Snapshot::to_tiles` writes the same files.
+covers it. In Rust, `Snapshot::to_tiles` writes the same files. While frames are still recorded,
+rewrite the manifest and the spans past its old end, then call `tiles.refresh()`: views keep what
+they drew and fetch only the last span of each level again. A server can also answer the files
+itself through `new Tiles(name, url, { fetch })`.
 
 ### Stream
 
@@ -497,19 +500,16 @@ The Rust library is the `latkit` crate.
 | File/URL slices                     | Browser fetch and CORS         | Supply data directly             | Local paths and `file:` URLs |
 | H.264 MP4                           | WebCodecs Constrained Baseline | Use the CLI                      | Windows Media Foundation     |
 
-Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, shaders, and worker
-from the same package version: latkit refuses shaders from another version. Rendering requires an
-enabled WebGL2 context. WebCodecs video export requires HTTPS or localhost.
+Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, and worker from the
+same package version. Rendering requires an enabled WebGL2 context. WebCodecs video export requires
+HTTPS or localhost.
 
 ### Assets and workers
 
-The package has four assets besides its modules:
+The package has three assets besides its modules:
 
-- `latkit/wasm`: the WebAssembly.
-- `latkit/shaders`: the shaders, translated for WebGL2 when the package was built. `load()`
-  downloads them while the WebAssembly compiles, wherever a canvas is available. Only drawing needs
-  them, so if the download fails, `Gpu.create()` rejects with an `io` error and the next call
-  downloads them again.
+- `latkit/wasm`: the WebAssembly, with the shaders translated for WebGL2 when the package was
+  built.
 - `latkit/wgsl`: the WebAssembly that translates custom markers' WGSL. A page loads it the first
   time it draws a custom marker.
 - `latkit/worker`: a standalone classic worker that runs jobs.
@@ -520,20 +520,24 @@ path:
 
 ```ts
 import { load } from 'latkit';
-import shadersUrl from 'latkit/shaders?url';
 import wasmUrl from 'latkit/wasm?url';
 import wgslUrl from 'latkit/wgsl?url';
 import workerUrl from 'latkit/worker?url';
 
-await load({ wasm: wasmUrl, shaders: shadersUrl, wgsl: wgslUrl, worker: workerUrl });
+await load({ wasm: wasmUrl, wgsl: wgslUrl, worker: workerUrl });
 ```
 
-A worker URL on another origin, such as a CDN, starts through a Blob URL on the page's origin.
-Workers start when needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on
-the calling thread. Your Content Security Policy must allow the WASM, shaders, and data origins in
+A browser starts workers only from the page's origin, so the page fetches a worker on another
+origin, such as a CDN or a webview's resources, and starts it from a Blob URL. Workers start when
+needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on the calling
+thread. Your Content Security Policy must allow the WASM, worker, and data origins in
 `connect-src`, WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), the
 package's modules in `script-src` (the WGSL translator is imported when first used), and the
 worker URL in `worker-src` (with `blob:` for one on another origin).
+
+To test without a GPU, Chrome and Electron draw WebGL2 on the CPU with
+`--use-angle=swiftshader --enable-unsafe-swiftshader`. `gpu.lose()` loses the device as a GPU reset
+does, so a test can check what follows.
 
 ### Server-side builders and data
 

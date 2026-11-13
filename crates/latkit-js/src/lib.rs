@@ -80,12 +80,6 @@ pub fn set_translator(translate: js_sys::Function) {
     latkit::host::Browser::set_translator(translate);
 }
 
-/// Hands over the shaders the build translated, the bytes of the package's `latkit/shaders` asset.
-#[wasm_bindgen(js_name = setShaders)]
-pub fn set_shaders(bytes: Vec<u8>) -> Result<(), Error> {
-    latkit::host::Browser::set_shaders(bytes).map_err(Error::from)
-}
-
 /// Runs a job a view handed to the page, in a worker, and returns the result's bytes. The job's
 /// bytes come in once, owned, rather than borrowed and copied again.
 #[wasm_bindgen]

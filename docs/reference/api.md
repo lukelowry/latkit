@@ -23,23 +23,17 @@ What every part of the package shares.
 ### `load()`
 
 {.signature}
-`function load(options?: { wasm?: string | URL | WebAssembly.Module; shaders?: string | URL; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
+`function load(options?: { wasm?: string | URL | WebAssembly.Module; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
 
 Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
 load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
 load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
-also downloads the shaders, then creates the first WebGL2 device for [`Gpu.create()`](#gpu-create). Only
-drawing needs the shaders, so a failed download fails `Gpu.create()`, not `load()`.
+also creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
 
 {#load-wasm .member}
 **`wasm`**`?: string | URL | WebAssembly.Module` [¶](#load-wasm){.headerlink}
-: The URL of this version's `latkit/wasm` asset, or that asset compiled. Defaults to the
-  bundled asset.
-
-{#load-shaders .member}
-**`shaders`**`?: string | URL` [¶](#load-shaders){.headerlink}
-: The URL of this version's `latkit/shaders` asset: the shaders translated for WebGL2. Defaults
-  to the bundled asset.
+: The URL of this version's `latkit/wasm` asset, or that asset compiled. It carries the
+  shaders, translated for WebGL2 when the package was built. Defaults to the bundled asset.
 
 {#load-wgsl .member}
 **`wgsl`**`?: string | URL | WebAssembly.Module` [¶](#load-wgsl){.headerlink}
@@ -50,8 +44,9 @@ drawing needs the shaders, so a failed download fails `Gpu.create()`, not `load(
 {#load-worker .member}
 **`worker`**`?: string | URL | (() => Worker)` [¶](#load-worker){.headerlink}
 : The URL of this version's standalone `latkit/worker` asset, or a function that creates a
-  worker running it. A URL on another origin, such as a CDN, starts through a script on the
-  page's origin, since browsers start workers only from there. Defaults to the bundled worker.
+  worker running it. A browser starts workers only from the page's origin, so the page fetches
+  a worker on another origin, such as a CDN or a webview's resources, and starts it from a
+  blob. Defaults to the bundled worker.
 
 (latkiterror)=
 
@@ -304,11 +299,14 @@ window need, and views on one GPU share them. The first bytes at `url` decide th
 - Time tiles: a `frames.json` manifest written by `latkit tile`. A line that traces a sampled
   field fetches the detail its plot window shows. Other marks fetch the frames around the view's
   `at`. While a span loads, the coarser span that contains it shows. The manifest is
-  `{ data, chunk, url, frames: [{ table, field, levels, frames: [first, end] }] }`: `data` is the
-  dataset without the listed fields' entries, and each span at `url` (such as
-  `{field}/{level}/{index}.latk`) is a patch of `chunk` entries of one level. A server that
-  records more frames rewrites the manifest and the spans past the old end, then the app calls
-  `refresh()`.
+  `{ data, chunk, url, frames: [{ table, field, levels, frames: [first, end] }] }`. `data` is the
+  dataset without the listed fields' entries: at least the axis and the tables' rows, such as
+  `new Patch().axis('time', 's').replace('Bus', ids)`. Each span at `url` is a
+  [`Patch.frames()`](#patch-frames) patch of `chunk` entries of one level. `url` names `{level}` and
+  `{index}`, and `{field}`, the field's index in `frames`, when several fields are listed. A span
+  holds every row of its table, so choose `chunk` to keep a span near 1 MiB, and give a plot of a
+  few rows of a large table its own manifest of those rows. A server that records more frames
+  rewrites the manifest and the spans past the old end, then the app calls `refresh()`.
 - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
@@ -343,8 +341,10 @@ window need, and views on one GPU share them. The first bytes at `url` decide th
 {#tiles-refresh .member}
 **`refresh`**`(): void` [¶](#tiles-refresh){.headerlink}
 : Fetches the index again, as when a running simulation records more frames, and redraws what
-  changed in every view drawing the tiles. Time tiles keep the spans the earlier frames cover.
-  Vector tiles start over.
+  changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
+  earlier frames filled. They fetch the last span of each level again, which shows what it held
+  until the new one arrives, and every span that failed. A manifest that names another base,
+  `chunk`, or `url` starts over, as vector tiles always do.
 
 (tilesoptions)=
 
@@ -359,7 +359,9 @@ How [`Tiles`](#tiles) fetch their files.
 **`fetch`**`?: (url: string, range?: [start: number, end: number]) => Promise<`[`ByteSource`](#bytesource)`>` [¶](#tilesoptions-fetch){.headerlink}
 : Fetches a file in place of the browser, such as with credentials or from the app's own store:
   the index at `url`, the pieces at URLs resolved against it, and bytes `[start, end)` of an
-  archive. A 404 or 204 `Response` is a missing piece.
+  archive. A 404 or 204 `Response` is a missing piece. latkit calls it after the frame that needs
+  the file, so it may change views and datasets. Tiles at one URL with different `fetch`
+  functions share nothing.
 
 (source)=
 
@@ -1476,14 +1478,18 @@ its views and frame listeners. Other GPUs and datasets stay usable.
 : Requests a WebGL2 device. The first call takes the device [`load()`](#load) requested. Create one before
   any view to set its `budget` first, or create another for views that should not share memory
   with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
-  when the browser has no WebGL2 device, and with an `io` error when the shaders could not be
-  downloaded. The next call downloads them again.
+  when the browser has no WebGL2 device.
 
 {#gpu-on .member}
 **`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}
 : Calls `listener` every animation frame with the frame's timestamp in milliseconds. It runs
   before the views draw, so its changes show in that frame. While any listener is registered, a
   frame runs on every animation frame. Returns a function that removes the listener.
+
+{#gpu-lose .member}
+**`lose`**`(): void` [¶](#gpu-lose){.headerlink}
+: Loses the device, as a GPU reset does, so a test can check what follows: `lost` turns true,
+  and latkit moves the views to a new device.
 
 {#gpu-step .member}
 **`step`**`(now: number, wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-step){.headerlink}

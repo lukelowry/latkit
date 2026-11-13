@@ -1,6 +1,5 @@
-import { load, field, Data, Gpu, Patch, Shot, View, type Scene } from 'latkit';
+import { load, field, Data, Gpu, Patch, Shot, Tiles, View, type Scene } from 'latkit';
 import { quickstart } from './quickstart';
-import shadersUrl from 'latkit/shaders?url';
 import wasmUrl from 'latkit/wasm?url';
 import workerUrl from 'latkit/worker?url';
 
@@ -58,13 +57,7 @@ async function run(custom: boolean, compiled: boolean) {
   };
   const started = performance.now();
   const source = compiled ? await WebAssembly.compileStreaming(fetch(wasmUrl)) : wasmUrl;
-  const loading = load(
-    custom
-      ? { wasm: source, shaders: shadersUrl, worker }
-      : compiled
-        ? { wasm: source }
-        : undefined,
-  );
+  const loading = load(custom ? { wasm: source, worker } : compiled ? { wasm: source } : undefined);
   check(loading === load(), 'concurrent loads must share their promise');
   await loading;
   const initialized = performance.now();
@@ -186,7 +179,7 @@ async function run(custom: boolean, compiled: boolean) {
     new Shot([64, 64], { views: [headless] }).image(),
     recording?.record((time) => time < 0.1),
   ]);
-  (gpu as unknown as { lose(): void }).lose();
+  gpu.lose();
   const [framed, moving, moved] = await waits;
   check(!recording || recording.frames === 3, 'a video in progress follows its view too');
   recorder.destroy();
@@ -259,6 +252,56 @@ async function run(custom: boolean, compiled: boolean) {
   check(places.query({ of: 'points' }).ids.length === 1, 'worker must decode GeoJSON');
   if (custom) check(createdWorkers > 0, 'custom worker factory must be used');
   places.destroy();
+
+  // Time tiles fetched through the app: the manifest, the base, and a span.
+  const at = Array.from({ length: 8 }, (_, i) => i);
+  const files = new Map<string, Uint8Array>([
+    [
+      'app:history/frames.json',
+      new TextEncoder().encode(
+        JSON.stringify({
+          data: 'base.latk',
+          chunk: 8,
+          url: '{level}/{index}.latk',
+          frames: [{ table: 'Signal', field: 'v', levels: 0, frames: [0, 8] }],
+        }),
+      ),
+    ],
+    ['app:history/base.latk', new Patch().axis('time', 's').replace('Signal', [1]).toBytes()],
+    [
+      'app:history/0/0.latk',
+      new Patch().frames('Signal', 'v', { first: 0, at, values: at.map((t) => t % 2) }).toBytes(),
+    ],
+  ]);
+  const asked: string[] = [];
+  const history = new Tiles('history', 'app:history/frames.json', {
+    fetch: (url) => {
+      asked.push(url);
+      return Promise.resolve(files.get(url) ?? new Response(null, { status: 404 }));
+    },
+  });
+  const plotCanvas = document.createElement('canvas');
+  plotCanvas.style.width = plotCanvas.style.height = '64px';
+  document.body.append(plotCanvas);
+  const plot = await View.create(
+    plotCanvas,
+    {
+      space: { plot: {} },
+      ease: 0,
+      marks: [{ lines: history.table('Signal'), trace: 'v' }],
+    },
+    { gpu: secondGpu, sources: [history], camera: { x: [0, 7] } },
+  );
+  plot.on('error', (error) => {
+    throw error;
+  });
+  await plot.done();
+  check(
+    asked.includes('app:history/0/0.latk') && plot.stats.tiles > 0 && plot.stats.tilesLoading === 0,
+    `time tiles draw through the app's fetch: ${asked.join(', ')}`,
+  );
+  plot.destroy();
+  plotCanvas.remove();
   secondGpu.destroy();
   data.destroy();
   const exampleCanvas = document.createElement('canvas');

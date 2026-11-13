@@ -12,8 +12,8 @@
 //!
 //! For the browser, every entry point of every specialization pipelines use is translated to GLSL
 //! ES 3.00 here (see `src/gpu/glsl.rs`), so the page translates nothing. The translations go in
-//! `OUT_DIR/shaders.bin` (see [`Store`]), with the linked WGSL of the custom marker shaders, which
-//! translate once a page draws a custom marker. The channel shader's evaluating entries are
+//! `OUT_DIR/shaders.bin` (see [`Store`]), which the browser build carries in its WebAssembly, with
+//! the linked WGSL of the custom marker shaders, which translate once a page draws a custom marker. The channel shader's evaluating entries are
 //! translated without their kernel, which the page writes in GLSL for each program and appends.
 //!
 //! It also writes the module of every specialization pipelines use, exactly as the runtime writes
@@ -252,16 +252,7 @@ pub(crate) fn generate() {
         }
     }
     fs::write(out.join("shaders.wgsl"), &pieces.text).unwrap();
-    let store = store.finish();
-    if browser {
-        writeln!(
-            rust,
-            "/// The stamp of the `shaders.bin` this build wrote. The page must hand over exactly that file.\npub(crate) const STORE: u64 = {:#018x};\n",
-            stamp(&store)
-        )
-        .unwrap();
-    }
-    fs::write(out.join("shaders.bin"), store).unwrap();
+    fs::write(out.join("shaders.bin"), store.finish()).unwrap();
     writeln!(
         rust,
         "/// Each declaration's byte range in `shaders.wgsl`.\n#[cfg(not(target_arch = \"wasm32\"))]\npub(crate) static PIECES: &[(u32, u32)] = &{:?};\n",
@@ -525,12 +516,6 @@ struct Store {
 
 /// The inflated bytes of a store block, at most, unless one chunk is longer.
 const BLOCK: usize = 32 << 10;
-
-/// The 64-bit FNV-1a hash of `bytes`. `src/gpu/store.rs` stamps the file a page hands over the same
-/// way, and refuses it unless the stamps match.
-fn stamp(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
-}
 
 impl Store {
     fn add(&mut self, key: &str, text: &str) {

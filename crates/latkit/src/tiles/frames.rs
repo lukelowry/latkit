@@ -3,7 +3,9 @@
 //! coarsest spans, which are drawn as placeholders for any span still loading. A line tracing a
 //! field needs the spans at the level of detail the plot window draws at, middle first. A mark
 //! showing a field at the view's coordinate needs the frames around that coordinate. A drawn span
-//! adds its entries to the set's dataset, and a span no longer drawn removes them.
+//! adds its entries to the set's dataset, and a span no longer drawn removes them. A refresh keeps
+//! the base and every span the earlier frames filled, and fetches the last span of each level
+//! again, which draws what it held until the new one lands.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -20,12 +22,13 @@ use crate::derive::Jobs;
 use crate::host::Request;
 use crate::{Error, Pending};
 
-/// Most spans a line needs, middle first. A plot window normally needs far fewer.
+/// Most spans a line fetches at one level, middle first. A plot window that needs more draws from
+/// a coarser level.
 const MAX_SPANS: usize = 64;
 
 /// The spans of one manifest's sampled fields, shared by every set drawing them. Holds the base
-/// dataset without their entries, each field's fetched and decoded spans, and how many times the
-/// manifest was refreshed.
+/// dataset without their entries, each field's fetched and decoded spans, and how many times a
+/// base was opened.
 pub(crate) struct Fetched {
     manifest: Manifest,
     /// The spans' URL template, resolved against the manifest's URL.
@@ -33,7 +36,7 @@ pub(crate) struct Fetched {
     base: Base,
     /// Each listed field's spans.
     fields: Vec<Tiling<Span>>,
-    refreshes: u64,
+    opened: u64,
 }
 
 /// The base dataset, without its sampled fields' entries, as it arrives.
@@ -53,29 +56,36 @@ impl Fetched {
             base: Base::Fetching(base),
             fields: manifest.fields.iter().map(|_| Tiling::default()).collect(),
             manifest,
-            refreshes: 0,
+            opened: 0,
         }
     }
 
-    /// Takes `manifest`, a newer version of this one, fetched again from `url`. Fetches the base
-    /// dataset again. Each field keeps the spans within the frames it held, and drops the spans
-    /// that reach past them, which the new manifest may extend.
+    /// Takes `manifest`, a newer version of this one, fetched again from `url`. A manifest that
+    /// names another base, span size, or span template starts over. Otherwise each field keeps the
+    /// spans the frames it listed filled, and fetches the rest again, such as the last span of each
+    /// level, which the new manifest may extend. Spans that failed are fetched again too.
     pub(crate) fn refresh(&mut self, url: &str, manifest: Manifest, jobs: &Jobs<'_>) {
-        let mut fresh = Fetched::open(url, manifest, jobs);
-        fresh.refreshes = self.refreshes + 1;
-        let chunk = u64::from(self.manifest.chunk);
-        for (k, listed) in fresh.manifest.fields.iter().enumerate() {
-            let held =
-                self.manifest.fields.iter().position(|old| old.table == listed.table && old.field == listed.field);
-            let Some(old) = held.filter(|_| fresh.manifest.chunk == self.manifest.chunk) else { continue };
-            let end = self.manifest.fields[old].frames.end;
-            let mut tiling = std::mem::take(&mut self.fields[old]);
-            tiling.forget(|span| {
-                (span.index + 1).saturating_mul(chunk).saturating_mul(bucket_frames(u32::from(span.level))) <= end
-            });
-            fresh.fields[k] = tiling;
+        let old = &self.manifest;
+        if manifest.data != old.data || manifest.chunk != old.chunk || manifest.url != old.url {
+            let opened = self.opened + 1;
+            *self = Fetched::open(url, manifest, jobs);
+            self.opened = opened;
+            return;
         }
-        *self = fresh;
+        let chunk = u64::from(manifest.chunk);
+        let mut fields = Vec::with_capacity(manifest.fields.len());
+        for listed in &manifest.fields {
+            let held = self.manifest.fields.iter().position(|o| o.table == listed.table && o.field == listed.field);
+            fields.push(held.map_or_else(Tiling::default, |old| {
+                let end = self.manifest.fields[old].frames.end;
+                let mut tiling = std::mem::take(&mut self.fields[old]);
+                tiling.renew(|span| {
+                    (span.index + 1).saturating_mul(chunk).saturating_mul(bucket_frames(u32::from(span.level))) > end
+                });
+                tiling
+            }));
+        }
+        (self.fields, self.manifest) = (fields, manifest);
     }
 
     /// Fetches and decodes in progress.
@@ -90,37 +100,41 @@ impl Fetched {
         }
     }
 
-    /// Takes the base dataset once it arrives.
+    /// Takes the base dataset once it arrives: a patch applied to an empty dataset. Each set draws
+    /// it under the tiles' name, so the patch need not name one.
     fn settle(&mut self) {
         let Base::Fetching(pending) = &self.base else { return };
         let Some(landed) = pending.take() else { return };
-        self.base = match landed.and_then(|bytes| Snapshot::from_bytes(&bytes)) {
+        let read = |bytes: Vec<u8>| {
+            let patch = Patch::from_bytes(&bytes)?;
+            Snapshot::new(patch.data.clone().unwrap_or_else(|| Name::from("base"))).applied(patch)
+        };
+        self.base = match landed.and_then(read) {
             Ok(base) => Base::Landed(base),
-            Err(error) => Base::Failed(error),
+            Err(error) => Base::Failed(error.at(self.manifest.data.as_str())),
         };
     }
 }
 
-/// What one set draws of time tiles: the refresh it draws, whether its dataset holds the base
-/// dataset yet, and for each listed field, the spans it draws with the runs each added.
+/// The spans a set draws of one field, with the tick each landed at and the runs it added.
+type DrawnSpans = FxHashMap<Span, (u64, Vec<Run>)>;
+
+/// What one set draws of time tiles: the base it draws, whether its dataset holds that base yet,
+/// and for each field by table and name, the spans it draws.
 pub(crate) struct Drawing {
-    refreshes: u64,
+    opened: u64,
     based: bool,
-    fields: Vec<FxHashMap<Span, Vec<Run>>>,
+    fields: FxHashMap<(Name, Name), DrawnSpans>,
 }
 
 impl Drawing {
     pub(crate) fn new(fetched: &Fetched) -> Drawing {
-        Drawing {
-            refreshes: fetched.refreshes,
-            based: false,
-            fields: fetched.fields.iter().map(|_| FxHashMap::default()).collect(),
-        }
+        Drawing { opened: fetched.opened, based: false, fields: FxHashMap::default() }
     }
 
     /// Spans drawn.
     pub(crate) fn drawn(&self) -> usize {
-        self.fields.iter().map(FxHashMap::len).sum()
+        self.fields.values().map(FxHashMap::len).sum()
     }
 
     /// Updates `data`, set `set`'s dataset `name`, to what `reading` reads of it, from what
@@ -136,9 +150,9 @@ impl Drawing {
         jobs: &Jobs<'_>,
     ) -> (bool, bool, Option<Error>) {
         fetched.settle();
-        // Once a refreshed source's base arrives, the set draws it from scratch. Until then it
-        // keeps drawing what it drew.
-        if self.refreshes != fetched.refreshes {
+        // Once a new base arrives, the set draws it from scratch. Until then it keeps drawing what
+        // it drew.
+        if self.opened != fetched.opened {
             if matches!(fetched.base, Base::Fetching(_)) {
                 return (false, true, None);
             }
@@ -157,10 +171,23 @@ impl Drawing {
             }
         }
         let Fetched { manifest, url, fields, .. } = fetched;
+        // A field the refreshed manifest no longer lists keeps no entries.
+        let unlisted: Vec<(Name, Name)> = (self.fields.keys())
+            .filter(|(table, field)| !manifest.fields.iter().any(|l| l.table == *table && l.field == *field))
+            .cloned()
+            .collect();
+        for (table, field) in unlisted {
+            let spans = self.fields.remove(&(table.clone(), field.clone())).unwrap_or_default();
+            changed |= data.sampled(&table, &field, |samples| {
+                spans.values().flat_map(|(_, runs)| runs).for_each(|run| samples.remove(run));
+                true
+            });
+        }
         let (mut standing_in, mut failure) = (false, None);
         for (k, listed) in manifest.fields.iter().enumerate() {
             let reads = reading.reads(name, &listed.table, &listed.field);
-            let (tiling, drawn_spans) = (&mut fields[k], &mut self.fields[k]);
+            let tiling = &mut fields[k];
+            let drawn_spans = self.fields.entry((listed.table.clone(), listed.field.clone())).or_default();
             // Drawn spans may locate the window more precisely, which may need finer spans. Repeat
             // until the wanted spans stop changing, so a placeholder is never mistaken for data.
             let (mut asked, mut standing) = (Vec::new(), false);
@@ -183,30 +210,34 @@ impl Drawing {
 }
 
 /// Makes field `field` of `table` in `data` hold exactly the entries of spans `drawn`, from those
-/// `tiling` decoded. `spans` records the runs each span added. Returns whether it changed.
+/// `tiling` decoded. `spans` records when each span landed and the runs it added. A span fetched
+/// again leaves and arrives in one change, so it never blinks. Returns whether it changed.
 fn draw(
-    spans: &mut FxHashMap<Span, Vec<Run>>,
+    spans: &mut DrawnSpans,
     tiling: &Tiling<Span>,
     drawn: &[Span],
     table: &Name,
     field: &Name,
     data: &mut Snapshot,
 ) -> bool {
-    let gone: Vec<Span> = spans.keys().filter(|s| !drawn.contains(s)).copied().collect();
-    let arrived: Vec<(Span, &Patch)> =
-        drawn.iter().filter(|s| !spans.contains_key(s)).filter_map(|s| Some((*s, tiling.decoded(s, 0)?))).collect();
+    let current = |span: &Span, landed: u64| drawn.contains(span) && tiling.landed(span) == landed;
+    let gone: Vec<Span> = spans.iter().filter(|(s, (landed, _))| !current(s, *landed)).map(|(s, _)| *s).collect();
+    let arrived: Vec<(Span, u64, &Patch)> = (drawn.iter())
+        .filter(|s| spans.get(s).is_none_or(|(landed, _)| *landed != tiling.landed(s)))
+        .filter_map(|s| Some((*s, tiling.landed(s), tiling.decoded(s, 0)?)))
+        .collect();
     if gone.is_empty() && arrived.is_empty() {
         return false;
     }
-    let mut put: Vec<(Span, Vec<Run>)> = Vec::new();
+    let mut put: Vec<(Span, (u64, Vec<Run>))> = Vec::new();
     let changed = data.sampled(table, field, |samples| {
         for span in &gone {
-            for run in spans.remove(span).unwrap_or_default() {
+            for run in spans.remove(span).map(|(_, runs)| runs).unwrap_or_default() {
                 samples.remove(&run);
             }
         }
-        for (span, tile) in &arrived {
-            put.push((*span, held(tile, table, field, samples)));
+        for (span, landed, tile) in &arrived {
+            put.push((*span, (*landed, held(tile, table, field, samples))));
         }
         true
     });
@@ -277,7 +308,17 @@ fn wanted(
             (Some(samples), Some(across)) => samples.across(across),
             _ => frames.clone(),
         };
-        let level = detail(window.end - window.start, reading.columns).min(top);
+        // A trace draws from one level. When the window needs more than `MAX_SPANS` spans, a coarser
+        // level covers it, rather than fine spans between coarse placeholders, which break the line
+        // where they overlap.
+        let spans_over = |level: u32| {
+            let span = bucket_frames(level).saturating_mul(chunk);
+            window.end.div_ceil(span).saturating_sub(window.start / span)
+        };
+        let mut level = detail(window.end - window.start, reading.columns).min(top);
+        while level < top && spans_over(level) > MAX_SPANS as u64 {
+            level += 1;
+        }
         let (held, span) = (entries(level), bucket_frames(level));
         let first = (window.start / span).max(held.start) / chunk;
         let end = window.end.div_ceil(span).min(held.end).div_ceil(chunk);
@@ -308,5 +349,27 @@ impl Pieces<Span> for At<'_> {
 
     fn decode(&self, _: Span, bytes: &Arc<Vec<u8>>, _: &Jobs<'_>) -> Decoding {
         Decoding::Now(Patch::from_bytes(bytes).unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_trace_fetches_one_level_however_wide_its_window() {
+        let reading = Reading { columns: 1000, ..Reading::default() };
+        let traced = |chunk: u32| {
+            let all = wanted(&(0..100_000), None, (true, false), &reading, chunk, 5);
+            all.into_iter().filter(|span| span.level != 5).collect::<Vec<Span>>()
+        };
+        // 100,000 frames over 1,000 columns draw from level 2: 1,563 buckets of 64 frames.
+        let wide = traced(64);
+        assert!(wide.iter().all(|span| span.level == 2) && wide.len() == 25, "{wide:?}");
+        // In spans of 8 buckets that is 196 spans, past the most a line fetches, so level 3 covers
+        // the window rather than a middle of level 2 between coarse placeholders.
+        let narrow = traced(8);
+        assert!(narrow.iter().all(|span| span.level == 3), "{narrow:?}");
+        assert!(narrow.len() <= MAX_SPANS, "{} spans", narrow.len());
     }
 }

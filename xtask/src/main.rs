@@ -261,9 +261,6 @@ fn build_wasm(dev: bool, output: &str) -> Result<String> {
         let wasm = format!("target/wasm32-unknown-unknown/{profile}/{crate_name}.wasm");
         run("wasm-bindgen", &[wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", name])?;
     }
-    // The shaders the build translated, which the page loads beside the WebAssembly.
-    std::fs::copy(std::path::Path::new(&shaders).join("shaders.bin"), root().join(&pkg).join("latkit_shaders.bin"))
-        .map_err(|e| format!("latkit's shader store: {e}"))?;
     run("node", &["npm/build.mjs", "compile", output])?;
     Ok(shaders)
 }

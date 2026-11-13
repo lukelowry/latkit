@@ -34,7 +34,8 @@ use crate::pending::Watchers;
 /// [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes it. The history of each sampled field
 /// is fetched in spans. A line tracing a field fetches the level of detail the plot window draws
 /// at. A mark showing a field fetches the frames around the view's coordinate. While a span loads,
-/// the coarser span above it is drawn.
+/// the coarser span above it is drawn. The base dataset needs at least the axis and the tables'
+/// rows. A span holds every row of its table.
 ///
 /// **Vector tiles**: a PMTiles archive, a TileJSON document, or a URL template with `{z}`, `{x}`,
 /// and `{y}`. Tiles are fetched as the camera needs them. Each layer becomes a table of the
@@ -63,6 +64,9 @@ pub struct Tiles {
 /// Fetches a tile source's files in place of the host.
 pub(crate) type Fetch = Arc<dyn Fn(&Request) -> Pending<Vec<u8>> + Send + Sync>;
 
+/// A tile source's URL and the address of its fetch (0 for the host's): what a GPU's views share.
+pub(crate) type Shared = (Arc<str>, usize);
+
 /// How many times a tile source was refreshed, and the views drawing it, which each refresh wakes.
 #[derive(Default)]
 pub(crate) struct Refreshes {
@@ -77,7 +81,8 @@ impl Tiles {
     }
 
     /// The same tiles, with their files fetched by `fetch` instead of the host: the index at
-    /// `url`, then the pieces at URLs resolved against it, and byte ranges of an archive.
+    /// `url`, then the pieces at URLs resolved against it, and byte ranges of an archive. Tiles at
+    /// one URL with different fetches share nothing.
     #[must_use]
     pub fn fetch(mut self, fetch: impl Fn(&Request) -> Pending<Vec<u8>> + Send + Sync + 'static) -> Tiles {
         self.fetch = Some(Arc::new(fetch));
@@ -85,8 +90,10 @@ impl Tiles {
     }
 
     /// Fetches the index again, as when a running simulation records more frames, and redraws what
-    /// changed in every view drawing the tiles. Time tiles keep the spans that the frames they held
-    /// cover, and fetch the rest again as views need them. Vector tiles start over.
+    /// changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
+    /// earlier frames filled. They fetch the last span of each level again, which draws what it
+    /// held until the new one lands, and every span that failed. A manifest that names another
+    /// base, span size, or span template starts over, as vector tiles always do.
     pub fn refresh(&self) {
         self.refreshes.count.fetch_add(1, Ordering::Relaxed);
         self.refreshes.views.wake_all();
@@ -95,6 +102,13 @@ impl Tiles {
     /// How many times the tiles were refreshed.
     pub(crate) fn refreshed(&self) -> u64 {
         self.refreshes.count.load(Ordering::Relaxed)
+    }
+
+    /// What views on one GPU share: the tiles at one URL, fetched one way. Tiles that differ in
+    /// either may fetch different bytes, so they share nothing.
+    pub(crate) fn shared(&self) -> Shared {
+        let fetch = self.fetch.as_ref().map_or(0, |fetch| Arc::as_ptr(fetch).cast::<()>().addr());
+        (self.url.clone(), fetch)
     }
 
     /// The dataset the tiles are drawn as.
@@ -111,11 +125,7 @@ impl Tiles {
 /// Tiles are equal when they draw the same URL as the same dataset, fetched the same way.
 impl PartialEq for Tiles {
     fn eq(&self, other: &Tiles) -> bool {
-        let fetch = match (&self.fetch, &other.fetch) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (a, b) => a.is_none() && b.is_none(),
-        };
-        self.name == other.name && self.url == other.url && fetch
+        self.name == other.name && self.shared() == other.shared()
     }
 }
 

@@ -278,7 +278,9 @@ export interface TilesOptions {
   /**
    * Fetches a file in place of the browser, such as with credentials or from the app's own store:
    * the index at `url`, the pieces at URLs resolved against it, and bytes `[start, end)` of an
-   * archive. A 404 or 204 `Response` is a missing piece.
+   * archive. A 404 or 204 `Response` is a missing piece. latkit calls it after the frame that needs
+   * the file, so it may change views and datasets. Tiles at one URL with different `fetch`
+   * functions share nothing.
    */
   fetch?: (url: string, range?: [start: number, end: number]) => Promise<ByteSource>;
 }
@@ -293,11 +295,14 @@ const tiled = new WeakMap<Tiles, { fetch?: TilesOptions['fetch']; bound?: bindin
  * - Time tiles: a `frames.json` manifest written by `latkit tile`. A line that traces a sampled
  *   field fetches the detail its plot window shows. Other marks fetch the frames around the view's
  *   `at`. While a span loads, the coarser span that contains it shows. The manifest is
- *   `{ data, chunk, url, frames: [{ table, field, levels, frames: [first, end] }] }`: `data` is the
- *   dataset without the listed fields' entries, and each span at `url` (such as
- *   `{field}/{level}/{index}.latk`) is a patch of `chunk` entries of one level. A server that
- *   records more frames rewrites the manifest and the spans past the old end, then the app calls
- *   `refresh()`.
+ *   `{ data, chunk, url, frames: [{ table, field, levels, frames: [first, end] }] }`. `data` is the
+ *   dataset without the listed fields' entries: at least the axis and the tables' rows, such as
+ *   `new Patch().axis('time', 's').replace('Bus', ids)`. Each span at `url` is a
+ *   {@link Patch.frames} patch of `chunk` entries of one level. `url` names `{level}` and
+ *   `{index}`, and `{field}`, the field's index in `frames`, when several fields are listed. A span
+ *   holds every row of its table, so choose `chunk` to keep a span near 1 MiB, and give a plot of a
+ *   few rows of a large table its own manifest of those rows. A server that records more frames
+ *   rewrites the manifest and the spans past the old end, then the app calls `refresh()`.
  * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
  *   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
  *   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
@@ -324,8 +329,10 @@ export class Tiles {
 
   /**
    * Fetches the index again, as when a running simulation records more frames, and redraws what
-   * changed in every view drawing the tiles. Time tiles keep the spans the earlier frames cover.
-   * Vector tiles start over.
+   * changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
+   * earlier frames filled. They fetch the last span of each level again, which shows what it held
+   * until the new one arrives, and every span that failed. A manifest that names another base,
+   * `chunk`, or `url` starts over, as vector tiles always do.
    */
   refresh(): void {
     tiled.get(this)!.bound?.refresh();

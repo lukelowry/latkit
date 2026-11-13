@@ -105,7 +105,8 @@ impl Device {
         Ok(Self(state))
     }
 
-    fn lost(&self, reason: wgpu::DeviceLostReason) {
+    /// Reports the loss once: to the lost callback, which wakes the views.
+    pub(super) fn lost(&self, reason: wgpu::DeviceLostReason) {
         if self.0.lost_reason.get().is_some() {
             return;
         }
@@ -115,6 +116,16 @@ impl Device {
         let callback = self.0.lost.borrow_mut().take();
         if let Some(callback) = callback {
             callback(reason, "WebGL2 device lost".into());
+        }
+    }
+
+    /// Loses the context with `WEBGL_lose_context`, as a GPU reset does.
+    pub(super) fn lose_context(&self) {
+        if let Ok(Some(extension)) = self.0.gl.get_extension("WEBGL_lose_context")
+            && let Ok(method) = js_sys::Reflect::get(&extension, &"loseContext".into())
+            && let Some(method) = method.dyn_ref::<js_sys::Function>()
+        {
+            let _ = method.call0(&extension);
         }
     }
 
@@ -466,11 +477,6 @@ impl DeviceInterface for Device {
         self.lost(wgpu::DeviceLostReason::Destroyed);
         // Each device owns its context. Explicit destruction releases all GPU allocations,
         // including resources still held by callers, and cancels outstanding fence waits.
-        if let Ok(Some(extension)) = self.0.gl.get_extension("WEBGL_lose_context")
-            && let Ok(method) = js_sys::Reflect::get(&extension, &"loseContext".into())
-            && let Some(method) = method.dyn_ref::<js_sys::Function>()
-        {
-            let _ = method.call0(&extension);
-        }
+        self.lose_context();
     }
 }

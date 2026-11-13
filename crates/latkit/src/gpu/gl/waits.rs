@@ -117,6 +117,9 @@ impl Waits {
             let mut linked: Option<web_time::Instant> = None;
             loop {
                 let Some(state) = weak.upgrade() else { return };
+                // Fences and links end on a lost context. The loss is reported first, so what ended
+                // with it is not mistaken for a failure of its own.
+                super::noticed_loss(&state);
                 state.waits.settle_fences(&state);
                 if linked.is_none_or(|at| at.elapsed() >= LINKING) {
                     linked = Some(web_time::Instant::now());
