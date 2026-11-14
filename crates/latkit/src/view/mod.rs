@@ -997,8 +997,8 @@ impl View {
     }
 
     /// The stages frames draw with now: the marks and any text, transitions while rows ease, the
-    /// glow while a row is lit, and layers while depth varies. Never input: probes and queries draw
-    /// nothing, so a view is complete without them.
+    /// glow while a row is lit, layers while depth varies, and a fit's passes while it will measure
+    /// rows. Never input: probes and queries draw nothing, so a view is complete without them.
     fn used(&self) -> StageSet {
         let mut used = StageSet::default().with(Stage::Draw).with(Stage::Text);
         if self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some()) {
@@ -1010,6 +1010,9 @@ impl View {
         if self.deep() {
             used = used.with(Stage::Layers);
         }
+        if self.measures() {
+            used = used.with(Stage::Fit);
+        }
         used
     }
 
@@ -1018,6 +1021,13 @@ impl View {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn compiling(&self) -> bool {
         !self.can_use(Stage::Draw)
+    }
+
+    /// Whether a drawn mark's shade passes `test`.
+    fn shades(&self, test: impl Fn(&crate::scene::mark::Shading) -> bool) -> bool {
+        self.marks
+            .iter()
+            .any(|m| m.drawable() && m.compiled.as_ref().and_then(|c| c.drawing.shade.as_ref()).is_some_and(&test))
     }
 
     /// Whether a new frame would differ from the last one: something changed, animates, or streams
@@ -1048,7 +1058,7 @@ impl View {
             || self.derived.tiles.pending()
             || self.rig.easing()
             || (self.rig.orbit != 0.0 && moves)
-            || (self.fitting.due() && !self.limited)
+            || self.measure_due()
             // Probes and queries wait for their pipelines, and each finished compile wakes the
             // view while a stage it asked for compiles.
             || (self.can_use(Stage::Input) && (self.probing.due() || self.queries.due()))
@@ -1060,6 +1070,8 @@ impl View {
             // Heights that changed within `lists::RESORT` of the last sort sort in a later frame.
             || self.marks.iter().any(|m| m.height_order.stale())
             || (moves && self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME))))
+            // A shade that reads the time draws every frame while motion is enabled.
+            || (moves && self.shades(|shading| shading.timed))
             || (moves && self.flowing())
             || self.gpu.0.lock().arena.uploading()
             || self.room != frame::Room::Found
@@ -1087,7 +1099,7 @@ impl View {
     fn due(&self, input: bool) -> bool {
         self.gpu.0.lock().arena.uploading()
             || self.room != frame::Room::Found
-            || (self.fitting.due() && !self.limited)
+            || self.measure_due()
             || (input && self.can_use(Stage::Input) && (self.probing.due() || self.queries.due()))
             || self.derived.tiles.pending()
             || self.marks.iter().any(|m| m.begin.is_some())

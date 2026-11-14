@@ -77,7 +77,8 @@ export default page({
 
   async open({ settings, signal, view, detail, credit, fail }) {
     let grid = await load(settings.grid, signal, detail);
-    // The map joins the scene once its datasets are read, so the grid draws first.
+    // The map joins the scene once its datasets are read and the grid has drawn, so the grid's
+    // first frame waits only for what the grid draws with.
     let map: Basemap = NO_MAP;
 
     const scene = (s: typeof settings): Scene => {
@@ -181,9 +182,11 @@ export default page({
       const [west, south, east, north] = extent(grid.positions);
       void shown.fit({ bounds: { min: [west, south, 0], max: [east, north, 0] } });
     };
-    /** Swaps in map `id` once its datasets are read, unless another map was chosen meanwhile. */
-    const showMap = async (id: typeof settings.map) => {
+    /** Swaps in map `id` once its datasets are read and `after` settles, unless another map was
+     * chosen meanwhile. */
+    const showMap = async (id: typeof settings.map, after?: Promise<unknown>) => {
       const next = await MAPS[id](signal);
+      await after;
       if (id !== settings.map || signal.aborted) {
         for (const d of next.data) d.destroy();
         return;
@@ -196,7 +199,9 @@ export default page({
     };
     const shown = await view(scene, { label: 'A power grid: hover or click a bus or line' });
     frame();
-    showMap(settings.map).catch(fail);
+    // The map joins once the grid has drawn. A grid that can't draw reports why itself.
+    const drawn = shown.done().catch(() => {});
+    showMap(settings.map, drawn).catch(fail);
 
     return {
       async change(s, key) {

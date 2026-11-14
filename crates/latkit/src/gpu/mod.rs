@@ -13,6 +13,7 @@ pub(crate) mod gl;
 #[cfg(all(feature = "wgsl", target_arch = "wasm32"))]
 mod glsl;
 pub(crate) mod grown;
+pub(crate) mod hooks;
 pub(crate) mod icons;
 pub(crate) mod kernel;
 mod layers;

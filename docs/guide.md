@@ -234,6 +234,34 @@ reference from a selected or hovered row), `pointer()`, `elapsed()`, and `zoom()
 lists the colormap catalog with each map's colors, and `colormapCss(map)` returns a colormap as a
 CSS gradient, for legends drawn in HTML.
 
+### Custom shaders
+
+Where an expression can't say how a mark looks, two options take WGSL:
+
+- A vertex mark's `marker: { wgsl: { source, inputs } }` draws each marker. `source` defines
+  `fn marker(f: MarkerFragment) -> MarkerColor`, which returns the pixel's color and its signed
+  distance from the outline, so glows and status rings follow the shape.
+- Any mark's `shade: { source, inputs }` colors each pixel before it blends. `source` defines
+  `fn shade(f: ShadeFragment) -> vec4f`. It reads the pixel (`f.px`, and `f.local` within its row's
+  shape), the pointer (`f.pointer`), and the time (`f.elapsed`). A shade that reads the time draws
+  every frame, and one that reads the pointer draws as it moves.
+
+Both read up to eight `inputs`, expressions evaluated for each row, as `f.input[i]`. They change
+color only: hover and picks follow the rows' shapes.
+
+```ts
+// Lines brighten near the pointer.
+const spotlight = `fn shade(f: ShadeFragment) -> vec4f {
+  let near = (1.0 - smoothstep(0.0, 200.0, distance(f.px, f.pointer.xy))) * f.pointer.z;
+  return vec4f(mix(f.color.rgb, vec3f(1.0, 0.8, 0.4), 0.6 * near), f.color.a);
+}`;
+const lines = { edges: grid.table('Line'), ends: ['from', 'to'], shade: { source: spotlight } };
+```
+
+The source may declare its own functions, types, and constants, and sees only the struct it reads.
+It compiles once, the first time a view draws it. Source that does not compile is the mark's
+failure (see [Events](#events)), and the mark draws nothing.
+
 ### Themes, controls, and layouts
 
 - `theme` is `'dark'`, `'light'`, or overrides of a base theme, grouped by what they style:
@@ -510,8 +538,8 @@ The package has three assets besides its modules:
 
 - `latkit/wasm`: the WebAssembly, with the shaders translated for WebGL2 when the package was
   built.
-- `latkit/wgsl`: the WebAssembly that translates custom markers' WGSL. A page loads it the first
-  time it draws a custom marker.
+- `latkit/wgsl`: the WebAssembly that translates [custom shaders](#custom-shaders). A page loads
+  it the first time it draws one.
 - `latkit/worker`: a standalone classic worker that runs jobs.
 
 By default, `load()` finds each next to the installed modules. With Vite or another bundler that
@@ -575,7 +603,7 @@ let restored = Data::read(&saved, Reading::default()).await?;
 relative to, and the `resource::Fetch` that fetches them. Every rendering `Host` is also a `Fetch`.
 Enable `gpu` for scenes, views, and wgpu rendering. `native` adds system fonts, jobs, files, and
 Windows H.264, and `web` adds browser integration for the WASM target. `wgsl` adds a WGSL compiler
-to the browser build, for custom markers without the npm package's translator.
+to the browser build, for custom shaders without the npm package's translator.
 
 ### Share an existing device
 

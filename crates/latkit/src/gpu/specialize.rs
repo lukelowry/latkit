@@ -4,17 +4,20 @@
 //! the specialized branches away. The build writes and validates every specialization pipelines
 //! use with this same code.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::fmt::Write as _;
 
 /// A constant pipelines specialize a shader with: its name, the index of the declaration that
 /// declares it, and whether it is a `bool` (else a `u32`).
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the browser's shaders are specialized ahead of time"))]
 pub(crate) struct Constant<'a> {
     pub(crate) name: &'a str,
     pub(crate) at: u16,
     pub(crate) bool: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Joins a shader's declarations `pieces`, with each of `constants` declared as a `const` of
 /// `value(name)` in place of its `override`.
 pub(crate) fn specialize<'a>(
@@ -41,8 +44,7 @@ pub(crate) fn specialize<'a>(
 }
 
 /// Lowers the four-byte normalized packing operations, absent from GLSL ES 3.00, to exact
-/// integer arithmetic. Applied to built-in and application marker source alike, on every
-/// backend. Identifiers are matched as tokens, so unpacking and longer names never collide.
+/// integer arithmetic. Applied to latkit's shaders and to hooks alike, on every backend. Identifiers are matched as tokens, so unpacking and longer names never collide.
 pub(crate) fn portable(source: &str) -> String {
     const PACK: &str = "pack4x8unorm";
     const UNPACK: &str = "unpack4x8unorm";
@@ -74,14 +76,17 @@ pub(crate) fn portable(source: &str) -> String {
     out
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The separator between a linked shader's top-level declarations.
 pub(crate) const SEPARATOR: &str = "\n\n";
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The declarations of the evaluation shader a WGSL kernel replaces: its register count and the
 /// functions it writes for a program.
 pub(crate) const KERNEL: [&str; 5] =
     ["const ROW_WORDS:", "fn k_load_words(", "fn k_channels(", "fn k_run(", "fn k_output("];
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Replaces the evaluation shader's declarations that `kernel` declares (see [`KERNEL`]) with
 /// `kernel`'s straight-line code. This operates on linked, validated WGSL declarations, before
 /// creating a module.

@@ -5,22 +5,9 @@ import package::lib::types::{
     THEME_CORNER,
 };
 import package::lib::bind::{frame, mark, program, theme_word};
+import package::lib::hooks::{MarkerColor, MarkerFragment};
 import package::lib::mark::coverage;
 import package::lib::project::TAU;
-
-struct MarkerColor {
-    color: vec4f,
-    distance: f32,
-}
-
-struct MarkerFragment {
-    // The pixel's offset from the vertex, CSS pixels, y up.
-    p: vec2f,
-    // Half the marker's width and height.
-    half: vec2f,
-    color: vec4f,
-    input: array<f32, 8>,
-}
 
 fn box_distance(p: vec2f, half: vec2f, corner: f32) -> f32 {
     let d = abs(p) - half + corner;

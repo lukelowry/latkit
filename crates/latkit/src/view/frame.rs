@@ -379,15 +379,16 @@ impl View {
 
     /// Reports the failures when they changed. Runs after the frame takes the latest data versions,
     /// so a dataset filled between frames reports nothing about the version before. Failures change
-    /// only with the scene, the data, or a custom marker's check, so most frames only compare each
-    /// mark's with what it last reported. A custom marker whose WGSL does not compile draws
-    /// nothing, and every mark drawing it says why.
+    /// only with the scene, the data, or a hook's check, so most frames only compare each mark's
+    /// with what it last reported. A mark whose hook does not compile draws nothing, and says why.
     fn tell_failures(&mut self, inner: &mut Inner) {
-        inner.pipelines.check_custom();
+        inner.pipelines.check_hooked();
         for shown in self.marks.iter_mut().filter(|shown| !shown.twin) {
-            let crate::Mark::Vertices(vertices) = &shown.mark else { continue };
-            let crate::Marker::Wgsl { source, .. } = &vertices.marker else { continue };
-            if let Some(failure) = inner.pipelines.custom_failure(source)
+            let hooks = shown.mark.hooks();
+            if hooks.is_empty() {
+                continue;
+            }
+            if let Some(failure) = inner.pipelines.hooks_failure(&hooks)
                 && !shown.failures.contains(failure)
             {
                 shown.failures.push(failure.clone());

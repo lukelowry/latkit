@@ -2,7 +2,8 @@
  * A spiral galaxy whose bodies orbit its center. Each body's position is an expression of the
  * elapsed time, its radius, phase, and angular speed, evaluated on the GPU: once the data is
  * uploaded, no frame writes a byte, however many bodies move. Inner bodies orbit faster than outer
- * ones, so the arms wind as time passes. Near the pointer, bodies swell like a lens.
+ * ones, so the arms wind as time passes. Near the pointer, bodies swell like a lens, and each body
+ * twinkles at its own pace.
  */
 import { Data, elapsed, field, pointer, type CustomColormap } from 'latkit';
 import { page, choice, toggle } from '../shell/page.js';
@@ -13,6 +14,13 @@ const GLOW: CustomColormap = {
   kind: 'sequential',
   colors: ['#2a1b5c66', '#7b2cbf99', '#e0559dbb', '#ff9e64dd', '#fff1c9'],
 };
+
+/** A shade in WGSL, which colors each pixel of a body before it blends: brighter and dimmer with the
+ * time, at a pace set by the body's phase. */
+const TWINKLE = `fn shade(f: ShadeFragment) -> vec4f {
+  let twinkle = 0.8 + 0.2 * sin(f.elapsed * 2.5 + f.input[0] * 23.0);
+  return vec4f(f.color.rgb * twinkle, f.color.a);
+}`;
 
 /** Places `n` bodies in a disk with four arms: their radius, phase, angular speed, and height. */
 function galaxy(n: number) {
@@ -65,6 +73,7 @@ export default page({
               s.color === 'speed'
                 ? field('speed').colormap(GLOW).domain(0.07, 1.2)
                 : field('r').neg().colormap(GLOW).domain(-12.3, -0.3),
+            shade: { source: TWINKLE, inputs: ['$phase'] },
             pick: false,
           },
         ],

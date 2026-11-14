@@ -2,15 +2,16 @@
 // status ring, plus one pixel of antialiased edge. The focus variant redraws the lit rows over
 // everything, with quads enlarged for their glow. Where depth varies, the opaque variant draws each
 // marker's opaque pixels before any pixel blends, keeping their depth, so the nearest marker shows.
+// The custom variants call an application's `marker`, and the shaded variants its `shade`.
 
 import package::lib::types::{STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON};
-import package::lib::bind::{mark, word, ramp, program, focused};
-import package::lib::state::extra_at;
+import package::lib::bind::{mark, ramp, program, focused};
+import package::lib::state::row_inputs;
+import package::lib::hooks::{MarkerColor, MarkerFragment};
+import package::lib::shade::shade_fragment;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
 import package::lib::points::{Point, shown_point, reach, drawn_clip};
-import package::lib::marker::{
-    MarkerColor, MarkerFragment, gauge, pie, filled, outline_distance, status_ring, glow, premultiplied,
-};
+import package::lib::marker::{gauge, pie, filled, outline_distance, status_ring, glow, premultiplied};
 import package::lib::daylight::daylight;
 import package::lib::drawn::drawn_instance;
 import package::lib::color::{output, OPAQUE};
@@ -71,14 +72,11 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     return out;
 }
 
+// The marker's inputs. A plain shape reads none.
 fn inputs(row: u32) -> array<f32, 8> {
-    var input = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     @if(!custom)
-    if MARKER == MARKER_SHAPE { return input; }
-    for (var i = 0u; i < min(mark.inputs, 8u); i++) {
-        input[i] = bitcast<f32>(word(extra_at(row, mark.input + i)));
-    }
-    return input;
+    if MARKER == MARKER_SHAPE { return array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0); }
+    return row_inputs(row, mark.input, mark.inputs);
 }
 
 // An icon: image `f.input[0]` of the mark's images, fitted to the marker's box and faded with its
@@ -103,11 +101,15 @@ fn marker(f: MarkerFragment) -> MarkerColor {
     }
 }
 
-fn shaded(v: Varyings) -> MarkerColor {
+// The pixel's marker color, with any status ring, then shaded.
+fn colored(v: Varyings) -> MarkerColor {
     let f = MarkerFragment(v.p, v.half, v.color, inputs(v.row));
     var m = marker(f);
-    if (mark.flags & STATUS) != 0u && v.status.a > 0.0 {
+    if ((mark.flags & STATUS) != 0u) & (v.status.a > 0.0) {
         m = status_ring(m, vec4f(v.status.rgb, v.status.a * v.color.a));
+    }
+    @if(shaded) {
+        m.color = shade(shade_fragment(m.color, v.clip.xy, v.p, v.row));
     }
     return m;
 }
@@ -120,13 +122,13 @@ fn shaded(v: Varyings) -> MarkerColor {
 @if(!focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return output(premultiplied(shaded(v)));
+    return output(premultiplied(colored(v)));
 }
 
 @if(!focused)
 @fragment
 fn opaque(v: Varyings) -> @location(0) vec4f {
-    let c = premultiplied(shaded(v));
+    let c = premultiplied(colored(v));
     if c.a < OPAQUE {
         discard;
     }
@@ -136,5 +138,5 @@ fn opaque(v: Varyings) -> @location(0) vec4f {
 @if(focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return output(glow(shaded(v), v.focus));
+    return output(glow(colored(v), v.focus));
 }

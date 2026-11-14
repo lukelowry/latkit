@@ -232,6 +232,10 @@ pub(crate) fn mark(
         mark.hole = markers.hole;
         mark.inputs = markers.inputs;
         mark.input = markers.input;
+        if let Some(shading) = &drawing.shade {
+            mark.shade_inputs = shading.inputs;
+            mark.shade_input = shading.input;
+        }
         mark.geometry = drawing.geometry;
         mark.lane = drawing.lane;
         if shown.transition.is_some() {

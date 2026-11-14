@@ -4,6 +4,10 @@
 // (a net's star, or a path field). Draws, probes, bounds, and labels all
 // read segments through `segment_ends` and `segment_screen`. A pipeline's `PATH` selects one kind
 // of path, so each pipeline compiles only that kind.
+//
+// As in `lib/read.wesl`, paths read every word they might need and select the answer, with no early
+// return and no short-circuit test (`&&`, `||`) around a read: the D3D compiler behind WebGL takes
+// several times longer on code that branches around reads.
 
 import package::lib::types::{
     NONE, VISIBLE, PLACED, DASH, ENDS_COLOR, GEODESIC, MARK_EDGES, PATH_ENDS, PATH_BENDS, PATH_TRACE,
@@ -108,13 +112,17 @@ struct OnScreen {
 // Segment `instance` as the mark numbers them. Rows have a fixed number of segments, or the mark's
 // list numbers them, with each entry holding a segment's drawn row and distance along.
 fn numbered_segment(instance: u32) -> Segment {
-    if mark.per_row != NONE {
-        let per = max(mark.per_row, 1u);
-        return path_segment(instance / per, instance % per, 0.0);
-    }
+    let per = max(mark.per_row, 1u);
     let entry = list_entry(mark.list, 2u * instance);
     let item = list(entry);
-    return path_segment(item, instance - list_start(mark.list, item), bitcast<f32>(list(entry + 1u)));
+    let start = list_start(mark.list, item);
+    let along = bitcast<f32>(list(entry + 1u));
+    let listed = mark.per_row == NONE;
+    return path_segment(
+        select(instance / per, item, listed),
+        select(instance % per, instance - start, listed),
+        select(0.0, along, listed),
+    );
 }
 
 // The segment drawn at position `instance`, which `drawn_instance` gives.
@@ -140,11 +148,9 @@ fn lit_segment(instance: u32) -> Segment {
     let pieces = max(mark.pieces, 1u);
     let item = focused(mark.focused + instance / pieces);
     let index = instance % pieces;
-    var along = 0.0;
-    if mark.per_row == NONE && item < mark.rows && index < path_count(item) {
-        along = bitcast<f32>(list(list_entry(mark.list, 2u * (list_start(mark.list, item) + index)) + 1u));
-    }
-    return path_segment(item, index, along);
+    let along = bitcast<f32>(list(list_entry(mark.list, 2u * (list_start(mark.list, item) + index)) + 1u));
+    let listed = (mark.per_row == NONE) & (item < mark.rows) & (index < path_count(item));
+    return path_segment(item, index, select(0.0, along, listed));
 }
 
 // Distance between two path points in position units, which a segment adds to the distance along.
@@ -158,18 +164,13 @@ fn path_position(p: PathPoint) -> vec3f {
 
 // Segments across all drawn rows' paths.
 fn stroke_instances() -> u32 {
-    if mark.per_row != NONE {
-        return mark.rows * mark.per_row;
-    }
-    return list_total(mark.list);
+    return select(list_total(mark.list), mark.rows * mark.per_row, mark.per_row != NONE);
 }
 
 // Segments in drawn row `item`'s path.
 fn path_count(item: u32) -> u32 {
-    if mark.per_row != NONE {
-        return mark.per_row;
-    }
-    return list_start(mark.list, item + 1u) - list_start(mark.list, item);
+    let listed = list_start(mark.list, item + 1u) - list_start(mark.list, item);
+    return select(listed, mark.per_row, mark.per_row != NONE);
 }
 
 // Segments a geodesic from `a` to `b` takes: one per `GEODESIC_STEP` degrees of arc.
@@ -183,52 +184,46 @@ fn arcs(a: vec2f, b: vec2f) -> u32 {
 // The geometry column's point count for held row `row`: an edge's bends, or a whole path. Rows that
 // left have none.
 fn geometry_count(row: u32) -> u32 {
-    if row >= mark.held - mark.exits {
-        return 0u;
-    }
-    return points_of(mark.geometry, row).count;
+    return select(points_of(mark.geometry, row).count, 0u, row >= mark.held - mark.exits);
 }
 
-// Whether lane `l` of edge row `row` draws. A family draws only the lanes the screen can show
-// apart, so a family of thousands of lanes costs only as many lanes as the screen resolves, in
-// draws and probes alike. A lane whose curve lies off screen draws nothing. Where neighboring lanes
-// lie less than a pixel apart, only every `step`-th lane draws, `step` a power of two, so drawn
-// lanes are at least a pixel apart.
-fn lane_drawn(row: u32, l: Lane, planning: bool) -> bool {
-    let e = edge_at(row_at(row));
-    let a = end_vertex(0u, e.a);
-    let b = end_vertex(1u, e.b);
+// Whether a segment list keeps lane `l` of the edge from vertex `a` to vertex `b`. A family keeps
+// only the lanes the screen can show apart, so a family of thousands of lanes costs only as many lanes
+// as the screen resolves, in draws and probes alike. A lane whose curve lies off screen is not kept,
+// except on a plane, where a list keeps a band of zooms. Where neighboring lanes lie less than a pixel
+// apart, only every `step`-th lane is kept (see `lane_thinned`). A lane with an end behind the eye is
+// kept, cut at the near plane. The caller has read the ends.
+fn lane_drawn(a: Vertex, b: Vertex, l: Lane, planning: bool) -> bool {
     let ca = clip_of(world(a.hi, a.lo, a.elevation));
     let cb = clip_of(world(b.hi, b.lo, b.elevation));
-    if ca.w <= 0.0 || cb.w <= 0.0 {
-        return true;
-    }
+    let banded = planning & (frame.lane_scale > 0.0);
+    // The curve stays within the triangle of its ends and its control point, which lies twice as far
+    // out as the curve's middle. A great circle is not tested.
+    let d = (b.hi - a.hi) + (b.lo - a.lo);
+    let control = a.lo + 0.5 * d + vec2f(-d.y, d.x) * 2.0 * l.offset * frame.bow;
+    let cc = clip_of(world(a.hi, control, mix(a.elevation, b.elevation, 0.5)));
     let sa = to_screen(ca);
     let sb = to_screen(cb);
-    let banded = planning && frame.lane_scale > 0.0;
-    if !banded && (mark.flags & GEODESIC) == 0u {
-        // The curve stays within the triangle of its ends and its control point, which lies twice
-        // as far out as the curve's middle.
-        let c = between(a, b, 0.5, 2.0 * l.offset * frame.bow);
-        let cc = clip_of(world(c.hi, c.lo, c.z));
-        if cc.w > 0.0 {
-            let sc = to_screen(cc);
-            // Room for the stroke's width past the curve.
-            let margin = vec2f(64.0);
-            let lo = min(min(sa, sb), sc) - margin;
-            let hi = max(max(sa, sb), sc) + margin;
-            if any(hi < vec2f(0.0)) || any(lo > eye.size) {
-                return false;
-            }
-        }
-    }
+    let sc = to_screen(cc);
+    // Room for the stroke's width past the curve.
+    let margin = vec2f(64.0);
+    let lo = min(min(sa, sb), sc) - margin;
+    let hi = max(max(sa, sb), sc) + margin;
+    let tested = !banded & ((mark.flags & GEODESIC) == 0u) & (cc.w > 0.0);
+    let off = tested & (any(hi < vec2f(0.0)) | any(lo > eye.size));
+    let thinned = lane_thinned(ca, cb, l, select(1.0, frame.lane_scale, banded));
+    return (ca.w <= 0.0) | (cb.w <= 0.0) | (!off & !thinned);
+}
+
+// Whether lane `l`, between ends at clip positions `ca` and `cb`, is left out where neighboring
+// lanes lie less than a pixel apart: only every `step`-th lane draws, `step` a power of two, so drawn
+// lanes are at least a pixel apart. `scale` is the zoom a planned band of zooms measures at, as a
+// factor of the current one. An end behind the eye leaves nothing out.
+fn lane_thinned(ca: vec4f, cb: vec4f, l: Lane, scale: f32) -> bool {
     // Pixels between neighboring lanes at their middle.
-    let apart = distance(sa, sb) * abs(frame.bow) * l.step * select(1.0, frame.lane_scale, banded);
-    if !(apart < 1.0) {
-        return true;
-    }
-    let step = u32(exp2(ceil(log2(1.0 / max(apart, 1e-6)))));
-    return l.index % step == 0u;
+    let apart = distance(to_screen(ca), to_screen(cb)) * abs(frame.bow) * l.step * scale;
+    let step = max(u32(exp2(ceil(log2(1.0 / max(apart, 1e-6))))), 1u);
+    return (ca.w > 0.0) & (cb.w > 0.0) & (apart < 1.0) & (l.index % step != 0u);
 }
 
 // The segment count of held row `row`'s path, or an area's triangle count, as a segment list counts
@@ -252,23 +247,24 @@ fn row_segments(row: u32) -> u32 {
 }
 
 fn end_segments(row: u32) -> u32 {
+    let e = edge_at(row_at(row));
+    let a = end_vertex(0u, e.a);
+    let b = end_vertex(1u, e.b);
+    let l = lane_of(row);
     if PATH == PATH_BENDS {
         let middle = geometry_count(row);
         if middle > 0u { return middle + 1u; }
     }
-    let l = lane_of(row);
-    if l.offset != 0.0 && !lane_drawn(row, l, true) { return 0u; }
+    if l.offset != 0.0 {
+        if !lane_drawn(a, b, l, true) { return 0u; }
+    }
     let pieces = select(1u, BOW_PIECES, l.offset != 0.0);
     if PROJECTION == PROJECTION_PLANAR { return pieces; }
     if PROJECTION == PROJECTION_DYNAMIC {
         if !geographic() { return pieces; }
     }
     if (mark.flags & GEODESIC) == 0u { return pieces; }
-    let e = edge_at(row_at(row));
-    if e.a == NONE || e.b == NONE { return 0u; }
-    let a = end_vertex(0u, e.a);
-    let b = end_vertex(1u, e.b);
-    return max(pieces, arcs(a.hi + a.lo, b.hi + b.lo));
+    return select(0u, max(pieces, arcs(a.hi + a.lo, b.hi + b.lo)), (e.a != NONE) & (e.b != NONE));
 }
 
 // Vertex `held` of end `end` as a path point.
@@ -358,30 +354,25 @@ fn between(a: Vertex, b: Vertex, t: f32, bow: f32) -> PathPoint {
 // one place, which keeps compiled shaders small.
 fn end_point(row: u32, count: u32, i: u32) -> PathPoint {
     let e = edge_at(row_at(row));
-    if e.a == NONE || e.b == NONE || same_vertex(e.a, e.b) {
-        return hidden();
-    }
+    let a = end_vertex(0u, e.a);
+    let b = end_vertex(1u, e.b);
     let bends = bends_of(row);
     let last = select(bends.count + 1u, count, bends.count == 0u);
-    if i == 0u || i >= last {
-        return vertex_point(select(1u, 0u, i == 0u), select(e.b, e.a, i == 0u));
-    }
-    return edge_point(end_vertex(0u, e.a), end_vertex(1u, e.b), bends, last, lane(row) * frame.bow, i);
+    var p = edge_point(a, b, bends, last, lane(row) * frame.bow, i);
+    p.shown = p.shown & (e.a != NONE) & (e.b != NONE) & !same_vertex(e.a, e.b);
+    return p;
 }
 
 // Shared endpoint state is read once for a segment, including when both points lie on its curve.
 fn edge_point(a: Vertex, b: Vertex, bends: Points, last: u32, bow: f32, i: u32) -> PathPoint {
-    var p: PathPoint;
+    let t = f32(i) / f32(max(last, 1u));
+    var p = middle_point(a, b, bends, t, bow, i);
+    p.color = mix(unpack4x8unorm(a.color), unpack4x8unorm(b.color), t);
+    p.shown = p.shown & ((a.flags & PLACED) != 0u) & ((b.flags & PLACED) != 0u);
     if i == 0u {
         p = vertex_shape(a);
     } else if i >= last {
         p = vertex_shape(b);
-    } else {
-        let t = f32(i) / f32(last);
-        p = middle_point(a, b, bends, t, bow, i);
-        if !p.shown { return p; }
-        p.color = mix(unpack4x8unorm(a.color), unpack4x8unorm(b.color), t);
-        p.shown = (a.flags & PLACED) != 0u && (b.flags & PLACED) != 0u;
     }
     return p;
 }
@@ -395,18 +386,18 @@ fn bends_of(row: u32) -> Points {
 }
 
 fn middle_point(a: Vertex, b: Vertex, bends: Points, t: f32, bow: f32, i: u32) -> PathPoint {
-    if PATH == PATH_BENDS {
-        if bends.count > 0u {
-            let w = point_bits(bends, i - 1u);
-            if missing_bits(w.x) || missing_bits(w.y) { return hidden(); }
-            var p: PathPoint;
-            p.hi = bitcast<vec2f>(w);
-            p.shown = true;
-            return p;
-        }
-    }
     var p = between(a, b, t, bow * 4.0 * t * (1.0 - t));
     p.shown = true;
+    if PATH == PATH_BENDS {
+        // The bend is read whatever the count, and taken only where there are bends.
+        let w = point_bits(bends, i - 1u);
+        if bends.count > 0u {
+            var bend: PathPoint;
+            bend.hi = bitcast<vec2f>(w);
+            bend.shown = !missing_bits(w.x) & !missing_bits(w.y);
+            return bend;
+        }
+    }
     return p;
 }
 
@@ -483,33 +474,27 @@ fn segment_ends(s: Segment) -> PathEnds {
     let count = path_count(s.item);
     if has_end_vertices() {
         let e = edge_at(row_at(s.row));
-        if e.a == NONE || e.b == NONE || same_vertex(e.a, e.b) {
-            return PathEnds(hidden(), hidden());
-        }
         let a = end_vertex(0u, e.a);
         let b = end_vertex(1u, e.b);
-        // A single unbowed segment joins its vertices directly, including short great circles.
-        // No lane descriptor or curve interpolation participates in either endpoint.
-        if PATH == PATH_ENDS {
-            if count == 1u && mark.lane == NONE {
-                return PathEnds(vertex_shape(a), vertex_shape(b));
-            }
-        }
         let bends = bends_of(s.row);
-        let last = select(bends.count + 1u, count, bends.count == 0u);
         let l = lane_of(s.row);
-        // Only a plane uses retained lane bands. Geographic lists already contain exactly the
-        // lanes they draw; keep their shaders free of the three extra projections for this test.
+        let last = select(bends.count + 1u, count, bends.count == 0u);
+        var drawn = (e.a != NONE) & (e.b != NONE) & !same_vertex(e.a, e.b);
+        // On a plane a list keeps the lanes a band of zooms draws, so at the current zoom some lie
+        // less than a pixel apart. Geographic lists keep exactly the lanes they draw. A kept lane off
+        // screen needs no test: its quads lie off screen.
         if !geographic() {
-            if bends.count == 0u && frame.lane_scale > 0.0 && l.offset != 0.0 && !lane_drawn(s.row, l, false) {
-                return PathEnds(hidden(), hidden());
+            if (bends.count == 0u) & (frame.lane_scale > 0.0) & (l.offset != 0.0) {
+                let ca = clip_of(world(a.hi, a.lo, a.elevation));
+                let cb = clip_of(world(b.hi, b.lo, b.elevation));
+                drawn = drawn & !lane_thinned(ca, cb, l, 1.0);
             }
         }
         let bow = l.offset * frame.bow;
-        return PathEnds(
-            edge_point(a, b, bends, last, bow, s.index),
-            edge_point(a, b, bends, last, bow, s.index + 1u),
-        );
+        var ends = PathEnds(edge_point(a, b, bends, last, bow, s.index), edge_point(a, b, bends, last, bow, s.index + 1u));
+        ends.a.shown = ends.a.shown & drawn;
+        ends.b.shown = ends.b.shown & drawn;
+        return ends;
     }
     return PathEnds(path_point(s.row, count, s.index), path_point(s.row, count, s.index + 1u));
 }
@@ -520,7 +505,7 @@ fn ends_part(s: Segment) -> bool {
     if PATH == PATH_GEOMETRY {
         let points = points_of(mark.geometry, s.row);
         let next = s.index + 2u;
-        return next >= points.count || missing_bits(point_bits(points, next).x);
+        return (next >= points.count) | missing_bits(point_bits(points, next).x);
     }
     return s.index + 1u == path_count(s.item);
 }
@@ -536,20 +521,19 @@ struct Lane {
 }
 
 fn lane_of(row: u32) -> Lane {
-    if mark.lane == NONE || row >= mark.held - mark.exits {
-        return Lane(0.0, 0u, 1.0);
-    }
     // The high 16 bits hold twice the lane's position from the middle, plus 32768. The low 16 bits
-    // hold the family's size.
-    // Lanes are a derived static bit column, never joined or sampled channel values.
+    // hold the family's size. Lanes are a derived static bit column, never joined or sampled channel
+    // values. A row without a lane has offset 0 and step 1.
     let word = bits_value(mark.lane, row);
     let size = word & 0xffffu;
-    if word == NONE || word == MISSING || size < 2u {
-        return Lane(0.0, 0u, 1.0);
-    }
+    let laned = (mark.lane != NONE) & (row < mark.held - mark.exits) & (word != NONE) & (word != MISSING) & (size >= 2u);
     let twice = i32(word >> 16u) - 32768;
-    let step = min(1.0, FAMILY_LANES / f32(size));
-    return Lane(0.5 * f32(twice) * step, u32((twice + i32(size) - 1) / 2), step);
+    let step = min(1.0, FAMILY_LANES / f32(max(size, 1u)));
+    return Lane(
+        select(0.0, 0.5 * f32(twice) * step, laned),
+        select(0u, u32((twice + i32(size) - 1) / 2), laned),
+        select(1.0, step, laned),
+    );
 }
 
 fn lane(row: u32) -> f32 {
@@ -572,7 +556,7 @@ fn segment_screen(s: Segment) -> OnScreen {
     let ends = segment_ends(s);
     var out: OnScreen;
     out.ends = ends;
-    if !ends.a.shown || !ends.b.shown { return out; }
+    if !ends.a.shown | !ends.b.shown { return out; }
     if PATH == PATH_TRACE {
         out.ca = plot_clip(ends.a.hi, ends.a.lo);
         out.cb = plot_clip(ends.b.hi, ends.b.lo);
@@ -591,14 +575,14 @@ fn segment_screen(s: Segment) -> OnScreen {
     out.cb = cb;
     // Most segments are wholly in front. Only a segment crossing the near plane needs a
     // division and endpoint interpolation, including when one end lies behind the eye.
-    if ca.z > ca.w || cb.z > cb.w {
+    if (ca.z > ca.w) | (cb.z > cb.w) {
         cut = in_front(ca, cb);
         out.ca = mix(ca, cb, cut.x);
         out.cb = mix(ca, cb, cut.y);
     }
     // A segment reaching past the globe's edge still draws. The globe's depth clips it there.
-    let ahead = shows(wa) || shows(wb);
-    out.shown = ahead && cut.x < cut.y;
+    let ahead = shows(wa) | shows(wb);
+    out.shown = ahead & (cut.x < cut.y);
     out.a = to_screen(out.ca);
     out.b = to_screen(out.cb);
     out.kept = cut;
@@ -636,7 +620,7 @@ fn edge_style(row: u32) -> Style {
     let e = edge_at(row_at(row));
     s.width = clamp(px(e.width, EDGE_WIDTH), mark.size_min, mark.size_max) * growth(e.flags);
     // A missing color takes its endpoints' colors in the draw. Here it only fades.
-    s.blends = (mark.flags & ENDS_COLOR) != 0u && e.color == MISSING_COLOR;
+    s.blends = ((mark.flags & ENDS_COLOR) != 0u) & (e.color == MISSING_COLOR);
     s.color = select(unpack4x8unorm(e.color), vec4f(1.0), s.blends);
     s.color.a *= faded(row, e.flags);
     s.flow = e.flow;

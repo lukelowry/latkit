@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 
 use super::Shared;
+use super::hooks::{Hook, Hooks};
 use super::shaders::{Binding, MARK_GROUP, PATH_ENDS, Shader, VIEW_GROUP};
 use super::work::{Count, Counters};
 use crate::view::DEPTH;
@@ -88,17 +89,32 @@ pub(crate) type Check = Pin<Box<dyn Future<Output = Option<wgpu::Error>> + Send>
 #[cfg(target_arch = "wasm32")]
 pub(crate) type Check = Pin<Box<dyn Future<Output = Option<wgpu::Error>>>>;
 
-/// A custom marker's pipeline, compiled from its source the first time a view draws it, with the
-/// check of its WGSL until it answers, and why it failed to compile, if it did.
-struct Custom {
+/// A pipeline drawing a mark's hooks, compiled the first time a view draws it, with the check of
+/// their WGSL until it answers, and the failure of a hook that does not compile.
+struct Hooked {
     pipeline: Option<wgpu::RenderPipeline>,
     check: Option<Check>,
     failed: Option<Error>,
 }
 
-/// The failure of a custom marker whose WGSL does not compile, for `message`.
-fn failure(message: &str) -> Error {
-    Error::invalid(format!("the custom marker does not compile: {message}")).at("marker")
+/// What completes a shader's module: nothing, a program's kernel, or a mark's hooks.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum Appended {
+    None,
+    Kernel(Arc<str>),
+    Hooks(Hooks),
+}
+
+impl Appended {
+    /// Its WGSL, which natively follows the shader's, or replaces the kernel's declarations.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wgsl(&self) -> String {
+        match self {
+            Appended::None => String::new(),
+            Appended::Kernel(kernel) => kernel.to_string(),
+            Appended::Hooks(hooks) => hooks.wgsl(),
+        }
+    }
 }
 
 /// One pipeline: a shader's entry point specialized for one primitive's geometry (`PRIMITIVE`),
@@ -254,7 +270,7 @@ impl Variant {
 
     /// Normal and opaque marks share vertex geometry and select their own fragment entry.
     pub(crate) fn mode(mut self, draw: Draw) -> Self {
-        if matches!(self.shader, Shader::Points | Shader::PointsCustom | Shader::Strokes) {
+        if layered(self.shader) {
             self.draw = draw;
         }
         self
@@ -350,8 +366,9 @@ impl Specialized {
         }
     }
 
-    /// The module's WGSL, with `appended` after the shader's own: a custom marker's function, or for
-    /// the channel shader, a kernel replacing the declarations it writes.
+    /// The module's WGSL, with `appended` after the shader's own: a mark's hooks, or for the channel
+    /// shader, a kernel replacing the declarations it writes.
+    #[cfg(not(target_arch = "wasm32"))]
     fn wgsl(&self, appended: &str) -> String {
         let mut wgsl = self.shader.source().wgsl(|name| self.value(name));
         if appended.is_empty() {
@@ -377,12 +394,12 @@ impl Specialized {
     }
 }
 
-/// A pipeline requested ahead of use: a variant of a latkit shader, or of a custom marker. A custom
-/// marker's WGSL is appended to its shader's WGSL.
+/// A pipeline requested ahead of use: a variant of a latkit shader, that variant completed by a
+/// mark's hooks, or the channel shader completed by a program's kernel.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Asked {
     Shader(Variant),
-    Custom(Arc<str>, Variant),
+    Hooked(Hooks, Variant),
     Kernel(Arc<str>, Variant),
 }
 
@@ -391,20 +408,17 @@ impl Asked {
     pub(crate) fn size(&self) -> usize {
         match self {
             Asked::Shader(variant) => variant.shader.source().size(),
-            Asked::Custom(source, variant) | Asked::Kernel(source, variant) => {
-                variant.shader.source().size() + source.len()
-            }
+            Asked::Hooked(hooks, variant) => variant.shader.source().size() + hooks.size(),
+            Asked::Kernel(source, variant) => variant.shader.source().size() + source.len(),
         }
     }
 
-    /// A label naming exactly this pipeline: its variant's, and for a custom marker, a stamp of its
-    /// WGSL.
+    /// A label naming exactly this pipeline: its variant's, and a stamp of the hooks or kernel that
+    /// complete it.
     pub(crate) fn label(&self) -> String {
         match self {
             Asked::Shader(variant) => variant.label(),
-            Asked::Custom(source, variant) => {
-                format!("{} custom {:016x}", variant.label(), crate::derive::stamp_of(source))
-            }
+            Asked::Hooked(hooks, variant) => format!("{} hooks {:016x}", variant.label(), hooks.stamp()),
             Asked::Kernel(source, variant) => {
                 format!("{} kernel {:016x}", variant.label(), crate::derive::stamp_of(source))
             }
@@ -458,24 +472,23 @@ pub(crate) struct Pipelines {
     pub(crate) empty: wgpu::BindGroup,
     empty_layout: wgpu::BindGroupLayout,
     pass_layouts: HashMap<Vec<wgpu::BindGroupLayoutEntry>, wgpu::BindGroupLayout>,
+    /// Each specialization's module natively, with what completes it, parsed once.
     #[cfg(not(target_arch = "wasm32"))]
-    modules: HashMap<Specialized, Modules>,
-    #[cfg(not(target_arch = "wasm32"))]
-    application_modules: HashMap<(Arc<str>, Specialized), Modules>,
-    /// Each stage's module in the browser: the specialization's entry point, with the kernel or
-    /// custom marker it was built with.
+    modules: HashMap<(Appended, Specialized), Modules>,
+    /// Each stage's module in the browser: the specialization's entry point, with what completes
+    /// it. A vertex stage calls no hook, so the pipelines of every mark's hooks share it.
     #[cfg(target_arch = "wasm32")]
-    stages: HashMap<(Option<Arc<str>>, Specialized, &'static str), wgpu::ShaderModule>,
-    /// Each custom marker shader the page translated, by its marker and specialization: each entry
-    /// point's GLSL, or why it does not translate. `None` while it translates.
+    stages: HashMap<(Appended, Specialized, &'static str), wgpu::ShaderModule>,
+    /// Each hook the page translated, by kind and WGSL: the GLSL it appends, or why it does not
+    /// translate. `None` while it translates.
     #[cfg(target_arch = "wasm32")]
-    translations: HashMap<(Arc<str>, Specialized), Option<Translation>>,
-    /// Custom marker pipelines waiting for their shader's translation, at their urgency.
+    translations: HashMap<(Hook, Arc<str>), Option<HookGlsl>>,
+    /// Hooked pipelines waiting for their hooks' translation, at their urgency.
     #[cfg(target_arch = "wasm32")]
     translating: Vec<(Urgency, Asked)>,
     kernels: HashMap<(Arc<str>, Variant), wgpu::RenderPipeline>,
     render: HashMap<Variant, wgpu::RenderPipeline>,
-    custom: HashMap<(Arc<str>, Variant), Custom>,
+    hooked: HashMap<(Hooks, Variant), Hooked>,
     /// Pipelines requested ahead by views, shots, and the GPU, each with its compile state.
     asked: HashMap<Asked, Arc<Ahead>>,
     /// Requested pipelines waiting to start compiling: most urgent first, and largest first within
@@ -507,17 +520,30 @@ pub(crate) struct Pipelines {
 
 /// The primitive topology of a render shader.
 fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
-    // Custom markers draw like points, as triangle strips.
     match shader {
         Shader::Backdrop => wgpu::PrimitiveTopology::TriangleList,
         _ => wgpu::PrimitiveTopology::TriangleStrip,
     }
 }
 
+/// Whether `shader` draws the rows of points or strokes, with or without hooks. Their draws have
+/// an opaque variant.
+fn layered(shader: Shader) -> bool {
+    matches!(
+        shader,
+        Shader::Points
+            | Shader::PointsCustom
+            | Shader::PointsShaded
+            | Shader::PointsCustomShaded
+            | Shader::Strokes
+            | Shader::StrokesShaded
+    )
+}
+
 /// Whether `shader` draws the opaque pixels of points or strokes, which where depth varies draw
 /// before any pixel blends.
 fn opaque(shader: Shader, draw: Draw) -> bool {
-    matches!(shader, Shader::Points | Shader::PointsCustom | Shader::Strokes) && draw == Draw::Opaque
+    layered(shader) && draw == Draw::Opaque
 }
 
 /// A render shader's depth state, with reversed depth. The backdrop writes the globe's depth,
@@ -528,10 +554,9 @@ fn opaque(shader: Shader, draw: Draw) -> bool {
 fn depth(shader: Shader, draw: Draw) -> wgpu::DepthStencilState {
     let compare = match shader {
         Shader::Backdrop | Shader::Overlay | Shader::Glyphs => wgpu::CompareFunction::Always,
-        Shader::Points | Shader::PointsCustom | Shader::Strokes if draw != Draw::Rows => {
-            wgpu::CompareFunction::GreaterEqual
-        }
-        Shader::Points | Shader::PointsCustom | Shader::Strokes | Shader::Areas => wgpu::CompareFunction::Greater,
+        shader if layered(shader) && draw != Draw::Rows => wgpu::CompareFunction::GreaterEqual,
+        shader if layered(shader) => wgpu::CompareFunction::Greater,
+        Shader::Areas | Shader::AreasShaded => wgpu::CompareFunction::Greater,
         _ => wgpu::CompareFunction::GreaterEqual,
     };
     wgpu::DepthStencilState {
@@ -564,8 +589,6 @@ impl Pipelines {
             pass_layouts: HashMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
             modules: HashMap::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            application_modules: HashMap::new(),
             #[cfg(target_arch = "wasm32")]
             stages: HashMap::new(),
             #[cfg(target_arch = "wasm32")]
@@ -574,7 +597,7 @@ impl Pipelines {
             translating: Vec::new(),
             kernels: HashMap::new(),
             render: HashMap::new(),
-            custom: HashMap::new(),
+            hooked: HashMap::new(),
             asked: HashMap::new(),
             queue: Vec::new(),
             #[cfg(target_arch = "wasm32")]
@@ -694,10 +717,10 @@ impl Pipelines {
             }
             let (_, need) = self.queue.remove(0);
             let ahead = self.asked[&need].clone();
-            // A custom marker's shader translates first, which can take a task or more.
+            // A mark's hooks translate first, which can take a task or more.
             #[cfg(target_arch = "wasm32")]
-            if let Asked::Custom(source, variant) = &need {
-                match self.translation(source, variant.specialized()) {
+            if let Asked::Hooked(hooks, _) = &need {
+                match self.translation(hooks) {
                     Some(Ok(())) => {}
                     Some(Err(message)) => {
                         if ahead.refused.set(message).is_ok() {
@@ -777,7 +800,7 @@ impl Pipelines {
     }
 
     /// The error of the first of latkit's own `needs` the browser refused to build, whenever it
-    /// refused, if it refused any. A custom marker it refused is its mark's failure instead.
+    /// refused, if it refused any. Hooks it refused are their mark's failure instead.
     pub(crate) fn refused(&self, needs: &[Asked]) -> Option<Error> {
         needs.iter().filter(|need| matches!(need, Asked::Shader(_) | Asked::Kernel(..))).find_map(|need| {
             let message = self.asked.get(need)?.refused()?;
@@ -803,8 +826,8 @@ impl Pipelines {
             Asked::Shader(variant) => {
                 self.render(device, *variant);
             }
-            Asked::Custom(source, variant) => {
-                self.custom(device, source, *variant);
+            Asked::Hooked(hooks, variant) => {
+                self.hooked(device, hooks, *variant);
             }
             Asked::Kernel(source, variant) => {
                 self.kernel(device, source, *variant);
@@ -837,18 +860,15 @@ impl Pipelines {
             .clone()
     }
 
-    /// Parse each specialization once, then share its individual stages across pipeline targets
-    /// and depth modes. Application markers and expression kernels follow the same path.
+    /// Parse each specialization once, with what completes it, then share its individual stages
+    /// across pipeline targets and depth modes.
     #[cfg(not(target_arch = "wasm32"))]
-    fn program(&mut self, device: &wgpu::Device, variant: Variant, appended: Option<&Arc<str>>) -> Program {
+    fn program(&mut self, device: &wgpu::Device, variant: Variant, appended: &Appended) -> Program {
         let specialized = variant.specialized();
-        let modules = match appended {
-            Some(source) => self
-                .application_modules
-                .entry((source.clone(), specialized))
-                .or_insert_with(|| Modules::new(specialized.wgsl(source))),
-            None => self.modules.entry(specialized).or_insert_with(|| Modules::new(specialized.wgsl(""))),
-        };
+        let modules = self
+            .modules
+            .entry((appended.clone(), specialized))
+            .or_insert_with(|| Modules::new(specialized.wgsl(&appended.wgsl())));
         let label = specialized.shader.source().label;
         Program {
             vertex: modules.entry(device, label, "vertex"),
@@ -858,18 +878,22 @@ impl Pipelines {
 
     /// In the browser, each stage is GLSL translated ahead of time and passed to the WebGL2 device
     /// as is: latkit's shaders by the build, the channel shader's kernel entries completed by a
-    /// program's kernel, and a custom marker's shader by the page's translator. Stages are shared
-    /// across pipeline targets and depth modes.
+    /// program's kernel, and the draw shaders' entries completed by a mark's hooks, which the page
+    /// translates. Stages are shared across pipeline targets and depth modes.
     #[cfg(target_arch = "wasm32")]
     #[allow(unsafe_code, reason = "wgpu passes shader modules through unchecked")]
-    fn program(&mut self, device: &wgpu::Device, variant: Variant, appended: Option<&Arc<str>>) -> Program {
+    fn program(&mut self, device: &wgpu::Device, variant: Variant, appended: &Appended) -> Program {
         let specialized = variant.specialized();
         let mut stage = |entry: &'static str| {
-            let key = (appended.cloned(), specialized, entry);
+            let appended = match appended {
+                Appended::Hooks(_) if entry == "vertex" => Appended::None,
+                other => other.clone(),
+            };
+            let key = (appended, specialized, entry);
             if let Some(module) = self.stages.get(&key) {
                 return module.clone();
             }
-            let glsl = self.glsl(specialized, appended, entry);
+            let glsl = self.glsl(specialized, &key.0, entry);
             let label = specialized.shader.source().label;
             // SAFETY: the GLSL is ES 3.00 that the WebGL2 device validates itself when it links it.
             let module = unsafe {
@@ -889,75 +913,85 @@ impl Pipelines {
         Program { vertex: stage("vertex"), fragment: stage(variant.fragment()) }
     }
 
-    /// The GLSL of `specialized`'s entry `entry`, built with `appended`: a kernel, or a custom
-    /// marker whose shader translated. One the build did not translate is a shader that fails to
-    /// compile, saying so, so the browser refuses its pipeline and the views that need it report
-    /// why, rather than the page stopping.
+    /// The GLSL of `specialized`'s entry `entry`, completed by `appended`: a kernel, or a mark's
+    /// translated hooks. One the build did not translate is a shader that fails to compile, saying
+    /// so, so the browser refuses its pipeline and the views that need it report why, rather than
+    /// the page stopping.
     #[cfg(target_arch = "wasm32")]
-    fn glsl(&self, specialized: Specialized, appended: Option<&Arc<str>>, entry: &str) -> String {
+    fn glsl(&self, specialized: Specialized, appended: &Appended, entry: &str) -> String {
         let stored = |key: String| {
             super::store::text(&key)
                 .unwrap_or_else(|| format!("#version 300 es\n#error latkit's build translated no shader for {key}\n"))
         };
         match appended {
-            Some(kernel) if specialized.shader == Shader::State && entry != "vertex" => {
+            Appended::Kernel(kernel) if specialized.shader == Shader::State && entry != "vertex" => {
                 let rows = super::kernel::glsl_row_words(kernel).expect("a GLSL kernel names its registers");
                 super::kernel::linked(&stored(specialized.key(entry, Some(rows))), kernel)
             }
-            Some(marker) if specialized.shader != Shader::State => {
-                let translated = self.translations.get(&(marker.clone(), specialized));
-                match translated.and_then(Option::as_ref) {
-                    Some(Ok(entries)) => entries.get(entry).cloned().unwrap_or_default(),
-                    _ => String::new(),
-                }
+            Appended::Hooks(hooks) => {
+                let translated = hooks.each().filter_map(|(hook, source)| {
+                    self.translations.get(&(hook, source.clone()))?.as_ref()?.as_ref().ok().map(String::as_str)
+                });
+                super::kernel::linked(&stored(specialized.key(entry, None)), &translated.collect::<Vec<_>>().join("\n"))
             }
             _ => stored(specialized.key(entry, None)),
         }
     }
 
-    /// Whether the shader of custom marker `source` specialized as `specialized` translated: `Ok`
-    /// once it did, or why it did not, and `None` while it translates. The first call starts it.
+    /// Whether `hooks` translated: `Ok` once every one did, or the first that did not and why, and
+    /// `None` while any translates. The first call for a hook starts its translation.
     #[cfg(target_arch = "wasm32")]
-    fn translation(&mut self, source: &Arc<str>, specialized: Specialized) -> Option<std::result::Result<(), String>> {
-        let key = (source.clone(), specialized);
-        if let Some(translated) = self.translations.get(&key) {
-            return translated.as_ref().map(|result| result.as_ref().map(|_| ()).map_err(Clone::clone));
+    fn translation(&mut self, hooks: &Hooks) -> Option<std::result::Result<(), String>> {
+        let mut translating = false;
+        for (hook, source) in hooks.each() {
+            let key = (hook, source.clone());
+            if !self.translations.contains_key(&key) {
+                self.translate(key.clone());
+            }
+            match self.translations.get(&key).cloned().flatten() {
+                Some(Ok(_)) => {}
+                Some(Err(message)) => return Some(Err(message)),
+                None => translating = true,
+            }
         }
-        let wgsl = specialized.wgsl(source);
+        (!translating).then_some(Ok(()))
+    }
+
+    /// Translates hook `key` alone, in the page with the `wgsl` feature, else with the page's
+    /// translator, which answers in a later task.
+    #[cfg(target_arch = "wasm32")]
+    fn translate(&mut self, key: (Hook, Arc<str>)) {
+        let module = key.0.module(&key.1);
         #[cfg(feature = "wgsl")]
         {
-            let translated = translate(&wgsl);
-            self.translations.insert(key, Some(translated.clone()));
-            Some(translated.map(|_| ()))
+            let translated = translate(&module).and_then(|entries| hook_glsl(&entries));
+            self.translations.insert(key, Some(translated));
         }
         #[cfg(not(feature = "wgsl"))]
         {
             self.translations.insert(key.clone(), None);
-            let pending = crate::host::translate(&wgsl);
+            let pending = crate::host::translate(&module);
             let weak = self.gpu.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let answer = pending.await;
                 let Some(shared) = weak.upgrade() else { return };
                 let gpu = crate::Gpu(shared);
                 let mut inner = gpu.0.lock();
-                inner
-                    .pipelines
-                    .translated(&key, answer.map_err(|error| error.to_string()).and_then(|json| parse(&json)));
+                let result = answer
+                    .map_err(|error| error.to_string())
+                    .and_then(|json| parse(&json))
+                    .and_then(|entries| hook_glsl(&entries));
+                inner.pipelines.translated(key, result);
             });
-            None
         }
     }
 
-    /// Keeps a custom marker shader's translation, and queues the pipelines that waited for it.
+    /// Keeps a hook's translation, and queues again the pipelines that waited for one.
     #[cfg(all(target_arch = "wasm32", not(feature = "wgsl")))]
-    fn translated(&mut self, key: &(Arc<str>, Specialized), result: Translation) {
-        self.translations.insert(key.clone(), Some(result));
-        let (ready, waiting) = std::mem::take(&mut self.translating).into_iter().partition(|(_, need)| {
-            matches!(need, Asked::Custom(source, variant) if *source == key.0 && variant.specialized() == key.1)
-        });
-        self.translating = waiting;
-        let ready: Vec<(Urgency, Asked)> = ready;
-        self.queue.extend(ready);
+    fn translated(&mut self, key: (Hook, Arc<str>), result: HookGlsl) {
+        self.translations.insert(key, Some(result));
+        let waited = std::mem::take(&mut self.translating);
+        self.queue.extend(waited);
         crate::order::by_key(&mut self.queue, |(urgency, need)| {
             crate::order::pair(*urgency as u32, !(need.size().min(u32::MAX as usize) as u32))
         });
@@ -978,7 +1012,7 @@ impl Pipelines {
         }
         let need = Asked::Kernel(source.clone(), variant);
         self.count(&need);
-        let module = self.program(device, variant, Some(source));
+        let module = self.program(device, variant, &Appended::Kernel(source.clone()));
         let pipeline = self.pipeline(device, variant, &module, &need.label());
         self.kernels.insert(key, pipeline.clone());
         pipeline
@@ -1003,57 +1037,78 @@ impl Pipelines {
         })
     }
 
-    /// The pipeline that draws a custom marker of `source`: `variant`, with `source` appended to
-    /// its shader. `None` once that WGSL failed to compile, which
-    /// [`custom_failure`](Pipelines::custom_failure) then tells. Natively the device answers at
-    /// once, and in a browser the compile ahead of use does, so a broken marker never draws.
-    pub(crate) fn custom(
+    /// The pipeline that draws `variant` completed by `hooks`. `None` once a hook failed to
+    /// compile, which [`hooks_failure`](Pipelines::hooks_failure) then tells. Natively the device
+    /// answers at once, and in a browser the compile ahead of use does, so a broken hook never draws.
+    pub(crate) fn hooked(
         &mut self,
         device: &wgpu::Device,
-        source: &Arc<str>,
+        hooks: &Hooks,
         variant: Variant,
     ) -> Option<wgpu::RenderPipeline> {
-        let key = (source.clone(), variant);
-        if let Some(custom) = self.custom.get(&key) {
-            return custom.pipeline.clone().filter(|_| custom.failed.is_none());
+        let key = (hooks.clone(), variant);
+        if let Some(hooked) = self.hooked.get(&key) {
+            return hooked.pipeline.clone().filter(|_| hooked.failed.is_none());
         }
-        let need = Asked::Custom(key.0.clone(), key.1);
+        let need = Asked::Hooked(hooks.clone(), variant);
         let label = need.label();
         if let Some(message) = self.asked.get(&need).and_then(|ahead| ahead.refused()) {
-            let failed = Some(failure(message));
-            self.custom.insert(key, Custom { pipeline: None, check: None, failed });
+            let failed = Some(self.blamed(hooks).failure(message));
+            self.hooked.insert(key, Hooked { pipeline: None, check: None, failed });
+            return None;
+        }
+        // Natively each hook is checked alone first, so a failure names the hook that fails.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(failed) = hooks.each().find_map(|(hook, source)| checked(hook, source).err()) {
+            self.hooked.insert(key, Hooked { pipeline: None, check: None, failed: Some(failed) });
             return None;
         }
         self.count(&need);
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = self.program(device, variant, Some(source));
+        let module = self.program(device, variant, &Appended::Hooks(hooks.clone()));
         let pipeline = self.pipeline(device, variant, &module, &label);
         let mut check: Check = Box::pin(scope.pop());
-        let mut custom = Custom { pipeline: Some(pipeline), check: None, failed: None };
+        let mut hooked = Hooked { pipeline: Some(pipeline), check: None, failed: None };
         match check.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready(error) => custom.failed = error.map(|error| failure(&error.to_string())),
-            Poll::Pending => custom.check = Some(check),
+            Poll::Ready(error) => hooked.failed = error.map(|error| self.blamed(hooks).failure(&error.to_string())),
+            Poll::Pending => hooked.check = Some(check),
         }
-        let drawn = custom.pipeline.clone().filter(|_| custom.failed.is_none());
-        self.custom.insert(key, custom);
+        let drawn = hooked.pipeline.clone().filter(|_| hooked.failed.is_none());
+        self.hooked.insert(key, hooked);
         drawn
     }
 
-    /// Hears the checks of custom markers' WGSL still waiting for the device's answer.
-    pub(crate) fn check_custom(&mut self) {
+    /// The hook a failure of `hooks` is told for: one whose translation failed, else the last.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(clippy::unused_self, reason = "natively each hook is checked alone before its pipeline")
+    )]
+    fn blamed(&self, hooks: &Hooks) -> Hook {
+        #[cfg(target_arch = "wasm32")]
+        if let Some((hook, _)) = hooks
+            .each()
+            .find(|(hook, source)| matches!(self.translations.get(&(*hook, (*source).clone())), Some(Some(Err(_)))))
+        {
+            return hook;
+        }
+        hooks.last()
+    }
+
+    /// Hears the checks of hooked pipelines still waiting for the device's answer.
+    pub(crate) fn check_hooked(&mut self) {
         let mut context = Context::from_waker(Waker::noop());
-        for custom in self.custom.values_mut() {
-            let Some(check) = &mut custom.check else { continue };
+        for ((hooks, _), hooked) in &mut self.hooked {
+            let Some(check) = &mut hooked.check else { continue };
             if let Poll::Ready(error) = check.as_mut().poll(&mut context) {
-                custom.check = None;
-                custom.failed = error.map(|error| failure(&error.to_string()));
+                hooked.check = None;
+                hooked.failed = error.map(|error| hooks.last().failure(&error.to_string()));
             }
         }
     }
 
-    /// Why the custom marker of `source` does not compile, if it does not.
-    pub(crate) fn custom_failure(&self, source: &Arc<str>) -> Option<&Error> {
-        self.custom.iter().filter(|((of, _), _)| of == source).find_map(|(_, custom)| custom.failed.as_ref())
+    /// Why one of `hooks` does not compile, if one does not.
+    pub(crate) fn hooks_failure(&self, hooks: &Hooks) -> Option<&Error> {
+        self.hooked.iter().filter(|((of, _), _)| of == hooks).find_map(|(_, hooked)| hooked.failed.as_ref())
     }
 
     /// The render pipeline `variant` names.
@@ -1063,7 +1118,7 @@ impl Pipelines {
         }
         let need = Asked::Shader(variant);
         self.count(&need);
-        let module = self.program(device, variant, None);
+        let module = self.program(device, variant, &Appended::None);
         let pipeline = self.pipeline(device, variant, &module, &need.label());
         self.render.insert(variant, pipeline.clone());
         pipeline
@@ -1124,15 +1179,36 @@ struct Program {
     fragment: wgpu::ShaderModule,
 }
 
-/// A custom marker shader translated to GLSL: each entry point's, by name.
+/// A module translated to GLSL: each entry point's, by name.
 #[cfg(target_arch = "wasm32")]
 type Translated = HashMap<String, String>;
 
-/// A custom marker shader's translation, or why it does not translate.
+/// A module's translation, or why it does not translate.
 #[cfg(target_arch = "wasm32")]
 type Translation = std::result::Result<Translated, String>;
 
-/// Translates a custom marker shader's `wgsl` in the page, with the `wgsl` feature.
+/// The GLSL a hook appends to the shaders it completes, or why it does not translate.
+#[cfg(target_arch = "wasm32")]
+type HookGlsl = std::result::Result<String, String>;
+
+/// What a hook's translated module appends to the shaders it completes (see [`super::hooks`]).
+#[cfg(target_arch = "wasm32")]
+fn hook_glsl(entries: &Translated) -> HookGlsl {
+    super::hooks::appended(entries.get("hook").ok_or("the translator left out the hook's entry")?)
+}
+
+/// Natively, whether `source` compiles as `hook` alone, in the module its translation reads.
+#[cfg(not(target_arch = "wasm32"))]
+fn checked(hook: Hook, source: &str) -> std::result::Result<(), Error> {
+    let module = hook.module(source);
+    let parsed = naga::front::wgsl::parse_str(&module).map_err(|error| hook.failure(&error.emit_to_string(&module)))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&parsed)
+        .map_err(|error| hook.failure(&error.emit_to_string(&module)))?;
+    Ok(())
+}
+
+/// Translates a module's `wgsl` in the page, with the `wgsl` feature.
 #[cfg(all(target_arch = "wasm32", feature = "wgsl"))]
 fn translate(wgsl: &str) -> Translation {
     let module = naga::front::wgsl::parse_str(wgsl).map_err(|error| error.emit_to_string(wgsl))?;
@@ -1219,9 +1295,14 @@ mod tests {
         ];
         let labels: HashSet<String> = variants.iter().map(|&variant| Asked::Shader(variant).label()).collect();
         assert_eq!(labels.len(), variants.len(), "variants that differ have labels that differ: {labels:?}");
-        let custom = |source: &str| Asked::Custom(Arc::from(source), variants[0]).label();
-        assert_ne!(custom("a"), custom("b"), "custom markers differ by their WGSL");
-        assert!(!labels.contains(&custom("a")), "and from the shader they extend");
+        let hooked = |source: &str| {
+            let hooks = Hooks { marker: Some(Arc::from(source)), shade: None };
+            Asked::Hooked(hooks, variants[0]).label()
+        };
+        let shaded = Asked::Hooked(Hooks { marker: None, shade: Some(Arc::from("a")) }, variants[0]).label();
+        assert_ne!(hooked("a"), hooked("b"), "hooks differ by their WGSL");
+        assert_ne!(hooked("a"), shaded, "and by the hook they define");
+        assert!(!labels.contains(&hooked("a")), "and from the shader they complete");
     }
 
     #[test]

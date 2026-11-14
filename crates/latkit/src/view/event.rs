@@ -389,8 +389,8 @@ pub struct Stats {
     pub tiles_loading: u64,
     /// Milliseconds the last frame took to record on the CPU.
     pub cpu_ms: f32,
-    /// Milliseconds the GPU takes per frame: the median of recently measured frames. 0 if the
-    /// device cannot measure GPU time.
+    /// Milliseconds the GPU works on each frame, without the time it waits between the frame's
+    /// commands: the median of recently measured frames. 0 if the device cannot measure GPU time.
     pub gpu_ms: f32,
 }
 

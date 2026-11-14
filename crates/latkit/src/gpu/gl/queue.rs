@@ -1,5 +1,5 @@
 use super::{
-    command::{Commands, Image},
+    command::{Command, Commands, Image},
     device::State,
     resource::Buffer,
     transfer::{Source, upload},
@@ -51,11 +51,28 @@ impl QueueInterface for Queue {
     ) {
         report_to(&self.state, "copy external images");
     }
+    /// Runs the commands in order. Between a timer's `Begin` and `End`, each command runs inside a
+    /// query of the timer's own.
     fn submit(&self, command_buffers: &mut dyn Iterator<Item = DispatchCommandBuffer>) -> u64 {
         Waits::issued(&self.state);
+        let gl = &self.state.gl;
+        let mut timing: Option<Rc<super::elapsed::Query>> = None;
         for buffer in command_buffers {
             for command in buffer.as_custom::<Commands>().unwrap().0.borrow_mut().drain(..) {
-                command.run(&self.state.gl);
+                match command {
+                    Command::Begin(query) => {
+                        query.start();
+                        timing = Some(query);
+                    }
+                    Command::End(query) => {
+                        query.ended.set(true);
+                        timing = None;
+                    }
+                    command => match &timing {
+                        Some(query) => query.time(gl, || command.run(gl)),
+                        None => command.run(gl),
+                    },
+                }
             }
         }
         let serial = self.submitted.get() + 1;

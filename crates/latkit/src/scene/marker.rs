@@ -48,9 +48,13 @@ pub enum Marker {
         /// Each row's image index, from 0.
         index: Expr,
     },
-    /// A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`,
-    /// which can read up to eight `inputs` as `f.input[i]`. It compiles once, when the view first
-    /// draws it.
+    /// A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It
+    /// reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's
+    /// size as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It
+    /// returns the pixel's straight color and its signed distance in CSS pixels from the outline,
+    /// negative inside, which glows and status rings follow. The source may declare its own
+    /// functions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and
+    /// `MarkerColor`. It compiles once, when a view first draws it.
     Wgsl {
         /// The WGSL source of the `marker` function.
         source: Arc<str>,
@@ -124,7 +128,15 @@ impl Marker {
                 Markers { hole: *hole, palette: colors.iter().map(|c| c.packed()).collect(), ..base }
             }
             Marker::Icon { images, .. } => Markers { icons: images.clone(), ..base },
-            Marker::Wgsl { source, .. } => Markers { custom: Some(source.clone()), ..base },
+            Marker::Wgsl { .. } => base,
+        }
+    }
+
+    /// A custom marker's WGSL, the `marker` hook its shader calls.
+    pub(crate) fn hook(&self) -> Option<&std::sync::Arc<str>> {
+        match self {
+            Marker::Wgsl { source, .. } => Some(source),
+            _ => None,
         }
     }
 

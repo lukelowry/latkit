@@ -1646,7 +1646,7 @@
               "additionalProperties": false
             },
             {
-              "description": "A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`,\nwhich can read up to eight `inputs` as `f.input[i]`. It compiles once, when the view first\ndraws it.",
+              "description": "A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It\nreads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's\nsize as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It\nreturns the pixel's straight color and its signed distance in CSS pixels from the outline,\nnegative inside, which glows and status rings follow. The source may declare its own\nfunctions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and\n`MarkerColor`. It compiles once, when a view first draws it.",
               "type": "object",
               "properties": {
                 "wgsl": {
@@ -1897,6 +1897,27 @@
       ],
       "description": "Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the\nmarks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's\nbackground. Either way, the pointer reaches no row under it. A title and legends in one place\nstack in scene order, the title first."
     },
+    "Shade": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "The WGSL source of the `shade` function."
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Expr"
+          },
+          "description": "Each row's inputs, at most eight."
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "description": "A mark's shade: WGSL that colors each pixel of its rows before it blends. `source` defines\n`fn shade(f: ShadeFragment) -> vec4f`, which returns the pixel's straight color. It reads the\nmark's color at the pixel as `f.color`, the pixel in CSS pixels from the view's top left as\n`f.px`, the pixel within its row's shape as `f.local`, the pointer as `f.pointer` (its `z` is 1\nwhile it is over the view), seconds since the view was created as `f.elapsed`, and up to eight\n`inputs` as `f.input[i]`. A shade that reads `f.elapsed` draws every frame, and one that reads\n`f.pointer` draws as the pointer moves. It changes color only: hits and picks follow the rows'\nshapes. The source may declare its own functions, types, and constants. Of latkit's shader code,\nit sees only `ShadeFragment`. It compiles once, when a view first draws it.\n\n```\n# use latkit::{Edges, Shade, field};\n// Lines brighten near the pointer.\nlet spotlight = Shade::new(\n    \"fn shade(f: ShadeFragment) -> vec4f {\n        let near = (1.0 - smoothstep(0.0, 200.0, distance(f.px, f.pointer.xy))) * f.pointer.z;\n        return vec4f(mix(f.color.rgb, vec3f(1.0, 0.8, 0.4), 0.6 * near), f.color.a);\n    }\",\n);\nlet lines = Edges::of(\"grid\", \"Line\").ends(\"from\", \"to\").shade(spotlight);\n```"
+    },
     "MarkOptions": {
       "type": "object",
       "description": "The options every mark has.",
@@ -1970,6 +1991,17 @@
             }
           ],
           "description": "A legend of the mark's colors: its title, or legend options."
+        },
+        "shade": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Shade"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "WGSL that colors each pixel of the rows before it blends: its source and inputs. See\n[`Shade`](crate::Shade)."
         }
       }
     },
@@ -4726,7 +4758,7 @@
         "gpuMs": {
           "type": "number",
           "format": "float",
-          "description": "Milliseconds the GPU takes per frame: the median of recently measured frames. 0 if the\ndevice cannot measure GPU time."
+          "description": "Milliseconds the GPU works on each frame, without the time it waits between the frame's\ncommands: the median of recently measured frames. 0 if the device cannot measure GPU time."
         }
       },
       "required": [

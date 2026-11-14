@@ -2,7 +2,8 @@
 
 Each row is a benchmark scenario at the largest size it ran, in Chrome on one GPU. **Open** is the
 time from creating the view until it has drawn everything. **Frame** and **GPU** are the median CPU
-and GPU milliseconds per frame in the scenario's slowest phase with a moving view. **Pick** is the
+and GPU milliseconds per frame in the scenario's slowest phase with a moving view. GPU time counts
+the GPU's work on the frame's commands, not its waits between them. **Pick** is the
 time to answer a pick or hover. `cargo xtask bench` runs every scenario at increasing sizes and
 checks it against the committed baselines. `node benchmark/docs.ts` writes this table from those
 baselines, measured with WebGL2 through ANGLE on Direct3D 11.
@@ -39,11 +40,15 @@ timings need a GPU.
 - The GPU computes how every row draws, so a frame's CPU time does not grow with the number of
   rows. Only the GPU's work grows.
 - Pipelines are requested before use, with drawing first, then text, then input and other work.
-  The browser shares compiled stages and programs, and polls readiness through
+  The passes that measure rows for a fit come first only while a fit waits for them. The browser
+  shares compiled stages and programs, and polls readiness through
   [KHR_parallel_shader_compile](https://registry.khronos.org/webgl/extensions/KHR_parallel_shader_compile/)
   when available. Without that extension, checking a program's link result can still block.
 - Each pipeline contains only the code its mark uses: the primitive it draws, and whether it reads
-  joins, sampled fields, or view state.
+  joins, sampled fields, or view state. Shaders read every value they might need and then select
+  one, since Direct3D's compiler takes far longer over branches around reads.
+- latkit's shaders are translated to GLSL when latkit is built. A custom marker or shade is
+  translated alone, once, and completes each of latkit's shaders that call it.
 - A table too large to draw at once is split into pages. The view draws only the pages on screen,
   within the GPU memory budget. A page stays on the GPU while the camera moves, and after the
   camera leaves while the budget allows, so coming back to it needs no upload.

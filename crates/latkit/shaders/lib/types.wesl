@@ -579,6 +579,9 @@ struct Mark {
     inputs: u32,
     input: u32,
     palette: u32,
+    // Shade inputs: how many, and the extra word of the first.
+    shade_inputs: u32,
+    shade_input: u32,
     // Absolute trace-cursor address (or NONE), visible points, and resident row blocks.
     trace: u32,
     trace_points: u32,
@@ -620,9 +623,7 @@ struct Mark {
     size_min: f32,
     size_max: f32,
     // Complete the final std140 uniform slot.
-    padding_a: u32,
-    padding_b: u32,
-    padding_c: u32,
+    padding: u32,
 }
 
 // An overlay sprite in CSS pixels: a line, box, fill, or run of text, drawn over the marks.
