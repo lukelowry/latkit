@@ -1099,7 +1099,9 @@ impl View {
         }
         self.refused = None;
         self.unready = unready;
-        self.compiling = (asked != StageSet::default()).then_some(landed);
+        // A compile landing wakes the view while it asked for a stage that compiles, or while a scene
+        // set since waits for its pipelines.
+        self.compiling = (asked != StageSet::default() || self.incoming.is_some()).then_some(landed);
         let compiling = unready.meets(self.used()) || self.incoming.is_some();
         if self.waiting.compiling != compiling {
             self.waiting.compiling = compiling;
@@ -1240,7 +1242,8 @@ impl View {
             m.compiled.is_some() || m.failed() || self.snapshot(data).is_some() || self.derived.tiles.owns(data)
         };
         Waiting {
-            compiling: self.asked.is_empty() || self.unready.meets(self.used()),
+            // A scene set since draws once its pipelines compile.
+            compiling: self.asked.is_empty() || self.unready.meets(self.used()) || self.incoming.is_some(),
             data: !self.marks.iter().all(given)
                 || marks().any(|m| !m.tables.synced())
                 || self.staged.values().any(|s| !s.is_empty()),

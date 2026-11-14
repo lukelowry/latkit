@@ -751,6 +751,8 @@ mod tests {
         assert_eq!(view.marks.len(), 1, "but the scene before draws");
         assert!(view.ready_for(format, 1.0, true), "and goes on drawing while the new one compiles");
         assert!(view.waiting().compiling && !view.measure_due());
+        assert!(view.under_way().compiling, "every frame meanwhile waits on it");
+        assert!(view.compiling.is_some(), "and a compile landing wakes the view to draw it");
         view.set_camera(crate::Camera::Map { center: [5.0, 0.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 });
         assert!(matches!(view.camera, crate::Camera::Map { center: [0.0, ..], .. }), "a camera set waits for it");
         for need in &new {
