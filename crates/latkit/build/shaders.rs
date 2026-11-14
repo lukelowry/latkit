@@ -680,13 +680,10 @@ fn prune(source: &str) -> String {
         .expect("pruned shader writes WGSL")
 }
 
-/// Asserts that each fragment entry of `module` writes at most one color target. ANGLE on D3D11
-/// builds a pixel shader for the first target when a program links, and one for more targets on
-/// the browser's GPU thread when a frame first draws with it, stalling the page.
-/// Asserts that no struct or array constructor in `module` takes a boolean `&` or `|` directly.
-/// Metal writes these constructors as brace initializers, where C++ evaluates `bool & bool` to an
-/// int that may not narrow back to bool, so the pipeline fails to compile on Apple GPUs. A value
-/// bound with `let` first is written as its own declaration, which converts.
+/// Asserts that no struct or array constructor in `module` takes a boolean `&` or `|`, even through
+/// a `let`, which Metal may write inline. Metal writes these constructors as brace initializers,
+/// where C++ evaluates `bool & bool` to an int that may not narrow back to bool, so the pipeline
+/// fails to compile on Apple GPUs. A `select` stays a bool.
 fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
     let functions = module
         .functions
@@ -707,8 +704,8 @@ fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
                 let boolean =
                     matches!(types[component].ty.inner_with(&module.types), TypeInner::Scalar(naga::Scalar::BOOL));
                 assert!(
-                    !(combined && boolean) || function.named_expressions.contains_key(&component),
-                    "{name}: {} builds a struct or array from a boolean `&` or `|`, which Metal can't compile. Bind it with `let` first.",
+                    !(combined && boolean),
+                    "{name}: {} builds a struct or array from a boolean `&` or `|`, which Metal can't compile. Use `select`.",
                     function.name.as_deref().unwrap_or("an entry point"),
                 );
             }
@@ -716,6 +713,9 @@ fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
     }
 }
 
+/// Asserts that each fragment entry of `module` writes at most one color target. ANGLE on D3D11
+/// builds a pixel shader for the first target when a program links, and one for more targets on
+/// the browser's GPU thread when a frame first draws with it, stalling the page.
 fn check_targets(module: &naga::Module, name: &str) {
     for entry in module.entry_points.iter().filter(|e| e.stage == naga::ShaderStage::Fragment) {
         let Some(result) = &entry.function.result else { continue };

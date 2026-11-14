@@ -134,7 +134,9 @@ fn pixel(v: Varyings) -> vec2f {
 }
 
 fn segment_of(v: Varyings) -> Stroke {
-    let arrow = (PATH != PATH_TRACE) & ((v.bits.x & 1u) != 0u);
+    // A select, not `&`: Metal can write this inline in the struct's brace initializer, where
+    // C++'s int result of `bool & bool` does not narrow back to bool.
+    let arrow = select(false, (v.bits.x & 1u) != 0u, PATH != PATH_TRACE);
     if !PAINTED {
         return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color, 0.0, 0.0, false, arrow);
     }
