@@ -1185,6 +1185,9 @@ const view = await View.create(canvas, {
   nothing. Each is listed in `failures`. Only a scene whose space, marks, or a mark's table can't
   be read throws, and leaves the current one in place.
 
+  A new scene draws once the pipelines its frames draw with have compiled. Until then the view
+  goes on drawing, and answering for, the scene before, and fits wait for the new one.
+
 {#view-sources .member}
 **`sources`**`: readonly` [`Source`](#source)`[]` [¶](#view-sources){.headerlink}
 : Datasets the view draws besides those its scene uses. A source replaces a scene dataset with
