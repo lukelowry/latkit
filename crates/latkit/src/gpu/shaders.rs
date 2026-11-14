@@ -3,7 +3,9 @@
 
 #![allow(clippy::unreadable_literal)]
 
-use super::specialize::{Constant, specialize};
+use super::specialize::Constant;
+#[cfg(not(target_arch = "wasm32"))]
+use super::specialize::specialize;
 
 /// A binding's resource type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,16 +29,6 @@ const VERTEX: u32 = 1;
 const FRAGMENT: u32 = 2;
 
 impl ShaderSource {
-    /// The shader's WGSL for one pipeline, with each of its
-    /// [`constants`](ShaderSource::constants) declared as a `const` of `value(name)`. The browser
-    /// build carries only the custom marker shaders' WGSL, in its store.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn wgsl(&self, value: impl Fn(&str) -> u32) -> String {
-        let linked = super::store::text(&format!("wgsl {}", self.label))
-            .unwrap_or_else(|| panic!("the browser build stores no WGSL for {}", self.label));
-        specialize(linked.split(super::specialize::SEPARATOR), self.constants, value)
-    }
-
     /// The shader's WGSL for one pipeline: its declarations joined in order, with each of its
     /// [`constants`](ShaderSource::constants) declared as a `const` of `value(name)`. Each
     /// declaration is stored once and shared by every shader.
@@ -73,8 +65,7 @@ impl ShaderSource {
     }
 
     /// Whether the build made the specialization `value` names, which the browser's store holds
-    /// translated. The build lists none for the channel shader or custom marker shaders, which are
-    /// completed at runtime.
+    /// translated. The build lists none for the channel shader, which kernels complete at runtime.
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn built(&self, value: impl Fn(&str) -> u32) -> bool {
         self.specializations.iter().any(|s| self.constants.iter().zip(s.values).all(|(c, &v)| value(c.name) == v))
@@ -112,8 +103,8 @@ pub(crate) struct ShaderSource {
     constants: &'static [Constant<'static>],
     /// Constants reached by a pipeline's vertex and selected fragment entry together.
     entry_constants: &'static [(&'static str, &'static [&'static str])],
-    /// Each specialization pipelines use, with its constant branches removed. Kernels and custom
-    /// markers keep their helper declarations until their source is supplied.
+    /// Each specialization pipelines use, with its constant branches removed. One that hooks
+    /// complete keeps every declaration, since the hooks are written at runtime.
     #[cfg(not(target_arch = "wasm32"))]
     specializations: &'static [Specialization],
     /// Whether it reads the view and mark groups. A shader that does not gets empty groups in their

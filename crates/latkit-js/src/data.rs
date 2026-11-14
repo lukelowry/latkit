@@ -4,6 +4,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use latkit::host::Host as _;
@@ -176,43 +178,57 @@ impl Source {
 }
 
 thread_local! {
-    /// The page's tile fetch functions, by id. A tile fetch must be `Send`, so it holds only the id.
+    /// The page's tile fetch functions, by id.
     static FETCHES: RefCell<HashMap<u32, js_sys::Function>> = RefCell::new(HashMap::new());
 }
 
-/// The id of a function in [`FETCHES`], removed when the tiles holding it are dropped.
-struct Registered(u32);
+/// A page's tile fetch function, kept in [`FETCHES`] while any tiles hold it. A tile fetch must be
+/// `Send`, so this holds only the id.
+struct PageFetch(u32);
 
-impl Drop for Registered {
+impl PageFetch {
+    fn new(fetch: js_sys::Function) -> PageFetch {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        FETCHES.with(|all| all.borrow_mut().insert(id, fetch));
+        PageFetch(id)
+    }
+
+    /// Calls the function for `url` and `range`, and resolves to the bytes it returns.
+    async fn call(&self, url: &str, range: Option<Range<u64>>) -> latkit::Result<Vec<u8>> {
+        let failed = |error: &JsValue| {
+            let message = js_sys::Reflect::get(error, &"message".into()).ok().and_then(|m| m.as_string());
+            let message = message.or_else(|| error.as_string()).unwrap_or_default();
+            latkit::Error::Io(format!("{url} could not be fetched: {message}").into())
+        };
+        // Cloned out, so the function runs with no borrow held and may create tiles of its own.
+        let Some(fetch) = FETCHES.with(|all| all.borrow().get(&self.0).cloned()) else {
+            return Err(latkit::Error::Io(format!("{url} could not be fetched: its fetch was released").into()));
+        };
+        let range = range.map_or(JsValue::UNDEFINED, |r| {
+            js_sys::Array::of2(&(r.start as f64).into(), &(r.end as f64).into()).into()
+        });
+        let promise = fetch.call2(&JsValue::NULL, &url.into(), &range).map_err(|error| failed(&error))?;
+        let bytes = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&promise)).await;
+        bytes.map(|b| js_sys::Uint8Array::new(&b).to_vec()).map_err(|error| failed(&error))
+    }
+}
+
+impl Drop for PageFetch {
     fn drop(&mut self) {
         FETCHES.with(|all| all.borrow_mut().remove(&self.0));
     }
 }
 
-/// A tile fetch that calls the page's `fetch`.
+/// A tile fetch that calls the page's `fetch`. The function stays registered while any tiles hold
+/// the closure.
 fn fetcher(fetch: js_sys::Function) -> impl Fn(&latkit::host::Request) -> latkit::Pending<Vec<u8>> + Send + Sync {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    FETCHES.with(|all| all.borrow_mut().insert(id, fetch));
-    let registered = Registered(id);
+    let fetch = Arc::new(PageFetch::new(fetch));
     move |request| {
-        let range = request.range.as_ref().map_or(JsValue::UNDEFINED, |r| {
-            js_sys::Array::of2(&(r.start as f64).into(), &(r.end as f64).into()).into()
-        });
-        let url = request.url.clone();
-        let called = FETCHES.with(|all| all.borrow()[&registered.0].call2(&JsValue::NULL, &(*url).into(), &range));
-        let failed = move |error: JsValue| {
-            let message = js_sys::Reflect::get(&error, &"message".into()).ok().and_then(|m| m.as_string());
-            latkit::Error::Io(format!("{url} could not be fetched: {}", message.unwrap_or_default()).into())
-        };
         let (pending, resolver) = latkit::Pending::new();
-        match called {
-            Ok(promise) => wasm_bindgen_futures::spawn_local(async move {
-                let bytes = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise)).await;
-                resolver.resolve(bytes.map(|b| js_sys::Uint8Array::new(&b).to_vec()).map_err(failed));
-            }),
-            Err(error) => resolver.resolve(Err(failed(error))),
-        }
+        let (fetch, url, range) = (fetch.clone(), request.url.clone(), request.range.clone());
+        // The page's function runs in a microtask, after the frame that asked, so it may call latkit.
+        wasm_bindgen_futures::spawn_local(async move { resolver.resolve(fetch.call(&url, range).await) });
         pending
     }
 }

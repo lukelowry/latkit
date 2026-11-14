@@ -13,11 +13,10 @@ import { typescript } from './schema.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const output = path.join(root, 'target/npm');
-/** The most bytes each WebAssembly and shader asset may have, raw and with brotli, which is what a
+/** The most bytes each WebAssembly asset may have, raw and with brotli, which is what a
  * page downloads. A release over either fails its package step, so growth is a choice. */
 const BUDGET = {
-  'pkg/latkit_bg.wasm': { raw: 3_610_000, brotli: 1_020_000 },
-  'pkg/latkit_shaders.bin': { raw: 245_000, brotli: 245_000 },
+  'pkg/latkit_bg.wasm': { raw: 3_855_000, brotli: 1_265_000 },
   'pkg/latkit_wgsl_bg.wasm': { raw: 1_320_000, brotli: 345_000 },
 };
 const [mode, directory, version] = process.argv.slice(2);
@@ -108,7 +107,7 @@ if (mode === 'prepare') {
   const sizes = {};
   for (const folder of ['dist', 'pkg']) {
     for (const file of fs.readdirSync(path.join(stage, folder)).sort()) {
-      if (!/\.(js|wasm|bin)$/.test(file)) continue;
+      if (!/\.(js|wasm)$/.test(file)) continue;
       const bytes = fs.readFileSync(path.join(stage, folder, file));
       sizes[`${folder}/${file}`] = {
         raw: bytes.length,

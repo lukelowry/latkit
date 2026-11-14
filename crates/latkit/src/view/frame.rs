@@ -88,6 +88,8 @@ impl View {
         let ratio = f64::from(self.pixel_ratio);
         self.size = [f64::from(frame.size[0]) / ratio, f64::from(frame.size[1]) / ratio];
         let landed = self.signal.take();
+        // A scene set since draws once the pipelines its frames draw with have landed.
+        self.swap_when_ready();
         if !self.ready_for(frame.format, frame.pixel_ratio, input) {
             self.signal.leave(landed);
             return;
@@ -135,8 +137,7 @@ impl View {
         // have compiled.
         let answers = input && self.can_use(Stage::Input);
         let probe = self.probe_point(answers);
-        let layered = self.layered();
-        let query = self.lay_out_lists(answers, layered);
+        let query = self.lay_out_lists(answers, self.sorted());
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
         let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, elapsed, self.at);
@@ -379,15 +380,16 @@ impl View {
 
     /// Reports the failures when they changed. Runs after the frame takes the latest data versions,
     /// so a dataset filled between frames reports nothing about the version before. Failures change
-    /// only with the scene, the data, or a custom marker's check, so most frames only compare each
-    /// mark's with what it last reported. A custom marker whose WGSL does not compile draws
-    /// nothing, and every mark drawing it says why.
+    /// only with the scene, the data, or a hook's check, so most frames only compare each mark's
+    /// with what it last reported. A mark whose hook does not compile draws nothing, and says why.
     fn tell_failures(&mut self, inner: &mut Inner) {
-        inner.pipelines.check_custom();
+        inner.pipelines.check_hooked();
         for shown in self.marks.iter_mut().filter(|shown| !shown.twin) {
-            let crate::Mark::Vertices(vertices) = &shown.mark else { continue };
-            let crate::Marker::Wgsl { source, .. } = &vertices.marker else { continue };
-            if let Some(failure) = inner.pipelines.custom_failure(source)
+            let hooks = shown.mark.hooks();
+            if hooks.is_empty() {
+                continue;
+            }
+            if let Some(failure) = inner.pipelines.hooks_failure(&hooks)
                 && !shown.failures.contains(failure)
             {
                 shown.failures.push(failure.clone());
@@ -468,11 +470,11 @@ impl View {
         derive::Input { scene: &self.scene, scene_version: self.scene_version, data: &self.snapshots, paged: None }
     }
 
-    /// Lays out the lists buffer: the marks' segment lists, and in `layered` frames their draw
+    /// Lays out the lists buffer: the marks' segment lists, and in `sorted` frames their draw
     /// orders. If the frame `answers` queries, takes this frame's query, returning its words and
     /// whether it reads depth. A replaced buffer starts empty, so every list is made again.
-    fn lay_out_lists(&mut self, answers: bool, layered: bool) -> Option<([f32; 4], bool)> {
-        self.lay_out_lists_buffer(layered);
+    fn lay_out_lists(&mut self, answers: bool, sorted: bool) -> Option<([f32; 4], bool)> {
+        self.lay_out_lists_buffer(sorted);
         let device = &self.gpu.0.device;
         self.resources.as_mut().expect("created").fit_lists(device, u64::from(self.list_words));
         if answers { self.next_query() } else { None }
@@ -511,16 +513,23 @@ impl View {
         }
     }
 
-    /// Every mark's uniform, at its dynamic offset.
+    /// Every mark's uniform at its dynamic offset, then each one's copy for its opaque draw (see
+    /// [`passes::offset`](super::passes::offset)).
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
-        let mut marks = vec![0_u8; self.marks.len() * MARK_STRIDE as usize];
+        let count = self.marks.len();
+        let mut marks = vec![0_u8; 2 * count * MARK_STRIDE as usize];
+        let mut write = |at: usize, uniform: &wgsl::Mark| {
+            let at = at * MARK_STRIDE as usize;
+            marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(uniform));
+        };
         for (i, shown) in self.marks.iter().enumerate() {
             let mut uniform = uniforms::mark(i, shown, &self.labels, &self.clock);
             if !self.focus.has_words() {
                 uniform.focus = wgsl::NONE;
             }
-            let at = i * MARK_STRIDE as usize;
-            marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(&uniform));
+            write(i, &uniform);
+            uniform.opaque = 1;
+            write(count + i, &uniform);
         }
         marks
     }

@@ -221,11 +221,8 @@ impl Command {
                 super::transfer::upload(gl, super::transfer::Source::Buffer(from), *layout, to, *size);
             }
             Self::Render(render) => render.run(gl),
-            Self::Begin(query) => gl.begin_query(super::elapsed::TIME_ELAPSED, &query.raw),
-            Self::End(query) => {
-                gl.end_query(super::elapsed::TIME_ELAPSED);
-                query.ended.set(true);
-            }
+            // The submission times the commands between them (see `Queue::submit`).
+            Self::Begin(_) | Self::End(_) => {}
         }
     }
 }

@@ -277,6 +277,8 @@ impl View {
         for shown in &mut self.marks {
             shown.dirty_rows(shown.channels_reading(crate::expr::compile::Deps::POINTER), None);
         }
+        // A shade that reads the pointer draws again where it moved.
+        self.changed |= self.shades(|shading| shading.pointed);
     }
 
     /// Where the pointer last acted, the modifier keys held, and its device. The default once it
@@ -290,6 +292,7 @@ impl View {
     fn left(&mut self) {
         let trigger = self.pointing();
         self.pointer = None;
+        self.changed |= self.shades(|shading| shading.pointed);
         if matches!(self.gestures.now, Gesture::Idle) {
             self.gestures.session += 1;
             self.probing.wanted = None;

@@ -40,17 +40,15 @@ fn point(row: u32) -> Point {
     p.world = world(v.hi, v.lo, v.elevation);
     p.position = v.hi + v.lo;
     p.clip = clip_of(p.world);
-    p.shown = (v.flags & VISIBLE) != 0u && placed(v) && shows(p.world) && p.clip.w > 0.0;
-    // Hidden rows keep their position for locating. Their marker, focus, and front depth
-    // cannot contribute to a draw, label, or hit, so do not calculate them.
-    if !p.shown { return p; }
+    // Hidden rows keep their position for locating. Their marker, focus, and front depth draw
+    // nothing, but are read anyway: a read no branch guards keeps the compiled shader small (see
+    // `lib/read.wesl`).
+    p.shown = ((v.flags & VISIBLE) != 0u) & placed(v) & shows(p.world) & (p.clip.w > 0.0);
     var half = vec2f(px(v.half.x, VERTEX_HALF));
-    if (mark.flags & SIZED) != 0u {
-        half.y = px(v.half.y, VERTEX_HALF + 1u);
-    }
+    half.y = select(half.x, px(v.half.y, VERTEX_HALF + 1u), (mark.flags & SIZED) != 0u);
     half = within(half, vec2f(mark.size_min, mark.size_max));
     let focus = focus_of(row);
-    let grows = (mark.units & (1u << VERTEX_HALF)) == 0u && (focus & HOVERED) != 0u;
+    let grows = ((mark.units & (1u << VERTEX_HALF)) == 0u) & ((focus & HOVERED) != 0u);
     half *= select(1.0, frame.grow, grows) * growth(v.flags);
     let color = unpack4x8unorm(v.color);
     let front = toward_eye(p.clip, p.world, max(half.x, half.y));

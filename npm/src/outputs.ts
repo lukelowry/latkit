@@ -141,8 +141,8 @@ export interface Stats {
   /** Milliseconds the last frame took to record on the CPU. */
   cpuMs: number;
   /**
-   * Milliseconds the GPU takes per frame: the median of recently measured frames. 0 if the device
-   * cannot measure GPU time.
+   * Milliseconds the GPU works on each frame, without the time it waits between the frame's
+   * commands: the median of recently measured frames. 0 if the device cannot measure GPU time.
    */
   gpuMs: number;
 }

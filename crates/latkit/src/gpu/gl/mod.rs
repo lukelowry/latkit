@@ -30,6 +30,26 @@ pub(crate) fn owns(device: &wgpu::Device) -> bool {
     device.as_custom::<device::Device>().is_some()
 }
 
+/// Loses the WebGL2 context of `device`, as a GPU reset does, and reports the loss without waiting
+/// for the browser's event. Returns `false` when `device` is not latkit's WebGL2 device.
+pub(crate) fn lose(device: &wgpu::Device) -> bool {
+    let Some(device) = device.as_custom::<device::Device>() else { return false };
+    device.lose_context();
+    device.lost(wgpu::DeviceLostReason::Unknown);
+    true
+}
+
+/// Reports the loss of `state`'s context once latkit sees it, before the browser's event arrives,
+/// so work that meets the lost context is the loss rather than an error. Returns whether it is
+/// lost.
+fn noticed_loss(state: &std::rc::Rc<device::State>) -> bool {
+    let lost = state.gl.is_context_lost();
+    if lost {
+        device::Device(state.clone()).lost(wgpu::DeviceLostReason::Unknown);
+    }
+    lost
+}
+
 /// Yields to the next browser task, where WebGL fences and queries advance.
 async fn turn() {
     crate::time::next_task().await;
@@ -67,13 +87,17 @@ pub(crate) fn present(
 }
 
 /// Blits `texture` to `canvas`, fences the frame, then copies it into `sink`. The fence comes
-/// before the copy so a wait after the frame can join it (see [`waits`]).
+/// before the copy so a wait after the frame can join it (see [`waits`]). On a lost context it
+/// shows nothing, and reports the loss.
 fn show(
-    state: &device::State,
+    state: &std::rc::Rc<device::State>,
     texture: &resource::Texture,
     canvas: &super::browser::Canvas,
     sink: &super::browser::Sink,
 ) -> crate::Result<()> {
+    if noticed_loss(state) {
+        return Ok(());
+    }
     blit(texture, canvas)?;
     waits::Waits::presented(state);
     let size = texture.0.size;
@@ -83,9 +107,6 @@ fn show(
 fn blit(texture: &resource::Texture, canvas: &super::browser::Canvas) -> crate::Result<()> {
     use web_sys::WebGl2RenderingContext as Gl;
     let gl = &texture.0.gl;
-    if gl.is_context_lost() {
-        return Err(crate::Error::Unsupported("WebGL2 context is lost".into()));
-    }
     let size = texture.0.size;
     // The caller reserved room for the texture, so the canvas never resizes while presenting.
     let extent = canvas.size();

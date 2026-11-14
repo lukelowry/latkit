@@ -15,7 +15,6 @@
       "default": "./dist/index.js"
     },
     "./wasm": "./pkg/latkit_bg.wasm",
-    "./shaders": "./pkg/latkit_shaders.bin",
     "./wgsl": "./pkg/latkit_wgsl_bg.wasm",
     "./worker": "./dist/worker.js"
   },
@@ -25,7 +24,6 @@
     "pkg/latkit.d.ts",
     "pkg/latkit_bg.wasm",
     "pkg/latkit_bg.wasm.d.ts",
-    "pkg/latkit_shaders.bin",
     "pkg/latkit_wgsl.js",
     "pkg/latkit_wgsl.d.ts",
     "pkg/latkit_wgsl_bg.wasm",

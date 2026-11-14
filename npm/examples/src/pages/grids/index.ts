@@ -77,7 +77,8 @@ export default page({
 
   async open({ settings, signal, view, detail, credit, fail }) {
     let grid = await load(settings.grid, signal, detail);
-    // The map joins the scene once its datasets are read, so the grid draws first.
+    // The map joins the scene once its datasets are read. A scene set before the view's first frame
+    // draws second, so the grid draws first.
     let map: Basemap = NO_MAP;
 
     const scene = (s: typeof settings): Scene => {

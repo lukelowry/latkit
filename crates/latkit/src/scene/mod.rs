@@ -12,6 +12,7 @@ mod layout;
 pub(crate) mod lines;
 pub(crate) mod mark;
 mod marker;
+mod shade;
 mod space;
 #[cfg(test)]
 mod tests;
@@ -31,6 +32,7 @@ pub use layout::{Direction, Interpolation, Layered, Layout, Route, Stress};
 pub use lines::Lines;
 pub use mark::Mark;
 pub use marker::{Marker, Shape};
+pub use shade::Shade;
 pub(crate) use space::sun;
 pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space};
 pub use theme::{

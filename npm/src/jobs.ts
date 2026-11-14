@@ -33,15 +33,16 @@ function failure(cause: unknown): LatkitError {
 }
 
 /**
- * Returns the function latkit hands its jobs to. It runs each job on a pooled worker, one job per
- * worker at a time. latkit queues jobs itself and hands one over only when it can run, so the pool
- * grows only to the number of jobs running at once and nothing queues here. Idle workers are
- * terminated after 30 seconds. A job times out after one minute, counting a new worker's startup.
- * A failure rejects that job and terminates its worker. Later jobs start a new one.
+ * Returns the function latkit hands its jobs to. It runs each job on a pooled worker that `worker`
+ * creates, one job per worker at a time. latkit queues jobs itself and hands one over only when it
+ * can run, so the pool grows only to the number of jobs running at once and nothing queues here.
+ * Idle workers are terminated after 30 seconds. A job times out after one minute, counting a new
+ * worker's startup. A failure rejects that job and terminates its worker. Later jobs start a new
+ * one.
  */
 export function jobs(
   module: WebAssembly.Module,
-  worker = () => new Worker(new URL('./worker.js', import.meta.url)),
+  worker: () => Worker,
 ): (bytes: Uint8Array) => Promise<Uint8Array> {
   const idle = new Set<Slot>();
 

@@ -26,21 +26,6 @@ use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::{MarkKind, Primitive};
 
-/// Draw shaders sharing the view resources. Bind groups are cached by resource generation.
-const DRAW_SHADERS: [Shader; 11] = [
-    Shader::Backdrop,
-    Shader::Points,
-    Shader::PointsCustom,
-    Shader::Strokes,
-    Shader::StrokesFocus,
-    Shader::Areas,
-    Shader::PointsFocus,
-    Shader::PointsCustomFocus,
-    Shader::AreasFocus,
-    Shader::Glyphs,
-    Shader::Overlay,
-];
-
 /// The scissor rectangle `[x, y, width, height]`, in target pixels, covering `area`.
 fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
     let [w, h] = frame.size.map(f64::from);
@@ -124,6 +109,8 @@ struct Marks<'a> {
     samples: u32,
     groups: &'a super::resources::Groups,
     passes: &'a [(Shader, wgpu::BindGroup)],
+    /// The number of marks, after whose uniforms come their copies for opaque draws.
+    count: usize,
 }
 
 impl Marks<'_> {
@@ -170,13 +157,15 @@ impl Marks<'_> {
         let asked = variants.draw(draw, self.format, self.samples);
         let pipeline = match asked {
             Asked::Shader(variant) => Some(inner.pipelines.render(self.device, variant)),
-            Asked::Custom(source, variant) => inner.pipelines.custom(self.device, &source, variant),
+            Asked::Hooked(hooks, variant) => inner.pipelines.hooked(self.device, &hooks, variant),
             Asked::Kernel(source, variant) => Some(inner.pipelines.kernel(self.device, &source, variant)),
         };
         let Some(pipeline) = pipeline else { return };
         let corners = shown.kind().primitive().corners();
         let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
-        pass.set_bind_group(1, &self.groups.mark, &[offset(i)]);
+        // An opaque draw shares the rows' program and binds the copy of the uniform that says so.
+        let at = if draw == Draw::Opaque { self.count + i } else { i };
+        pass.set_bind_group(1, &self.groups.mark, &[offset(at)]);
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(2, group, &[]);
         if draw == Draw::Lit {
@@ -227,7 +216,8 @@ fn listed(shown: &super::marks::Shown) -> Vec<u32> {
     blocks
 }
 
-/// Mark `index`'s dynamic offset in the marks' uniforms.
+/// Uniform `index`'s dynamic offset in the marks' uniforms: mark `index`'s, or past the last mark,
+/// the copy for an opaque draw.
 pub(super) fn offset(index: usize) -> u32 {
     (index as u64 * MARK_STRIDE) as u32
 }
@@ -559,18 +549,35 @@ impl View {
         let resources = self.resources.as_mut().expect("created before passes");
         let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
         let groups = resources.groups(&gpu.0, inner);
-        let mut passes: Vec<(Shader, wgpu::BindGroup)> = Vec::new();
-        for shader in DRAW_SHADERS {
-            passes.push((shader, resources.pass(device, inner, shader)));
+        // The pass groups of the shaders this frame draws with, each built once per resource
+        // generation: the backdrop, text, and overlay, and each mark's.
+        let mut shaders = vec![Shader::Backdrop, Shader::Glyphs, Shader::Overlay];
+        for shown in &self.marks {
+            let variants = MarkVariants::shown(shown, &self.scene.space);
+            for draw in [Draw::Rows, Draw::Lit] {
+                let shader = variants.shader(draw);
+                if !shaders.contains(&shader) {
+                    shaders.push(shader);
+                }
+            }
         }
+        let passes: Vec<(Shader, wgpu::BindGroup)> =
+            shaders.into_iter().map(|shader| (shader, resources.pass(device, inner, shader))).collect();
         let pick_targets = (probing && samples > 1).then(|| resources.pick_targets(device));
         let group = |shader: Shader| &passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         let (view, resolve) = match &color {
             Some(color) => (color, Some(frame.target)),
             None => (frame.target, None),
         };
-        let marks =
-            Marks { space: &self.scene.space, device, format: frame.format, samples, groups: &groups, passes: &passes };
+        let marks = Marks {
+            space: &self.scene.space,
+            device,
+            format: frame.format,
+            samples,
+            groups: &groups,
+            passes: &passes,
+            count: self.marks.len(),
+        };
         if let Some((pick_color, pick_depth)) = &pick_targets {
             let mut pass = main_pass(encoder, pick_color, None, pick_depth, [0.0; 4], true);
             if !self.unplaced() {

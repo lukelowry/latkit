@@ -88,7 +88,10 @@ view.sources = [new Tiles('grid', 'history/frames.json')]; // in place of the da
 
 A line that traces a field fetches the spans in its plot window, at the detail it draws. Other
 marks fetch the frames around `view.at`. While a span loads, the view draws the coarser span that
-covers it. In Rust, `Snapshot::to_tiles` writes the same files.
+covers it. In Rust, `Snapshot::to_tiles` writes the same files. While frames are still recorded,
+rewrite the manifest and the spans past its old end, then call `tiles.refresh()`: views keep what
+they drew and fetch only the last span of each level again. A server can also answer the files
+itself through `new Tiles(name, url, { fetch })`.
 
 ### Stream
 
@@ -136,8 +139,9 @@ const hot = grid.query({
 
 A scene is plain data: a `space`, a list of `marks` drawn in order, and optional `layout`, `theme`,
 `controls`, `ease` (how many seconds a change eases over), and `title`. Set `view.scene = next` to
-replace the scene. Each row eases from where it was drawn. An option that can't be read or doesn't
-fit the data draws as if unset, and `view.failures` lists why.
+replace the scene. It draws once the shaders it needs have compiled, and the view goes on drawing
+the scene before until then. Each row eases from where it was drawn. An option that can't be read
+or doesn't fit the data draws as if unset, and `view.failures` lists why.
 
 ```ts
 const scene: Scene = {
@@ -230,6 +234,34 @@ the zoom. State expressions read the view: `selected()`, `hovered()`, `related()
 reference from a selected or hovered row), `pointer()`, `elapsed()`, and `zoom()`. `colormaps()`
 lists the colormap catalog with each map's colors, and `colormapCss(map)` returns a colormap as a
 CSS gradient, for legends drawn in HTML.
+
+### Custom shaders
+
+Where an expression can't say how a mark looks, two options take WGSL:
+
+- A vertex mark's `marker: { wgsl: { source, inputs } }` draws each marker. `source` defines
+  `fn marker(f: MarkerFragment) -> MarkerColor`, which returns the pixel's color and its signed
+  distance from the outline, so glows and status rings follow the shape.
+- Any mark's `shade: { source, inputs }` colors each pixel before it blends. `source` defines
+  `fn shade(f: ShadeFragment) -> vec4f`. It reads the pixel (`f.px`, and `f.local` within its row's
+  shape), the pointer (`f.pointer`), and the time (`f.elapsed`). A shade that reads the time draws
+  every frame, and one that reads the pointer draws as it moves.
+
+Both read up to eight `inputs`, expressions evaluated for each row, as `f.input[i]`. They change
+color only: hover and picks follow the rows' shapes.
+
+```ts
+// Lines brighten near the pointer.
+const spotlight = `fn shade(f: ShadeFragment) -> vec4f {
+  let near = (1.0 - smoothstep(0.0, 200.0, distance(f.px, f.pointer.xy))) * f.pointer.z;
+  return vec4f(mix(f.color.rgb, vec3f(1.0, 0.8, 0.4), 0.6 * near), f.color.a);
+}`;
+const lines = { edges: grid.table('Line'), ends: ['from', 'to'], shade: { source: spotlight } };
+```
+
+The source may declare its own functions, types, and constants, and sees only the struct it reads.
+It compiles once, the first time a view draws it. Source that does not compile is the mark's
+failure (see [Events](#events)), and the mark draws nothing.
 
 ### Themes, controls, and layouts
 
@@ -497,21 +529,18 @@ The Rust library is the `latkit` crate.
 | File/URL slices                     | Browser fetch and CORS         | Supply data directly             | Local paths and `file:` URLs |
 | H.264 MP4                           | WebCodecs Constrained Baseline | Use the CLI                      | Windows Media Foundation     |
 
-Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, shaders, and worker
-from the same package version: latkit refuses shaders from another version. Rendering requires an
-enabled WebGL2 context. WebCodecs video export requires HTTPS or localhost.
+Serve WASM with `Content-Type: application/wasm`. Serve the JavaScript, WASM, and worker from the
+same package version. Rendering requires an enabled WebGL2 context. WebCodecs video export requires
+HTTPS or localhost.
 
 ### Assets and workers
 
-The package has four assets besides its modules:
+The package has three assets besides its modules:
 
-- `latkit/wasm`: the WebAssembly.
-- `latkit/shaders`: the shaders, translated for WebGL2 when the package was built. `load()`
-  downloads them while the WebAssembly compiles, wherever a canvas is available. Only drawing needs
-  them, so if the download fails, `Gpu.create()` rejects with an `io` error and the next call
-  downloads them again.
-- `latkit/wgsl`: the WebAssembly that translates custom markers' WGSL. A page loads it the first
-  time it draws a custom marker.
+- `latkit/wasm`: the WebAssembly, with the shaders translated for WebGL2 when the package was
+  built.
+- `latkit/wgsl`: the WebAssembly that translates [custom shaders](#custom-shaders). A page loads
+  it the first time it draws one.
 - `latkit/worker`: a standalone classic worker that runs jobs.
 
 By default, `load()` finds each next to the installed modules. With Vite or another bundler that
@@ -520,20 +549,24 @@ path:
 
 ```ts
 import { load } from 'latkit';
-import shadersUrl from 'latkit/shaders?url';
 import wasmUrl from 'latkit/wasm?url';
 import wgslUrl from 'latkit/wgsl?url';
 import workerUrl from 'latkit/worker?url';
 
-await load({ wasm: wasmUrl, shaders: shadersUrl, wgsl: wgslUrl, worker: workerUrl });
+await load({ wasm: wasmUrl, wgsl: wgslUrl, worker: workerUrl });
 ```
 
-A worker URL on another origin, such as a CDN, starts through a Blob URL on the page's origin.
-Workers start when needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on
-the calling thread. Your Content Security Policy must allow the WASM, shaders, and data origins in
+A browser starts workers only from the page's origin, so the page fetches a worker on another
+origin, such as a CDN or a webview's resources, and starts it from a Blob URL. Workers start when
+needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on the calling
+thread. Your Content Security Policy must allow the WASM, worker, and data origins in
 `connect-src`, WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), the
 package's modules in `script-src` (the WGSL translator is imported when first used), and the
 worker URL in `worker-src` (with `blob:` for one on another origin).
+
+To test without a GPU, Chrome and Electron draw WebGL2 on the CPU with
+`--use-angle=swiftshader --enable-unsafe-swiftshader`. `gpu.lose()` loses the device as a GPU reset
+does, so a test can check what follows.
 
 ### Server-side builders and data
 
@@ -571,7 +604,7 @@ let restored = Data::read(&saved, Reading::default()).await?;
 relative to, and the `resource::Fetch` that fetches them. Every rendering `Host` is also a `Fetch`.
 Enable `gpu` for scenes, views, and wgpu rendering. `native` adds system fonts, jobs, files, and
 Windows H.264, and `web` adds browser integration for the WASM target. `wgsl` adds a WGSL compiler
-to the browser build, for custom markers without the npm package's translator.
+to the browser build, for custom shaders without the npm package's translator.
 
 ### Share an existing device
 

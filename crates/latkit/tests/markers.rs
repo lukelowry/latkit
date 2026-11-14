@@ -76,7 +76,7 @@ fn custom_markers_draw_their_wgsl_and_bad_ones_are_reported() {
     }
     let source = "fn marker(f: MarkerFragment) -> MarkerColor {
         let d = max(abs(f.p.x), abs(f.p.y)) - f.half.x;
-        return filled(vec4f(f.input[0], 1.0, 0.0, 1.0), d);
+        return MarkerColor(vec4f(f.input[0], 1.0, 0.0, clamp(0.5 - d / fwidth(d), 0.0, 1.0)), d);
     }";
     let (mut view, gpu) = one(Marker::Wgsl { source: source.into(), inputs: vec![field("v")] });
     let pixels = frame(&gpu, &mut view);

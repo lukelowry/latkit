@@ -1,16 +1,17 @@
 // Points: one instanced quad per vertex row, shaded by its marker. A quad covers its marker and any
 // status ring, plus one pixel of antialiased edge. The focus variant redraws the lit rows over
-// everything, with quads enlarged for their glow. Where depth varies, the opaque variant draws each
+// everything, with quads enlarged for their glow. Where depth varies, an opaque pass draws each
 // marker's opaque pixels before any pixel blends, keeping their depth, so the nearest marker shows.
+// The custom variants call an application's `marker`, and the shaded variants its `shade`.
 
 import package::lib::types::{STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON};
-import package::lib::bind::{mark, word, ramp, program, focused};
-import package::lib::state::extra_at;
+import package::lib::bind::{mark, ramp, program, focused};
+import package::lib::state::row_inputs;
+import package::lib::hooks::{MarkerColor, MarkerFragment};
+import package::lib::shade::shade_fragment;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
 import package::lib::points::{Point, shown_point, reach, drawn_clip};
-import package::lib::marker::{
-    MarkerColor, MarkerFragment, gauge, pie, filled, outline_distance, status_ring, glow, premultiplied,
-};
+import package::lib::marker::{gauge, pie, filled, outline_distance, status_ring, glow, premultiplied};
 import package::lib::daylight::daylight;
 import package::lib::drawn::drawn_instance;
 import package::lib::color::{output, OPAQUE};
@@ -23,7 +24,7 @@ import package::lib::color::{output, OPAQUE};
 override MARKER: u32 = MARKER_SHAPE;
 
 struct Varyings {
-    // Invariant, so the opaque variant and the other draws compute the same depth.
+    // Invariant, so the opaque pass and the other draws compute the same depth.
     @invariant @builtin(position) clip: vec4f,
     @location(0) p: vec2f,
     @location(1) @interpolate(flat) row: u32,
@@ -71,14 +72,11 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     return out;
 }
 
+// The marker's inputs. A plain shape reads none.
 fn inputs(row: u32) -> array<f32, 8> {
-    var input = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     @if(!custom)
-    if MARKER == MARKER_SHAPE { return input; }
-    for (var i = 0u; i < min(mark.inputs, 8u); i++) {
-        input[i] = bitcast<f32>(word(extra_at(row, mark.input + i)));
-    }
-    return input;
+    if MARKER == MARKER_SHAPE { return array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0); }
+    return row_inputs(row, mark.input, mark.inputs);
 }
 
 // An icon: image `f.input[0]` of the mark's images, fitted to the marker's box and faded with its
@@ -103,31 +101,30 @@ fn marker(f: MarkerFragment) -> MarkerColor {
     }
 }
 
-fn shaded(v: Varyings) -> MarkerColor {
+// The pixel's marker color, with any status ring, then shaded.
+fn colored(v: Varyings) -> MarkerColor {
     let f = MarkerFragment(v.p, v.half, v.color, inputs(v.row));
     var m = marker(f);
-    if (mark.flags & STATUS) != 0u && v.status.a > 0.0 {
+    if ((mark.flags & STATUS) != 0u) & (v.status.a > 0.0) {
         m = status_ring(m, vec4f(v.status.rgb, v.status.a * v.color.a));
+    }
+    @if(shaded) {
+        m.color = shade(shade_fragment(m.color, v.clip.xy, v.p, v.row));
     }
     return m;
 }
 
-// The opaque variant draws a marker's opaque pixels and keeps their depth. Its antialiased edge,
-// any part too small to cover a pixel, an icon's clear pixels, a custom marker's holes, and
-// translucent rows (dimmed by a selection, fading, or of a translucent color) draw after, over them.
-// The vertex stage is shared. Separate fragment entries keep discard out of the normal draw,
-// allowing early depth rejection without carrying draw-mode uniforms for every mark.
+// Where depth varies, a mark draws twice with this one program: first its opaque pixels, keeping
+// their depth, through the copy of its uniform whose `opaque` is set, then every pixel. Its
+// antialiased edge, any part too small to cover a pixel, an icon's clear pixels, a custom marker's
+// holes, and translucent rows (dimmed by a selection, fading, or of a translucent color) draw in
+// the second pass, over the opaque pixels. That pass writes no depth, so the discard it never takes
+// leaves early depth tests on.
 @if(!focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return output(premultiplied(shaded(v)));
-}
-
-@if(!focused)
-@fragment
-fn opaque(v: Varyings) -> @location(0) vec4f {
-    let c = premultiplied(shaded(v));
-    if c.a < OPAQUE {
+    let c = premultiplied(colored(v));
+    if (mark.opaque != 0u) & (c.a < OPAQUE) {
         discard;
     }
     return output(c);
@@ -136,5 +133,5 @@ fn opaque(v: Varyings) -> @location(0) vec4f {
 @if(focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return output(glow(shaded(v), v.focus));
+    return output(glow(colored(v), v.focus));
 }

@@ -259,10 +259,10 @@ impl View {
     }
 
     /// Lays out the lists buffer: every listed mark's segment list at the front, using counts read
-    /// back, then each paged mark's drawn-row words, then in `layered` frames the height order of
+    /// back, then each paged mark's drawn-row words, then in `sorted` frames the height order of
     /// each mark whose rows stand at different heights. A list smaller than its rows need grows,
     /// with a quarter to spare.
-    pub(super) fn lay_out_lists_buffer(&mut self, layered: bool) {
+    pub(super) fn lay_out_lists_buffer(&mut self, sorted: bool) {
         let mut at = 0;
         for shown in &mut self.marks {
             if let Some((stamp, bytes)) = shown.segments.found.landed() {
@@ -301,7 +301,7 @@ impl View {
         }
         // Then a height order for each mark whose rows stand at different heights, with room for
         // every instance it may draw.
-        let ordered: Vec<bool> = (0..self.marks.len()).map(|i| layered && self.heights_vary(i)).collect();
+        let ordered: Vec<bool> = (0..self.marks.len()).map(|i| sorted && self.heights_vary(i)).collect();
         for (shown, ordered) in self.marks.iter_mut().zip(ordered) {
             if !ordered {
                 shown.height_order.list = None;

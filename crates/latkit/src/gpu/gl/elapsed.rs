@@ -1,28 +1,62 @@
 //! GPU time of the commands between two points of an encoder, with the `TIME_ELAPSED_EXT` queries
 //! of `EXT_disjoint_timer_query_webgl2`. WebGL2 writes no timestamps on Direct3D, so this is how a
-//! view times its frames in a browser. A result arrives a few browser tasks after its frame, and an
-//! event that makes timing unreliable, such as a GPU reset, discards the results at hand.
+//! view times its frames in a browser. Each command that gives the GPU work runs inside a query of
+//! its own, and the time is their sum: what the GPU spent on the commands. One query around them all
+//! would also count the time the browser takes to issue them, which leaves the GPU idle. A result
+//! arrives a few browser tasks after its frame, and an event that makes timing unreliable, such as a
+//! GPU reset, discards the results at hand.
 
 use super::command::{Command, Encoder};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use web_sys::{WebGl2RenderingContext as Gl, WebGlQuery};
 
 /// `TIME_ELAPSED_EXT`.
-pub(super) const TIME_ELAPSED: u32 = 0x88BF;
+const TIME_ELAPSED: u32 = 0x88BF;
 /// `QUERY_COUNTER_BITS_EXT`.
 const COUNTER_BITS: u32 = 0x8864;
 /// `GPU_DISJOINT_EXT`.
 const DISJOINT: u32 = 0x8FBB;
 
-/// A query, and whether the commands that end it ran.
-#[derive(Debug)]
+/// The queries timing one frame's commands, one per command, kept from frame to frame, and whether
+/// the commands that end the frame ran.
+#[derive(Debug, Default)]
 pub(super) struct Query {
-    pub(super) raw: WebGlQuery,
+    parts: RefCell<Vec<WebGlQuery>>,
+    /// How many parts the frame used.
+    used: Cell<usize>,
     pub(super) ended: Cell<bool>,
 }
 
-/// One query timing the commands between [`begin`](Elapsed::begin) and [`end`](Elapsed::end).
+impl Query {
+    /// Starts timing a frame.
+    pub(super) fn start(&self) {
+        self.used.set(0);
+        self.ended.set(false);
+    }
+
+    /// Runs `command` inside a query of its own. A browser that makes no more queries runs it
+    /// untimed.
+    pub(super) fn time(&self, gl: &Gl, command: impl FnOnce()) {
+        let at = self.used.get();
+        let part = {
+            let mut parts = self.parts.borrow_mut();
+            if at == parts.len()
+                && let Some(made) = gl.create_query()
+            {
+                parts.push(made);
+            }
+            parts.get(at).cloned()
+        };
+        let Some(part) = part else { return command() };
+        gl.begin_query(TIME_ELAPSED, &part);
+        command();
+        gl.end_query(TIME_ELAPSED);
+        self.used.set(at + 1);
+    }
+}
+
+/// Times the commands between [`begin`](Elapsed::begin) and [`end`](Elapsed::end).
 pub(crate) struct Elapsed {
     gl: Gl,
     query: Rc<Query>,
@@ -31,7 +65,7 @@ pub(crate) struct Elapsed {
 }
 
 impl Elapsed {
-    /// A query on `device`, or `None` unless it is latkit's WebGL2 device and the browser times GPU
+    /// A timer on `device`, or `None` unless it is latkit's WebGL2 device and the browser times GPU
     /// work.
     pub(crate) fn new(device: &wgpu::Device) -> Option<Elapsed> {
         let gl = device.as_custom::<super::device::Device>()?.0.gl.clone();
@@ -40,8 +74,7 @@ impl Elapsed {
         if bits < 1.0 {
             return None;
         }
-        let raw = gl.create_query()?;
-        Some(Elapsed { gl, query: Rc::new(Query { raw, ended: Cell::new(false) }), pending: false })
+        Some(Elapsed { gl, query: Rc::default(), pending: false })
     }
 
     /// Whether it can time another frame.
@@ -52,7 +85,6 @@ impl Elapsed {
     /// Starts timing the commands `encoder` records next.
     pub(crate) fn begin(&mut self, encoder: &wgpu::CommandEncoder) {
         if let Some(encoder) = encoder.as_custom::<Encoder>() {
-            self.query.ended.set(false);
             encoder.commands.borrow_mut().push(Command::Begin(self.query.clone()));
         }
     }
@@ -65,28 +97,33 @@ impl Elapsed {
         }
     }
 
-    /// The milliseconds the timed commands took, once the browser has the result. It is freed then,
-    /// and also once the result is discarded: when `disjoint` says timing was unreliable since the
-    /// last check, which [`disjoint`] reads, or when the context is lost.
+    /// The milliseconds the GPU spent on the timed commands, once the browser has every result. It
+    /// is freed then, and also once the results are discarded: when `disjoint` says timing was
+    /// unreliable since the last check, which [`disjoint`] reads, or when the context is lost.
     pub(crate) fn take(&mut self, disjoint: bool) -> Option<f32> {
         if !self.pending || !self.query.ended.get() {
             return None;
         }
-        let available = self.gl.get_query_parameter(&self.query.raw, Gl::QUERY_RESULT_AVAILABLE);
-        if available.as_bool() != Some(true) {
-            // A lost context answers null, and its query never completes.
+        let parts = self.query.parts.borrow();
+        let used = &parts[..self.query.used.get().min(parts.len())];
+        let available = |part| self.gl.get_query_parameter(part, Gl::QUERY_RESULT_AVAILABLE).as_bool() == Some(true);
+        if !used.iter().all(available) {
+            // A lost context answers null, and its queries never complete.
             self.pending = !self.gl.is_context_lost();
             return None;
         }
         self.pending = false;
-        let nanoseconds = self.gl.get_query_parameter(&self.query.raw, Gl::QUERY_RESULT).as_f64()?;
+        let nanoseconds: f64 =
+            used.iter().filter_map(|part| self.gl.get_query_parameter(part, Gl::QUERY_RESULT).as_f64()).sum();
         (!disjoint).then_some((nanoseconds / 1e6) as f32)
     }
 }
 
 impl Drop for Elapsed {
     fn drop(&mut self) {
-        self.gl.delete_query(Some(&self.query.raw));
+        for part in self.query.parts.borrow().iter() {
+            self.gl.delete_query(Some(part));
+        }
     }
 }
 

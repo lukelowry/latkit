@@ -57,6 +57,8 @@ use resources::Resources;
 use rig::Rig;
 use variants::{Stage, StageSet};
 
+use crate::gpu::pipelines::Urgency;
+
 use crate::derive::Derivations;
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
@@ -104,8 +106,12 @@ pub struct View {
     gpu: Gpu,
     /// This view's id among the GPU's views. The GPU's ledger keys budget shares by it.
     id: u64,
+    /// The scene the view draws.
     scene: Scene,
-    /// Incremented whenever the scene changes.
+    /// A scene set since, compiled and waiting for the pipelines its first frame draws with. The view
+    /// draws `scene` until they land.
+    incoming: Option<Incoming>,
+    /// Incremented whenever the scene the view draws changes.
     scene_version: u64,
     /// Why options of the scene draw as if unset: those its JSON left out, and those it can't use.
     scene_failures: Vec<Error>,
@@ -210,6 +216,24 @@ pub struct View {
     stats: Stats,
 }
 
+/// A scene set while the view draws another: the scene, why its options draw as if unset, each mark
+/// compiled for it (`None` where a drawn mark carries over), and a camera set for it.
+struct Incoming {
+    scene: Scene,
+    failures: Vec<Error>,
+    fresh: Vec<Option<Shown>>,
+    camera: Option<Camera>,
+}
+
+impl Incoming {
+    /// Releases what its compiled marks hold, as when a newer scene replaces it.
+    fn release(self, inner: &mut crate::gpu::Inner) {
+        for mut shown in self.fresh.into_iter().flatten() {
+            shown.release(inner);
+        }
+    }
+}
+
 /// The number of views created, used to give each view its id.
 static VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -237,6 +261,7 @@ impl View {
             gpu: gpu.clone(),
             id,
             scene: Scene::new(scene.space.clone()),
+            incoming: None,
             scene_version: 0,
             scene_failures: Vec::new(),
             scene_failures_due: false,
@@ -309,7 +334,7 @@ impl View {
     /// uploads again.
     pub fn move_to(&mut self, gpu: &Gpu) {
         let identity = Identity { id: self.id, signal: self.signal.clone(), job_errors: self.job_errors.clone() };
-        let mut moved = View::made(gpu, self.scene.clone(), identity);
+        let mut moved = View::made(gpu, self.scene().clone(), identity);
         moved.use_sources(self.sources.clone());
         // The same scene and data, so what was derived from them alone still holds, layouts too.
         moved.scene_version = self.scene_version;
@@ -351,9 +376,9 @@ impl View {
         *self = moved;
     }
 
-    /// The scene the view draws.
+    /// The scene last set. Until its pipelines compile, the view draws the one before.
     pub fn scene(&self) -> &Scene {
-        &self.scene
+        self.incoming.as_ref().map_or(&self.scene, |incoming| &incoming.scene)
     }
 
     /// Replaces the scene, compiling its marks against the latest version of each
@@ -362,23 +387,41 @@ impl View {
     /// scene can't use, or that doesn't fit the data draws as if unset, and a mark that doesn't fit
     /// draws nothing. Each is listed in [`failures`](View::failures), those of the data until it
     /// fits.
+    ///
+    /// The view goes on drawing, and answering for, the scene before until the pipelines this
+    /// scene's frames draw with have compiled, then draws it from the next frame. They compile after
+    /// those of the scene before, so a scene set before the view's first frame draws second. Fits and
+    /// cameras asked for meanwhile apply to this scene. A view's first scene draws at once.
     pub fn set_scene(&mut self, mut scene: Scene) {
         let mut failures = std::mem::take(&mut scene.unread);
         failures.extend(scene.sanitize());
-        self.scene_failures = failures;
-        self.scene_failures_due = true;
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
-        // Every mark recompiles if the theme, the kind of space, or the presence of a layout
-        // changed.
+        let fresh = self.compile_marks(&scene, &mut inner);
+        if let Some(replaced) = self.incoming.replace(Incoming { scene, failures, fresh, camera: None }) {
+            replaced.release(&mut inner);
+        }
+        drop(inner);
+        self.swap_when_ready();
+        // Until it draws, the view waits on its pipelines, so `done` waits for it.
+        if self.incoming.is_some() && !self.waiting.compiling {
+            self.waiting.compiling = true;
+            self.events.tell(Event::Waiting(self.waiting));
+        }
+        self.wake();
+    }
+
+    /// Compiles each mark of `scene` that is new or changed from the marks drawn, or `None` where a
+    /// drawn mark draws alike and carries over. Every mark recompiles if the theme, the kind of
+    /// space, or the presence of a layout changed. A twin of an earlier mark draws nothing and takes
+    /// over no state.
+    fn compile_marks(&self, scene: &Scene, inner: &mut crate::gpu::Inner) -> Vec<Option<Shown>> {
         let kind_changed = std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
         let context_changed = scene.theme != self.scene.theme
             || kind_changed
             || matches!(scene.layout, crate::Layout::None) != matches!(self.scene.layout, crate::Layout::None);
         let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
-        // Compile every new or changed mark before changing anything. A twin of an earlier mark
-        // draws nothing and takes over no state.
         let mut fresh = Vec::with_capacity(scene.marks.len());
         for (i, mark) in scene.marks.iter().enumerate() {
             if scene.twin(i) {
@@ -391,9 +434,58 @@ impl View {
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.snapshots, context, &mut inner);
+            shown.compile(&self.snapshots, context, inner);
             fresh.push(Some(shown));
         }
+        fresh
+    }
+
+    /// The incoming scene's marks: each compiled one, or the drawn mark that carries over.
+    fn incoming_marks<'a>(&'a self, incoming: &'a Incoming) -> impl Iterator<Item = &'a Shown> + Clone {
+        incoming.scene.marks.iter().zip(&incoming.fresh).filter_map(|(mark, fresh)| {
+            fresh.as_ref().or_else(|| self.marks.iter().find(|s| !s.twin && s.mark.draws_like(mark)))
+        })
+    }
+
+    /// Draws the incoming scene from the next frame once it can: the pipelines its frames draw with
+    /// have landed, or the browser refused one, which the view then reports. It asks for them first,
+    /// after those of the scene drawn, for each target its frames draw into. A view's first scene,
+    /// or one set before any frame on the GPU, swaps in at once.
+    fn swap_when_ready(&mut self) {
+        let Some(incoming) = &self.incoming else { return };
+        let gpu = self.gpu.clone();
+        let targets = self.targets();
+        // While it waits, the compiles that had landed when it last checked.
+        let waiting = if self.scene_version == 0 || targets.is_empty() {
+            None
+        } else {
+            let mut needs = variants::channels(self.incoming_marks(incoming));
+            for (format, samples) in targets {
+                needs.extend(variants::draws(&incoming.scene, format, samples));
+            }
+            let mut inner = gpu.0.lock();
+            let urgency = if self.stats.frames > 0 { Urgency::Draw } else { Urgency::Text };
+            inner.pipelines.ask(&gpu.0.device, &needs, urgency, &self.compile_waker);
+            let ready = inner.pipelines.ready(&needs) || inner.pipelines.refused(&needs).is_some();
+            (!ready).then(|| inner.pipelines.landed())
+        };
+        if let Some(landed) = waiting {
+            self.compiling = Some(landed);
+        } else {
+            let incoming = self.incoming.take().expect("checked");
+            self.swap(incoming);
+        }
+    }
+
+    /// Draws `incoming`'s scene from the next frame. Each changed mark takes over the rows of the
+    /// drawn mark with its key, and eases from them.
+    fn swap(&mut self, incoming: Incoming) {
+        let Incoming { scene, failures, fresh, camera } = incoming;
+        self.scene_failures = failures;
+        self.scene_failures_due = true;
+        let kind_changed = std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
+        let gpu = self.gpu.clone();
+        let mut inner = gpu.0.lock();
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
         let easing = !scene.ease.is_zero() && self.moves_with(&scene.controls);
         // Each new mark's index before, for a mark that keeps its state or takes over another's.
@@ -471,6 +563,9 @@ impl View {
             self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
         }
         self.focus.dirty = true;
+        if let Some(camera) = camera {
+            self.set_camera(camera);
+        }
         self.invalidate();
     }
 
@@ -602,6 +697,16 @@ impl View {
                 }
             }
         }
+        // An incoming scene's marks compiled against the version before.
+        if let Some(incoming) = &mut self.incoming {
+            let scene = &incoming.scene;
+            let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
+            for shown in incoming.fresh.iter_mut().flatten() {
+                if shown.stale(&self.snapshots[at]) {
+                    shown.compile(&self.snapshots, context, inner);
+                }
+            }
+        }
         // Rows may have moved under the focus.
         self.focus.dirty = true;
         self.fitting.plot_due = true;
@@ -627,6 +732,12 @@ impl View {
                 shown.rows = 0;
                 shown.exits = 0;
                 shown.holding = None;
+            }
+        }
+        // An incoming scene's marks recompile when a source provides the dataset again.
+        for shown in self.incoming.iter_mut().flat_map(|incoming| incoming.fresh.iter_mut().flatten()) {
+            if shown.compiled.as_ref().is_some_and(|c| c.schemas.iter().any(|(n, _)| n == name)) {
+                shown.compiled = None;
             }
         }
     }
@@ -661,6 +772,12 @@ impl View {
     /// first frame. When its size, insets, or space change, the next frame moves the camera back
     /// within the limits and emits a [`Camera`](Event::Camera) event.
     pub fn set_camera(&mut self, camera: Camera) {
+        if let Some(incoming) = &mut self.incoming {
+            if camera.fits(&incoming.scene.space) {
+                incoming.camera = Some(camera);
+            }
+            return;
+        }
         if camera.fits(&self.scene.space) {
             self.cancel_fit();
             self.rig.hold();
@@ -982,8 +1099,10 @@ impl View {
         }
         self.refused = None;
         self.unready = unready;
-        self.compiling = (asked != StageSet::default()).then_some(landed);
-        let compiling = unready.meets(self.used());
+        // A compile landing wakes the view while it asked for a stage that compiles, or while a scene
+        // set since waits for its pipelines.
+        self.compiling = (asked != StageSet::default() || self.incoming.is_some()).then_some(landed);
+        let compiling = unready.meets(self.used()) || self.incoming.is_some();
         if self.waiting.compiling != compiling {
             self.waiting.compiling = compiling;
             self.events.tell(Event::Waiting(self.waiting));
@@ -997,8 +1116,8 @@ impl View {
     }
 
     /// The stages frames draw with now: the marks and any text, transitions while rows ease, the
-    /// glow while a row is lit, and layers while depth varies. Never input: probes and queries draw
-    /// nothing, so a view is complete without them.
+    /// glow while a row is lit, layers while depth varies, and a fit's passes while it will measure
+    /// rows. Never input: probes and queries draw nothing, so a view is complete without them.
     fn used(&self) -> StageSet {
         let mut used = StageSet::default().with(Stage::Draw).with(Stage::Text);
         if self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some()) {
@@ -1010,6 +1129,9 @@ impl View {
         if self.deep() {
             used = used.with(Stage::Layers);
         }
+        if self.measures() {
+            used = used.with(Stage::Fit);
+        }
         used
     }
 
@@ -1018,6 +1140,13 @@ impl View {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn compiling(&self) -> bool {
         !self.can_use(Stage::Draw)
+    }
+
+    /// Whether a drawn mark's shade passes `test`.
+    fn shades(&self, test: impl Fn(&crate::scene::mark::Shading) -> bool) -> bool {
+        self.marks
+            .iter()
+            .any(|m| m.drawable() && m.compiled.as_ref().and_then(|c| c.drawing.shade.as_ref()).is_some_and(&test))
     }
 
     /// Whether a new frame would differ from the last one: something changed, animates, or streams
@@ -1029,6 +1158,7 @@ impl View {
                 let inner = self.gpu.0.lock();
                 inner.pipelines.landed() != seen
                     && (self.unready.meets(self.used())
+                        || self.incoming.is_some()
                         || self.probing.due()
                         || self.queries.due()
                         || inner.pipelines.refusing())
@@ -1048,7 +1178,7 @@ impl View {
             || self.derived.tiles.pending()
             || self.rig.easing()
             || (self.rig.orbit != 0.0 && moves)
-            || (self.fitting.due() && !self.limited)
+            || self.measure_due()
             // Probes and queries wait for their pipelines, and each finished compile wakes the
             // view while a stage it asked for compiles.
             || (self.can_use(Stage::Input) && (self.probing.due() || self.queries.due()))
@@ -1060,6 +1190,8 @@ impl View {
             // Heights that changed within `lists::RESORT` of the last sort sort in a later frame.
             || self.marks.iter().any(|m| m.height_order.stale())
             || (moves && self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME))))
+            // A shade that reads the time draws every frame while motion is enabled.
+            || (moves && self.shades(|shading| shading.timed))
             || (moves && self.flowing())
             || self.gpu.0.lock().arena.uploading()
             || self.room != frame::Room::Found
@@ -1087,7 +1219,7 @@ impl View {
     fn due(&self, input: bool) -> bool {
         self.gpu.0.lock().arena.uploading()
             || self.room != frame::Room::Found
-            || (self.fitting.due() && !self.limited)
+            || self.measure_due()
             || (input && self.can_use(Stage::Input) && (self.probing.due() || self.queries.due()))
             || self.derived.tiles.pending()
             || self.marks.iter().any(|m| m.begin.is_some())
@@ -1110,7 +1242,8 @@ impl View {
             m.compiled.is_some() || m.failed() || self.snapshot(data).is_some() || self.derived.tiles.owns(data)
         };
         Waiting {
-            compiling: self.asked.is_empty() || self.unready.meets(self.used()),
+            // A scene set since draws once its pipelines compile.
+            compiling: self.asked.is_empty() || self.unready.meets(self.used()) || self.incoming.is_some(),
             data: !self.marks.iter().all(given)
                 || marks().any(|m| !m.tables.synced())
                 || self.staged.values().any(|s| !s.is_empty()),

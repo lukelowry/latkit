@@ -1,48 +1,22 @@
 //! The browser build's shaders: each built entry point's GLSL, and the custom marker shaders' WGSL,
-//! by key, as `build/shaders.rs` stores them. The store is a file of its own, `shaders.bin` in the
-//! build's output, which the page loads beside the WebAssembly and hands over with
-//! [`Browser::set_shaders`](crate::host::Browser::set_shaders). Each block of text inflates the first
+//! by key, as `build/shaders.rs` stores them in `shaders.bin`. The WebAssembly carries the store.
+//! Its index is read the first time a shader is needed, and each block of text inflates the first
 //! time a shader needs it, and stays.
 
 use std::io::Read as _;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
-static STORE: OnceLock<Store> = OnceLock::new();
-
-/// Keeps the store's `bytes`. Errors unless they are exactly the `shaders.bin` this build wrote, so a
-/// file from another version, or a damaged one, fails here rather than when a shader compiles. Later
-/// calls change nothing: a page has one build's shaders.
-pub(crate) fn set(bytes: Vec<u8>) -> crate::Result<()> {
-    if STORE.get().is_some() {
-        return Ok(());
-    }
-    if stamp(&bytes) != super::shaders::STORE {
-        return Err(crate::Error::invalid(
-            "latkit_shaders.bin is not the file this latkit build wrote: serve it from the same version as the WebAssembly",
-        ));
-    }
-    let store = Store::read(bytes).ok_or_else(|| crate::Error::invalid("latkit_shaders.bin could not be read"))?;
-    let _ = STORE.set(store);
-    Ok(())
-}
-
-/// The 64-bit FNV-1a hash of `bytes`, as `build/shaders.rs` stamps the store it writes.
-fn stamp(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
-}
-
-/// Whether the page handed over the store.
-pub(crate) fn loaded() -> bool {
-    STORE.get().is_some()
-}
+static STORE: LazyLock<Store> = LazyLock::new(|| {
+    Store::read(include_bytes!(concat!(env!("OUT_DIR"), "/shaders.bin"))).expect("the build writes a readable store")
+});
 
 /// The text stored at `key`, such as the GLSL of `"Points vertex [0, 1, 1, 1, 0, 1, 0]"`.
 pub(crate) fn text(key: &str) -> Option<String> {
-    STORE.get()?.text(key)
+    STORE.text(key)
 }
 
 struct Store {
-    bytes: Vec<u8>,
+    bytes: &'static [u8],
     /// Each chunk's block, start, and length in bytes.
     chunks: Vec<[u32; 3]>,
     /// Each text's chunks, by key.
@@ -65,16 +39,16 @@ fn inflate(bytes: &[u8], size: usize) -> Option<Vec<u8>> {
 }
 
 impl Store {
-    fn read(bytes: Vec<u8>) -> Option<Store> {
+    fn read(bytes: &'static [u8]) -> Option<Store> {
         let mut at = 0;
-        let packed = word(&bytes, &mut at)? as usize;
-        let size = word(&bytes, &mut at)? as usize;
+        let packed = word(bytes, &mut at)? as usize;
+        let size = word(bytes, &mut at)? as usize;
         let index = inflate(bytes.get(at..at + packed)?, size)?;
         at += packed;
         let mut blocks = Vec::new();
-        for _ in 0..word(&bytes, &mut at)? {
-            let packed = word(&bytes, &mut at)? as usize;
-            let size = word(&bytes, &mut at)? as usize;
+        for _ in 0..word(bytes, &mut at)? {
+            let packed = word(bytes, &mut at)? as usize;
+            let size = word(bytes, &mut at)? as usize;
             bytes.get(at..at + packed)?;
             blocks.push((at..at + packed, size, OnceLock::new()));
             at += packed;
@@ -102,10 +76,10 @@ impl Store {
         for &id in ids {
             let [block, start, length] = *self.chunks.get(id as usize)?;
             let (range, size, inflated) = self.blocks.get(block as usize)?;
-            // The stamp checked in `set` guarantees the bytes are the build's own.
+            // The bytes are the build's own, carried in the WebAssembly.
             let block = inflated.get_or_init(|| {
-                let bytes = inflate(&self.bytes[range.clone()], *size).expect("a stamped store block inflates");
-                String::from_utf8(bytes).expect("a stamped store block is text").into_boxed_str()
+                let bytes = inflate(&self.bytes[range.clone()], *size).expect("a built store block inflates");
+                String::from_utf8(bytes).expect("a built store block is text").into_boxed_str()
             });
             text.push_str(block.get(start as usize..(start + length) as usize)?);
         }

@@ -2,7 +2,7 @@
 // in its row's color and lit by the earth's daylight. Areas lie under anything drawn after them,
 // and where depth varies, under every pixel that blends: they test depth but do not write it. The
 // focus variant redraws the lit rows' triangles over everything, tinted toward the theme's focus
-// colors.
+// colors. The shaded variants call an application's `shade` for each pixel.
 
 import package::lib::types::{SELECTED, HOVERED};
 import package::lib::bind::frame;
@@ -11,6 +11,7 @@ import package::lib::triangles::{triangle_vertex, triangle_instances, corner_cli
 import package::lib::focus::focus_of;
 import package::lib::daylight::daylight;
 import package::lib::color::output;
+import package::lib::shade::shade_fragment;
 
 struct Varyings {
     @builtin(position) clip: vec4f,
@@ -41,16 +42,27 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     return out;
 }
 
+// The row's color at the pixel, shaded.
+fn colored(v: Varyings) -> vec4f {
+    var color = v.color;
+    @if(shaded) {
+        color = shade(shade_fragment(color, v.clip.xy, vec2f(0.0), v.row));
+    }
+    return color;
+}
+
 @if(!focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return output(vec4f(v.color.rgb * v.color.a, v.color.a));
+    let color = colored(v);
+    return output(vec4f(color.rgb * color.a, color.a));
 }
 
 @if(focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    var rgb = v.color.rgb;
+    let color = colored(v);
+    var rgb = color.rgb;
     let focus = v.focus;
     if (focus & SELECTED) != 0u {
         // A selected color with a negative red means each row's own color, brightened.
@@ -59,5 +71,5 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     } else if (focus & HOVERED) != 0u {
         rgb = mix(rgb, frame.hover.rgb, 0.6 * frame.hover.a);
     }
-    return output(vec4f(rgb * v.color.a, v.color.a));
+    return output(vec4f(rgb * color.a, color.a));
 }

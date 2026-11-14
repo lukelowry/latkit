@@ -13,16 +13,14 @@ fn trace_cursor(row: u32) -> vec3u {
 }
 
 // Coordinate high/low and value bits; a missing value represents a hidden point.
+// Both words are read whatever the point, and a point past the plan or without a value selects
+// missing (see `lib/read.wesl`).
 fn trace_read(base: vec3u, point: u32) -> vec3u {
-    if point >= base.y {
-        return vec3u(0u, 0u, MISSING);
-    }
     let slot = (mark.trace_head + point) & (mark.trace_capacity - 1u);
     let cursor = word_quad(program_words, base.x + 4u * slot);
-    if cursor.z == NONE || base.z >= cursor.w {
-        return vec3u(0u, 0u, MISSING);
-    }
-    return vec3u(cursor.xy, word(cursor.z + base.z));
+    let value = word(cursor.z + base.z);
+    let missing = (point >= base.y) | (cursor.z == NONE) | (base.z >= cursor.w);
+    return select(vec3u(cursor.xy, value), vec3u(0u, 0u, MISSING), missing);
 }
 
 fn trace_sample(row: u32, point: u32) -> vec3u {

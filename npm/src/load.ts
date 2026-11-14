@@ -8,16 +8,12 @@ import { translator } from './wgsl.js';
 
 interface Configured {
   wasm?: string | WebAssembly.Module;
-  shaders?: string;
   wgsl?: string | WebAssembly.Module;
   worker?: string | (() => Worker);
 }
 
 let configured: Configured | undefined;
 let loading: Promise<void> | undefined;
-
-/** The shaders' download and handover, while it runs or once it succeeded. */
-let shaders: Promise<void> | undefined;
 
 /** The GPU device requested while loading, kept until the first `Gpu.create()` takes it. */
 let first: Promise<bindings.Gpu> | undefined;
@@ -26,21 +22,15 @@ let first: Promise<bindings.Gpu> | undefined;
  * Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
  * load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
  * load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
- * also downloads the shaders, then creates the first WebGL2 device for `Gpu.create()`. Only
- * drawing needs the shaders, so a failed download fails `Gpu.create()`, not `load()`.
+ * also creates the first WebGL2 device for `Gpu.create()`.
  */
 export function load(
   options: {
     /**
-     * The URL of this version's `latkit/wasm` asset, or that asset compiled. Defaults to the
-     * bundled asset.
+     * The URL of this version's `latkit/wasm` asset, or that asset compiled. It carries the
+     * shaders, translated for WebGL2 when the package was built. Defaults to the bundled asset.
      */
     wasm?: string | URL | WebAssembly.Module;
-    /**
-     * The URL of this version's `latkit/shaders` asset: the shaders translated for WebGL2. Defaults
-     * to the bundled asset.
-     */
-    shaders?: string | URL;
     /**
      * The URL of this version's `latkit/wgsl` asset, the WebAssembly that translates custom
      * markers' WGSL, or that asset compiled. A page loads it the first time it draws a custom
@@ -49,8 +39,9 @@ export function load(
     wgsl?: string | URL | WebAssembly.Module;
     /**
      * The URL of this version's standalone `latkit/worker` asset, or a function that creates a
-     * worker running it. A URL on another origin, such as a CDN, starts through a script on the
-     * page's origin, since browsers start workers only from there. Defaults to the bundled worker.
+     * worker running it. A browser starts workers only from the page's origin, so the page fetches
+     * a worker on another origin, such as a CDN or a webview's resources, and starts it from a
+     * blob. Defaults to the bundled worker.
      */
     worker?: string | URL | (() => Worker);
   } = {},
@@ -59,7 +50,6 @@ export function load(
   const text = <T>(value: T | URL) => (value instanceof URL ? value.href : value);
   const asked: Configured = {
     wasm: text(options.wasm),
-    shaders: text(options.shaders),
     wgsl: text(options.wgsl),
     worker: text(options.worker),
   };
@@ -84,89 +74,59 @@ export function load(
 
 /**
  * Instantiates the bindings, installs the job workers, the WGSL translator, and the video encoder
- * where the browser has them. Where a browser canvas is available, including workers, the shaders
- * download meanwhile, and once handed over, the first GPU device is requested.
+ * where the browser has them. A worker on another origin is fetched meanwhile. Where a browser
+ * canvas is available, including workers, the first GPU device is then requested.
  */
 async function initialize(options: Configured) {
-  const drawing = typeof OffscreenCanvas === 'function' || typeof document !== 'undefined';
   const instantiated = init(
     options.wasm === undefined ? undefined : { module_or_path: options.wasm },
   );
-  const handed = drawing ? download(instantiated) : undefined;
+  const worker =
+    typeof options.worker === 'function'
+      ? Promise.resolve(options.worker)
+      : typeof Worker === 'function'
+        ? workerAt(options.worker ?? new URL('./worker.js', import.meta.url).href)
+        : undefined;
   await instantiated;
   bindings.onStop(stop);
   bindings.setTranslator(translator(options.wgsl));
-  const worker = typeof options.worker === 'string' ? workerAt(options.worker) : options.worker;
-  if (worker || typeof Worker === 'function')
-    bindings.setJobs(jobs(bindings.module() as WebAssembly.Module, worker));
+  if (worker) bindings.setJobs(jobs(bindings.module() as WebAssembly.Module, await worker));
   if (typeof VideoEncoder === 'function') bindings.setEncoder(encoder);
   loaded(bindings);
-  if (handed) {
-    const device = handed.then(() => bindings.Gpu.create());
+  if (typeof OffscreenCanvas === 'function' || typeof document !== 'undefined') {
+    const device = bindings.Gpu.create();
     device.catch(() => {});
     first = device;
-    // A failed download leaves no device for `Gpu.create()` to take: it downloads again.
-    handed.catch(() => {
-      if (first === device) first = undefined;
-    });
   }
 }
 
 /**
- * Downloads the shaders meanwhile, and hands them over once `instantiated` resolves. A failure
- * rejects with an `io` error, and the next `Gpu.create()` downloads them again.
+ * Creates workers running the worker bundle at `url`. A browser starts workers only from the
+ * page's origin, so the page fetches a bundle on another origin and starts it from a blob. If that
+ * fetch fails, each job fails with an `io` error.
  */
-function download(instantiated: Promise<unknown>): Promise<void> {
-  const at = configured?.shaders ?? new URL('../pkg/latkit_shaders.bin', import.meta.url);
-  const bytes = fetched(at);
-  const handed = Promise.all([bytes, instantiated]).then(([shaders]) =>
-    bindings.setShaders(shaders),
-  );
-  const tried: Promise<void> = handed.catch((cause: unknown) => {
-    if (shaders === tried) shaders = undefined;
-    throw thrown({
-      code: 'io',
-      message: `could not load latkit's shaders from ${String(at)}`,
-      cause,
-    });
-  });
-  tried.catch(() => {});
-  shaders = tried;
-  return tried;
-}
-
-/**
- * @internal Resolves once the shaders are handed over, downloading them again if the last download
- * failed. Rejects with an `io` error if they cannot be. Without a browser canvas, there is nothing
- * to draw on, and it resolves at once.
- */
-export function shadersLoaded(): Promise<void> {
-  const drawing = typeof OffscreenCanvas === 'function' || typeof document !== 'undefined';
-  if (!drawing) return Promise.resolve();
-  return shaders ?? download(Promise.resolve());
-}
-
-/** The bytes at `url`. Fails on a status other than 200. */
-async function fetched(url: string | URL): Promise<Uint8Array> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`${String(url)} answered HTTP ${response.status}`);
-  return new Uint8Array(await response.arrayBuffer());
-}
-
-/**
- * Creates workers running the worker bundle at `url`. One on another origin starts through a blob
- * on the page's origin that imports it.
- */
-function workerAt(url: string): () => Worker {
+async function workerAt(url: string): Promise<() => Worker> {
   const page = globalThis.location?.href;
   const href = new URL(url, page).href;
-  const script =
-    page === undefined || new URL(href).origin === new URL(page).origin
-      ? href
-      : URL.createObjectURL(
-          new Blob([`importScripts(${JSON.stringify(href)});`], { type: 'text/javascript' }),
-        );
-  return () => new Worker(script);
+  if (page === undefined || new URL(href).origin === new URL(page).origin)
+    return () => new Worker(href);
+  try {
+    const response = await fetch(href);
+    if (!response.ok) throw new Error(`${href} answered HTTP ${response.status}`);
+    const script = URL.createObjectURL(
+      new Blob([await response.arrayBuffer()], { type: 'text/javascript' }),
+    );
+    return () => new Worker(script);
+  } catch (cause) {
+    const error = thrown({
+      code: 'io',
+      message: `could not load latkit's worker from ${href}`,
+      cause,
+    });
+    return () => {
+      throw error;
+    };
+  }
 }
 
 /**

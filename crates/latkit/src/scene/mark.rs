@@ -100,6 +100,7 @@ pub(crate) struct Style {
     pub(crate) interaction: Interaction,
     pub(crate) label: Option<Label>,
     pub(crate) legend: Option<super::Legend>,
+    pub(crate) shade: Option<super::Shade>,
 }
 
 /// Options of marks that draw strokes: edges and lines.
@@ -172,6 +173,7 @@ impl Style {
             interaction: Interaction::default(),
             label: None,
             legend: None,
+            shade: None,
         }
     }
 }
@@ -217,28 +219,19 @@ impl MarkKind {
         }
     }
 
-    /// The shaders drawing its rows and its focused rows. With `custom`, both draw the
-    /// vertex mark's application-defined marker.
-    pub(crate) fn shaders(self, custom: bool) -> (wgsl::Shader, wgsl::Shader) {
+    /// The shaders drawing its rows and its focused rows: those calling a vertex mark's custom
+    /// `marker`, a mark's `shade`, both, or neither.
+    pub(crate) fn shaders(self, custom: bool, shaded: bool) -> (wgsl::Shader, wgsl::Shader) {
         use wgsl::Shader;
-        match self {
-            MarkKind::Vertices if custom => (Shader::PointsCustom, Shader::PointsCustomFocus),
-            MarkKind::Vertices => (Shader::Points, Shader::PointsFocus),
-            MarkKind::Edges | MarkKind::Lines => (Shader::Strokes, Shader::StrokesFocus),
-            MarkKind::Areas => (Shader::Areas, Shader::AreasFocus),
-        }
-    }
-
-    /// The shader that draws its rows' opaque pixels where depth varies, before any pixel blends:
-    /// the opaque variant of points and strokes (with `custom`, for a vertex mark's custom marker),
-    /// and the rows of areas, which lie on the ground.
-    pub(crate) fn opaque_shader(self, custom: bool) -> wgsl::Shader {
-        use wgsl::Shader;
-        match self {
-            MarkKind::Vertices if custom => Shader::PointsCustom,
-            MarkKind::Vertices => Shader::Points,
-            MarkKind::Edges | MarkKind::Lines => Shader::Strokes,
-            MarkKind::Areas => Shader::Areas,
+        match (self, custom, shaded) {
+            (MarkKind::Vertices, false, false) => (Shader::Points, Shader::PointsFocus),
+            (MarkKind::Vertices, true, false) => (Shader::PointsCustom, Shader::PointsCustomFocus),
+            (MarkKind::Vertices, false, true) => (Shader::PointsShaded, Shader::PointsShadedFocus),
+            (MarkKind::Vertices, true, true) => (Shader::PointsCustomShaded, Shader::PointsCustomShadedFocus),
+            (MarkKind::Edges | MarkKind::Lines, _, false) => (Shader::Strokes, Shader::StrokesFocus),
+            (MarkKind::Edges | MarkKind::Lines, _, true) => (Shader::StrokesShaded, Shader::StrokesShadedFocus),
+            (MarkKind::Areas, _, false) => (Shader::Areas, Shader::AreasFocus),
+            (MarkKind::Areas, _, true) => (Shader::AreasShaded, Shader::AreasShadedFocus),
         }
     }
 
@@ -320,8 +313,16 @@ pub(crate) struct Markers {
     pub(crate) palette: Vec<u32>,
     /// An icon marker's images.
     pub(crate) icons: Vec<crate::Image>,
-    /// A custom marker's WGSL.
-    pub(crate) custom: Option<std::sync::Arc<str>>,
+}
+
+/// How a compiled mark's shade reads its rows: how many inputs, the extra word holding the first,
+/// and whether it reads the time or the pointer, which then draw it again.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Shading {
+    pub(crate) inputs: u32,
+    pub(crate) input: u32,
+    pub(crate) timed: bool,
+    pub(crate) pointed: bool,
 }
 
 /// How a compiled mark's labels draw: the extra word where the label words start, the program
@@ -372,6 +373,7 @@ pub(crate) struct Drawing {
     pub(crate) geometry: u32,
     pub(crate) lane: u32,
     pub(crate) label: Option<Labeling>,
+    pub(crate) shade: Option<Shading>,
     /// CSS pixel bounds on the mark's size: a vertex's half-size, or a stroke's width.
     pub(crate) size_px: [f32; 2],
 }
@@ -389,6 +391,7 @@ impl Drawing {
             geometry: wgsl::NONE,
             lane: wgsl::NONE,
             label: None,
+            shade: None,
             size_px: crate::Size::ANY,
         }
     }
@@ -485,6 +488,9 @@ impl Mark {
         if let Some(label) = &style.label {
             [&label.text].into_iter().chain(&label.color).for_each(&mut *f);
         }
+        if let Some(shade) = &style.shade {
+            shade.inputs.iter().for_each(&mut *f);
+        }
         let stroke = match self {
             Mark::Edges(m) => Some(&m.stroke),
             Mark::Lines(m) => Some(&m.stroke),
@@ -535,6 +541,15 @@ impl Mark {
         a == *other
     }
 
+    /// The hooks its draw shaders call: a vertex mark's custom marker, and its shade.
+    pub(crate) fn hooks(&self) -> crate::gpu::hooks::Hooks {
+        let marker = match self {
+            Mark::Vertices(vertices) => vertices.marker.hook().cloned(),
+            _ => None,
+        };
+        crate::gpu::hooks::Hooks { marker, shade: self.style().shade.as_ref().map(|shade| shade.source.clone()) }
+    }
+
     pub(crate) fn compile(&self, compiler: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
         let mut drawing = match self {
             Mark::Vertices(m) => m.compile(compiler, context),
@@ -550,8 +565,31 @@ impl Mark {
         if let Some(label) = &style.label {
             compiler.within("label", |c| compile_label(label, c, context, &mut drawing))?;
         }
+        if let Some(shade) = &style.shade {
+            compiler.within("shade", |c| compile_shade(shade, c, &mut drawing))?;
+        }
         Ok(drawing)
     }
+}
+
+/// Compiles a shade's inputs into extra words after the mark's others.
+fn compile_shade(shade: &super::Shade, c: &mut Compiler<'_>, drawing: &mut Drawing) -> Result<()> {
+    if shade.inputs.len() > 8 {
+        return Err(Error::invalid("a shade reads at most eight inputs").at("inputs"));
+    }
+    let first = drawing.extras;
+    for (i, input) in shade.inputs.iter().enumerate() {
+        let store = Store::Number { word: drawing.kind.stride() + first + i as u32, fallback: None };
+        c.within("inputs", |c| c.within(i, |c| c.channel(&format!("shade{i}"), input, store)))?;
+    }
+    drawing.extras += shade.inputs.len() as u32;
+    drawing.shade = Some(Shading {
+        inputs: shade.inputs.len() as u32,
+        input: first,
+        timed: shade.reads("elapsed"),
+        pointed: shade.reads("pointer"),
+    });
+    Ok(())
 }
 
 /// Compiles `label`'s text or number and color into extra words after the mark's own. A number is
@@ -610,7 +648,8 @@ pub(crate) fn described(lines: &[&str]) -> String {
 
 /// The options every mark's JSON form has, and those of the marks drawn as strokes. The key naming
 /// the kind stays in each mark's own form.
-const MARK_OPTIONS: [&str; 9] = ["color", "visible", "priority", "name", "pick", "select", "drag", "label", "legend"];
+const MARK_OPTIONS: [&str; 10] =
+    ["color", "visible", "priority", "name", "pick", "select", "drag", "label", "legend", "shade"];
 const STROKE_OPTIONS: [&str; 3] = ["width", "dash", "flow"];
 
 /// Builds a mark's schema from its form's schema. The options every mark has move to a
@@ -778,6 +817,9 @@ macro_rules! mark {
             label: Option<$crate::Label>,
             /// A legend of the mark's colors: its title, or legend options.
             legend: Option<$crate::Legend>,
+            /// WGSL that colors each pixel of the rows before it blends: its source and inputs. See
+            /// [`Shade`](crate::Shade).
+            shade: Option<$crate::Shade>,
         }
 
         impl Form {
@@ -792,6 +834,7 @@ macro_rules! mark {
                     interaction: $crate::scene::mark::Interaction { pick: self.pick, select: self.select, drag: self.drag },
                     label: self.label.clone(),
                     legend: self.legend.clone(),
+                    shade: self.shade.clone(),
                 }
             }
         }
@@ -894,6 +937,14 @@ macro_rules! style_methods {
             #[must_use]
             pub fn legend(mut self, legend: impl Into<$crate::Legend>) -> Self {
                 self.style.legend = Some(legend.into());
+                self
+            }
+
+            /// Colors each pixel of the rows with WGSL before it blends. See
+            /// [`Shade`](crate::Shade).
+            #[must_use]
+            pub fn shade(mut self, shade: $crate::Shade) -> Self {
+                self.style.shade = Some(shade);
                 self
             }
         }

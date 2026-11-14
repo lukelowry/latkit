@@ -1,6 +1,6 @@
 // Reading evaluated rows. Each mark keeps its per-row words in pages of `PAGE_ROWS` held rows,
 // listed by the page table at `mark.state`. A row has `mark.stride` kind words, then `mark.extras`
-// extra words (labels, marker inputs, trailing texel padding). An edge reads its vertices through the page
+// extra words (marker inputs, labels, shade inputs, trailing texel padding). An edge reads its vertices through the page
 // tables of the vertex marks that draw them, which its ends list.
 
 import package::lib::types::{
@@ -80,6 +80,16 @@ fn extra_at(row: u32, w: u32) -> u32 {
     return row_at(row) + mark.stride + w;
 }
 
+// `count` (at most eight) of the current mark's extra words of `row` from `first`, as numbers: a
+// marker's or a shade's inputs.
+fn row_inputs(row: u32, first: u32, count: u32) -> array<f32, 8> {
+    var input = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for (var i = 0u; i < min(count, 8u); i++) {
+        input[i] = bitcast<f32>(word(extra_at(row, first + i)));
+    }
+    return input;
+}
+
 fn vertex_at(at: u32) -> Vertex {
     // Compiled row widths and arena pages are multiples of four words.
     let a = word_quad(pages, at);
@@ -102,7 +112,7 @@ fn end_vertex(end: u32, held: u32) -> Vertex {
 // Whether an edge's ends `a` and `b`, held rows of the vertex marks its two ends attach to, are the
 // same vertex.
 fn same_vertex(a: u32, b: u32) -> bool {
-    return a == b && mark.from_state == mark.to_state;
+    return (a == b) & (mark.from_state == mark.to_state);
 }
 
 fn edge_at(at: u32) -> Edge {

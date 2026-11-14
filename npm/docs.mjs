@@ -842,6 +842,7 @@ const sections = {
         'Areas',
         'Marker',
         'Shape',
+        'Shade',
         'Bitmap',
         'Route',
         'Interpolation',

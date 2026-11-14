@@ -16,6 +16,7 @@ use super::View;
 use super::camera::Bounds;
 use super::event::Fit;
 use super::marks::Shown;
+use super::variants::Stage;
 use crate::derive::Working;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
@@ -161,7 +162,8 @@ impl View {
 
     /// Applies a box fit, a plot's fit to its traces' span, or measured extents that arrived.
     pub(super) fn settle_fit(&mut self) {
-        if !self.sized() {
+        // A fit asked for while a scene is incoming frames that scene.
+        if !self.sized() || self.incoming.is_some() {
             return;
         }
         match &self.fitting.wanted {
@@ -228,7 +230,7 @@ impl View {
 
     /// What this frame measures, if anything: a fit whose marks are drawn, or a plot's traces.
     pub(super) fn measuring(&mut self) -> Option<Measure> {
-        if self.fitting.reading.busy() || !self.sized() {
+        if self.fitting.reading.busy() || !self.sized() || self.incoming.is_some() {
             return None;
         }
         // A plot with traces fits everything to their whole span once their data is available.
@@ -258,6 +260,10 @@ impl View {
                 self.applied();
                 return None;
             }
+            // Rows are measured once the passes measuring them have compiled.
+            if ready && !self.can_use(Stage::Fit) {
+                return None;
+            }
             if !ready {
                 // Nothing to frame: every mark fits measure has failed, or has synced and holds no
                 // rows. Rows arriving wake the view.
@@ -275,11 +281,28 @@ impl View {
             return Some(Measure { rows: matches!(fit, Fit::Rows(_) | Fit::Reveal(_)), fit: Some(fit) });
         }
         let auto = matches!(self.camera, Camera::Plot { y: None, .. });
-        if auto && self.fitting.plot_due && ready && self.marks.iter().any(|m| m.kind() == MarkKind::Lines) {
+        let lines = self.marks.iter().any(|m| m.kind() == MarkKind::Lines);
+        if auto && self.fitting.plot_due && ready && lines && self.can_use(Stage::Fit) {
             self.fitting.plot_due = false;
             return Some(Measure { rows: false, fit: None });
         }
         None
+    }
+
+    /// Whether a fit will measure rows on the GPU: one asked for that is not a box, or a plot's value
+    /// range following its traces. Its passes are then as urgent as drawing.
+    pub(super) fn measures(&self) -> bool {
+        let asked = self.fitting.wanted.as_ref().is_some_and(|fit| !matches!(fit, Fit::Bounds { .. }));
+        let traced = matches!(self.camera, Camera::Plot { y: None, .. })
+            && self.marks.iter().any(|m| m.kind() == MarkKind::Lines);
+        asked || traced
+    }
+
+    /// Whether a fit is due and can measure: the view is not limited, the passes measuring rows
+    /// have compiled, and no scene is incoming, which the fit is then for. A compile landing wakes
+    /// the view.
+    pub(super) fn measure_due(&self) -> bool {
+        self.fitting.due() && !self.limited && self.can_use(Stage::Fit) && self.incoming.is_none()
     }
 
     pub(super) fn measuring_started(&mut self, readback: Readback, fit: Option<Fit>) {

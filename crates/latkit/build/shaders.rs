@@ -11,10 +11,12 @@
 //! into exactly the module it linked.
 //!
 //! For the browser, every entry point of every specialization pipelines use is translated to GLSL
-//! ES 3.00 here (see `src/gpu/glsl.rs`), so the page translates nothing. The translations go in
-//! `OUT_DIR/shaders.bin` (see [`Store`]), with the linked WGSL of the custom marker shaders, which
-//! translate once a page draws a custom marker. The channel shader's evaluating entries are
-//! translated without their kernel, which the page writes in GLSL for each program and appends.
+//! ES 3.00 here (see `src/gpu/glsl.rs`), so the page translates only what an application writes.
+//! The translations go in `OUT_DIR/shaders.bin` (see [`Store`]), which the browser build carries in
+//! its WebAssembly. The channel shader's evaluating entries are translated without their kernel,
+//! which the page writes in GLSL for each program and appends. The draw shaders' custom and shaded
+//! variants are translated with each hook they call left a declaration, which the hook the page
+//! translates defines (see `src/gpu/hooks.rs`). `HOOKS` holds the structs hooks read.
 //!
 //! It also writes the module of every specialization pipelines use, exactly as the runtime writes
 //! it (see `src/gpu/specialize.rs`) and validated, with each entry's GLSL, and
@@ -55,13 +57,33 @@ const ENTRIES: &[Entry] = &[
         module: "draw::points",
         variants: &[
             ("main", &[]),
+            ("focus", &["focused"]),
             ("custom", &["custom"]),
             ("custom_focus", &["custom", "focused"]),
-            ("focus", &["focused"]),
+            ("shaded", &["shaded"]),
+            ("shaded_focus", &["shaded", "focused"]),
+            ("custom_shaded", &["custom", "shaded"]),
+            ("custom_shaded_focus", &["custom", "shaded", "focused"]),
         ],
     },
-    Entry { module: "draw::strokes", variants: &[("main", &[]), ("focus", &["focused"])] },
-    Entry { module: "draw::areas", variants: &[("main", &[]), ("focus", &["focused"])] },
+    Entry {
+        module: "draw::strokes",
+        variants: &[
+            ("main", &[]),
+            ("focus", &["focused"]),
+            ("shaded", &["shaded"]),
+            ("shaded_focus", &["shaded", "focused"]),
+        ],
+    },
+    Entry {
+        module: "draw::areas",
+        variants: &[
+            ("main", &[]),
+            ("focus", &["focused"]),
+            ("shaded", &["shaded"]),
+            ("shaded_focus", &["shaded", "focused"]),
+        ],
+    },
     Entry { module: "draw::glyphs", variants: &[("main", &[])] },
     Entry { module: "raster::metadata", variants: &[("main", &[])] },
     Entry { module: "raster::claims", variants: &[("main", &[])] },
@@ -72,10 +94,15 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::fields", variants: &[("main", &[]), ("columns", &["columns"])] },
 ];
 
-const FEATURES: &[&str] = &["custom", "focused", "columns", "scatter", "gather"];
+const FEATURES: &[&str] = &["custom", "shaded", "focused", "columns", "scatter", "gather"];
 
-/// A placeholder custom marker function, appended to validate the custom variants.
-const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";
+/// The hooks a variant calls, by the feature that calls each: the function's name and a
+/// placeholder definition, appended to validate and translate the variant. The browser's copy
+/// keeps each hook a declaration, which the application's hook defines.
+const HOOKS: [(&str, &str, &str); 2] = [
+    ("custom", "marker", "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }"),
+    ("shaded", "shade", "fn shade(f: ShadeFragment) -> vec4f { return f.color; }"),
+];
 
 /// The channel shader's entry points that run a mark's kernel.
 const KERNEL_ENTRIES: [&str; 2] = ["evaluate", "reduce"];
@@ -180,6 +207,14 @@ pub(crate) fn generate() {
     mirror_consts(&types_module, &mut rust);
     mirror_structs(&types_module, &mut rust);
 
+    let hooks = link(&root, "lib::hooks", &[], true);
+    validate("lib::hooks", &hooks);
+    writeln!(
+        rust,
+        "/// The structs an application's hooks read: `lib/hooks.wesl`.\npub(crate) const HOOKS: &str = {hooks:?};\n"
+    )
+    .unwrap();
+
     let bind = link(&root, "lib::bind", &[], true);
     let (bind_module, _) = validate("lib::bind", &bind);
     for (group, name) in [(0, "VIEW_GROUP"), (1, "MARK_GROUP")] {
@@ -188,7 +223,7 @@ pub(crate) fn generate() {
     }
 
     // A browser build draws on its own WebGL2 device with the GLSL translated here, so it carries no
-    // WGSL but the custom marker shaders', which go in the store.
+    // WGSL.
     let browser = env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|arch| arch == "wasm32");
     let mut shaders = String::new();
     let mut sources = String::new();
@@ -198,12 +233,19 @@ pub(crate) fn generate() {
     for entry in ENTRIES {
         for &(variant, features) in entry.variants {
             let source = link(&root, entry.module, features, false);
-            // Custom variants lack the application's marker, so validation appends a placeholder.
-            let custom = features.contains(&"custom");
-            let checked = if custom { format!("{source}\n{CUSTOM_MARKER}") } else { source.clone() };
+            // A variant calling hooks lacks the application's, so validation appends placeholders.
+            let hooks: Vec<(&str, &str)> = HOOKS
+                .iter()
+                .filter(|(feature, ..)| features.contains(feature))
+                .map(|&(_, name, stub)| (name, stub))
+                .collect();
+            let called: Vec<&str> = hooks.iter().map(|(name, _)| *name).collect();
+            let stubs = hooks.iter().map(|(_, stub)| *stub).collect::<Vec<_>>().join("\n");
+            let checked = if hooks.is_empty() { source.clone() } else { format!("{source}\n{stubs}") };
             let (module, info) = validate(&format!("{}.{variant}", entry.module), &checked);
             check_shared(&module, &bind_module, entry.module);
             check_targets(&module, entry.module);
+            check_brace_bools(&module, &info, entry.module);
             let names = constant_names(&module);
             let constants = constants(&module, &names, &source);
             let file = format!("{}.{variant}", entry.module.replace("::", "."));
@@ -216,14 +258,12 @@ pub(crate) fn generate() {
                 constants: &constants,
                 module: &module,
                 types: &types_module,
-                custom,
+                hooks: &called,
+                stubs: &stubs,
             };
             let (entries, specializations) = shader.specializations(&out, &mut pieces, &mut store, browser);
             manifest.extend(entries);
             let label = format!("latkit {}.{variant}", entry.module);
-            if custom {
-                store.add(&format!("wgsl {label}"), &source);
-            }
             writeln!(shaders, "    {name},").unwrap();
             let pass = bindings(&module, (entry.module != "raster::state").then_some(&info), 2);
             let constants: Vec<String> = constants
@@ -231,8 +271,7 @@ pub(crate) fn generate() {
                 .map(|c| format!("Constant {{ name: {:?}, at: {}, bool: {} }}", c.name, c.at, c.bool))
                 .collect();
             let shared = module.global_variables.iter().any(|(_, g)| g.binding.as_ref().is_some_and(|b| b.group < 2));
-            let entry_constants =
-                if custom || entry.module == "raster::state" { Vec::new() } else { entry_constants(&module) };
+            let entry_constants = if entry.module == "raster::state" { Vec::new() } else { entry_constants(&module) };
             // Natively, a shader's WGSL joins its declarations. The browser build's shaders are in
             // its store instead.
             let declarations = if browser {
@@ -252,16 +291,7 @@ pub(crate) fn generate() {
         }
     }
     fs::write(out.join("shaders.wgsl"), &pieces.text).unwrap();
-    let store = store.finish();
-    if browser {
-        writeln!(
-            rust,
-            "/// The stamp of the `shaders.bin` this build wrote. The page must hand over exactly that file.\npub(crate) const STORE: u64 = {:#018x};\n",
-            stamp(&store)
-        )
-        .unwrap();
-    }
-    fs::write(out.join("shaders.bin"), store).unwrap();
+    fs::write(out.join("shaders.bin"), store.finish()).unwrap();
     writeln!(
         rust,
         "/// Each declaration's byte range in `shaders.wgsl`.\n#[cfg(not(target_arch = \"wasm32\"))]\npub(crate) static PIECES: &[(u32, u32)] = &{:?};\n",
@@ -363,15 +393,16 @@ struct Specializing<'a> {
     constants: &'a [Constant<'a>],
     module: &'a naga::Module,
     types: &'a naga::Module,
-    /// Whether it lacks a custom marker's function, which validation appends a placeholder for.
-    custom: bool,
+    /// The hooks it calls, which the application defines, and their placeholders.
+    hooks: &'a [&'a str],
+    stubs: &'a str,
 }
 
 impl Specializing<'_> {
     /// Writes the module of each specialization pipelines use, as the runtime writes it, and
-    /// validates it, then translates each entry point to GLSL for the browser's `store`, except a
-    /// custom marker shader's. Returns each module as JSON for the browser gate and, natively, the
-    /// `Specialization` of each pruned module for the runtime, with its declarations in `pieces`.
+    /// validates it, then translates each entry point to GLSL for the browser's `store`. Returns each
+    /// module as JSON for the browser gate and, natively, the `Specialization` of each module for the
+    /// runtime, with its declarations in `pieces`: pruned, unless hooks complete it.
     fn specializations(
         &self,
         out: &Path,
@@ -410,9 +441,7 @@ impl Specializing<'_> {
                 continue;
             }
             let file = format!("{file}.wgsl");
-            if self.custom {
-                Self::write(out, &file, &specialized, CUSTOM_MARKER);
-            } else {
+            if self.hooks.is_empty() {
                 let pruned = prune(&specialized);
                 if !browser {
                     let refs = pieces.add(&pruned);
@@ -420,6 +449,17 @@ impl Specializing<'_> {
                 }
                 for (entry, glsl) in Self::write(out, &file, &pruned, "") {
                     store.add(&format!("{} {entry} {numbers:?}", self.name), &glsl);
+                }
+            } else {
+                // Natively the application's hooks follow the module. In a browser they complete its
+                // GLSL, which keeps each hook a declaration.
+                if !browser {
+                    let refs = pieces.add(&specialized);
+                    specializations.push(format!("Specialization {{ values: &{numbers:?}, pieces: &{refs:?} }}"));
+                }
+                let pruned = prune(&format!("{specialized}\n{}", self.stubs));
+                for (entry, glsl) in Self::write(out, &file, &pruned, "") {
+                    store.add(&format!("{} {entry} {numbers:?}", self.name), &hooked(&glsl, &entry, self.hooks));
                 }
             }
             manifest.push(format!("  {{ \"file\": {file:?} }}"));
@@ -470,27 +510,51 @@ fn gate_entry(file: &str, entry: &str, stage: naga::ShaderStage, glsl: &str) -> 
     )
 }
 
+/// Whether top-level GLSL `glsl` defines a function named `name`.
+fn defines(glsl: &str, name: &str) -> bool {
+    glsl.lines().any(|line| {
+        !line.starts_with([' ', '/', '#'])
+            && line.split('(').next().is_some_and(|head| head.ends_with(&format!(" {name}")))
+    })
+}
+
 /// The GLSL of a kernel entry translated with [`reference_kernel`], with the functions a kernel
 /// writes left as declarations, which the kernel a page appends defines. Asserts that the
 /// functions kernels call kept their names.
 fn template(glsl: &str) -> String {
-    let defines = |name: &str| {
-        glsl.lines().any(|line| {
-            !line.starts_with([' ', '/', '#'])
-                && line.split('(').next().is_some_and(|head| head.ends_with(&format!(" {name}")))
-        })
-    };
     for name in KERNEL_CALLS {
-        assert!(defines(name), "translation renamed {name}, which kernels call:\n{glsl}");
+        assert!(defines(glsl, name), "translation renamed {name}, which kernels call:\n{glsl}");
     }
     assert!(glsl.contains("struct Reduction {"), "translation renamed Reduction, which kernels return");
+    declared(glsl, &["k_load_words", "k_channels", "k_run", "k_output"])
+}
+
+/// The GLSL of a draw entry translated with placeholder `hooks` (see [`HOOKS`]), with each hook
+/// left a declaration, which the hook a page appends defines. A vertex entry calls none. Asserts
+/// that translation kept the names of the hooks and of the structs they read.
+fn hooked(glsl: &str, entry: &str, hooks: &[&str]) -> String {
+    if entry == "vertex" {
+        return glsl.to_owned();
+    }
+    for hook in hooks {
+        assert!(defines(glsl, hook), "translation renamed {hook}, which an application defines:\n{glsl}");
+        let structs: &[&str] = if *hook == "marker" { &["MarkerFragment", "MarkerColor"] } else { &["ShadeFragment"] };
+        for name in structs {
+            assert!(glsl.contains(&format!("struct {name} {{")), "translation renamed {name}, which hooks read");
+        }
+    }
+    declared(glsl, hooks)
+}
+
+/// `glsl` with the top-level functions named `written` left as declarations, which GLSL appended
+/// after it defines.
+fn declared(glsl: &str, written: &[&str]) -> String {
     let mut out = String::with_capacity(glsl.len());
     let mut lines = glsl.split_inclusive('\n');
     while let Some(line) = lines.next() {
         let head = line.split('(').next().unwrap_or("");
-        let written =
-            ["k_load_words", "k_channels", "k_run", "k_output"].iter().any(|name| head.ends_with(&format!(" {name}")));
-        if written && !line.starts_with(' ') && line.trim_end().ends_with('{') {
+        let writes = written.iter().any(|name| head.ends_with(&format!(" {name}")));
+        if writes && !line.starts_with(' ') && line.trim_end().ends_with('{') {
             out.push_str(line.trim_end().trim_end_matches('{').trim_end());
             out.push_str(";\n");
             // Skip the body, which ends at the first closing brace in the first column.
@@ -506,11 +570,11 @@ fn template(glsl: &str) -> String {
     out
 }
 
-/// Deduplicated text for the browser: each translated entry's GLSL, and the custom marker shaders'
-/// WGSL, by key. Texts are split into chunks at blank lines and at each `struct` and `const`
-/// declaration, and each distinct chunk is stored once. Chunks are packed in their first order into
-/// blocks of about [`BLOCK`] bytes, each compressed with deflate on its own, so a page inflates only
-/// the blocks the shaders it compiles use.
+/// Deduplicated text for the browser: each translated entry's GLSL, by key. Texts are split into
+/// chunks at blank lines and at each `struct` and `const` declaration, and each distinct chunk is
+/// stored once. Chunks are packed in their first order into blocks of about [`BLOCK`] bytes, each
+/// compressed with deflate on its own, so a page inflates only the blocks the shaders it compiles
+/// use.
 ///
 /// `shaders.bin`, all little-endian: the index's compressed and inflated sizes and its deflate
 /// stream, then the block count, and each block's compressed and inflated sizes followed by its
@@ -525,12 +589,6 @@ struct Store {
 
 /// The inflated bytes of a store block, at most, unless one chunk is longer.
 const BLOCK: usize = 32 << 10;
-
-/// The 64-bit FNV-1a hash of `bytes`. `src/gpu/store.rs` stamps the file a page hands over the same
-/// way, and refuses it unless the stamps match.
-fn stamp(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
-}
 
 impl Store {
     fn add(&mut self, key: &str, text: &str) {
@@ -620,6 +678,39 @@ fn prune(source: &str) -> String {
         .expect("pruned shader is valid");
     naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::EXPLICIT_TYPES)
         .expect("pruned shader writes WGSL")
+}
+
+/// Asserts that no struct or array constructor in `module` takes a boolean `&` or `|`, even through
+/// a `let`, which Metal may write inline. Metal writes these constructors as brace initializers,
+/// where C++ evaluates `bool & bool` to an int that may not narrow back to bool, so the pipeline
+/// fails to compile on Apple GPUs. A `select` stays a bool.
+fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
+    let functions = module
+        .functions
+        .iter()
+        .map(|(handle, function)| (function, &info[handle]))
+        .chain(module.entry_points.iter().enumerate().map(|(i, entry)| (&entry.function, info.get_entry_point(i))));
+    for (function, types) in functions {
+        for (_, expression) in function.expressions.iter() {
+            let naga::Expression::Compose { ty, components } = expression else { continue };
+            if !matches!(module.types[*ty].inner, TypeInner::Struct { .. } | TypeInner::Array { .. }) {
+                continue;
+            }
+            for &component in components {
+                let combined = matches!(
+                    function.expressions[component],
+                    naga::Expression::Binary { op: naga::BinaryOperator::And | naga::BinaryOperator::InclusiveOr, .. }
+                );
+                let boolean =
+                    matches!(types[component].ty.inner_with(&module.types), TypeInner::Scalar(naga::Scalar::BOOL));
+                assert!(
+                    !(combined && boolean),
+                    "{name}: {} builds a struct or array from a boolean `&` or `|`, which Metal can't compile. Use `select`.",
+                    function.name.as_deref().unwrap_or("an entry point"),
+                );
+            }
+        }
+    }
 }
 
 /// Asserts that each fragment entry of `module` writes at most one color target. ANGLE on D3D11

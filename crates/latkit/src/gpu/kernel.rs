@@ -112,13 +112,13 @@ pub(crate) fn glsl_row_words(kernel: &str) -> Option<u32> {
     kernel.lines().next()?.strip_prefix("// ROW_WORDS ")?.parse().ok()
 }
 
-/// The GLSL program of `template`, an evaluation entry translated ahead of time, completed by
-/// `kernel`, without the functions `main` never calls. The translation keeps every function any
-/// kernel calls, and ANGLE passes uncalled functions on to the driver's compiler, which then takes
-/// longer.
+/// The GLSL program of `template`, an entry translated ahead of time, completed by `appended`: an
+/// evaluation entry's kernel, or a draw entry's hooks (see [`super::hooks`]). Functions `main`
+/// never calls are left out. The translation keeps every function any kernel calls, and ANGLE
+/// passes uncalled functions on to the driver's compiler, which then takes longer.
 #[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn linked(template: &str, kernel: &str) -> String {
-    let text = format!("{template}\n{kernel}");
+pub(crate) fn linked(template: &str, appended: &str) -> String {
+    let text = format!("{template}\n{appended}");
     // Top-level items: a line, or the lines up to where the braces that open on the first close.
     let mut items: Vec<&str> = Vec::new();
     let (mut start, mut depth) = (0, 0i32);
@@ -136,6 +136,9 @@ pub(crate) fn linked(template: &str, kernel: &str) -> String {
             functions.entry(name).or_default().push(item);
         }
     }
+    // A helper latkit writes into a shader and a hook alike, such as a packing function, is kept once.
+    let mut defined: hashbrown::HashSet<&str> = hashbrown::HashSet::new();
+    items.retain(|item| !(item.contains('{') && item.contains('}')) || defined.insert(item.trim()));
     let mut reached: hashbrown::HashSet<&str> = hashbrown::HashSet::from(["main"]);
     let mut next = vec!["main"];
     while let Some(name) = next.pop() {

@@ -85,6 +85,14 @@ impl Manifest {
             if !chunks(m.chunk) {
                 return Err(Error::invalid("a span must hold a multiple of 8 entries, from 8 to 2^20").at("chunk"));
             }
+            // Without these, different spans would share a URL, and draw each other's entries.
+            let names = |part: &str| m.url.contains(part);
+            if !(names("{level}") && names("{index}")) || (m.fields.len() > 1 && !names("{field}")) {
+                return Err(Error::invalid(
+                    "the span template must name {level} and {index}, and {field} when several fields are listed",
+                )
+                .at("url"));
+            }
             for (i, field) in m.fields.iter().enumerate() {
                 if field.levels > super::samples::MAX_LEVEL {
                     return Err(Error::invalid("sample levels must be from 0 to 21").at("levels").at(i).at("frames"));
@@ -226,6 +234,17 @@ mod tests {
             br#"{"data": "b", "chunk": 16, "url": "u", "frames": [{"table": "t", "field": "f", "levels": 0, "frames": [3, 1]}]}"#;
         let error = Manifest::from_bytes(backwards).expect("a manifest").unwrap_err();
         assert!(error.to_string().starts_with("frames.json.frames[0].frames"), "{error}");
+        let listing = |url: &str, fields: usize| {
+            let field = r#"{"table": "t", "field": "f", "levels": 0, "frames": [0, 8]}"#;
+            let fields = vec![field; fields].join(", ");
+            format!(r#"{{"data": "b", "chunk": 16, "url": "{url}", "frames": [{fields}]}}"#)
+        };
+        let template =
+            |url: &str, fields: usize| Manifest::from_bytes(listing(url, fields).as_bytes()).expect("a manifest");
+        assert!(template("{level}/{index}.latk", 1).is_ok(), "one field needs no {{field}}");
+        let error = template("{field}/{index}.latk", 1).unwrap_err();
+        assert!(error.to_string().starts_with("frames.json.url"), "{error}");
+        assert!(template("{level}/{index}.latk", 2).is_err(), "two fields need {{field}}");
         assert!(data.to_tiles(12, |_, _| Ok(())).is_err());
     }
 }

@@ -125,15 +125,6 @@ impl Browser {
     pub fn set_translator(translate: js_sys::Function) {
         TRANSLATOR.with(|translator| *translator.borrow_mut() = Some(translate));
     }
-
-    /// Hands over the shaders latkit's build translated for WebGL2: the bytes of `shaders.bin` in
-    /// the build's output, which the npm package serves as `latkit/shaders`. A [`Gpu`](crate::Gpu)
-    /// needs them, so the page loads them before creating one. Fails unless the bytes are exactly
-    /// the file this build wrote, so serve it from the same version as the WebAssembly. Later calls
-    /// change nothing.
-    pub fn set_shaders(bytes: Vec<u8>) -> crate::Result<()> {
-        crate::gpu::store::set(bytes)
-    }
 }
 
 /// An encoder made by the page. Its `encode` and `finish` return promises of units.

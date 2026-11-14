@@ -1,7 +1,7 @@
-//! The tile cache holds each tile source a GPU's views draw, by URL. A source is opened once, and
-//! its pieces are fetched and decoded once for every set drawing them. It is released once no set
-//! draws it. When work for a source finishes, it wakes every set drawing the source, so a piece one
-//! view fetched draws in all of them.
+//! The tile cache holds each tile source a GPU's views draw, by URL and fetch. A source is opened
+//! once, and its pieces are fetched and decoded once for every set drawing them. It is released once
+//! no set draws it. When work for a source finishes, it wakes every set drawing the source, so a
+//! piece one view fetched draws in all of them.
 
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::task::Waker;
 
 use rustc_hash::FxHashMap;
 
-use super::{frames, vector};
+use super::{Shared, Tiles, frames, vector};
 use crate::data::Manifest;
 use crate::derive::Jobs;
 use crate::host::Request;
@@ -20,10 +20,10 @@ use crate::{Error, Pending};
 /// in most archives, the root directory after it. Other sources are read whole.
 const ARCHIVE_FIRST: u64 = 16_384;
 
-/// Every tile source a GPU's views draw, by URL.
+/// Every tile source a GPU's views draw, by URL and fetch.
 #[derive(Default)]
 pub(crate) struct Cache {
-    sources: FxHashMap<Arc<str>, Fetched>,
+    sources: FxHashMap<Shared, Fetched>,
 }
 
 /// One tile source: its open state, the sets drawing it, and the waker that wakes them all as the
@@ -58,9 +58,9 @@ impl Cache {
     /// as the source's work finishes. Starts opening the source if no set drew it before, fetches
     /// its index again when the tiles were refreshed since, and opens it as far as finished work
     /// allows.
-    pub(crate) fn open(&mut self, tiles: &super::Tiles, set: u64, jobs: &Jobs<'_>) -> &mut Fetched {
+    pub(crate) fn open(&mut self, tiles: &Tiles, set: u64, jobs: &Jobs<'_>) -> &mut Fetched {
         let url = &tiles.url;
-        let fetched = match self.sources.entry(url.clone()) {
+        let fetched = match self.sources.entry(tiles.shared()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let sets = Arc::new(Watchers::default());
@@ -78,9 +78,9 @@ impl Cache {
         fetched
     }
 
-    /// Fetches and decodes in progress for the source at `url`.
-    pub(crate) fn under_way(&self, url: &str) -> usize {
-        self.sources.get(url).map_or(0, |fetched| {
+    /// Fetches and decodes in progress for the source of `tiles`.
+    pub(crate) fn under_way(&self, tiles: &Tiles) -> usize {
+        self.sources.get(&tiles.shared()).map_or(0, |fetched| {
             usize::from(fetched.refreshing.is_some())
                 + match &fetched.state {
                     State::Opening(_) => 1,
@@ -91,12 +91,13 @@ impl Cache {
         })
     }
 
-    /// Releases what set `set` drew of the source at `url`, and the source itself once no set draws
-    /// it.
-    pub(crate) fn release(&mut self, url: &str, set: u64) {
-        let Some(fetched) = self.sources.get_mut(url) else { return };
+    /// Releases what set `set` drew of the source of `tiles`, and the source itself once no set
+    /// draws it.
+    pub(crate) fn release(&mut self, tiles: &Tiles, set: u64) {
+        let shared = tiles.shared();
+        let Some(fetched) = self.sources.get_mut(&shared) else { return };
         if fetched.sets.unwatch(set) == 0 {
-            self.sources.remove(url);
+            self.sources.remove(&shared);
             return;
         }
         match &mut fetched.state {

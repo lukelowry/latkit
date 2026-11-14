@@ -13,6 +13,7 @@ pub(crate) mod gl;
 #[cfg(all(feature = "wgsl", target_arch = "wasm32"))]
 mod glsl;
 pub(crate) mod grown;
+pub(crate) mod hooks;
 pub(crate) mod icons;
 pub(crate) mod kernel;
 mod layers;
@@ -300,19 +301,13 @@ impl Gpu {
     /// Creates a WebGL2 device in browsers, or the best supported native raster device.
     /// Errors if no adapter or device is available.
     pub async fn new() -> Result<Gpu> {
-        #[cfg(target_arch = "wasm32")]
-        if !store::loaded() {
-            return Err(Error::Unsupported(
-                "latkit's shaders are not loaded: the page hands them over with Browser::set_shaders".into(),
-            ));
-        }
         #[cfg(not(target_arch = "wasm32"))]
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: if cfg!(target_arch = "wasm32") { wgpu::Backends::GL } else { wgpu::Backends::PRIMARY },
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         #[cfg(target_arch = "wasm32")]
-        let (instance, mut browser) = browser::Browser::new()?;
+        let (instance, browser) = browser::Browser::new()?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -343,7 +338,6 @@ impl Gpu {
         let gpu = Gpu::create(Some(instance), Some(adapter), device, queue);
         #[cfg(target_arch = "wasm32")]
         {
-            browser.watch(&gpu);
             *gpu.0.browser.lock().unwrap_or_else(PoisonError::into_inner) = Some(browser);
         }
         Ok(gpu)
@@ -551,6 +545,21 @@ impl Gpu {
         let mut inner = self.0.lock();
         inner.host = Some(Arc::new(host));
         inner.atlas.rehost();
+    }
+
+    /// Loses the device, as a GPU reset does, so a test can check what follows: [`lost`](Gpu::lost)
+    /// turns true, and the views can [move](crate::View::move_to) to a new `Gpu`. In a browser,
+    /// latkit's WebGL2 context is lost, as the browser loses it. Otherwise the device is destroyed.
+    pub fn lose(&self) {
+        self.device_events().lost();
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::web::waker(self).wake();
+            if gl::lose(&self.0.device) {
+                return;
+            }
+        }
+        self.0.device.destroy();
     }
 
     /// Whether the device was lost. Drawing then does nothing until the views

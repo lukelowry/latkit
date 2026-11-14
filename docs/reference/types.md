@@ -953,6 +953,10 @@ The options every mark has.
 **`legend`**`?:` [`Legend`](#legend) `| null` [¶](#markoptions-legend){.headerlink}
 : A legend of the mark's colors: its title, or legend options.
 
+{#markoptions-shade .member}
+**`shade`**`?:` [`Shade`](#shade) `| null` [¶](#markoptions-shade){.headerlink}
+: WGSL that colors each pixel of the rows before it blends: its source and inputs. See [`Shade`](#shade).
+
 (strokeoptions)=
 
 ### `StrokeOptions`
@@ -1177,8 +1181,13 @@ How a vertex is drawn: a shape's name, `"block"`, or
 
 {#marker-wgsl .member}
 `{` **`wgsl`**`: { source: string; inputs?:` [`ExprInput`](#exprinput)`[] } }` [¶](#marker-wgsl){.headerlink}
-: A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`, which
-  can read up to eight `inputs` as `f.input[i]`. It compiles once, when the view first draws it.
+: A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It
+  reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's size
+  as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It returns
+  the pixel's straight color and its signed distance in CSS pixels from the outline, negative
+  inside, which glows and status rings follow. The source may declare its own functions, types,
+  and constants. Of latkit's shader code, it sees only `MarkerFragment` and `MarkerColor`. It
+  compiles once, when a view first draws it.
 
   {#marker-wgsl-source .member}
   **`source`**`: string` [¶](#marker-wgsl-source){.headerlink}
@@ -1212,6 +1221,31 @@ A marker's outline.
 {#shape-diamond .member}
 **`'diamond'`** [¶](#shape-diamond){.headerlink}
 : A diamond.
+
+(shade)=
+
+### `Shade`
+
+{.signature}
+`interface Shade`
+
+A mark's shade: WGSL that colors each pixel of its rows before it blends. `source` defines
+`fn shade(f: ShadeFragment) -> vec4f`, which returns the pixel's straight color. It reads the
+mark's color at the pixel as `f.color`, the pixel in CSS pixels from the view's top left as
+`f.px`, the pixel within its row's shape as `f.local`, the pointer as `f.pointer` (its `z` is 1
+while it is over the view), seconds since the view was created as `f.elapsed`, and up to eight
+`inputs` as `f.input[i]`. A shade that reads `f.elapsed` draws every frame, and one that reads
+`f.pointer` draws as the pointer moves. It changes color only: hits and picks follow the rows'
+shapes. The source may declare its own functions, types, and constants. Of latkit's shader code,
+it sees only `ShadeFragment`. It compiles once, when a view first draws it.
+
+{#shade-source .member}
+**`source`**`: string` [¶](#shade-source){.headerlink}
+: The WGSL source of the `shade` function.
+
+{#shade-inputs .member}
+**`inputs`**`?:` [`ExprInput`](#exprinput)`[]` [¶](#shade-inputs){.headerlink}
+: Each row's inputs, at most eight.
 
 (bitmap)=
 
@@ -2461,8 +2495,8 @@ Counters describing a view's frames.
 
 {#stats-gpums .member}
 **`gpuMs`**`: number` [¶](#stats-gpums){.headerlink}
-: Milliseconds the GPU takes per frame: the median of recently measured frames. 0 if the device
-  cannot measure GPU time.
+: Milliseconds the GPU works on each frame, without the time it waits between the frame's
+  commands: the median of recently measured frames. 0 if the device cannot measure GPU time.
 
 (waiting)=
 

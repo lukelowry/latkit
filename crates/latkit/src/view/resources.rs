@@ -145,12 +145,13 @@ impl Resources {
         self.remap.write_padded(queue, 0, words);
     }
 
-    /// Makes room for every mark's uniforms, domains, and extents.
+    /// Makes room for every mark's uniforms (two each: see `View::mark_uniforms`), domains, and
+    /// extents.
     pub(crate) fn fit(&mut self, device: &wgpu::Device, marks: u64, domains: u64) {
         let count = marks + 1;
         let mut replaced = self.domains.ensure(device, (domains * 2).max(4));
         replaced |= self.extents.ensure(device, u64::from(wgsl::EXTENT_WORDS) * count);
-        replaced |= self.marks.ensure(device, MARK_STRIDE * count);
+        replaced |= self.marks.ensure(device, MARK_STRIDE * 2 * count);
         if replaced {
             self.generation += 1;
         }

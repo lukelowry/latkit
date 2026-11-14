@@ -104,23 +104,18 @@ fn surfaces(hi: vec2f, lo: vec2f, elevation: f32) -> Surfaces {
 // elevation and lies as deep as raised by all of it: on the eye's ray through where it appears.
 // Looking straight down, elevation so sets only depth, and every row draws over its ground
 // position. Tilting the camera eases the parallax to 1, where the point is the raised position.
+// Every case is computed and one selected: every shader projects, and branches here make the D3D
+// compiler behind WebGL take longer on all of them.
 fn world(hi: vec2f, lo: vec2f, elevation: f32) -> vec3f {
     let projected = surfaces(hi, lo, elevation);
     let raised = projected.raised;
-    if eye.parallax >= 1.0 || elevation == 0.0 {
-        return raised;
-    }
     let apparent = projected.apparent;
     let depth = clip_of(apparent).w;
-    if !(depth > 0.0) {
-        return raised;
-    }
-    // Past the globe's edge, a row hides where it appears.
-    if !shows(apparent) {
-        return apparent;
-    }
     let e = eye.position.xyz;
-    return e + (apparent - e) * (clip_of(raised).w / depth);
+    let along = e + (apparent - e) * (clip_of(raised).w / depth);
+    let flat = (eye.parallax >= 1.0) | (elevation == 0.0) | !(depth > 0.0);
+    // Past the globe's edge, a row hides where it appears.
+    return select(select(along, apparent, !shows(apparent)), raised, flat);
 }
 
 fn clip_of(w: vec3f) -> vec4f {
@@ -153,7 +148,7 @@ fn shows(w: vec3f) -> bool {
     if PROJECTION == PROJECTION_PLANAR { return true; }
     if PROJECTION == PROJECTION_MERCATOR { return true; }
     if PROJECTION == PROJECTION_DYNAMIC {
-        if frame.space != SPACE_EARTH || frame.globe < 1.0 { return true; }
+        if (frame.space != SPACE_EARTH) | (frame.globe < 1.0) { return true; }
     }
     let c = globe_center();
     return dot(w - c, eye.position.xyz - w) > 0.0;
