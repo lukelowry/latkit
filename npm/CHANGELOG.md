@@ -1,5 +1,42 @@
 # latkit
 
+## 0.8.0
+
+### Minor Changes
+
+- d700c4e: The WebAssembly carries latkit's shaders, so a page serves one asset where it served two, and a test can lose the GPU device to check what follows.
+
+  - Removed: the `latkit/shaders` asset and the `shaders` option of `load()`. `latkit/wasm` carries the shaders, so `Gpu.create()` no longer waits for a second download or fails when it fails. The WebAssembly is 3.78 MB instead of 3.56 MB (1.19 MB with brotli), the same bytes a drawing page downloaded before.
+  - Removed: in Rust, `host::Browser::set_shaders`. A browser build carries its shaders.
+  - Changed: a worker URL on another origin, such as a CDN or a webview's resources, is fetched by the page and started from a Blob URL, instead of a Blob URL that imports it. The bundled worker follows the same rule, so latkit loaded from another origin starts its workers.
+  - Added: `gpu.lose()`, and `Gpu::lose` in Rust, lose the device as a GPU reset does, so a test can check that views move to a new device.
+  - Fixed: a WebGL2 context lost before the browser reports it is the device's loss, not an error. Before, the next frame raised a view error, and a canvas presented through a wgpu surface stopped latkit.
+
+- d700c4e: Any mark can color its pixels with WGSL, and the shaders a view opens with compile sooner.
+
+  - Added: `shade` on every mark, and `Shade` with each mark's `.shade()` in Rust: WGSL that defines `fn shade(f: ShadeFragment) -> vec4f` and colors each pixel before it blends. It reads the mark's color, the pixel, the pointer, the time, and up to eight `inputs`. A shade that reads the time draws every frame, and one that reads the pointer draws as it moves. A shade that does not compile is its mark's failure.
+  - Changed: a custom marker sees only `MarkerFragment`, `MarkerColor`, and its own declarations, natively as in the browser. latkit's shader functions, such as `filled`, are no longer in scope, so a marker that called one fails to compile.
+  - Changed: a page translates a custom marker or shade once, alone, and appends it to latkit's shaders translated ahead of time. Before, it translated latkit's whole shader again for each variant that drew the marker.
+  - Changed: `stats.gpuMs` counts the GPU's work on a frame's commands, not its waits between them. On WebGL2 it read about three times the GPU's work.
+  - Changed: the passes that measure rows for a fit no longer hold back a view's first frame. They compile with the drawing pipelines only while a fit that measures rows waits for them.
+  - Changed: on Direct3D, edges and lines compile in about two thirds of the time, since their shaders read every value they might need and then select one, rather than branch around reads.
+
+- d700c4e: A view keeps drawing while a new scene's pipelines compile, and draws in depth order with half the compiles.
+
+  - Changed: a scene set while the view draws another draws once the pipelines its frames draw with have compiled. Until then the view goes on drawing, and answering for, the scene before, so changing the space, a projection, or a mark no longer stops the view for a compile. Fits and cameras asked for meanwhile apply to the new scene, and `scene` returns it. A scene set before the view's first frame compiles after the first one, so it draws second.
+  - Changed: where depth varies, a mark's opaque pixels draw with the same program as its other pixels, through a copy of its uniform. Each point and stroke draw compiles once instead of twice, so a tilted or globe view draws in depth order from its first frame. Height sorts are the only pipelines left that a view asks for once depth varies.
+
+### Patch Changes
+
+- d700c4e: Time tiles fetched through the app work, and a live run's `refresh()` fetches only what changed.
+
+  - Fixed: `Tiles` with a `fetch` no longer stops latkit on their first file. latkit calls `fetch` after the frame that needs the file, so it may change views and datasets.
+  - Fixed: tiles at one URL with different `fetch` functions each draw their own files. Before, every view drew the files of the first.
+  - Fixed: a manifest whose `url` lacks `{level}` or `{index}`, or `{field}` when it lists several fields, is invalid. Before, its spans shared files and drew each other's entries.
+  - Changed: `tiles.refresh()` keeps the base dataset and the spans the earlier frames filled. It fetches the last span of each level again, which draws what it held until the new one arrives, and every span that failed. Before, it fetched the base again and redrew every span. A manifest that names another base, `chunk`, or `url` starts over.
+  - Changed: a span that could not be fetched is fetched again on the next refresh, and each tile failure is reported once.
+  - Changed: a trace whose plot window needs more than 64 spans draws from a coarser level, rather than its middle at the finer level between coarse placeholders, which broke the line.
+
 ## 0.7.1
 
 ### Patch Changes
