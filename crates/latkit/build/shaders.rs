@@ -245,6 +245,7 @@ pub(crate) fn generate() {
             let (module, info) = validate(&format!("{}.{variant}", entry.module), &checked);
             check_shared(&module, &bind_module, entry.module);
             check_targets(&module, entry.module);
+            check_brace_bools(&module, &info, entry.module);
             let names = constant_names(&module);
             let constants = constants(&module, &names, &source);
             let file = format!("{}.{variant}", entry.module.replace("::", "."));
@@ -682,6 +683,39 @@ fn prune(source: &str) -> String {
 /// Asserts that each fragment entry of `module` writes at most one color target. ANGLE on D3D11
 /// builds a pixel shader for the first target when a program links, and one for more targets on
 /// the browser's GPU thread when a frame first draws with it, stalling the page.
+/// Asserts that no struct or array constructor in `module` takes a boolean `&` or `|` directly.
+/// Metal writes these constructors as brace initializers, where C++ evaluates `bool & bool` to an
+/// int that may not narrow back to bool, so the pipeline fails to compile on Apple GPUs. A value
+/// bound with `let` first is written as its own declaration, which converts.
+fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
+    let functions = module
+        .functions
+        .iter()
+        .map(|(handle, function)| (function, &info[handle]))
+        .chain(module.entry_points.iter().enumerate().map(|(i, entry)| (&entry.function, info.get_entry_point(i))));
+    for (function, types) in functions {
+        for (_, expression) in function.expressions.iter() {
+            let naga::Expression::Compose { ty, components } = expression else { continue };
+            if !matches!(module.types[*ty].inner, TypeInner::Struct { .. } | TypeInner::Array { .. }) {
+                continue;
+            }
+            for &component in components {
+                let combined = matches!(
+                    function.expressions[component],
+                    naga::Expression::Binary { op: naga::BinaryOperator::And | naga::BinaryOperator::InclusiveOr, .. }
+                );
+                let boolean =
+                    matches!(types[component].ty.inner_with(&module.types), TypeInner::Scalar(naga::Scalar::BOOL));
+                assert!(
+                    !(combined && boolean) || function.named_expressions.contains_key(&component),
+                    "{name}: {} builds a struct or array from a boolean `&` or `|`, which Metal can't compile. Bind it with `let` first.",
+                    function.name.as_deref().unwrap_or("an entry point"),
+                );
+            }
+        }
+    }
+}
+
 fn check_targets(module: &naga::Module, name: &str) {
     for entry in module.entry_points.iter().filter(|e| e.stage == naga::ShaderStage::Fragment) {
         let Some(result) = &entry.function.result else { continue };

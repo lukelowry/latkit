@@ -404,6 +404,12 @@ impl View {
         }
         drop(inner);
         self.swap_when_ready();
+        // Until it draws, the view waits on its pipelines, so `done` waits for it.
+        if self.incoming.is_some() && !self.waiting.compiling {
+            self.waiting.compiling = true;
+            self.events.tell(Event::Waiting(self.waiting));
+        }
+        self.wake();
     }
 
     /// Compiles each mark of `scene` that is new or changed from the marks drawn, or `None` where a

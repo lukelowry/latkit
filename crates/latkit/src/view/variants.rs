@@ -746,6 +746,7 @@ mod tests {
             }
         }
         view.set_scene(after);
+        assert!(!view.complete() && view.done().take().is_none(), "what waits for it to be done waits");
         assert_eq!(view.scene().marks.len(), 2, "the view's scene is the one set");
         assert_eq!(view.marks.len(), 1, "but the scene before draws");
         assert!(view.ready_for(format, 1.0, true), "and goes on drawing while the new one compiles");

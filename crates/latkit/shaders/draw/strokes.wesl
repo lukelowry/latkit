@@ -134,12 +134,11 @@ fn pixel(v: Varyings) -> vec2f {
 }
 
 fn segment_of(v: Varyings) -> Stroke {
+    let arrow = (PATH != PATH_TRACE) & ((v.bits.x & 1u) != 0u);
     if !PAINTED {
-        return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color,
-            0.0, 0.0, false, (PATH != PATH_TRACE) & ((v.bits.x & 1u) != 0u));
+        return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color, 0.0, 0.0, false, arrow);
     }
     let dash = (v.bits.x & 2u) != 0u;
-    let arrow = (PATH != PATH_TRACE) & ((v.bits.x & 1u) != 0u);
     return Stroke(v.ends.xy, v.ends.zw, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, arrow);
 }
 
