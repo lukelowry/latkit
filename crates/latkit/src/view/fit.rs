@@ -162,7 +162,8 @@ impl View {
 
     /// Applies a box fit, a plot's fit to its traces' span, or measured extents that arrived.
     pub(super) fn settle_fit(&mut self) {
-        if !self.sized() {
+        // A fit asked for while a scene is incoming frames that scene.
+        if !self.sized() || self.incoming.is_some() {
             return;
         }
         match &self.fitting.wanted {
@@ -229,7 +230,7 @@ impl View {
 
     /// What this frame measures, if anything: a fit whose marks are drawn, or a plot's traces.
     pub(super) fn measuring(&mut self) -> Option<Measure> {
-        if self.fitting.reading.busy() || !self.sized() {
+        if self.fitting.reading.busy() || !self.sized() || self.incoming.is_some() {
             return None;
         }
         // A plot with traces fits everything to their whole span once their data is available.
@@ -292,15 +293,16 @@ impl View {
     /// range following its traces. Its passes are then as urgent as drawing.
     pub(super) fn measures(&self) -> bool {
         let asked = self.fitting.wanted.as_ref().is_some_and(|fit| !matches!(fit, Fit::Bounds { .. }));
-        let traced =
-            matches!(self.camera, Camera::Plot { y: None, .. }) && self.marks.iter().any(|m| m.kind() == MarkKind::Lines);
+        let traced = matches!(self.camera, Camera::Plot { y: None, .. })
+            && self.marks.iter().any(|m| m.kind() == MarkKind::Lines);
         asked || traced
     }
 
-    /// Whether a fit is due and can measure: the view is not limited, and the passes measuring rows
-    /// have compiled. Their compile landing wakes the view.
+    /// Whether a fit is due and can measure: the view is not limited, the passes measuring rows
+    /// have compiled, and no scene is incoming, which the fit is then for. A compile landing wakes
+    /// the view.
     pub(super) fn measure_due(&self) -> bool {
-        self.fitting.due() && !self.limited && self.can_use(Stage::Fit)
+        self.fitting.due() && !self.limited && self.can_use(Stage::Fit) && self.incoming.is_none()
     }
 
     pub(super) fn measuring_started(&mut self, readback: Readback, fit: Option<Fit>) {

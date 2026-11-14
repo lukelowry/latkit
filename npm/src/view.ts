@@ -181,6 +181,9 @@ export class View extends Handle {
    * can't use, or that doesn't fit the data draws as if unset, and a mark that doesn't fit draws
    * nothing. Each is listed in `failures`. Only a scene whose space, marks, or a mark's table can't
    * be read throws, and leaves the current one in place.
+   *
+   * A new scene draws once the pipelines its frames draw with have compiled. Until then the view
+   * goes on drawing, and answering for, the scene before, and fits wait for the new one.
    */
   get scene(): Scene {
     return this.#scene;

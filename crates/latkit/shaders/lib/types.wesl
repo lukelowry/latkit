@@ -622,8 +622,9 @@ struct Mark {
     // stroke's width.
     size_min: f32,
     size_max: f32,
-    // Complete the final std140 uniform slot.
-    padding: u32,
+    // 1 in the copy of the mark's uniform that its opaque draw binds: that draw keeps only the
+    // pixels its rows cover fully, which draw first where depth varies.
+    opaque: u32,
 }
 
 // An overlay sprite in CSS pixels: a line, box, fill, or run of text, drawn over the marks.

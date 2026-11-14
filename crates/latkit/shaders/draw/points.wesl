@@ -1,6 +1,6 @@
 // Points: one instanced quad per vertex row, shaded by its marker. A quad covers its marker and any
 // status ring, plus one pixel of antialiased edge. The focus variant redraws the lit rows over
-// everything, with quads enlarged for their glow. Where depth varies, the opaque variant draws each
+// everything, with quads enlarged for their glow. Where depth varies, an opaque pass draws each
 // marker's opaque pixels before any pixel blends, keeping their depth, so the nearest marker shows.
 // The custom variants call an application's `marker`, and the shaded variants its `shade`.
 
@@ -24,7 +24,7 @@ import package::lib::color::{output, OPAQUE};
 override MARKER: u32 = MARKER_SHAPE;
 
 struct Varyings {
-    // Invariant, so the opaque variant and the other draws compute the same depth.
+    // Invariant, so the opaque pass and the other draws compute the same depth.
     @invariant @builtin(position) clip: vec4f,
     @location(0) p: vec2f,
     @location(1) @interpolate(flat) row: u32,
@@ -114,22 +114,17 @@ fn colored(v: Varyings) -> MarkerColor {
     return m;
 }
 
-// The opaque variant draws a marker's opaque pixels and keeps their depth. Its antialiased edge,
-// any part too small to cover a pixel, an icon's clear pixels, a custom marker's holes, and
-// translucent rows (dimmed by a selection, fading, or of a translucent color) draw after, over them.
-// The vertex stage is shared. Separate fragment entries keep discard out of the normal draw,
-// allowing early depth rejection without carrying draw-mode uniforms for every mark.
+// Where depth varies, a mark draws twice with this one program: first its opaque pixels, keeping
+// their depth, through the copy of its uniform whose `opaque` is set, then every pixel. Its
+// antialiased edge, any part too small to cover a pixel, an icon's clear pixels, a custom marker's
+// holes, and translucent rows (dimmed by a selection, fading, or of a translucent color) draw in
+// the second pass, over the opaque pixels. That pass writes no depth, so the discard it never takes
+// leaves early depth tests on.
 @if(!focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return output(premultiplied(colored(v)));
-}
-
-@if(!focused)
-@fragment
-fn opaque(v: Varyings) -> @location(0) vec4f {
     let c = premultiplied(colored(v));
-    if c.a < OPAQUE {
+    if (mark.opaque != 0u) & (c.a < OPAQUE) {
         discard;
     }
     return output(c);

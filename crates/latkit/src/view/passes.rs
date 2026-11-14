@@ -109,6 +109,8 @@ struct Marks<'a> {
     samples: u32,
     groups: &'a super::resources::Groups,
     passes: &'a [(Shader, wgpu::BindGroup)],
+    /// The number of marks, after whose uniforms come their copies for opaque draws.
+    count: usize,
 }
 
 impl Marks<'_> {
@@ -161,7 +163,9 @@ impl Marks<'_> {
         let Some(pipeline) = pipeline else { return };
         let corners = shown.kind().primitive().corners();
         let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
-        pass.set_bind_group(1, &self.groups.mark, &[offset(i)]);
+        // An opaque draw shares the rows' program and binds the copy of the uniform that says so.
+        let at = if draw == Draw::Opaque { self.count + i } else { i };
+        pass.set_bind_group(1, &self.groups.mark, &[offset(at)]);
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(2, group, &[]);
         if draw == Draw::Lit {
@@ -212,7 +216,8 @@ fn listed(shown: &super::marks::Shown) -> Vec<u32> {
     blocks
 }
 
-/// Mark `index`'s dynamic offset in the marks' uniforms.
+/// Uniform `index`'s dynamic offset in the marks' uniforms: mark `index`'s, or past the last mark,
+/// the copy for an opaque draw.
 pub(super) fn offset(index: usize) -> u32 {
     (index as u64 * MARK_STRIDE) as u32
 }
@@ -564,8 +569,15 @@ impl View {
             Some(color) => (color, Some(frame.target)),
             None => (frame.target, None),
         };
-        let marks =
-            Marks { space: &self.scene.space, device, format: frame.format, samples, groups: &groups, passes: &passes };
+        let marks = Marks {
+            space: &self.scene.space,
+            device,
+            format: frame.format,
+            samples,
+            groups: &groups,
+            passes: &passes,
+            count: self.marks.len(),
+        };
         if let Some((pick_color, pick_depth)) = &pick_targets {
             let mut pass = main_pass(encoder, pick_color, None, pick_depth, [0.0; 4], true);
             if !self.unplaced() {

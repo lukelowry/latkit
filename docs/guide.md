@@ -139,8 +139,9 @@ const hot = grid.query({
 
 A scene is plain data: a `space`, a list of `marks` drawn in order, and optional `layout`, `theme`,
 `controls`, `ease` (how many seconds a change eases over), and `title`. Set `view.scene = next` to
-replace the scene. Each row eases from where it was drawn. An option that can't be read or doesn't
-fit the data draws as if unset, and `view.failures` lists why.
+replace the scene. It draws once the shaders it needs have compiled, and the view goes on drawing
+the scene before until then. Each row eases from where it was drawn. An option that can't be read
+or doesn't fit the data draws as if unset, and `view.failures` lists why.
 
 ```ts
 const scene: Scene = {

@@ -43,7 +43,8 @@ pub(crate) enum Urgency {
 #[cfg(target_arch = "wasm32")]
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(20);
 
-/// Draw passes can share a shader module while retaining their own fixed depth state.
+/// Draw passes share a shader's program and differ in their fixed depth state. An opaque draw binds
+/// the copy of its mark's uniform that sets `opaque`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Draw {
     Rows,
@@ -268,7 +269,7 @@ impl Variant {
         self
     }
 
-    /// Normal and opaque marks share vertex geometry and select their own fragment entry.
+    /// Normal and opaque draws share one program and differ in depth state.
     pub(crate) fn mode(mut self, draw: Draw) -> Self {
         if layered(self.shader) {
             self.draw = draw;
@@ -281,13 +282,7 @@ impl Variant {
     }
 
     fn fragment(&self) -> &'static str {
-        if self.entry != "vertex" {
-            self.entry
-        } else if opaque(self.shader, self.draw) {
-            "opaque"
-        } else {
-            "fragment"
-        }
+        if self.entry == "vertex" { "fragment" } else { self.entry }
     }
 
     /// What its shader module is specialized for.
@@ -526,8 +521,8 @@ fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
     }
 }
 
-/// Whether `shader` draws the rows of points or strokes, with or without hooks. Their draws have
-/// an opaque variant.
+/// Whether `shader` draws the rows of points or strokes, with or without hooks. Where depth varies,
+/// their opaque pixels draw first.
 fn layered(shader: Shader) -> bool {
     matches!(
         shader,
@@ -547,9 +542,9 @@ fn opaque(shader: Shader, draw: Draw) -> bool {
 }
 
 /// A render shader's depth state, with reversed depth. The backdrop writes the globe's depth,
-/// and the opaque variants write that of the opaque pixels of points and strokes. The rows of
+/// and the opaque draws write that of the opaque pixels of points and strokes. The rows of
 /// points, strokes, and areas draw only in front of what is drawn, so where depth varies they skip
-/// the pixels the opaque variants drew, their own included. Lit rows draw where nothing nearer was
+/// the pixels the opaque draws drew, their own included. Lit rows draw where nothing nearer was
 /// drawn, and the overlay and glyphs ignore depth.
 fn depth(shader: Shader, draw: Draw) -> wgpu::DepthStencilState {
     let compare = match shader {

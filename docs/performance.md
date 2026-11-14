@@ -40,7 +40,10 @@ timings need a GPU.
 - The GPU computes how every row draws, so a frame's CPU time does not grow with the number of
   rows. Only the GPU's work grows.
 - Pipelines are requested before use, with drawing first, then text, then input and other work.
-  The passes that measure rows for a fit come first only while a fit waits for them. The browser
+  The passes that measure rows for a fit come first only while a fit waits for them. A new scene
+  draws once its pipelines have compiled, after those of the scene drawn, so the view never stops
+  drawing while they compile. A mark drawing its opaque pixels first, where depth varies, uses the
+  same program as its other pixels. The browser
   shares compiled stages and programs, and polls readiness through
   [KHR_parallel_shader_compile](https://registry.khronos.org/webgl/extensions/KHR_parallel_shader_compile/)
   when available. Without that extension, checking a program's link result can still block.

@@ -27,7 +27,7 @@ override PAINTED: bool = true;
 
 struct Varyings {
     // The corner in clip space. In the fragment, the target pixel, which `pixel` reads. Invariant,
-    // so the opaque variant and the other draws compute the same depth.
+    // so the opaque pass and the other draws compute the same depth.
     @invariant @builtin(position) clip: vec4f,
     // Pack related values into complete varying slots; WebGL drivers may reserve a whole slot
     // even for a scalar. Both endpoints share one slot, and arrow/focus bits share another.
@@ -143,10 +143,11 @@ fn segment_of(v: Varyings) -> Stroke {
     return Stroke(v.ends.xy, v.ends.zw, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, arrow);
 }
 
-// The opaque variant draws the pixels an opaque row's line covers fully, outside dash gaps, and
-// keeps their depth. It tests the distance first, so the other pixels cost no color. Antialiased
-// edges, lines too thin to cover a pixel, and translucent rows (dimmed by a selection, fading, or of
-// a translucent color) draw after, over them.
+// Where depth varies, a mark draws twice with this one program: first the pixels an opaque row's
+// line covers fully, outside dash gaps, keeping their depth, through the copy of its uniform whose
+// `opaque` is set, then every pixel. Antialiased edges, lines too thin to cover a pixel, and
+// translucent rows (dimmed by a selection, fading, or of a translucent color) draw in the second
+// pass, over the opaque pixels.
 fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
     let s = segment_of(v);
     // The opaque test, color, and focus glow all use this same distance. Evaluating it once
@@ -158,10 +159,8 @@ fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
             let straight = vec4f(color.rgb / max(color.a, 1e-6), color.a);
             return output(glow(MarkerColor(straight, d.x), v.bits.y));
         }
-        if opaque {
-            if (s.color.a < OPAQUE) | (coverage(d.x) < 1.0) | gap(d, s) {
-                discard;
-            }
+        if opaque & ((s.color.a < OPAQUE) | (coverage(d.x) < 1.0) | gap(d, s)) {
+            discard;
         }
         return output(painted(stroke_paint(d, s)));
     }
@@ -173,10 +172,8 @@ fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
         if LIT_DRAW {
             return output(glow(MarkerColor(straight, d.x), v.bits.y));
         }
-        if opaque {
-            if straight.a < OPAQUE {
-                discard;
-            }
+        if opaque & (straight.a < OPAQUE) {
+            discard;
         }
         return output(painted(vec4f(straight.rgb * straight.a, straight.a)));
     }
@@ -193,11 +190,5 @@ fn stroke_fragment(color: vec4f, v: Varyings, s: Stroke) -> ShadeFragment {
 
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return fragment_color(v, false);
-}
-
-@if(!focused)
-@fragment
-fn opaque(v: Varyings) -> @location(0) vec4f {
-    return fragment_color(v, true);
+    return fragment_color(v, !LIT_DRAW & (mark.opaque != 0u));
 }
