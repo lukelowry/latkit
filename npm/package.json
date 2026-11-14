@@ -1,6 +1,6 @@
 {
   "name": "latkit",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Columnar data drawn as vertices, edges, lines, and areas with WebGL2.",
   "type": "module",
   "sideEffects": false,
