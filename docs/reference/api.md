@@ -211,7 +211,7 @@ grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
 : Reads a dataset from `source`. Its first bytes decide the format:
 
   - latkit's bytes, as `toBytes()` writes them.
-  - GeoJSON, plain or gzip-compressed, read as a job in a worker. Points, line strings, and polygons
+  - GeoJSON, plain or gzip-compressed, read in a worker. Points, line strings, and polygons
     become rows of tables `points`, `lines`, and `polygons`, with the geometry in field
     `geometry` and each property as a field.
   - A dataset document, `{"name": ..., "patch": [...]}`. Its patch is read like
