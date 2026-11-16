@@ -38,7 +38,7 @@
    "load": {
     "uploaded": 200000,
     "uploads": 15,
-    "written": 4336,
+    "written": 4368,
     "evaluated": 10000,
     "resolved": 0,
     "cleared": 0,
@@ -93,7 +93,7 @@
    "load": {
     "uploaded": 20000,
     "uploads": 5,
-    "written": 4272,
+    "written": 4304,
     "evaluated": 1000,
     "resolved": 0,
     "cleared": 0,
@@ -110,7 +110,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -127,7 +127,7 @@
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -144,7 +144,7 @@
    "revisit": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 1152,
+    "written": 1168,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -161,7 +161,7 @@
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2624,
+    "written": 2640,
     "evaluated": 1000,
     "resolved": 0,
     "cleared": 0,
@@ -178,7 +178,7 @@
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 46720,
+    "written": 47360,
     "evaluated": 40000,
     "resolved": 0,
     "cleared": 0,
@@ -195,7 +195,7 @@
    "every row": {
     "uploaded": 4000,
     "uploads": 1,
-    "written": 1168,
+    "written": 1184,
     "evaluated": 1000,
     "resolved": 0,
     "cleared": 0,
@@ -212,7 +212,7 @@
    "feed": {
     "uploaded": 156000,
     "uploads": 39,
-    "written": 46704,
+    "written": 47344,
     "evaluated": 39000,
     "resolved": 0,
     "cleared": 0,
@@ -229,7 +229,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2496,
+    "written": 2528,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -241,12 +241,12 @@
     "late": 0,
     "destroyed": 160,
     "resident": 86016,
-    "heap": 2621440
+    "heap": 2686976
    },
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2304,
+    "written": 2336,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -258,12 +258,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 86016,
-    "heap": 2621440
+    "heap": 2686976
    },
    "hover": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3728,
+    "written": 3776,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -275,12 +275,12 @@
     "late": 0,
     "destroyed": 32,
     "resident": 90112,
-    "heap": 2621440
+    "heap": 2686976
    },
    "select": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3120,
+    "written": 3152,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -292,7 +292,7 @@
     "late": 0,
     "destroyed": 16,
     "resident": 90112,
-    "heap": 2621440
+    "heap": 2686976
    },
    "query": {
     "uploaded": 0,
@@ -309,12 +309,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 90112,
-    "heap": 2621440
+    "heap": 2686976
    },
    "append": {
     "uploaded": 23680,
     "uploads": 200,
-    "written": 79216,
+    "written": 79856,
     "evaluated": 40820,
     "resolved": 0,
     "cleared": 0,
@@ -367,7 +367,7 @@
    "load": {
     "uploaded": 2000000,
     "uploads": 125,
-    "written": 5568,
+    "written": 5600,
     "evaluated": 100000,
     "resolved": 0,
     "cleared": 0,
@@ -379,12 +379,12 @@
     "late": 0,
     "destroyed": 12763296,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -396,12 +396,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -413,12 +413,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "revisit": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 1152,
+    "written": 1168,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -430,12 +430,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3296,
+    "written": 3312,
     "evaluated": 100000,
     "resolved": 0,
     "cleared": 0,
@@ -447,12 +447,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 47024,
+    "written": 47664,
     "evaluated": 163840,
     "resolved": 0,
     "cleared": 0,
@@ -464,12 +464,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "every row": {
     "uploaded": 400000,
     "uploads": 25,
-    "written": 1264,
+    "written": 1280,
     "evaluated": 100000,
     "resolved": 0,
     "cleared": 0,
@@ -481,12 +481,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "feed": {
     "uploaded": 15600000,
     "uploads": 975,
-    "written": 50448,
+    "written": 51088,
     "evaluated": 3900000,
     "resolved": 0,
     "cleared": 0,
@@ -498,12 +498,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2560,
+    "written": 2592,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -515,12 +515,12 @@
     "late": 0,
     "destroyed": 192,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2304,
+    "written": 2336,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -532,12 +532,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "hover": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3824,
+    "written": 3872,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -549,12 +549,12 @@
     "late": 0,
     "destroyed": 48,
     "resident": 8830976,
-    "heap": 7929856
+    "heap": 9043968
    },
    "select": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3120,
+    "written": 3152,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -566,7 +566,7 @@
     "late": 0,
     "destroyed": 16,
     "resident": 8830976,
-    "heap": 7929856
+    "heap": 9043968
    },
    "query": {
     "uploaded": 0,
@@ -583,12 +583,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8830976,
-    "heap": 7929856
+    "heap": 9043968
    },
    "append": {
     "uploaded": 3200,
     "uploads": 200,
-    "written": 78720,
+    "written": 79360,
     "evaluated": 68660,
     "resolved": 0,
     "cleared": 0,
@@ -600,7 +600,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 8830976,
-    "heap": 7929856
+    "heap": 9043968
    }
   },
   "1000000": {
@@ -641,7 +641,7 @@
    "load": {
     "uploaded": 1638400,
     "uploads": 100,
-    "written": 6704,
+    "written": 6752,
     "evaluated": 81920,
     "resolved": 0,
     "cleared": 0,
@@ -658,7 +658,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46336,
+    "written": 46976,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -675,7 +675,7 @@
    "zoom": {
     "uploaded": 3932160,
     "uploads": 240,
-    "written": 64432,
+    "written": 65072,
     "evaluated": 196608,
     "resolved": 0,
     "cleared": 0,
@@ -692,7 +692,7 @@
    "revisit": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 1376,
+    "written": 1392,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -709,7 +709,7 @@
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2672,
+    "written": 2688,
     "evaluated": 16384,
     "resolved": 0,
     "cleared": 0,
@@ -726,7 +726,7 @@
    "one row": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -743,7 +743,7 @@
    "every row": {
     "uploaded": 65536,
     "uploads": 4,
-    "written": 1184,
+    "written": 1200,
     "evaluated": 16384,
     "resolved": 0,
     "cleared": 0,
@@ -760,7 +760,7 @@
    "feed": {
     "uploaded": 2555904,
     "uploads": 156,
-    "written": 47328,
+    "written": 47968,
     "evaluated": 638976,
     "resolved": 0,
     "cleared": 0,
@@ -777,7 +777,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2560,
+    "written": 2592,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -794,7 +794,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2304,
+    "written": 2336,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -811,7 +811,7 @@
    "hover": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3728,
+    "written": 3776,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 65536,
@@ -828,7 +828,7 @@
    "select": {
     "uploaded": 81920,
     "uploads": 5,
-    "written": 4208,
+    "written": 4240,
     "evaluated": 98,
     "resolved": 0,
     "cleared": 16384,
@@ -862,7 +862,7 @@
    "append": {
     "uploaded": 3358720,
     "uploads": 205,
-    "written": 83088,
+    "written": 83728,
     "evaluated": 23957,
     "resolved": 0,
     "cleared": 16384,
@@ -917,7 +917,7 @@
    "load": {
     "uploaded": 36352,
     "uploads": 7,
-    "written": 7952,
+    "written": 8000,
     "evaluated": 3008,
     "resolved": 1984,
     "cleared": 0,
@@ -929,12 +929,12 @@
     "late": 0,
     "destroyed": 180448,
     "resident": 167936,
-    "heap": 3014656
+    "heap": 3080192
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -946,12 +946,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 167936,
-    "heap": 3014656
+    "heap": 3080192
    },
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -963,12 +963,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 167936,
-    "heap": 3014656
+    "heap": 3080192
    },
    "revisit": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 1664,
+    "written": 1680,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -980,12 +980,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 167936,
-    "heap": 3014656
+    "heap": 3080192
    },
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 67248,
+    "written": 67888,
     "evaluated": 40960,
     "resolved": 0,
     "cleared": 0,
@@ -997,12 +997,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 167936,
-    "heap": 3014656
+    "heap": 3080192
    },
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3776,
+    "written": 3808,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1019,7 +1019,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1036,7 +1036,7 @@
    "hover": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 5472,
+    "written": 5520,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1053,7 +1053,7 @@
    "append": {
     "uploaded": 23680,
     "uploads": 200,
-    "written": 83328,
+    "written": 83968,
     "evaluated": 41780,
     "resolved": 0,
     "cleared": 0,
@@ -1106,7 +1106,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 11488,
+    "written": 11536,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 0,
@@ -1123,7 +1123,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1140,7 +1140,7 @@
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1157,7 +1157,7 @@
    "revisit": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 1664,
+    "written": 1680,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1174,7 +1174,7 @@
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 67504,
+    "written": 68144,
     "evaluated": 163840,
     "resolved": 0,
     "cleared": 0,
@@ -1191,7 +1191,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3680,
+    "written": 3712,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1208,7 +1208,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1225,7 +1225,7 @@
    "hover": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 5824,
+    "written": 5872,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1242,7 +1242,7 @@
    "append": {
     "uploaded": 3200,
     "uploads": 200,
-    "written": 83840,
+    "written": 84480,
     "evaluated": 62900,
     "resolved": 0,
     "cleared": 0,
@@ -1295,7 +1295,7 @@
    "load": {
     "uploaded": 4980736,
     "uploads": 304,
-    "written": 21856,
+    "written": 21968,
     "evaluated": 286741,
     "resolved": 69632,
     "cleared": 0,
@@ -1312,7 +1312,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 71584,
+    "written": 72240,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1329,7 +1329,7 @@
    "zoom": {
     "uploaded": 12845056,
     "uploads": 784,
-    "written": 234368,
+    "written": 235008,
     "evaluated": 865176,
     "resolved": 380928,
     "cleared": 0,
@@ -1346,7 +1346,7 @@
    "revisit": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 5232,
+    "written": 5264,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1363,7 +1363,7 @@
    "one row": {
     "uploaded": 655360,
     "uploads": 40,
-    "written": 68656,
+    "written": 69296,
     "evaluated": 163840,
     "resolved": 0,
     "cleared": 0,
@@ -1380,7 +1380,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3584,
+    "written": 3616,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1397,7 +1397,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3552,
+    "written": 3584,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1414,7 +1414,7 @@
    "hover": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6640,
+    "written": 6688,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1431,7 +1431,7 @@
    "append": {
     "uploaded": 3276800,
     "uploads": 200,
-    "written": 167680,
+    "written": 168336,
     "evaluated": 23860,
     "resolved": 0,
     "cleared": 0,
@@ -1486,7 +1486,7 @@
    "load": {
     "uploaded": 240000,
     "uploads": 18,
-    "written": 390624,
+    "written": 389616,
     "evaluated": 10000,
     "resolved": 0,
     "cleared": 0,
@@ -1498,12 +1498,12 @@
     "late": 0,
     "destroyed": 600980,
     "resident": 901120,
-    "heap": 4784128
+    "heap": 4980736
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 216064,
+    "written": 216720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1515,12 +1515,12 @@
     "late": 0,
     "destroyed": 168208,
     "resident": 901120,
-    "heap": 4784128
+    "heap": 4980736
    },
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2730688,
+    "written": 2731344,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1532,7 +1532,7 @@
     "late": 0,
     "destroyed": 2673536,
     "resident": 901120,
-    "heap": 5046272
+    "heap": 5111808
    }
   },
   "1000000": {
@@ -1573,7 +1573,7 @@
    "load": {
     "uploaded": 1966080,
     "uploads": 120,
-    "written": 525936,
+    "written": 526112,
     "evaluated": 81920,
     "resolved": 0,
     "cleared": 0,
@@ -1590,7 +1590,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 53568,
+    "written": 54224,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1607,7 +1607,7 @@
    "zoom": {
     "uploaded": 4718592,
     "uploads": 288,
-    "written": 384064,
+    "written": 384720,
     "evaluated": 196608,
     "resolved": 0,
     "cleared": 0,
@@ -1662,41 +1662,41 @@
    "load": {
     "uploaded": 1456,
     "uploads": 7,
-    "written": 6864,
+    "written": 5216,
     "evaluated": 116,
     "resolved": 100,
     "cleared": 0,
     "packed": 0,
-    "readbacks": 3,
+    "readbacks": 2,
     "jobs": 0,
     "texts": 0,
     "pipelines": 27,
     "late": 0,
     "destroyed": 180384,
     "resident": 7680,
-    "heap": 2949120
+    "heap": 3014656
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66624,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
-    "readbacks": 4,
+    "readbacks": 0,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
     "resident": 7680,
-    "heap": 2949120
+    "heap": 3014656
    },
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3616,
+    "written": 3648,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1708,12 +1708,12 @@
     "late": 0,
     "destroyed": 160,
     "resident": 7680,
-    "heap": 3014656
+    "heap": 3080192
    },
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1725,7 +1725,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 7680,
-    "heap": 3014656
+    "heap": 3080192
    }
   },
   "100000": {
@@ -1766,7 +1766,7 @@
    "load": {
     "uploaded": 1200256,
     "uploads": 79,
-    "written": 9968,
+    "written": 8352,
     "evaluated": 100016,
     "resolved": 100000,
     "cleared": 0,
@@ -1778,12 +1778,12 @@
     "late": 0,
     "destroyed": 4374768,
     "resident": 4417536,
-    "heap": 5373952
+    "heap": 5439488
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66624,
+    "written": 67264,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1795,12 +1795,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 4417536,
-    "heap": 5373952
+    "heap": 5439488
    },
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3680,
+    "written": 3712,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1812,12 +1812,12 @@
     "late": 0,
     "destroyed": 176,
     "resident": 4417536,
-    "heap": 5373952
+    "heap": 5439488
    },
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1829,7 +1829,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 4417536,
-    "heap": 5373952
+    "heap": 5439488
    }
   }
  },
@@ -1870,26 +1870,26 @@
     "heap": 1638400
    },
    "load": {
-    "uploaded": 1340976,
-    "uploads": 52,
-    "written": 4528,
+    "uploaded": 74816,
+    "uploads": 6,
+    "written": 5744,
     "evaluated": 100,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
     "readbacks": 1,
-    "jobs": 0,
+    "jobs": 1,
     "texts": 0,
     "pipelines": 20,
     "late": 0,
-    "destroyed": 180432,
-    "resident": 1641984,
-    "heap": 9830400
+    "destroyed": 181440,
+    "resident": 86528,
+    "heap": 3080192
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1900,13 +1900,13 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 1641984,
-    "heap": 9830400
+    "resident": 86528,
+    "heap": 3080192
    },
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1917,13 +1917,13 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 1641984,
-    "heap": 9830400
+    "resident": 86528,
+    "heap": 3080192
    },
    "one row": {
     "uploaded": 624,
     "uploads": 39,
-    "written": 46704,
+    "written": 47344,
     "evaluated": 3900,
     "resolved": 0,
     "cleared": 0,
@@ -1934,13 +1934,13 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 1641984,
-    "heap": 9830400
+    "resident": 86528,
+    "heap": 3080192
    },
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2304,
+    "written": 2336,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1951,13 +1951,13 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 1641984,
-    "heap": 9830400
+    "resident": 86528,
+    "heap": 3080192
    },
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2304,
+    "written": 2336,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -1968,8 +1968,8 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 1641984,
-    "heap": 9830400
+    "resident": 86528,
+    "heap": 3080192
    }
   },
   "30000": {
@@ -2008,9 +2008,9 @@
     "heap": 33947648
    },
    "load": {
-    "uploaded": 40419760,
-    "uploads": 1561,
-    "written": 13552,
+    "uploaded": 22054288,
+    "uploads": 950,
+    "written": 10032,
     "evaluated": 30000,
     "resolved": 0,
     "cleared": 0,
@@ -2020,14 +2020,14 @@
     "texts": 0,
     "pipelines": 20,
     "late": 0,
-    "destroyed": 4644576,
-    "resident": 43941888,
-    "heap": 186384384
+    "destroyed": 4642160,
+    "resident": 23752704,
+    "heap": 113508352
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2038,13 +2038,13 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 43941888,
-    "heap": 186384384
+    "resident": 23752704,
+    "heap": 113508352
    },
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2055,13 +2055,13 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 43941888,
-    "heap": 186384384
+    "resident": 23752704,
+    "heap": 113508352
    },
    "one row": {
     "uploaded": 624,
     "uploads": 39,
-    "written": 47040,
+    "written": 47680,
     "evaluated": 159744,
     "resolved": 0,
     "cleared": 0,
@@ -2072,13 +2072,13 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 43941888,
-    "heap": 186384384
+    "resident": 23752704,
+    "heap": 113508352
    },
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2304,
+    "written": 2336,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2089,13 +2089,13 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 43941888,
-    "heap": 186384384
+    "resident": 23752704,
+    "heap": 113508352
    },
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 2304,
+    "written": 2336,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2106,8 +2106,8 @@
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 43941888,
-    "heap": 186384384
+    "resident": 23752704,
+    "heap": 113508352
    }
   }
  },
@@ -2148,9 +2148,9 @@
     "heap": 1572864
    },
    "load": {
-    "uploaded": 272352,
-    "uploads": 10,
-    "written": 5360,
+    "uploaded": 4096,
+    "uploads": 2,
+    "written": 5392,
     "evaluated": 64,
     "resolved": 0,
     "cleared": 0,
@@ -2160,43 +2160,43 @@
     "texts": 0,
     "pipelines": 20,
     "late": 0,
-    "destroyed": 180992,
-    "resident": 360960,
-    "heap": 5373952
+    "destroyed": 180960,
+    "resident": 70144,
+    "heap": 2883584
    },
    "pan": {
-    "uploaded": 287552,
-    "uploads": 12,
-    "written": 47808,
+    "uploaded": 7168,
+    "uploads": 4,
+    "written": 48048,
     "evaluated": 224,
     "resolved": 0,
     "cleared": 0,
     "packed": 224,
     "readbacks": 0,
-    "jobs": 8,
+    "jobs": 4,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "destroyed": 264192,
-    "resident": 674304,
-    "heap": 9175040
+    "destroyed": 4096,
+    "resident": 78336,
+    "heap": 3014656
    },
    "zoom": {
-    "uploaded": 347888,
-    "uploads": 18,
-    "written": 49792,
+    "uploaded": 30208,
+    "uploads": 11,
+    "written": 49920,
     "evaluated": 1536,
     "resolved": 0,
     "cleared": 0,
     "packed": 1536,
     "readbacks": 0,
-    "jobs": 21,
+    "jobs": 17,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "destroyed": 4727296,
-    "resident": 1061376,
-    "heap": 16121856
+    "destroyed": 33280,
+    "resident": 117248,
+    "heap": 3538944
    }
   },
   "4096": {
@@ -2235,9 +2235,9 @@
     "heap": 1572864
    },
    "load": {
-    "uploaded": 2638176,
-    "uploads": 258,
-    "written": 7680,
+    "uploaded": 950272,
+    "uploads": 257,
+    "written": 8928,
     "evaluated": 16384,
     "resolved": 0,
     "cleared": 0,
@@ -2247,43 +2247,43 @@
     "texts": 0,
     "pipelines": 20,
     "late": 0,
-    "destroyed": 4441664,
-    "resident": 3260416,
-    "heap": 20578304
+    "destroyed": 247360,
+    "resident": 1343488,
+    "heap": 11403264
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 47872,
+    "written": 49344,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 4,
+    "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
-    "resident": 3260416,
-    "heap": 22347776
+    "resident": 1343488,
+    "heap": 11665408
    },
    "zoom": {
-    "uploaded": 1397328,
-    "uploads": 195,
-    "written": 63280,
-    "evaluated": 28672,
+    "uploaded": 917504,
+    "uploads": 256,
+    "written": 68416,
+    "evaluated": 32768,
     "resolved": 0,
     "cleared": 0,
-    "packed": 28672,
+    "packed": 32768,
     "readbacks": 0,
-    "jobs": 7,
+    "jobs": 6,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "destroyed": 267056,
-    "resident": 5464064,
-    "heap": 31653888
+    "destroyed": 1839968,
+    "resident": 2654208,
+    "heap": 23986176
    }
   }
  },
@@ -2324,26 +2324,26 @@
     "heap": 1572864
    },
    "load": {
-    "uploaded": 2800,
-    "uploads": 7,
-    "written": 220688,
-    "evaluated": 198,
+    "uploaded": 4400,
+    "uploads": 11,
+    "written": 222528,
+    "evaluated": 298,
     "resolved": 98,
     "cleared": 0,
     "packed": 0,
     "readbacks": 4,
-    "jobs": 0,
+    "jobs": 1,
     "texts": 36,
     "pipelines": 37,
     "late": 0,
     "destroyed": 433572,
     "resident": 15872,
-    "heap": 4521984
+    "heap": 3932160
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 442896,
+    "written": 443552,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2355,12 +2355,12 @@
     "late": 0,
     "destroyed": 373664,
     "resident": 15872,
-    "heap": 4521984
+    "heap": 4063232
    },
    "edit": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 164512,
+    "written": 165120,
     "evaluated": 4000,
     "resolved": 0,
     "cleared": 0,
@@ -2372,24 +2372,24 @@
     "late": 0,
     "destroyed": 103920,
     "resident": 15872,
-    "heap": 4521984
+    "heap": 4063232
    },
    "arrange": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 1664,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 0,
+    "jobs": 1,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
     "destroyed": 0,
     "resident": 15872,
-    "heap": 4521984
+    "heap": 4063232
    }
   },
   "10000": {
@@ -2430,7 +2430,7 @@
    "load": {
     "uploaded": 438752,
     "uploads": 33,
-    "written": 90176,
+    "written": 88608,
     "evaluated": 29843,
     "resolved": 9843,
     "cleared": 0,
@@ -2442,12 +2442,12 @@
     "late": 0,
     "destroyed": 854580,
     "resident": 1269760,
-    "heap": 8454144
+    "heap": 8519680
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 357648,
+    "written": 358304,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2459,12 +2459,12 @@
     "late": 0,
     "destroyed": 944160,
     "resident": 1269760,
-    "heap": 8454144
+    "heap": 8519680
    },
    "edit": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 69168,
+    "written": 69824,
     "evaluated": 163840,
     "resolved": 0,
     "cleared": 0,
@@ -2476,12 +2476,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 1269760,
-    "heap": 8454144
+    "heap": 8519680
    },
    "arrange": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2493,7 +2493,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 1269760,
-    "heap": 8912896
+    "heap": 9371648
    }
   }
  },
@@ -2536,7 +2536,7 @@
    "load": {
     "uploaded": 40960,
     "uploads": 1,
-    "written": 61216,
+    "written": 61264,
     "evaluated": 10,
     "resolved": 0,
     "cleared": 0,
@@ -2548,12 +2548,12 @@
     "late": 0,
     "destroyed": 210884,
     "resident": 262656,
-    "heap": 3014656
+    "heap": 3080192
    },
    "stream": {
     "uploaded": 48,
     "uploads": 1,
-    "written": 198448,
+    "written": 199104,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2565,12 +2565,12 @@
     "late": 0,
     "destroyed": 49472,
     "resident": 262656,
-    "heap": 3407872
+    "heap": 3473408
    },
    "scrub": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 176576,
+    "written": 177216,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2582,12 +2582,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 262656,
-    "heap": 3407872
+    "heap": 3473408
    },
    "narrow": {
     "uploaded": 1568,
     "uploads": 1,
-    "written": 198672,
+    "written": 199328,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2599,12 +2599,12 @@
     "late": 0,
     "destroyed": 21136,
     "resident": 262656,
-    "heap": 3407872
+    "heap": 3473408
    },
    "hover": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 11792,
+    "written": 11840,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2616,7 +2616,7 @@
     "late": 0,
     "destroyed": 32,
     "resident": 262912,
-    "heap": 3407872
+    "heap": 3473408
    }
   },
   "10000": {
@@ -2657,7 +2657,7 @@
    "load": {
     "uploaded": 40960000,
     "uploads": 157,
-    "written": 95552,
+    "written": 95600,
     "evaluated": 10000,
     "resolved": 0,
     "cleared": 0,
@@ -2674,7 +2674,7 @@
    "stream": {
     "uploaded": 40000,
     "uploads": 3,
-    "written": 268688,
+    "written": 269344,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2691,7 +2691,7 @@
    "scrub": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 176576,
+    "written": 177216,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2708,7 +2708,7 @@
    "narrow": {
     "uploaded": 1560000,
     "uploads": 8,
-    "written": 224800,
+    "written": 225456,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2725,7 +2725,7 @@
    "hover": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 11904,
+    "written": 11952,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2780,7 +2780,7 @@
    "load": {
     "uploaded": 4000,
     "uploads": 1,
-    "written": 70096,
+    "written": 70144,
     "evaluated": 1,
     "resolved": 0,
     "cleared": 0,
@@ -2792,12 +2792,12 @@
     "late": 0,
     "destroyed": 219780,
     "resident": 262400,
-    "heap": 3014656
+    "heap": 3080192
    },
    "scrub": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 176640,
+    "written": 177280,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2809,12 +2809,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 262400,
-    "heap": 3014656
+    "heap": 3080192
    },
    "narrow": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 198480,
+    "written": 199136,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2826,7 +2826,7 @@
     "late": 0,
     "destroyed": 20736,
     "resident": 262400,
-    "heap": 3080192
+    "heap": 3145728
    }
   },
   "1000000": {
@@ -2867,7 +2867,7 @@
    "load": {
     "uploaded": 140672,
     "uploads": 4,
-    "written": 126480,
+    "written": 126528,
     "evaluated": 1,
     "resolved": 0,
     "cleared": 0,
@@ -2884,7 +2884,7 @@
    "scrub": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 176640,
+    "written": 177280,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2901,7 +2901,7 @@
    "narrow": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 343952,
+    "written": 1969040,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -2911,7 +2911,7 @@
     "texts": 16,
     "pipelines": 0,
     "late": 0,
-    "destroyed": 297824,
+    "destroyed": 33296,
     "resident": 1048832,
     "heap": 42008576
    }
@@ -2956,7 +2956,7 @@
    "load": {
     "uploaded": 20000,
     "uploads": 5,
-    "written": 4272,
+    "written": 4304,
     "evaluated": 1000,
     "resolved": 0,
     "cleared": 0,
@@ -2968,12 +2968,12 @@
     "late": 0,
     "destroyed": 180352,
     "resident": 86016,
-    "heap": 2621440
+    "heap": 2686976
    },
    "move": {
     "uploaded": 20000,
     "uploads": 5,
-    "written": 71952,
+    "written": 72928,
     "evaluated": 2000,
     "resolved": 0,
     "cleared": 0,
@@ -2985,12 +2985,12 @@
     "late": 0,
     "destroyed": 16,
     "resident": 217088,
-    "heap": 2621440
+    "heap": 2686976
    },
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 119296,
+    "written": 120912,
     "evaluated": 41000,
     "resolved": 0,
     "cleared": 0,
@@ -3002,7 +3002,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 217088,
-    "heap": 2621440
+    "heap": 2686976
    }
   },
   "100000": {
@@ -3043,7 +3043,7 @@
    "load": {
     "uploaded": 2000000,
     "uploads": 125,
-    "written": 5568,
+    "written": 5600,
     "evaluated": 100000,
     "resolved": 0,
     "cleared": 0,
@@ -3055,12 +3055,12 @@
     "late": 0,
     "destroyed": 12763296,
     "resident": 8429568,
-    "heap": 7929856
+    "heap": 9043968
    },
    "move": {
     "uploaded": 2000000,
     "uploads": 125,
-    "written": 79392,
+    "written": 80368,
     "evaluated": 200000,
     "resolved": 0,
     "cleared": 0,
@@ -3072,12 +3072,12 @@
     "late": 0,
     "destroyed": 16777360,
     "resident": 21274624,
-    "heap": 9633792
+    "heap": 9895936
    },
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 124048,
+    "written": 125664,
     "evaluated": 167936,
     "resolved": 0,
     "cleared": 0,
@@ -3089,7 +3089,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 21274624,
-    "heap": 9633792
+    "heap": 9895936
    }
   },
   "1000000": {
@@ -3130,7 +3130,7 @@
    "load": {
     "uploaded": 1638400,
     "uploads": 100,
-    "written": 651872,
+    "written": 652880,
     "evaluated": 98304,
     "resolved": 0,
     "cleared": 0,
@@ -3147,7 +3147,7 @@
    "move": {
     "uploaded": 655360,
     "uploads": 40,
-    "written": 307296,
+    "written": 309264,
     "evaluated": 65536,
     "resolved": 0,
     "cleared": 524288,
@@ -3159,12 +3159,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 7012352,
-    "heap": 98107392
+    "heap": 82051072
    },
    "one row": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 116528,
+    "written": 118128,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3176,7 +3176,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 5439488,
-    "heap": 98107392
+    "heap": 82051072
    }
   }
  },
@@ -3219,7 +3219,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 11168,
+    "written": 11216,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 0,
@@ -3236,7 +3236,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3289,7 +3289,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 89696,
+    "written": 90144,
     "evaluated": 2391488,
     "resolved": 1592640,
     "cleared": 0,
@@ -3306,7 +3306,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 532480,
+    "written": 537600,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3361,7 +3361,7 @@
    "load": {
     "uploaded": 2686976,
     "uploads": 164,
-    "written": 31392,
+    "written": 31456,
     "evaluated": 161126,
     "resolved": 49152,
     "cleared": 0,
@@ -3378,7 +3378,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 69952,
+    "written": 70592,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3395,7 +3395,7 @@
    "zoom": {
     "uploaded": 1703936,
     "uploads": 104,
-    "written": 515568,
+    "written": 516208,
     "evaluated": 137727,
     "resolved": 163840,
     "cleared": 0,
@@ -3448,7 +3448,7 @@
    "load": {
     "uploaded": 3588096,
     "uploads": 219,
-    "written": 39072,
+    "written": 39136,
     "evaluated": 206604,
     "resolved": 49152,
     "cleared": 0,
@@ -3465,7 +3465,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 69984,
+    "written": 70624,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3482,7 +3482,7 @@
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 73008,
+    "written": 73648,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3537,7 +3537,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 17760,
+    "written": 17824,
     "evaluated": 597872,
     "resolved": 398160,
     "cleared": 0,
@@ -3554,7 +3554,7 @@
    "image": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6720,
+    "written": 6784,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3571,7 +3571,7 @@
    "png": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3583,12 +3583,12 @@
     "late": 0,
     "destroyed": 10547264,
     "resident": 29302784,
-    "heap": 17432576
+    "heap": 15335424
    },
    "video": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 106560,
+    "written": 107584,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3600,12 +3600,12 @@
     "late": 0,
     "destroyed": 11324864,
     "resident": 29302784,
-    "heap": 17432576
+    "heap": 15335424
    },
    "held": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6720,
+    "written": 6784,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3617,7 +3617,7 @@
     "late": 0,
     "destroyed": 11324864,
     "resident": 29302784,
-    "heap": 17432576
+    "heap": 15335424
    }
   },
   "8294400": {
@@ -3658,7 +3658,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 21088,
+    "written": 21184,
     "evaluated": 597872,
     "resolved": 398160,
     "cleared": 0,
@@ -3675,7 +3675,7 @@
    "image": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6720,
+    "written": 6784,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3692,7 +3692,7 @@
    "png": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3704,12 +3704,12 @@
     "late": 0,
     "destroyed": 72755264,
     "resident": 29302784,
-    "heap": 141950976
+    "heap": 108724224
    },
    "video": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 106560,
+    "written": 107584,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3721,12 +3721,12 @@
     "late": 0,
     "destroyed": 97638464,
     "resident": 29302784,
-    "heap": 141950976
+    "heap": 108724224
    },
    "held": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6720,
+    "written": 6784,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3738,7 +3738,7 @@
     "late": 0,
     "destroyed": 85196864,
     "resident": 29302784,
-    "heap": 141950976
+    "heap": 108724224
    }
   }
  },
@@ -3781,7 +3781,7 @@
    "load": {
     "uploaded": 358400,
     "uploads": 25,
-    "written": 8192,
+    "written": 8240,
     "evaluated": 29800,
     "resolved": 19800,
     "cleared": 0,
@@ -3793,7 +3793,7 @@
     "late": 0,
     "destroyed": 180512,
     "resident": 1679360,
-    "heap": 3866624
+    "heap": 3801088
    }
   }
  },
@@ -3836,19 +3836,19 @@
    "load": {
     "uploaded": 240000,
     "uploads": 18,
-    "written": 400704,
+    "written": 398976,
     "evaluated": 10000,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
     "readbacks": 6,
     "jobs": 0,
-    "texts": 88,
+    "texts": 87,
     "pipelines": 28,
     "late": 0,
-    "destroyed": 600980,
+    "destroyed": 1190804,
     "resident": 901120,
-    "heap": 4784128
+    "heap": 4849664
    }
   }
  },
@@ -3891,7 +3891,7 @@
    "load": {
     "uploaded": 208000,
     "uploads": 26,
-    "written": 44512,
+    "written": 44544,
     "evaluated": 10000,
     "resolved": 0,
     "cleared": 0,
@@ -3946,7 +3946,7 @@
    "load": {
     "uploaded": 36352,
     "uploads": 7,
-    "written": 14592,
+    "written": 13008,
     "evaluated": 3008,
     "resolved": 1984,
     "cleared": 0,
@@ -3958,12 +3958,12 @@
     "late": 0,
     "destroyed": 352560,
     "resident": 167936,
-    "heap": 3276800
+    "heap": 3342336
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -3975,12 +3975,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 167936,
-    "heap": 3276800
+    "heap": 3342336
    },
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 73968,
+    "written": 74656,
     "evaluated": 40960,
     "resolved": 0,
     "cleared": 0,
@@ -3997,7 +3997,7 @@
    "every row": {
     "uploaded": 4096,
     "uploads": 1,
-    "written": 10112,
+    "written": 10208,
     "evaluated": 1024,
     "resolved": 0,
     "cleared": 0,
@@ -4014,7 +4014,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3744,
+    "written": 3776,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4031,7 +4031,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4084,7 +4084,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 14576,
+    "written": 14640,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 0,
@@ -4101,7 +4101,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4118,7 +4118,7 @@
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 74192,
+    "written": 76560,
     "evaluated": 163840,
     "resolved": 0,
     "cleared": 0,
@@ -4135,7 +4135,7 @@
    "every row": {
     "uploaded": 399424,
     "uploads": 25,
-    "written": 10304,
+    "written": 10400,
     "evaluated": 99856,
     "resolved": 0,
     "cleared": 0,
@@ -4147,12 +4147,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 16457728,
-    "heap": 9043968
+    "heap": 9895936
    },
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3680,
+    "written": 3712,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4164,12 +4164,12 @@
     "late": 0,
     "destroyed": 192,
     "resident": 16457728,
-    "heap": 9043968
+    "heap": 9895936
    },
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3328,
+    "written": 3360,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4181,7 +4181,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 16457728,
-    "heap": 9043968
+    "heap": 9895936
    }
   },
   "1000000": {
@@ -4222,7 +4222,7 @@
    "load": {
     "uploaded": 4980736,
     "uploads": 304,
-    "written": 29632,
+    "written": 28112,
     "evaluated": 286741,
     "resolved": 69632,
     "cleared": 0,
@@ -4239,7 +4239,7 @@
    "pan": {
     "uploaded": 8339456,
     "uploads": 509,
-    "written": 122176,
+    "written": 122816,
     "evaluated": 506621,
     "resolved": 155648,
     "cleared": 0,
@@ -4256,7 +4256,7 @@
    "one row": {
     "uploaded": 655360,
     "uploads": 40,
-    "written": 75344,
+    "written": 76032,
     "evaluated": 163840,
     "resolved": 0,
     "cleared": 0,
@@ -4273,7 +4273,7 @@
    "every row": {
     "uploaded": 2031616,
     "uploads": 124,
-    "written": 12800,
+    "written": 12896,
     "evaluated": 506621,
     "resolved": 0,
     "cleared": 0,
@@ -4290,7 +4290,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3840,
+    "written": 3872,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4307,7 +4307,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 3424,
+    "written": 3456,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4362,7 +4362,7 @@
    "load": {
     "uploaded": 20800,
     "uploads": 26,
-    "written": 44512,
+    "written": 44544,
     "evaluated": 1000,
     "resolved": 0,
     "cleared": 0,
@@ -4379,7 +4379,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 128000,
+    "written": 128640,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4396,7 +4396,7 @@
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 128688,
+    "written": 129328,
     "evaluated": 8000,
     "resolved": 0,
     "cleared": 0,
@@ -4413,7 +4413,7 @@
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 8736,
+    "written": 8768,
     "evaluated": 200,
     "resolved": 0,
     "cleared": 0,
@@ -4430,7 +4430,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6592,
+    "written": 6624,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4447,7 +4447,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6400,
+    "written": 6432,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4464,7 +4464,7 @@
    "pan shape alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4481,7 +4481,7 @@
    "pan gauge alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4498,7 +4498,7 @@
    "pan pie alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4515,7 +4515,7 @@
    "pan icon alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4532,7 +4532,7 @@
    "pan custom alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4585,7 +4585,7 @@
    "load": {
     "uploaded": 2080000,
     "uploads": 130,
-    "written": 45408,
+    "written": 45440,
     "evaluated": 100000,
     "resolved": 0,
     "cleared": 0,
@@ -4602,7 +4602,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 128000,
+    "written": 128640,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4619,7 +4619,7 @@
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 128944,
+    "written": 129584,
     "evaluated": 163840,
     "resolved": 0,
     "cleared": 0,
@@ -4636,7 +4636,7 @@
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 9296,
+    "written": 9328,
     "evaluated": 20000,
     "resolved": 0,
     "cleared": 0,
@@ -4653,7 +4653,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6656,
+    "written": 6688,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4670,7 +4670,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6400,
+    "written": 6432,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4687,7 +4687,7 @@
    "pan shape alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4704,7 +4704,7 @@
    "pan gauge alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4721,7 +4721,7 @@
    "pan pie alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4738,7 +4738,7 @@
    "pan icon alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4755,7 +4755,7 @@
    "pan custom alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4808,7 +4808,7 @@
    "load": {
     "uploaded": 20800000,
     "uploads": 1274,
-    "written": 57808,
+    "written": 57840,
     "evaluated": 1000000,
     "resolved": 0,
     "cleared": 0,
@@ -4825,7 +4825,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 128000,
+    "written": 128640,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4842,7 +4842,7 @@
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 128944,
+    "written": 129584,
     "evaluated": 163840,
     "resolved": 0,
     "cleared": 0,
@@ -4859,7 +4859,7 @@
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 15072,
+    "written": 15104,
     "evaluated": 200000,
     "resolved": 0,
     "cleared": 0,
@@ -4876,7 +4876,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6656,
+    "written": 6688,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4893,7 +4893,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6400,
+    "written": 6432,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4910,7 +4910,7 @@
    "pan shape alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4927,7 +4927,7 @@
    "pan gauge alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4944,7 +4944,7 @@
    "pan pie alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4961,7 +4961,7 @@
    "pan icon alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -4978,7 +4978,7 @@
    "pan custom alone": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 46080,
+    "written": 46720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5033,7 +5033,7 @@
    "load": {
     "uploaded": 40192,
     "uploads": 7,
-    "written": 5056,
+    "written": 5088,
     "evaluated": 3008,
     "resolved": 1984,
     "cleared": 0,
@@ -5050,7 +5050,7 @@
    "still": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5067,7 +5067,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5084,7 +5084,7 @@
    "one row": {
     "uploaded": 480,
     "uploads": 30,
-    "written": 67040,
+    "written": 67680,
     "evaluated": 59520,
     "resolved": 0,
     "cleared": 0,
@@ -5101,7 +5101,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 7008,
+    "written": 7072,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5113,12 +5113,12 @@
     "late": 0,
     "destroyed": 160,
     "resident": 172032,
-    "heap": 3211264
+    "heap": 3276800
    },
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6656,
+    "written": 6720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5130,7 +5130,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 172032,
-    "heap": 3211264
+    "heap": 3276800
    }
   },
   "100000": {
@@ -5171,7 +5171,7 @@
    "load": {
     "uploaded": 3986656,
     "uploads": 247,
-    "written": 8992,
+    "written": 10704,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 0,
@@ -5188,7 +5188,7 @@
    "still": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5205,7 +5205,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5222,7 +5222,7 @@
    "one row": {
     "uploaded": 480,
     "uploads": 30,
-    "written": 67344,
+    "written": 67984,
     "evaluated": 122880,
     "resolved": 0,
     "cleared": 0,
@@ -5239,7 +5239,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 7168,
+    "written": 7232,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5256,7 +5256,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6656,
+    "written": 6720,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5309,7 +5309,7 @@
    "load": {
     "uploaded": 3457024,
     "uploads": 211,
-    "written": 881808,
+    "written": 809088,
     "evaluated": 226324,
     "resolved": 53248,
     "cleared": 0,
@@ -5326,7 +5326,7 @@
    "still": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66912,
+    "written": 67552,
     "evaluated": 36864,
     "resolved": 36864,
     "cleared": 0,
@@ -5343,7 +5343,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 75072,
+    "written": 75712,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5360,7 +5360,7 @@
    "one row": {
     "uploaded": 16384,
     "uploads": 1,
-    "written": 66896,
+    "written": 67536,
     "evaluated": 4096,
     "resolved": 0,
     "cleared": 0,
@@ -5377,7 +5377,7 @@
    "first pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 7136,
+    "written": 7200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5394,7 +5394,7 @@
    "pick": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6848,
+    "written": 6912,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5449,7 +5449,7 @@
    "load": {
     "uploaded": 40448,
     "uploads": 8,
-    "written": 54320,
+    "written": 54368,
     "evaluated": 3008,
     "resolved": 1984,
     "cleared": 0,
@@ -5461,12 +5461,12 @@
     "late": 0,
     "destroyed": 211684,
     "resident": 172032,
-    "heap": 3080192
+    "heap": 3145728
    },
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 268800,
+    "written": 269440,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5478,12 +5478,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 172032,
-    "heap": 3080192
+    "heap": 3145728
    },
    "one row": {
     "uploaded": 624,
     "uploads": 39,
-    "written": 269472,
+    "written": 270112,
     "evaluated": 39936,
     "resolved": 0,
     "cleared": 0,
@@ -5495,12 +5495,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 172032,
-    "heap": 3080192
+    "heap": 3145728
    },
    "every row": {
     "uploaded": 4096,
     "uploads": 1,
-    "written": 6736,
+    "written": 6752,
     "evaluated": 1024,
     "resolved": 0,
     "cleared": 0,
@@ -5512,12 +5512,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 172032,
-    "heap": 3080192
+    "heap": 3145728
    },
    "feed": {
     "uploaded": 159744,
     "uploads": 39,
-    "written": 269424,
+    "written": 270064,
     "evaluated": 39936,
     "resolved": 0,
     "cleared": 0,
@@ -5529,12 +5529,12 @@
     "late": 0,
     "destroyed": 0,
     "resident": 172032,
-    "heap": 3080192
+    "heap": 3145728
    },
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 8688,
+    "written": 8704,
     "evaluated": 1024,
     "resolved": 0,
     "cleared": 0,
@@ -5546,7 +5546,7 @@
     "late": 0,
     "destroyed": 0,
     "resident": 172032,
-    "heap": 3080192
+    "heap": 3145728
    }
   },
   "100000": {
@@ -5587,7 +5587,7 @@
    "load": {
     "uploaded": 3989184,
     "uploads": 248,
-    "written": 64832,
+    "written": 58160,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 0,
@@ -5604,7 +5604,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 268800,
+    "written": 269440,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5621,7 +5621,7 @@
    "one row": {
     "uploaded": 624,
     "uploads": 39,
-    "written": 269728,
+    "written": 270368,
     "evaluated": 159744,
     "resolved": 0,
     "cleared": 0,
@@ -5638,7 +5638,7 @@
    "every row": {
     "uploaded": 399424,
     "uploads": 25,
-    "written": 6928,
+    "written": 6944,
     "evaluated": 99856,
     "resolved": 0,
     "cleared": 0,
@@ -5655,7 +5655,7 @@
    "feed": {
     "uploaded": 15577536,
     "uploads": 975,
-    "written": 273168,
+    "written": 273808,
     "evaluated": 3894384,
     "resolved": 0,
     "cleared": 0,
@@ -5672,7 +5672,7 @@
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 10128,
+    "written": 10144,
     "evaluated": 99856,
     "resolved": 0,
     "cleared": 0,
@@ -5725,7 +5725,7 @@
    "load": {
     "uploaded": 11948544,
     "uploads": 731,
-    "written": 90224,
+    "written": 90304,
     "evaluated": 226324,
     "resolved": 53248,
     "cleared": 0,
@@ -5742,7 +5742,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 275984,
+    "written": 276624,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -5759,8 +5759,8 @@
    "one row": {
     "uploaded": 624,
     "uploads": 39,
-    "written": 273264,
-    "evaluated": 4194060,
+    "written": 269840,
+    "evaluated": 24576,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
@@ -5776,7 +5776,7 @@
    "every row": {
     "uploaded": 4000000,
     "uploads": 245,
-    "written": 6832,
+    "written": 6944,
     "evaluated": 107540,
     "resolved": 0,
     "cleared": 0,
@@ -5793,7 +5793,7 @@
    "feed": {
     "uploaded": 156000000,
     "uploads": 9555,
-    "written": 273168,
+    "written": 273808,
     "evaluated": 4194060,
     "resolved": 0,
     "cleared": 0,
@@ -5810,7 +5810,7 @@
    "restyle": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 26528,
+    "written": 26544,
     "evaluated": 107540,
     "resolved": 0,
     "cleared": 0,
@@ -5865,7 +5865,7 @@
    "load": {
     "uploaded": 36352,
     "uploads": 7,
-    "written": 6064,
+    "written": 6096,
     "evaluated": 3008,
     "resolved": 1984,
     "cleared": 0,
@@ -5882,7 +5882,7 @@
    "recover": {
     "uploaded": 36352,
     "uploads": 7,
-    "written": 4240,
+    "written": 4256,
     "evaluated": 3008,
     "resolved": 1984,
     "cleared": 0,
@@ -5935,7 +5935,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 11168,
+    "written": 11216,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 0,
@@ -5952,7 +5952,7 @@
    "recover": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 7648,
+    "written": 7664,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 0,
@@ -6005,7 +6005,7 @@
    "load": {
     "uploaded": 3948544,
     "uploads": 241,
-    "written": 27840,
+    "written": 27904,
     "evaluated": 226324,
     "resolved": 53248,
     "cleared": 0,
@@ -6022,7 +6022,7 @@
    "recover": {
     "uploaded": 3948544,
     "uploads": 241,
-    "written": 24320,
+    "written": 24352,
     "evaluated": 226324,
     "resolved": 53248,
     "cleared": 0,
@@ -6077,7 +6077,7 @@
    "load": {
     "uploaded": 36352,
     "uploads": 7,
-    "written": 6192,
+    "written": 6224,
     "evaluated": 3008,
     "resolved": 1984,
     "cleared": 0,
@@ -6094,7 +6094,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -6111,7 +6111,7 @@
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 67248,
+    "written": 67888,
     "evaluated": 120320,
     "resolved": 0,
     "cleared": 0,
@@ -6128,7 +6128,7 @@
    "feed": {
     "uploaded": 163840,
     "uploads": 40,
-    "written": 67200,
+    "written": 67840,
     "evaluated": 120320,
     "resolved": 0,
     "cleared": 0,
@@ -6181,7 +6181,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 11584,
+    "written": 9952,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 0,
@@ -6198,7 +6198,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 66560,
+    "written": 67200,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -6215,8 +6215,8 @@
    "one row": {
     "uploaded": 640,
     "uploads": 40,
-    "written": 67808,
-    "evaluated": 491520,
+    "written": 68448,
+    "evaluated": 327680,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
@@ -6232,7 +6232,7 @@
    "feed": {
     "uploaded": 15976960,
     "uploads": 1000,
-    "written": 78816,
+    "written": 79456,
     "evaluated": 11957440,
     "resolved": 0,
     "cleared": 0,
@@ -6285,7 +6285,7 @@
    "load": {
     "uploaded": 8161536,
     "uploads": 499,
-    "written": 30656,
+    "written": 30720,
     "evaluated": 226324,
     "resolved": 53248,
     "cleared": 0,
@@ -6302,7 +6302,7 @@
    "pan": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 73632,
+    "written": 74272,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
@@ -6319,8 +6319,8 @@
    "one row": {
     "uploaded": 98944,
     "uploads": 46,
-    "written": 68880,
-    "evaluated": 1499136,
+    "written": 68048,
+    "evaluated": 40960,
     "resolved": 0,
     "cleared": 0,
     "packed": 24576,
@@ -6336,7 +6336,7 @@
    "feed": {
     "uploaded": 177694720,
     "uploads": 10880,
-    "written": 76896,
+    "written": 77536,
     "evaluated": 5776160,
     "resolved": 0,
     "cleared": 0,

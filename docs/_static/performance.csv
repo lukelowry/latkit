@@ -5,16 +5,16 @@ A first visit to labeled points: the text pipelines compiled cold,"10,000 rows",
 A first visit to every kind of marker: the custom marker translated and all compiled cold,"10,000 rows",373,,,
 "Vertices on a plane, colored through a colormap","1,000,000 rows",353,0.1,0.4,9.2
 "A lattice grid on the globe: buses, and the geodesic lines between them","1,000,000 buses",787,0.3,2.6,37.5
-"Every vertex labeled: the texts in view found, set, and drawn","1,000,000 rows",396,0.2,1.3,
+"Every vertex labeled: the texts in view found, set, and drawn","1,000,000 rows",396,0.2,1.1,
 "Buses raised by load on a tilted globe: heights sorted on the GPU, depth tested","1,000,000 buses",799,0.2,0.8,4.9
 "Shapes, gauges, pies, icons, and a custom WGSL marker, a fifth of the rows each","1,000,000 rows",265,0.1,15.9,41.6
 "Comets flowing along every line of a grid, moved by the GPU each frame","1,000,000 buses",800,0.1,0.5,6.8
 "Buses colored and sized by fields joined from another dataset, under a title and legend","1,000,000 buses",861,0.2,0.6,
 "Lines colored by a field of the bus each starts at, read through its reference","1,000,000 buses",764,0.2,0.6,
 Edges by the thousand between the same sixteen pairs of vertices,"100,000 edges",122,0.1,0.2,4.2
-"Polygons of 33 points on the mercator map, triangulated in jobs","30,000 polygons",539,0.1,1.2,4.2
+"Polygons of 33 points on the mercator map, triangulated in jobs","30,000 polygons",439,0.1,1.2,4.0
 Vector tiles fetched from a local server as the camera needs them,"4,096 squares a tile",195,0.2,0.2,
-"Nodes without positions in trees of 64 on a plane, laid out in ranks on the frame or in a job","10,000 nodes",155,0.2,1.1,
+"Nodes without positions in trees of 64 on a plane, laid out in ranks in a job","10,000 nodes",155,0.2,1.1,
 "A plot of traces 1,024 frames long, fed a frame every animation frame","10,000 traces",227,0.5,19.0,18.4
 One trace with a long history: levels of detail,"1,000,000 frames",92.8,0.3,0.4,
 "Every row moving to a new place at once, then one row a frame, easing over a second","1,000,000 rows",457,0.1,0.2,
