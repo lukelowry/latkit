@@ -40,17 +40,14 @@ const HEIGHT_BITS: u32 = 24u;
 const STATE_WORDS: u32 = 32u;
 
 // A pass of the channel shader over `rows` rows from `first`, through page table `block` (or
-// `NONE`), writing the four words from `word`. `channels` has a bit for each channel the pass
-// evaluates: those its words depend on.
+// `NONE`). `word` is the first word a `reduce` pass reads. `texels` has, for each texel of a row,
+// a bit for each channel that evaluates when the texel is written: those its words depend on.
 struct StateStep {
     first: u32,
     rows: u32,
     block: u32,
     word: u32,
-    channels: u32,
-    padding_a: u32,
-    padding_b: u32,
-    padding_c: u32,
+    texels: array<vec4u, 2>,
 }
 
 // Sentinel for no index, slot, or page.

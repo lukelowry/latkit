@@ -6,14 +6,17 @@
  * Frames are stepped, each waiting for the GPU. So in a phase that acts once and settles, the
  * `EXACT` counts, which only the data and the frames drawn set, may not exceed the baseline at all,
  * unless the scenario fetches its data. Other counts, and every count of a steady phase, vary with
- * the frame a job finishes in, so they may reach `STEADY` times the baseline, and `FETCHED` times
- * in a scenario that fetches. WebAssembly memory may reach `SLOWER` times the baseline, plus a
- * mebibyte, or `FETCHED` times where fetches land at different times.
+ * the frame a job finishes in, so they may reach `STEADY` times the baseline. They may reach
+ * `FETCHED` times in a scenario that fetches, and in a first visit, where the frame each pipeline
+ * lands in decides what the next frames do. There the bytes destroyed are not judged: the pool of pages grows
+ * once, in whichever phase the fetch that fills it lands. WebAssembly memory may reach `SLOWER`
+ * times the baseline, plus a mebibyte, or `FETCHED` times where fetches land at different times.
  *
- * On the GPU the times baseline was taken on, no phase's fastest repeat may be much slower than its
+ * On the GPU the times baseline was taken on, no phase's fastest visit may be much slower than its
  * baseline: its time, its GPU time per frame, and its slowest frames. A machine stall slows one
- * repeat, but a regression slows every one. The allowances are those two sweeps of the same code
- * measured apart, with room to spare.
+ * visit, but a regression slows every one. So the verdict lists each size whose times read slow
+ * (`slow`), and the runner visits those again before the last verdict. The allowances are those
+ * two sweeps of the same code measured apart, with room to spare.
  *
  * Every phase measured needs a baseline. One without fails, unless this run records it with
  * `--update`, or the scenario reached a size larger than any its baseline has, as a faster machine
@@ -23,7 +26,7 @@ import type { Work } from 'latkit';
 import { quantile } from '../npm/examples/gate/quantile.ts';
 import type { Listed, Run } from './page/main.ts';
 
-/** A phase at one size, summarized across repeats: its fastest times and its least work. */
+/** A phase at one size, summarized across its visits: its fastest times and its least work. */
 export interface Summary {
   /** Milliseconds: CPU time per frame for a steady phase, else the whole phase. */
   time: number;
@@ -48,6 +51,9 @@ export type Growth = Partial<Record<'time' | 'gpu' | 'uploaded' | 'resident' | '
 export interface Verdict {
   failures: string[];
   notes: string[];
+  /** Each scenario and size with a time over what its baseline or its order allows. Only another
+   * visit tells a stall from a regression. */
+  slow: [scenario: string, size: number][];
   summaries: By<Summary>;
   /** The fitted growth exponent of each measure, by scenario and phase. */
   exponents: Record<string, Record<string, Growth>>;
@@ -65,7 +71,7 @@ const PAGE = 4096 * 4;
  * these. A frame's CPU time comes from the page's clock, which steps by 0.1 ms, so its floor is
  * five steps. A phase that acts once finishes on a timer tick. */
 const FLOOR = { frame: 0.5, action: TICK, bytes: 64 * 1024 };
-/** Factor by which the fastest repeat may be slower than the baseline. */
+/** Factor by which the fastest visit may be slower than the baseline. */
 const SLOWER = 1.25;
 /** Milliseconds loading may finish later than its baseline, beyond `SLOWER`. Loading waits on
  * compiles and browser tasks, so between sweeps it finishes as much as 70 ms either side. */
@@ -92,8 +98,10 @@ const EXACT = new Set([
 /** Factor by which other work counts may exceed the baseline. The frame a job finishes in changes
  * the label texts set by up to about 1.7×. A per-frame blowup changes far more. */
 const STEADY = 2;
-/** Factor by which other work counts, and memory, may exceed the baseline in a scenario that
- * fetches. When tiles land decides what is replaced: the bytes freed vary by over 2×. */
+/** Factor by which other work counts, memory, and the slowest frames may exceed the baseline in a
+ * scenario that fetches, and other work counts in a first visit. When tiles or pipelines land
+ * decides what a frame replaces: the bytes freed vary by over 2×, and so do the frames a tile
+ * lands in. */
 const FETCHED = 3;
 /** Minimum baseline values for work held within `STEADY`: one for byte counts, one for the rest. */
 const WORK_FLOOR = { bytes: 64 * 1024, count: 8 };
@@ -153,6 +161,7 @@ export function judge(
 ): Verdict {
   const failures: string[] = [];
   const notes: string[] = [];
+  const slow: Verdict['slow'] = [];
   /** Reports a phase measured without a baseline. */
   const unrecorded = (what: string, recorded: Record<number, unknown> | undefined, n: number) => {
     const largest = Math.max(0, ...Object.keys(recorded ?? {}).map(Number));
@@ -206,16 +215,23 @@ export function judge(
         heap: grows((s) => s.work.heap, FLOOR.bytes),
       };
       (exponents[scenario.name] ??= {})[phase] = fit;
-      const past = (what: string, e: number | undefined, limit: number | undefined) => {
-        if (e !== undefined && limit !== undefined && e > limit + SLACK)
-          failures.push(
-            `${scenario.name} ${phase}: ${what} grows as n^${e.toFixed(2)}, past n^${limit}`,
-          );
+      // A time that grows too fast may be one slow visit at any of the sizes.
+      const past = (
+        what: string,
+        e: number | undefined,
+        limit: number | undefined,
+        time = false,
+      ) => {
+        if (e === undefined || limit === undefined || e <= limit + SLACK) return;
+        failures.push(
+          `${scenario.name} ${phase}: ${what} grows as n^${e.toFixed(2)}, past n^${limit}`,
+        );
+        if (time) slow.push(...at.map((n): [string, number] => [scenario.name, n]));
       };
-      past('time', fit.time, order.time);
+      past('time', fit.time, order.time, true);
       // Only a steady phase measures GPU time per frame. A frame draws what is in view, so it may
       // grow linearly unless the phase says otherwise.
-      if (steady && base.timed) past('GPU time', fit.gpu, order.gpu ?? 1);
+      if (steady && base.timed) past('GPU time', fit.gpu, order.gpu ?? 1, true);
       past('uploaded bytes', fit.uploaded, order.bytes);
       // Resident bytes and memory are the data's footprint, which loading sets. Later phases only
       // add to it.
@@ -233,12 +249,14 @@ export function judge(
           keyof Summary['work'],
           number,
         ][]) {
+          // The phase a fetch lands in frees the pool it outgrows: 8 MiB in one phase or another.
+          if (scenario.fetches && k === 'destroyed') continue;
           const is = now.work[k];
           const floor = BYTES.has(k) ? WORK_FLOOR.bytes : WORK_FLOOR.count;
           const exact = !now.steady && !scenario.fetches && EXACT.has(k);
           const most = exact
             ? was
-            : scenario.fetches
+            : scenario.fetches || scenario.cold
               ? Math.max(was, floor) * FETCHED
               : k === 'heap'
                 ? was * SLOWER + MIB
@@ -262,20 +280,22 @@ export function judge(
         const compare = (what: string, is: number, was: number, factor: number, least: number) => {
           if (!is || !was) return;
           const show = (ms: number) => `${ms.toFixed(2)} ms`;
-          if (is > was * factor + least)
+          if (is > was * factor + least) {
             failures.push(`${where}: ${what} ${show(is)}, was ${show(was)}`);
-          else if (is < was / factor)
+            slow.push([scenario.name, n]);
+          } else if (is < was / factor)
             notes.push(`${where}: ${what} ${show(is)}, was ${show(was)}; --update records it`);
         };
         compare(now.steady ? 'CPU per frame' : 'time', now.time, then.time, SLOWER, floor);
         if (now.steady) {
           compare('GPU per frame', now.gpu, then.gpu, GPU.slower, GPU.floor);
-          compare('slowest frames', now.tail, then.tail, TAIL, 2 * FLOOR.frame);
+          const tail = scenario.fetches ? FETCHED : TAIL;
+          compare('slowest frames', now.tail, then.tail, tail, 2 * FLOOR.frame);
         }
       }
     }
   }
-  return { failures, notes, summaries, exponents };
+  return { failures, notes, slow, summaries, exponents };
 }
 
 const map = <T>(v: Verdict, read: (s: Summary) => T): By<T> =>
@@ -291,24 +311,34 @@ const map = <T>(v: Verdict, read: (s: Summary) => T): By<T> =>
     ]),
   );
 
-/** Merges `run` into `base`. Each scenario size this run measured replaces the base's entry, and
- * the rest is kept. */
-function over<T>(run: By<T>, base: By<T> = {}): By<T> {
+/** Merges `run` into `base`. Each scenario size this run measured replaces the base's entry. The
+ * rest is kept, except the sizes a scenario of `list` is no longer visited at. */
+function over<T>(run: By<T>, list: Listed[], base: By<T> = {}): By<T> {
   const out = structuredClone(base);
   for (const [scenario, bySize] of Object.entries(run))
     Object.assign((out[scenario] ??= {}), bySize);
+  for (const { name, sizes } of list) {
+    const recorded = out[name] ?? {};
+    for (const size of Object.keys(recorded).map(Number))
+      if (!sizes.includes(size)) delete recorded[size];
+  }
   return out;
 }
 
 /** The new work baseline: this run's work merged into `base`. */
-export function work(v: Verdict, base?: WorkBaseline): WorkBaseline {
+export function work(v: Verdict, list: Listed[], base?: WorkBaseline): WorkBaseline {
   const measured = map(v, (s) => s.work);
-  return over(measured, base);
+  return over(measured, list, base);
 }
 
 /** The new times baseline of this GPU: this run's times merged into `base`, now taken on
  * `machine`. */
-export function times(v: Verdict, machine: string, base?: TimeBaseline): TimeBaseline {
+export function times(
+  v: Verdict,
+  machine: string,
+  list: Listed[],
+  base?: TimeBaseline,
+): TimeBaseline {
   const measured = map(v, (s) => ({ time: s.time, gpu: s.gpu, tail: s.tail }));
-  return { machine, times: over(measured, base?.times) };
+  return { machine, times: over(measured, list, base?.times) };
 }

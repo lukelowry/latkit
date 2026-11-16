@@ -121,6 +121,15 @@ pub(crate) struct Shown {
     /// Whether this frame's ease pass writes the mark's shown state from its frozen and settled
     /// words.
     pub(crate) easing: bool,
+    /// The row blocks frozen this frame, when a transition starts: every block of a transition
+    /// that finds none running, otherwise the blocks the transition eases. With `settles`, the
+    /// frozen rows are written to the settled words too, so those hold every row's state and
+    /// channels evaluate only what changed. `freeze_block` and `ease_block` locate the frozen and
+    /// the eased blocks in the blocks buffer, or are `NONE` for every block.
+    pub(crate) frozen: Blocks,
+    pub(crate) settles: bool,
+    pub(crate) freeze_block: u32,
+    pub(crate) ease_block: u32,
     /// The program's code and constants, with colormap layers, text codes, and the domains over
     /// sampled fields' histories filled in. `histories` holds the field version each such domain was
     /// filled from.
@@ -199,6 +208,10 @@ impl Shown {
             end_block: 0,
             end_block_count: 0,
             easing: false,
+            frozen: Blocks::default(),
+            settles: false,
+            freeze_block: wgsl::NONE,
+            ease_block: wgsl::NONE,
             code: Vec::new(),
             constants: Vec::new(),
             histories: Vec::new(),
@@ -473,8 +486,9 @@ impl Shown {
             .fold(0, |mask, (k, c)| if c.reads.deps.intersects(deps) { mask | 1 << k } else { mask })
     }
 
-    /// Marks the channels and domains that read any of `columns` dirty. They evaluate over `blocks`
-    /// (the changed pages) when the channels read only their own rows, otherwise over every row.
+    /// Marks the channels and domains that read any of `columns` dirty. They evaluate over `blocks`,
+    /// the row blocks whose rows read what changed, in their own table or through a join. A fitted
+    /// domain reads every row, so with one that changed, every row evaluates.
     pub(crate) fn columns_changed(&mut self, columns: u64, blocks: Option<&[u32]>) {
         let Some(compiled) = &self.compiled else { return };
         let program = &compiled.program;
@@ -485,15 +499,12 @@ impl Shown {
                 channels |= 1 << k;
             }
         }
-        // A fitted domain, or a table read through a join, reads beyond a row's own block.
-        let joined =
-            program.columns.iter().enumerate().any(|(i, c)| c.from.is_some() && columns & Reads::column(i) != 0);
         // Rows whose endpoint references changed resolve their endpoints again.
         let ends = program
             .ends
             .iter()
             .any(|end| end.column != wgsl::NONE && columns & Reads::column(end.column as usize) != 0);
-        self.dirty_rows(channels, blocks.filter(|_| !reduce && !joined));
+        self.dirty_rows(channels, blocks.filter(|_| !reduce));
         self.reduce |= reduce;
         if ends {
             self.unresolved.add(blocks);
@@ -538,19 +549,23 @@ impl Shown {
     /// valid.
     pub(crate) fn slots_bound(&mut self, blocks: &[u32]) {
         let Some(compiled) = &self.compiled else { return };
-        let n = compiled.program.channels.len();
         let ends = !compiled.program.ends.is_empty() && !blocks.is_empty();
-        self.dirty_rows(if n >= 32 { u32::MAX } else { (1 << n) - 1 }, Some(blocks));
+        self.dirty_rows(self.every_channel(), Some(blocks));
         if ends {
             self.unresolved.add(Some(blocks));
         }
     }
 
+    /// A bit mask of every channel of its program.
+    pub(crate) fn every_channel(&self) -> u32 {
+        let n = self.compiled.as_ref().map_or(0, |compiled| compiled.program.channels.len());
+        if n >= 32 { u32::MAX } else { (1 << n) - 1 }
+    }
+
     /// Marks every channel dirty over every row, and every row's endpoints unresolved.
     pub(crate) fn all_dirty(&mut self) {
         if let Some(compiled) = &self.compiled {
-            let n = compiled.program.channels.len();
-            self.dirty = if n >= 32 { u32::MAX } else { (1 << n) - 1 };
+            self.dirty = self.every_channel();
             self.blocks = Blocks::All;
             self.reduce = !compiled.program.domains.is_empty();
             if !compiled.program.ends.is_empty() {
@@ -699,6 +714,26 @@ impl Blocks {
             (Blocks::All, _) => {}
             (Blocks::Listed(listed), Some(more)) => listed.extend_from_slice(more),
             (Blocks::Listed(_), None) => *self = Blocks::All,
+        }
+    }
+
+    /// Adds every block of `other`, keeping each listed block once.
+    pub(crate) fn merge(&mut self, other: &Blocks) {
+        match other {
+            Blocks::All => *self = Blocks::All,
+            Blocks::Listed(more) => self.add(Some(more)),
+        }
+        if let Blocks::Listed(listed) = self {
+            listed.sort_unstable();
+            listed.dedup();
+        }
+    }
+
+    /// The listed blocks, or `None` for every block.
+    pub(crate) fn listed(&self) -> Option<&[u32]> {
+        match self {
+            Blocks::All => None,
+            Blocks::Listed(listed) => Some(listed),
         }
     }
 

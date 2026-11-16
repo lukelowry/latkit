@@ -59,7 +59,7 @@ impl Dictionary {
                 // The old page is rarely written over again, so drop its codes.
                 self.pages.remove(&from);
                 let mut codes = before.to_vec();
-                for row in rows {
+                for row in rows.into_iter().flatten() {
                     codes[row as usize] = self.code(&page.values, row as usize);
                 }
                 codes.into()

@@ -190,7 +190,7 @@ fn forget<K: Clone + Eq + std::hash::Hash, V>(kept: &mut FxHashMap<K, V>, used: 
 /// A page of words for `column`'s rows `rows`, padded with missing values past the rows.
 pub(crate) fn values(column: &Column, rows: &[u32], words: Words, low: bool) -> Vec<u32> {
     let mut out = page_words(&column.pick(rows), words, low);
-    out.resize(PAGE_ROWS as usize, if words == Words::Bits { NONE } else { MISSING });
+    out.resize(PAGE_ROWS as usize, if matches!(words, Words::Bits | Words::Rows) { NONE } else { MISSING });
     out
 }
 

@@ -17,6 +17,12 @@
 //! a per-frame byte budget. Views plan their drawing to fit the pool, so a reservation rarely finds
 //! no space. When it does, it waits for the next frame, which grows the pool by the shortfall.
 //!
+//! A page written over a resident page takes that page's block when the tables reading it are
+//! replaced, and uploads only the rows written (see [`Arena::rewrite`]). Nothing is allocated and
+//! the block keeps its offset, so the page tables naming it stay as they are. A replaced page that
+//! nothing reads again is freed at once instead of cached (see [`Arena::discard`]). So a column
+//! written every frame uploads the rows it writes and leaves the pool's size as it was.
+//!
 //! A per-row word page is a block of its own. It is cleared when handed out if it is read before
 //! anything writes it, and freed only once the frame that released it is done. The pool grows only
 //! before a frame records writes to the pages, since growing copies the texture. A block that finds
@@ -31,6 +37,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
@@ -145,14 +152,13 @@ impl Content {
         len as u32
     }
 
-    /// The page's words from word `from` on, so a growing page uploads only its new tail.
-    fn words(&self, from: usize) -> Vec<u32> {
+    /// Appends words `range` of the page to `out`. A growing page uploads only its new tail this
+    /// way, and a rewritten page only the rows written. Nothing outside the range is converted.
+    fn append(&self, range: Range<usize>, out: &mut Vec<u32>) {
         match self {
-            Content::Values { values, words, low } => page_words(values, *words, *low).split_off(from),
-            Content::Frames(page) => {
-                page.read(|values| values[from.min(values.len())..].iter().map(|v| v.to_bits()).collect())
-            }
-            Content::Computed(words) => words[from.min(words.len())..].to_vec(),
+            Content::Values { values, words, low } => append_words(&values.slice(range), *words, *low, out),
+            Content::Frames(page) => page.read(|values| out.extend_from_slice(bytemuck::cast_slice(&values[range]))),
+            Content::Computed(words) => out.extend_from_slice(&words[range]),
         }
     }
 
@@ -187,33 +193,39 @@ fn slots(class: usize) -> u32 {
     CHUNK_WORDS / class_words(class)
 }
 
-/// The words a page uploads for `words`: numbers as `f32` (with `low`, the low part of each `f64`),
-/// point components, or reference rows as `u32`. Missing values become `MISSING`, or `NONE` for
-/// rows.
-pub(crate) fn page_words(values: &Values, words: Words, low: bool) -> Vec<u32> {
-    let n = values.len();
+/// Appends the words a page uploads for `values`, read as `words`: numbers as `f32` (with `low`,
+/// the low part of each `f64`), point components, or reference rows as `u32`. Missing values become
+/// `MISSING`, or `NONE` for rows. `f32` numbers with none missing are their own words, copied as
+/// stored.
+pub(crate) fn append_words(values: &Values, words: Words, low: bool, out: &mut Vec<u32>) {
     let word = |x: f64| {
         let hi = x as f32;
         if low { (x - f64::from(hi)) as f32 } else { hi }.to_bits()
     };
     match words {
-        Words::Values => values.map_numbers(|x| x.map_or(MISSING, word)),
-        Words::Bits => values.map_numbers(|x| x.map_or(NONE, |x| x as u32)),
+        Words::Values => match values.floats().filter(|_| !low) {
+            Some(floats) => out.extend_from_slice(bytemuck::cast_slice(floats)),
+            None => values.extend_numbers(out, |x| x.map_or(MISSING, word)),
+        },
+        Words::Bits | Words::Rows => values.extend_numbers(out, |x| x.map_or(NONE, |x| x as u32)),
         Words::X | Words::Y => {
             let component = usize::from(words == Words::Y);
             let coords = values.geometry().map(crate::data::Geometry::coords);
-            (0..n)
-                .map(|i| match coords {
-                    Some(coords) if values.is_valid(i) && coords[i][component].is_finite() => {
-                        word(coords[i][component])
-                    }
-                    _ => MISSING,
-                })
-                .collect()
+            out.extend((0..values.len()).map(|i| match coords {
+                Some(coords) if values.is_valid(i) && coords[i][component].is_finite() => word(coords[i][component]),
+                _ => MISSING,
+            }));
         }
         Words::Path => unreachable!("a geometry uploads in pieces"),
         Words::Codes => unreachable!("text codes upload as words"),
     }
+}
+
+/// The words a page uploads for `values`, as [`append_words`] writes them.
+pub(crate) fn page_words(values: &Values, words: Words, low: bool) -> Vec<u32> {
+    let mut out = Vec::with_capacity(values.len());
+    append_words(values, words, low, &mut out);
+    out
 }
 
 /// A geometry page as `lib/read.wesl` reads it. The row table has two words per row. The first is
@@ -472,6 +484,81 @@ impl Arena {
         true
     }
 
+    /// Where the block of page `key` lies and how many tables pin it, when a page of `need` words
+    /// written over `key` could take the block: it has room for them, and nothing is uploading
+    /// into it.
+    pub(crate) fn block_of(&self, key: PageKey, need: u32) -> Option<(u32, u32)> {
+        let block = self.blocks.get(&key).filter(|block| class_words(block.class) >= need)?;
+        (!self.contents.contains_key(&key)).then_some((block.offset, block.pins))
+    }
+
+    /// For each of `pages`: gives the block of page `from` to the page `ask` names, which was
+    /// written over it, and uploads the `rows` written since, as ascending runs of offsets into
+    /// the page.
+    /// The block keeps its offset and its pins, which pass to the tables that list the new page.
+    /// So nothing is allocated, and no page table changes. Pages written whole that lie side by
+    /// side, such as a column's, upload in one write.
+    ///
+    /// Only tables replaced along with this call may pin `from` (see [`block_of`](Arena::block_of)),
+    /// and the new page must not be resident. When several of those tables rewrite a page, the
+    /// first to name it moves the block and the others do nothing.
+    pub(crate) fn rewrite<'a>(
+        &mut self,
+        queue: &Queue,
+        pages: impl IntoIterator<Item = (PageKey, &'a [Range<u32>], &'a Ask)>,
+    ) {
+        let mut tails = Vec::new();
+        for (from, rows, ask) in pages {
+            let Some(content) = &ask.content else { continue };
+            let Some(mut block) = self.blocks.remove(&from) else { continue };
+            debug_assert!(block.pins > 0 && class_words(block.class) >= ask.need, "a block its tables pin, with room");
+            debug_assert!(!self.blocks.contains_key(&ask.key), "the new page is not resident");
+            let len = content.len();
+            // Whole texels cover each run, and runs whose texels meet upload as one piece.
+            let mut pieces: Vec<Range<u32>> = Vec::with_capacity(rows.len());
+            for run in rows {
+                let texels = run.start / 4 * 4..(run.end.div_ceil(4) * 4).min(len);
+                match pieces.last_mut() {
+                    Some(last) if texels.start <= last.end => last.end = last.end.max(texels.end),
+                    _ => pieces.push(texels),
+                }
+            }
+            for (i, piece) in pieces.into_iter().enumerate() {
+                let words = piece.start as usize..piece.end as usize;
+                tails.push((block.offset + piece.start, content, words, u64::from(i == 0)));
+            }
+            block.written = block.written.max(ask.need);
+            self.blocks.insert(ask.key, block);
+        }
+        self.upload(queue, tails);
+    }
+
+    /// Uploads `tails`: for each, words `range` of a page's content, to word `at` of the pool,
+    /// counted as `pages` pages. Tails that lie side by side, such as the pages of a column, upload
+    /// in one write, and each page's words are converted straight into it.
+    fn upload(&self, queue: &Queue, mut tails: Vec<(u32, &Content, Range<usize>, u64)>) {
+        tails.sort_unstable_by_key(|&(at, ..)| at);
+        let mut run: Option<(u32, Vec<u32>, u64)> = None;
+        for (at, content, words, count) in tails {
+            match &mut run {
+                Some((start, joined, pages)) if *start + joined.len() as u32 == at => {
+                    content.append(words, joined);
+                    *pages += count;
+                }
+                _ => {
+                    let mut joined = Vec::with_capacity(words.len());
+                    content.append(words, &mut joined);
+                    if let Some((start, joined, pages)) = run.replace((at, joined, count)) {
+                        self.words.upload(queue, start, &joined, pages);
+                    }
+                }
+            }
+        }
+        if let Some((start, joined, pages)) = run {
+            self.words.upload(queue, start, &joined, pages);
+        }
+    }
+
     /// Allocates a separate block of `words` for a per-row word page. With `cleared`, the next
     /// [`clear`](Arena::clear) zeroes reused storage. New texture storage already contains zero
     /// on every backend. Returns `None` if the pool has no space now. The next
@@ -595,15 +682,28 @@ impl Arena {
         block.pins += 1;
     }
 
-    /// Releases a pin a reservation took. A page no longer pinned stays cached, unless it is still
+    /// Releases a pin a table took. A page no longer pinned stays cached, unless it is still
     /// uploading: nothing waits for it now, so it is freed and its upload dropped.
     pub(crate) fn unpin(&mut self, key: PageKey) {
+        self.release_pin(key, true);
+    }
+
+    /// Releases a pin on a page that nothing asks for again, such as a version of rows written
+    /// since. Its block is freed once nothing pins it, where [`unpin`](Arena::unpin) keeps it
+    /// cached. A view still drawing that version pins the page, so it stays for that view.
+    pub(crate) fn discard(&mut self, key: PageKey) {
+        self.release_pin(key, false);
+    }
+
+    /// Releases one pin on `key`, if the pool holds it. Its block is then kept only while another
+    /// pin holds it, or with `cache`, once every word it was asked for has uploaded.
+    fn release_pin(&mut self, key: PageKey, cache: bool) {
         let Some(block) = self.blocks.get_mut(&key) else { return };
         block.pins -= 1;
         if block.pins > 0 {
             return;
         }
-        if self.contents.remove(&key).is_some() {
+        if self.contents.remove(&key).is_some() || !cache {
             let block = self.blocks.remove(&key).expect("a resident page");
             self.release(block.offset, block.class);
             return;
@@ -631,45 +731,26 @@ impl Arena {
     /// Uploads queued pages into their reserved blocks until `budget` bytes are reached, always at
     /// least one page unless `budget` is 0. Returns the bytes uploaded.
     pub(crate) fn pump(&mut self, queue: &Queue, budget: u64) -> u64 {
-        let mut bytes = 0;
         // Views drawn earlier in the frame spent the budget.
         if budget == 0 {
             return 0;
         }
-        let mut writes: Vec<(u32, Vec<u32>)> = Vec::new();
+        // Where each page's words still to upload go, and which words they are.
+        let mut bytes = 0;
+        let mut tails: Vec<(u32, Content, Range<usize>)> = Vec::new();
         while (bytes == 0 || bytes < budget)
             && let Some(key) = self.uploads.pop_front()
         {
             let Some(content) = self.contents.remove(&key) else { continue };
             let Some(block) = self.blocks.get_mut(&key) else { continue };
-            let (offset, written) = (block.offset, block.written);
-            let aligned = written / 4 * 4;
-            let tail = content.words(aligned as usize);
-            block.written = aligned + tail.len() as u32;
-            if !tail.is_empty() {
-                bytes += tail.len() as u64 * 4;
-                writes.push((offset + aligned, tail));
+            let (from, len) = (block.written / 4 * 4, content.len());
+            block.written = len.max(from);
+            if len > from {
+                bytes += u64::from(len - from) * 4;
+                tails.push((block.offset + from, content, from as usize..len as usize));
             }
         }
-        // Adjacent pages, such as a column's, upload in one write.
-        writes.sort_unstable_by_key(|&(at, _)| at);
-        let mut run: Option<(u32, Vec<u32>, u64)> = None;
-        for (at, words) in writes {
-            match &mut run {
-                Some((start, joined, pages)) if *start + joined.len() as u32 == at => {
-                    joined.extend_from_slice(&words);
-                    *pages += 1;
-                }
-                _ => {
-                    if let Some((start, joined, pages)) = run.replace((at, words, 1)) {
-                        self.words.upload(queue, start, &joined, pages);
-                    }
-                }
-            }
-        }
-        if let Some((start, joined, pages)) = run {
-            self.words.upload(queue, start, &joined, pages);
-        }
+        self.upload(queue, tails.iter().map(|(at, content, words)| (*at, content, words.clone(), 1)).collect());
         bytes
     }
 
@@ -780,7 +861,52 @@ fn create(device: &wgpu::Device, retired: &super::retired::Retired, chunks: u32)
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::Gpu;
+    use crate::gpu::testing::gpu;
+
+    /// A pool of its own on `gpu`'s device, apart from the pool its views draw from.
+    fn pool(gpu: &Gpu) -> Arena {
+        Arena::new(&gpu.0.device, gpu.0.queue.retired(), 64 << 20)
+    }
+
+    /// Reads `count` words of `arena` from word `at`. They lie in one row of its texture.
+    fn read(gpu: &Gpu, arena: &Arena, at: u32, count: u32) -> Vec<u32> {
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let output = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(count) * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let texture = arena.words.texture().as_image_copy();
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { origin: crate::gpu::words::origin(at), ..texture },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &output,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: None, rows_per_image: None },
+            },
+            wgpu::Extent3d { width: count / 4, height: 1, depth_or_array_layers: 1 },
+        );
+        queue.submit([encoder.finish()]);
+        let (sent, received) = std::sync::mpsc::channel();
+        let slice = output.slice(..);
+        slice.map_async(wgpu::MapMode::Read, move |result| sent.send(result).unwrap());
+        device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(10)) }).unwrap();
+        received.recv().unwrap().unwrap();
+        let bytes = slice.get_mapped_range().unwrap().to_vec();
+        bytemuck::pod_collect_to_vec(&bytes)
+    }
+
+    /// A page of `f32` values with an id of its own, asked for whole.
+    fn page(values: Vec<f32>) -> Ask {
+        let need = values.len() as u32;
+        let content = Content::Values { values: values.into(), words: Words::Values, low: false };
+        Ask { key: PageKey::of(PageId::next(), Words::Values, false), need, content: Some(content) }
+    }
 
     #[test]
     fn classes_round_up_to_powers_of_two() {
@@ -796,85 +922,49 @@ mod tests {
 
     #[test]
     fn untouched_blocks_are_zero_and_recarved_blocks_are_cleared() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = gpu() else { return };
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        let mut arena = Arena::new(device, queue.retired(), 64 << 20);
-        let read = |arena: &Arena| {
-            let output = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: 1024,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            encoder.copy_texture_to_buffer(
-                arena.words.texture().as_image_copy(),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &output,
-                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(1024), rows_per_image: None },
-                },
-                wgpu::Extent3d { width: 64, height: 1, depth_or_array_layers: 1 },
-            );
-            queue.submit([encoder.finish()]);
-            let (sent, received) = std::sync::mpsc::channel();
-            output.slice(..).map_async(wgpu::MapMode::Read, move |result| sent.send(result).unwrap());
-            device
-                .poll(wgpu::PollType::Wait {
-                    submission_index: None,
-                    timeout: Some(std::time::Duration::from_secs(10)),
-                })
-                .unwrap();
-            received.recv().unwrap().unwrap();
-            output.slice(..).get_mapped_range().unwrap().to_vec()
-        };
+        let mut arena = pool(&gpu);
+        let zero = |arena: &Arena| read(&gpu, arena, 0, 256).iter().all(|&word| word == 0);
         let before = gpu.work().cleared;
         let first = arena.block(device, queue, 128, true).unwrap();
         assert_eq!(first, 0);
         arena.clear(device, queue);
         assert_eq!(gpu.work().cleared, before, "untouched storage requires no explicit copy of zeros");
-        assert!(read(&arena).iter().all(|&byte| byte == 0));
+        assert!(zero(&arena));
         arena.words.write(queue, first, &[u32::MAX; 128]);
         arena.free(first, 128);
         arena.begin_frame(device, queue);
         // Recarving must retain the dirty extent, including when the new class is smaller.
-        let a = arena.block(device, queue, 64, true).unwrap();
-        let b = arena.block(device, queue, 64, true).unwrap();
-        let c = arena.block(device, queue, 64, true).unwrap();
-        assert_eq!([a, b, c], [0, 64, 128]);
+        let blocks: Vec<u32> = (0..3).map(|_| arena.block(device, queue, 64, true).unwrap()).collect();
+        assert_eq!(blocks, [0, 64, 128]);
         arena.clear(device, queue);
         assert_eq!(gpu.work().cleared - before, 128 * 4, "only the two reused blocks need clears");
-        assert!(read(&arena).iter().all(|&byte| byte == 0));
-        arena.words.write(queue, c, &[u32::MAX; 64]);
-        for block in [a, b, c] {
+        assert!(zero(&arena));
+        arena.words.write(queue, blocks[2], &[u32::MAX; 64]);
+        for block in blocks {
             arena.free(block, 64);
         }
         arena.begin_frame(device, queue);
         assert_eq!(arena.block(device, queue, 256, true), Some(0));
         arena.clear(device, queue);
         assert_eq!(gpu.work().cleared - before, (128 + 256) * 4);
-        assert!(read(&arena).iter().all(|&byte| byte == 0), "a larger recarved block cannot expose old data");
+        assert!(zero(&arena), "a larger recarved block cannot expose old data");
     }
 
     #[test]
     fn a_reservation_grows_the_pool_once_and_retires_the_buffer_it_replaces() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = gpu() else { return };
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        let mut arena = Arena::new(device, queue.retired(), 64 << 20);
+        let mut arena = pool(&gpu);
         // Twenty pages of a whole chunk each, for a pool of eight chunks.
-        let page = || Ask {
-            key: PageKey::of(PageId::next(), Words::Values, false),
-            need: CHUNK_WORDS,
-            content: Some(Content::Computed(vec![0; CHUNK_WORDS as usize])),
-        };
-        let mut asks: Vec<Ask> = (0..20).map(|_| page()).collect();
+        let mut asks: Vec<Ask> = (0..20)
+            .map(|_| Ask {
+                key: PageKey::of(PageId::next(), Words::Values, false),
+                need: CHUNK_WORDS,
+                content: Some(Content::Computed(vec![0; CHUNK_WORDS as usize])),
+            })
+            .collect();
         let texture = arena.words.texture();
         let allocated =
             u64::from(texture.width()) * u64::from(texture.height()) * u64::from(texture.depth_or_array_layers()) * 16;
@@ -886,13 +976,132 @@ mod tests {
     }
 
     #[test]
-    fn page_words_split_doubles() {
+    fn a_rewritten_page_keeps_its_block_and_uploads_only_the_rows_written() {
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let mut arena = pool(&gpu);
+        let rows = 4096_u32;
+        let mut values: Vec<f32> = (0..rows).map(|row| row as f32).collect();
+        let mut asks = [page(values.clone())];
+        let old = asks[0].key;
+        assert!(arena.reserve(device, queue, &mut asks));
+        assert_eq!(arena.block_of(old, rows), None, "nothing takes a block that is still uploading");
+        arena.pump(queue, u64::MAX);
+        let (offset, resident) = (arena.offset(old, rows).expect("uploaded"), arena.resident());
+        assert_eq!(arena.block_of(old, rows), Some((offset, 1)), "one table pins it");
+        assert_eq!(arena.block_of(old, rows + 1), None, "a page larger than the block takes another");
+        // Rows 5, 6, and 700 change: two texels of four rows each.
+        for row in [5, 6, 700] {
+            values[row] = -1.0;
+        }
+        let new = page(values);
+        let before = gpu.work();
+        arena.rewrite(queue, [(old, &[5..7, 700..701][..], &new)]);
+        let work = gpu.work() - before;
+        assert_eq!((work.uploaded, work.uploads), (2 * 16, 1), "two texels, counted as one page");
+        let blocks = (arena.offset(new.key, rows), arena.offset(old, rows));
+        assert_eq!(blocks, (Some(offset), None), "the block moved pages");
+        assert_eq!((arena.resident(), arena.generation), (resident, 0), "and nothing was allocated");
+        let words = |values: [f32; 4]| values.map(f32::to_bits);
+        assert_eq!(read(&gpu, &arena, offset + 4, 4), words([4.0, -1.0, -1.0, 7.0]));
+        assert_eq!(read(&gpu, &arena, offset + 700, 4), words([-1.0, 701.0, 702.0, 703.0]));
+        assert_eq!(read(&gpu, &arena, offset + 696, 4), words([696.0, 697.0, 698.0, 699.0]), "its neighbors stay");
+        // The pin passed to the new page, so the table replaced releases nothing.
+        arena.discard(old);
+        assert_eq!(arena.resident(), resident);
+        arena.discard(new.key);
+        assert_eq!(arena.resident(), 0, "the table that took the pin frees the block");
+    }
+
+    #[test]
+    fn a_rewrite_grows_a_page_within_its_block_and_a_second_one_does_nothing() {
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let mut arena = pool(&gpu);
+        // 100 rows take a 128-word block, which holds 20 more.
+        let mut asks = [page(vec![1.0; 100])];
+        let old = asks[0].key;
+        assert!(arena.reserve(device, queue, &mut asks));
+        arena.pump(queue, u64::MAX);
+        let offset = arena.offset(old, 100).expect("uploaded");
+        let mut values = vec![1.0; 120];
+        values[100..].fill(2.0);
+        let new = page(values);
+        let appended = 100..120;
+        arena.rewrite(queue, [(old, std::slice::from_ref(&appended), &new)]);
+        assert_eq!(arena.offset(new.key, 120), Some(offset), "the page grew where it was");
+        assert_eq!(read(&gpu, &arena, offset + 96, 8), [1.0_f32, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0].map(f32::to_bits));
+        // Another table replaced in the same swap rewrites the same page: the block already moved.
+        let before = gpu.work();
+        arena.rewrite(queue, [(old, std::slice::from_ref(&appended), &new)]);
+        assert_eq!((gpu.work() - before).uploaded, 0);
+        assert_eq!(arena.block_of(new.key, 120), Some((offset, 1)), "and its pins are unchanged");
+    }
+
+    #[test]
+    fn pages_side_by_side_rewrite_in_one_write() {
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let mut arena = pool(&gpu);
+        // Two pages that fill their blocks, as a column's pages do.
+        let mut asks = [page(vec![1.0; 64]), page(vec![2.0; 64])];
+        let olds = [asks[0].key, asks[1].key];
+        assert!(arena.reserve(device, queue, &mut asks));
+        arena.pump(queue, u64::MAX);
+        let offsets = olds.map(|key| arena.offset(key, 64).expect("uploaded"));
+        assert_eq!(offsets[1], offsets[0] + 64, "the pages lie side by side");
+        let news = [page(vec![3.0; 64]), page(vec![4.0; 64])];
+        let every = std::slice::from_ref(&(0..64));
+        let before = gpu.work();
+        arena.rewrite(queue, [(olds[1], every, &news[1]), (olds[0], every, &news[0])]);
+        let work = gpu.work() - before;
+        assert_eq!((work.uploaded, work.uploads), (2 * 64 * 4, 2), "both pages, in whatever order they came");
+        let across = [3.0_f32, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0, 4.0].map(f32::to_bits);
+        assert_eq!(read(&gpu, &arena, offsets[0] + 60, 8), across);
+    }
+
+    #[test]
+    fn an_unpinned_page_stays_cached_and_a_discarded_one_frees_its_block() {
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let mut arena = pool(&gpu);
+        let mut asks = [page(vec![1.0; 64]), page(vec![2.0; 64])];
+        let (cached, dropped) = (asks[0].key, asks[1].key);
+        assert!(arena.reserve(device, queue, &mut asks));
+        arena.pump(queue, u64::MAX);
+        let resident = arena.resident();
+        arena.unpin(cached);
+        assert!(arena.holds(cached, 64), "an unpinned page stays for whoever asks next");
+        assert_eq!(arena.resident(), resident);
+        arena.discard(dropped);
+        assert!(!arena.holds(dropped, 64), "a discarded page is gone");
+        assert_eq!(arena.resident(), resident / 2);
+        // A page two tables pin outlives the first to let go.
+        for _ in 0..2 {
+            assert!(arena.reserve(device, queue, &mut [Ask { key: cached, need: 64, content: None }]));
+        }
+        arena.discard(cached);
+        assert!(arena.holds(cached, 64), "the other table still reads it");
+        arena.discard(cached);
+        assert!(!arena.holds(cached, 64));
+        assert_eq!(arena.resident(), 0);
+    }
+
+    #[test]
+    fn page_words_split_doubles_and_copy_floats_as_stored() {
         let values = Values::from(vec![Some(1.0_f64 + 1e-9), None]);
         let hi = page_words(&values, Words::Values, false);
         let lo = page_words(&values, Words::Values, true);
         assert_eq!(hi[1], MISSING);
         let back = f64::from(f32::from_bits(hi[0])) + f64::from(f32::from_bits(lo[0]));
         assert!((back - (1.0 + 1e-9)).abs() < 1e-15);
+        // An `f32` column's words are its values. Part of a page converts alone.
+        let floats: Vec<f32> = vec![0.5, -2.0, f32::MAX, 0.0, 7.25];
+        let content = Content::Values { values: floats.clone().into(), words: Words::Values, low: false };
+        let mut part = vec![9];
+        content.append(1..4, &mut part);
+        assert_eq!(part, [9, (-2.0_f32).to_bits(), f32::MAX.to_bits(), 0]);
+        assert_eq!(page_words(&Values::from(floats), Words::Values, true), [0; 5], "which have no low part");
     }
 
     /// Row `row`'s piece index, first point, and point count, from a page's row table.

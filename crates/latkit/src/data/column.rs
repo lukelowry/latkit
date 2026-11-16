@@ -1,8 +1,9 @@
+use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use super::name::PageId;
 use super::values::{Array, Kind, Picks, Value, Values};
-use crate::Result;
+use crate::{Error, Result};
 
 /// Log2 of the rows per page (4,096). A page is the unit of sharing between versions, of GPU
 /// upload, of residency when a paged table is drawn, and of a mark's per-row evaluation.
@@ -27,12 +28,13 @@ pub(crate) struct Page {
 }
 
 /// How a page was written. It records the page it copied (`from`), the rows written or added as
-/// offsets into the page, and how `from` was written in turn (`before`), up to [`REMEMBERED`]
-/// writes back.
+/// runs of offsets into the page, and how `from` was written in turn (`before`), up to
+/// [`REMEMBERED`] writes back. The runs ascend and neither overlap nor touch, so a page written
+/// whole records one.
 #[derive(Debug)]
 pub(crate) struct Written {
     pub(crate) from: PageId,
-    pub(crate) rows: Box<[u32]>,
+    pub(crate) rows: Box<[Range<u32>]>,
     pub(crate) before: Option<Arc<Written>>,
     depth: u8,
 }
@@ -46,7 +48,7 @@ impl Page {
     fn over(values: Values, old: &Page, rows: Vec<u32>) -> Page {
         let before = old.written.clone().filter(|w| w.depth < REMEMBERED);
         let depth = before.as_ref().map_or(1, |w| w.depth + 1);
-        let written = Written { from: old.id, rows: rows.into(), before, depth };
+        let written = Written { from: old.id, rows: runs(rows).into(), before, depth };
         Page { id: PageId::next(), values, written: Some(Arc::new(written)), points: OnceLock::new() }
     }
 
@@ -55,10 +57,10 @@ impl Page {
         *self.points.get_or_init(|| self.values.points())
     }
 
-    /// The rows written since page `before`, as sorted offsets into the page. Empty if this page is
-    /// `before`. `None` unless this page was written from `before` and still remembers it (see
-    /// [`REMEMBERED`]).
-    pub(crate) fn rows_since(&self, before: PageId) -> Option<Vec<u32>> {
+    /// The rows written since page `before`, as ascending runs of offsets into the page that
+    /// neither overlap nor touch. Empty if this page is `before`. `None` unless this page was
+    /// written from `before` and still remembers it (see [`REMEMBERED`]).
+    pub(crate) fn rows_since(&self, before: PageId) -> Option<Vec<Range<u32>>> {
         if self.id == before {
             return Some(Vec::new());
         }
@@ -67,14 +69,41 @@ impl Page {
         while let Some(written) = at {
             rows.extend_from_slice(&written.rows);
             if written.from == before {
-                rows.sort_unstable();
-                rows.dedup();
-                return Some(rows);
+                // One write's runs are joined already. Several writes' runs may meet.
+                return Some(if std::ptr::eq(written, self.written.as_deref()?) { rows } else { joined(rows) });
             }
             at = written.before.as_deref();
         }
         None
     }
+}
+
+/// `rows` as ascending runs that neither overlap nor touch.
+fn runs(mut rows: Vec<u32>) -> Vec<Range<u32>> {
+    if !rows.is_sorted() {
+        rows.sort_unstable();
+    }
+    let mut runs: Vec<Range<u32>> = Vec::new();
+    for row in rows {
+        match runs.last_mut() {
+            Some(run) if row <= run.end => run.end = run.end.max(row + 1),
+            _ => runs.push(row..row + 1),
+        }
+    }
+    runs
+}
+
+/// `runs` in ascending order, with those that overlap or touch made one.
+fn joined(mut runs: Vec<Range<u32>>) -> Vec<Range<u32>> {
+    runs.sort_unstable_by_key(|run| run.start);
+    let mut joined: Vec<Range<u32>> = Vec::with_capacity(runs.len());
+    for run in runs {
+        match joined.last_mut() {
+            Some(last) if run.start <= last.end => last.end = last.end.max(run.end),
+            _ => joined.push(run),
+        }
+    }
+    joined
 }
 
 /// A field's values in pages of [`PAGE_ROWS`] rows. Writes replace only the pages they touch. The
@@ -162,7 +191,7 @@ impl Column {
     pub(crate) fn pick(&self, rows: &[u32]) -> Values {
         let from: Vec<Option<usize>> = rows.iter().map(|&r| Some(r as usize).filter(|&r| r < self.len)).collect();
         let sources: Vec<&Values> = std::iter::once(&self.like).chain(self.pages.iter().map(|p| &p.values)).collect();
-        Values::assemble(&sources, Picks::Writes { from: &from, kept: 0 }).expect("one storage")
+        Values::assemble(&sources, Picks::Found(&from)).expect("one storage")
     }
 
     /// A copy with `len` rows (at least the current count) and `writes` applied.
@@ -172,6 +201,10 @@ impl Column {
     /// nothing downstream. New rows not written are missing.
     /// Returns an error if both hold values, of different kinds. A column that holds no value takes
     /// the kind of `source`, and a `source` that holds none writes missing values of this kind.
+    ///
+    /// A write costs the values written and the pages they land in, not the column's rows. Writing
+    /// every row in order, in the column's storage, copies nothing: each page of `source` becomes
+    /// the column's (see [`replaced_by`](Column::replaced_by)).
     pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &Column) -> Result<Column> {
         if self.kind() != source.kind() {
             if !self.fixed {
@@ -180,14 +213,18 @@ impl Column {
             if !source.fixed {
                 return self.write(len, writes, &Column::missing(&self.like, source.len));
             }
+            return Err(Error::invalid(format!("{:?} values for a {:?} field", source.kind(), self.kind())));
         }
         debug_assert!(len >= self.len);
         debug_assert!(writes.windows(2).all(|w| w[0].0 < w[1].0));
+        let whole = len == self.len && source.len == len && writes.len() == len;
+        if whole && self.like.stored_like(&source.like) && writes.iter().enumerate().all(|(row, w)| *w == (row, row)) {
+            return Ok(self.replaced_by(source));
+        }
         let count = len.div_ceil(PAGE_ROWS);
         let mut pages: Vec<Page> = Vec::with_capacity(count);
         let mut sources: Vec<&Values> = vec![&self.like];
         sources.extend(source.pages.iter().map(|p| &p.values));
-        sources.push(&source.like);
         let mut next = 0;
         let mut fixed = self.fixed;
         for p in 0..count {
@@ -206,13 +243,9 @@ impl Column {
                 pages.push(old.clone());
                 continue;
             }
-            let mut from = vec![None; page_len];
-            for &(row, k) in page_writes {
-                from[row - start] = Some(k);
-            }
             sources[0] = old.map_or(&self.like, |o| &o.values);
             let kept = sources[0].len();
-            let values = Values::assemble(&sources, Picks::Writes { from: &from, kept })?;
+            let values = Values::picked(&sources, Picks::Written { writes: page_writes, start, kept, len: page_len });
             fixed |= source.fixed && values.holds_any();
             pages.push(match old {
                 // Record the rows whose values changed, plus the rows added past the old page's end.
@@ -231,6 +264,23 @@ impl Column {
             });
         }
         Ok(Column { len, pages: pages.into(), like: self.like.clone(), fixed })
+    }
+
+    /// This column with the values of `source`, which holds the same rows in the same storage. Each
+    /// page of `source` becomes the column's as it is, so nothing is copied. A page whose values are
+    /// equal keeps its id. Any other records the rows that differ, as a written page does.
+    pub(crate) fn replaced_by(&self, source: &Column) -> Column {
+        debug_assert!(source.len == self.len && self.like.stored_like(&source.like));
+        let pages = self
+            .pages
+            .iter()
+            .zip(source.pages.iter())
+            .map(|(old, new)| match new.values.differing(&old.values) {
+                rows if rows.is_empty() => old.clone(),
+                rows => Page::over(new.values.clone(), old, rows),
+            })
+            .collect();
+        Column { len: self.len, pages, like: self.like.clone(), fixed: self.fixed || source.fixed }
     }
 
     /// This column, ready for `source` to be written into it: `u32` numbers widen to `u64` when
@@ -262,7 +312,9 @@ impl Column {
             let (Some(now), Some(then)) = (self.pages.get(p), before.pages.get(p)) else { return false };
             let start = p * PAGE_ROWS;
             now.id == then.id
-                || now.rows_since(then.id).is_some_and(|written| written.iter().all(|&r| start + r as usize >= rows))
+                || now
+                    .rows_since(then.id)
+                    .is_some_and(|written| written.iter().all(|r| start + r.start as usize >= rows))
         })
     }
 
@@ -277,7 +329,7 @@ impl Column {
             match before.pages.get(p) {
                 Some(then) if then.id == now.id => {}
                 Some(then) => match now.rows_since(then.id) {
-                    Some(written) => rows.extend(written.into_iter().map(|r| start + r as usize)),
+                    Some(written) => rows.extend(written.into_iter().flatten().map(|r| start + r as usize)),
                     None => rows.extend(start..start + now.values.len()),
                 },
                 None => rows.extend(start..start + now.values.len()),

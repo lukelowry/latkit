@@ -55,6 +55,27 @@ impl Data {
         Ok(self.0.apply(latkit::Patch::from_bytes(bytes)?)?)
     }
 
+    /// Writes number `columns`, named `names`, for rows `ids` of `table`, or for rows `0..count`
+    /// without ids: as a patch's `set` does, or with `replace`, as its `replace`. Each typed array
+    /// crosses once and becomes its column's values as it is, with no frame written or read.
+    pub fn write(
+        &self,
+        replace: bool,
+        table: &str,
+        ids: Option<Vec<u32>>,
+        count: u32,
+        names: Vec<String>,
+        columns: Vec<JsValue>,
+    ) -> Result<(), Error> {
+        let ids = ids.map_or_else(|| latkit::Ids::count(count), latkit::Ids::from);
+        let mut rows = latkit::Table::new(table, ids);
+        for (name, column) in names.into_iter().zip(columns) {
+            rows = rows.field(name, convert::numbers(&column)?);
+        }
+        let patch = latkit::Patch::new();
+        Ok(self.0.apply(if replace { patch.replace(rows) } else { patch.set(rows) })?)
+    }
+
     /// The current version, taken in O(1) and sharing every page.
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {

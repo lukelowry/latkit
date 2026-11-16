@@ -1,9 +1,13 @@
 /**
- * The benchmark scenarios: the sizes each sweeps, its scene and data at each size, and its phases.
- * Each phase declares how its cost may grow with size. Together the phases check that:
+ * The benchmark scenarios: the sizes each is visited at, its scene and data at each size, and its
+ * phases. A scenario lists its smallest and largest size, and one between only where a size draws
+ * differently, so a sweep visits few pages. Each phase declares how its cost may grow with size.
+ * Together the phases check that:
  *
  * - CPU time per frame stays flat as rows grow;
- * - a one-row change costs the same at any size;
+ * - a one-row change costs the same at any size, eased or not, in the row's own table, a table
+ *   joined to it, or a table whose rows name it;
+ * - a field written whole every frame costs its rows, and no more memory however long it runs;
  * - restyling uploads no data;
  * - views share pages;
  * - returning the camera to where it was packs, uploads, and evaluates nothing;
@@ -14,8 +18,8 @@
  *
  * Every scenario starts with `init`, `data`, and `load`, and idle frames are counted after its last
  * phase. Between them, the scenarios draw every kind of mark and marker, labels, legends and a
- * title, joined fields, comets, elevation on a tilted globe, layouts, tiles, plots, pictures, and
- * video.
+ * title, fields joined by id and read through references, comets, elevation on a tilted globe,
+ * layouts, tiles, plots, pictures, and video.
  */
 import {
   Shot,
@@ -36,7 +40,8 @@ export interface Scenario {
   about: string;
   /** What a size counts, such as rows or buses. */
   unit: string;
-  /** The sizes swept, smallest first. `--quick` runs only the smallest. */
+  /** The sizes visited, smallest first: the ends, and each size between that draws differently.
+   * `--quick` visits only the smallest. */
   sizes: readonly number[];
   build(size: number): Built;
   phases: readonly Phase[];
@@ -85,7 +90,10 @@ export interface Phase {
 }
 
 export const LOAD: Order = { time: 1, bytes: 1 };
-export const DECADES = [1e3, 1e4, 1e5, 1e6, 2e6];
+/** The sizes at which a table of rows draws differently: in one page of rows, in many pages drawn
+ * whole, and too large to draw at once, so drawn in the pages in view. A write costs one page in
+ * the second, and packs pages in the third. */
+export const REGIMES = [1e3, 1e5, 1e6];
 /** Frames a steady phase acts in: enough past its warm-up for a stable median, and no more. */
 export const FRAMES = 40;
 export const HISTORY = 1024;
@@ -113,6 +121,26 @@ const grid = (space: Space): Scene => ({
   ease: 0,
   marks: [
     { edges: ['g', 'Line'], ends: ['from', 'to'], width: 0.6 },
+    {
+      vertices: ['g', 'Bus'],
+      position: ['$lon', '$lat'],
+      color: field('load').colormap('viridis').domain(0, 1),
+    },
+  ],
+});
+
+/** Dataset `g`'s lines, colored by the load of the bus each starts at, and its buses. Made when
+ * its scenario runs, so a package from before `of` still runs the others. */
+const referenced = (): Scene => ({
+  space: 'plane',
+  ease: 0,
+  marks: [
+    {
+      edges: ['g', 'Line'],
+      ends: ['from', 'to'],
+      width: 0.6,
+      color: field('load').of('from').colormap('viridis').domain(0, 1),
+    },
     {
       vertices: ['g', 'Bus'],
       position: ['$lon', '$lat'],
@@ -342,6 +370,21 @@ const every = (data: string, table: string, name: string): Phase => ({
     const n = s.count(data, table);
     const values = Float32Array.from({ length: n }, (_, i) => (i % 7) / 7);
     return s.once(() => s.apply(data, (p) => p.set(table, { count: n }, { [name]: values })));
+  },
+});
+
+/** Writes every row's value each frame as a typed array, the way an application feeds a field. The
+ * GPU keeps the pages it holds, so the bytes resident stay what they were. */
+const feed = (data: string, table: string, name: string): Phase => ({
+  name: 'feed',
+  order: { time: 1, bytes: 1 },
+  run: (s) => {
+    const n = s.count(data, table);
+    // Two columns that differ in every row, so every frame writes every row.
+    const columns = [0, 1].map((k) =>
+      Float32Array.from({ length: n }, (_, i) => ((i + k) % 7) / 7),
+    );
+    return s.steady(FRAMES, (i) => s.set(data, table, { [name]: columns[i % 2]! }));
   },
 });
 
@@ -586,7 +629,7 @@ export const scenarios: Record<string, Scenario> = {
   points: {
     about: 'vertices on a plane, colored through a colormap',
     unit: 'rows',
-    sizes: DECADES,
+    sizes: REGIMES,
     build: (n) => ({ scene: dots('plane'), data: { d: make.scatter(n) } }),
     phases: [
       pan(),
@@ -595,6 +638,7 @@ export const scenarios: Record<string, Scenario> = {
       restyle(dots('plane', 'magma')),
       one('d', 'Point', 'v'),
       every('d', 'Point', 'v'),
+      feed('d', 'Point', 'v'),
       ...pick(),
       hover(),
       select('d', 'Point'),
@@ -614,7 +658,7 @@ export const scenarios: Record<string, Scenario> = {
   grid: {
     about: 'a lattice grid on the globe: buses, and the geodesic lines between them',
     unit: 'buses',
-    sizes: DECADES,
+    sizes: REGIMES,
     build: (n) => ({
       scene: grid({ earth: { projection: 'globe' } }),
       data: { g: make.lattice(n) },
@@ -638,7 +682,7 @@ export const scenarios: Record<string, Scenario> = {
     unit: 'rows',
     // From 10,000 rows on, more labels show than a frame sets texts for, so a frame's CPU time
     // stays at the text budget however many rows are labeled.
-    sizes: [1e4, 1e5, 1e6],
+    sizes: [1e4, 1e6],
     build: (n) => ({
       scene: dots('plane', 'viridis', 'name'),
       data: { d: make.scatter(n, 1, true) },
@@ -648,7 +692,7 @@ export const scenarios: Record<string, Scenario> = {
   raised: {
     about: 'buses raised by load on a tilted globe: heights sorted on the GPU, depth tested',
     unit: 'buses',
-    sizes: DECADES,
+    sizes: REGIMES,
     build: (n) => ({
       scene: raised,
       data: { g: make.lattice(n) },
@@ -660,7 +704,7 @@ export const scenarios: Record<string, Scenario> = {
   markers: {
     about: 'shapes, gauges, pies, icons, and a custom WGSL marker, a fifth of the rows each',
     unit: 'rows',
-    sizes: [1e3, 1e4, 1e5, 1e6],
+    sizes: REGIMES,
     build: (n) => ({ scene: markers(0.6), data: { m: make.markers(n) } }),
     phases: [
       pan(),
@@ -674,7 +718,7 @@ export const scenarios: Record<string, Scenario> = {
   comets: {
     about: 'comets flowing along every line of a grid, moved by the GPU each frame',
     unit: 'buses',
-    sizes: [1e3, 1e4, 1e5, 1e6],
+    sizes: REGIMES,
     moving: true,
     build: (n) => ({ scene: flowing, data: { g: make.lattice(n, true) } }),
     phases: [still(), pan(), one('g', 'Line', 'speed'), ...pick()],
@@ -683,7 +727,7 @@ export const scenarios: Record<string, Scenario> = {
     about:
       'buses colored and sized by fields joined from another dataset, under a title and legend',
     unit: 'buses',
-    sizes: DECADES,
+    sizes: REGIMES,
     build: (n) => ({
       scene: joined('viridis'),
       data: { g: make.lattice(n), w: make.weather(n) },
@@ -692,14 +736,23 @@ export const scenarios: Record<string, Scenario> = {
       pan(),
       one('w', 'Bus', 'load'),
       every('w', 'Bus', 'load'),
+      feed('w', 'Bus', 'load'),
       // The legend's bar redraws in the new colormap.
       restyle(joined('magma')),
     ],
   },
+  references: {
+    about: 'lines colored by a field of the bus each starts at, read through its reference',
+    unit: 'buses',
+    sizes: REGIMES,
+    build: (n) => ({ scene: referenced(), data: { g: make.lattice(n) } }),
+    // A bus written changes the lines that name it.
+    phases: [pan(), one('g', 'Bus', 'load'), feed('g', 'Bus', 'load')],
+  },
   lanes: {
     about: 'edges by the thousand between the same sixteen pairs of vertices',
     unit: 'edges',
-    sizes: [1e2, 1e3, 1e4, 1e5],
+    sizes: [1e2, 1e5],
     build: (n) => ({
       scene: {
         space: 'plane',
@@ -716,7 +769,7 @@ export const scenarios: Record<string, Scenario> = {
   areas: {
     about: 'polygons of 33 points on the mercator map, triangulated in jobs',
     unit: 'polygons',
-    sizes: [1e2, 1e3, 1e4, 3e4],
+    sizes: [1e2, 3e4],
     build: (n) => ({
       scene: {
         space: 'earth',
@@ -736,7 +789,7 @@ export const scenarios: Record<string, Scenario> = {
   tiles: {
     about: 'vector tiles fetched from a local server as the camera needs them',
     unit: 'squares a tile',
-    sizes: [16, 256, 4096],
+    sizes: [16, 4096],
     fetches: true,
     build: (n) => ({
       scene: {
@@ -754,14 +807,14 @@ export const scenarios: Record<string, Scenario> = {
     about:
       'nodes without positions in trees of 64 on a plane, laid out in ranks on the frame or in a job',
     unit: 'nodes',
-    sizes: [1e2, 1e3, 1e4],
+    sizes: [1e2, 1e4],
     build: (n) => ({ scene: laidOut, data: { d: make.trees(n) } }),
     phases: [pan(), edit(), arrange()],
   },
   traces: {
     about: 'a plot of traces 1,024 frames long, fed a frame every animation frame',
     unit: 'traces',
-    sizes: [10, 1e2, 1e3, 1e4],
+    sizes: [10, 1e4],
     build: (n) => ({ scene: plot, data: { t: make.traces(n, HISTORY) } }),
     // Narrowing uploads each trace's finer level, so its bytes grow with the traces.
     phases: [stream(), scrub(), narrow({ time: 0, bytes: 1 }), hover()],
@@ -769,21 +822,22 @@ export const scenarios: Record<string, Scenario> = {
   history: {
     about: 'one trace with a long history: levels of detail',
     unit: 'frames',
-    sizes: [1e3, 1e4, 1e5, 1e6],
+    sizes: [1e3, 1e6],
     build: (n) => ({ scene: plot, data: { t: make.traces(1, n) } }),
     phases: [scrub(), narrow()],
   },
   transition: {
-    about: 'every row moving to a new place at once, easing over a second',
+    about: 'every row moving to a new place at once, then one row a frame, easing over a second',
     unit: 'rows',
-    sizes: [1e3, 1e4, 1e5, 1e6],
+    sizes: REGIMES,
     build: (n) => ({ scene: { ...dots('plane'), ease: 1 }, data: { d: make.scatter(n) } }),
-    phases: [move()],
+    // A row written eases alone: only its page of rows freezes, evaluates, and eases.
+    phases: [move(), one('d', 'Point', 'v')],
   },
   views: {
     about: 'views of one GPU drawing one dataset: pages shared, not copied',
     unit: 'views',
-    sizes: [1, 2, 4, 8],
+    sizes: [1, 8],
     views: (n) => n,
     // A budget large enough that the views' shares of it fit the per-row data of eight views.
     // Each view keeps its own per-row data, so resident bytes grow with the views. The pages are
@@ -796,7 +850,7 @@ export const scenarios: Record<string, Scenario> = {
   budget: {
     about: 'a 16 MiB budget: paged tables fit, and nothing fails',
     unit: 'buses',
-    sizes: [1e5, 1e6, 2e6],
+    sizes: [1e5, 2e6],
     budget: { bytes: 16 * 2 ** 20, uploadPerFrame: 4 * 2 ** 20 },
     load: { time: 1 },
     build: (n) => ({ scene: grid('plane'), data: { g: make.lattice(n) } }),
@@ -805,7 +859,7 @@ export const scenarios: Record<string, Scenario> = {
   shots: {
     about: 'pictures and video of two views of a 100,000-bus grid',
     unit: 'pixels',
-    sizes: [960 * 540, 1920 * 1080, 3840 * 2160],
+    sizes: [960 * 540, 3840 * 2160],
     views: () => 2,
     build: () => ({ scene: grid('plane'), data: { g: make.lattice(1e5) } }),
     phases: [image(), png(), video(true), video(false)],
@@ -814,7 +868,7 @@ export const scenarios: Record<string, Scenario> = {
   recovery: {
     about: 'a lost device: the views move to a new one and draw everything again',
     unit: 'buses',
-    sizes: [1e3, 1e4, 1e5, 1e6],
+    sizes: REGIMES,
     build: (n) => ({ scene: grid('plane'), data: { g: make.lattice(n) } }),
     phases: [recover()],
   },

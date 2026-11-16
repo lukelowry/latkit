@@ -190,53 +190,52 @@ fn identifiers_called(body: &str) -> Vec<&str> {
 }
 
 fn written(program: &Program, width: u32, syntax: Syntax) -> String {
-    assert!(width > 0 && width <= super::shaders::STATE_WORDS);
+    assert!(width > 0 && width.is_multiple_of(4) && width <= super::shaders::STATE_WORDS);
     let mut out = match syntax {
         Syntax::Wgsl => format!("const ROW_WORDS: u32 = {}u;\n", row_words(width)),
         Syntax::Glsl => format!("// ROW_WORDS {}\n", row_words(width)),
     };
     // Width is part of a kernel's shape. Constant register indices avoid a dynamically indexed
-    // private array; aligned application rows fetch each state texel just once.
+    // private array, and a row is whole texels, so each fetch reads four of its words.
     out.push_str(&syntax.function("k_load_words", &[("at", "u32")], None));
-    let fetch = if width.is_multiple_of(4) { "k_quad" } else { "k_four" };
     for first in (0..width).step_by(4) {
-        syntax.value(&mut out, &format!("q{first}"), "vec4u", &format!("{fetch}(at + {first}u)"));
+        syntax.value(&mut out, &format!("q{first}"), "vec4u", &format!("k_quad(at + {first}u)"));
         for (lane, name) in ["x", "y", "z", "w"].iter().enumerate() {
             writeln!(out, "k_set({}u, q{first}.{name});", first + lane as u32).unwrap();
         }
     }
     out.push_str("}\n");
-    // The four words from `word`, a plane's first, at constant indices: each plane's words, kept
-    // where `word` starts it. Selecting values, not branching, keeps the driver's compile short.
+    // The four words from `first`, a texel's first, at constant indices: each texel's words, kept
+    // where `first` starts it. Selecting values, not branching, keeps the driver's compile short.
     let vec4u = syntax.ty("vec4u");
     out.push_str(&syntax.function("k_output", &[("first", "u32")], Some("vec4u")));
     for first in (0..width).step_by(4) {
         let words: Vec<String> = (first..first + 4).map(|word| format!("k_load(0u, {word}u)")).collect();
-        let plane = format!("{vec4u}({})", words.join(", "));
+        let texel = format!("{vec4u}({})", words.join(", "));
         if first == 0 {
             match syntax {
-                Syntax::Wgsl => writeln!(out, "var words = {plane};"),
-                Syntax::Glsl => writeln!(out, "{vec4u} words = {plane};"),
+                Syntax::Wgsl => writeln!(out, "var words = {texel};"),
+                Syntax::Glsl => writeln!(out, "{vec4u} words = {texel};"),
             }
             .unwrap();
         } else {
-            writeln!(out, "words = {};", syntax.select("words", &plane, &format!("first == {first}u"))).unwrap();
+            writeln!(out, "words = {};", syntax.select("words", &texel, &format!("first == {first}u"))).unwrap();
         }
     }
     out.push_str("return words;\n}\n");
     for (index, &[start, end]) in program.ranges.iter().enumerate() {
         channel(&mut out, program, index, start, end, syntax);
     }
-    // The channels a pass evaluates: those that changed, of those its plane's words depend on.
+    // The channels a fragment evaluates: those that changed, of those its texel's words depend on.
     let channels = program.channels.len();
-    out.push_str(&syntax.function("k_channels", &[("row", "u32"), ("clear", "bool"), ("plane", "u32")], None));
+    out.push_str(&syntax.function("k_channels", &[("row", "u32"), ("clear", "bool"), ("texel", "u32")], None));
     out.push_str("k_load_row(row, clear);\n");
     for index in 0..channels {
         let call = match syntax {
             Syntax::Wgsl => format!("_ = k_channel_{index}(row);"),
             Syntax::Glsl => format!("k_channel_{index}(row);"),
         };
-        writeln!(out, "if ((k_mask() & plane & {}u) != 0u) {{ {call} }}", 1u32 << index).unwrap();
+        writeln!(out, "if ((k_mask() & texel & {}u) != 0u) {{ {call} }}", 1u32 << index).unwrap();
     }
     out.push_str("k_finish(row);\n}\n");
     // Reduction `start`, chosen by tests rather than returns from a switch.
@@ -255,10 +254,10 @@ fn written(program: &Program, width: u32, syntax: Syntax) -> String {
     out
 }
 
-/// For each plane of four words of `program`'s rows, `width` words wide, the channels a pass
-/// writing it evaluates (see [`planes`]).
-pub(crate) fn plane_channels(program: &Program, width: u32) -> Arc<[u32]> {
-    planes(program, width).into()
+/// For each texel of `program`'s rows, `width` words wide, the channels a fragment writing it
+/// evaluates (see [`texels`]).
+pub(crate) fn texel_channels(program: &Program, width: u32) -> Arc<[u32]> {
+    texels(program, width).into()
 }
 
 /// The words channel `index` of `program` writes and reads.
@@ -285,11 +284,11 @@ fn words(program: &Program, index: usize) -> (Vec<u32>, Vec<u32>) {
     (writes, reads)
 }
 
-/// For each plane of four words of a row `width` words wide, the channels that evaluate when it is
-/// written: those that store into it, and those that store words they read. The words the shader
-/// derives after the channels read only the flags, which are in the plane of the channels storing
-/// them. A row of one plane evaluates every channel.
-fn planes(program: &Program, width: u32) -> Vec<u32> {
+/// For each texel of a row `width` words wide, the channels that evaluate when it is written:
+/// those that store into its four words, and those that store words they read. The words the
+/// shader derives after the channels read only the flags, which are in the texel of the channels
+/// storing them. A row of one texel evaluates every channel.
+fn texels(program: &Program, width: u32) -> Vec<u32> {
     let channels = program.channels.len();
     let count = width.div_ceil(4) as usize;
     if count <= 1 {
@@ -300,8 +299,8 @@ fn planes(program: &Program, width: u32) -> Vec<u32> {
         words.iter().enumerate().filter(|(_, (writes, _))| writes.contains(&word)).fold(0, |m, (i, _)| m | 1 << i)
     };
     (0..count as u32)
-        .map(|plane| {
-            let mut mask = (plane * 4..plane * 4 + 4).fold(0, |mask, word| mask | writers(word));
+        .map(|texel| {
+            let mut mask = (texel * 4..texel * 4 + 4).fold(0, |mask, word| mask | writers(word));
             loop {
                 let more = (0..channels)
                     .filter(|&i| mask & 1 << i != 0)
@@ -489,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plane_evaluates_the_channels_its_words_depend_on() {
+    fn a_texel_evaluates_the_channels_its_words_depend_on() {
         // Channel 0 places the vertex (words 0 to 3, flags at 10), channel 1 stores word 5 from the
         // pointer's distance, which reads the position, and channel 2 stores word 6.
         let program = program(&[
@@ -497,8 +496,8 @@ mod tests {
             &[[OP_POINTER, 0, 0, 0], [OP_STORE_CODE, 5, 0, 0]],
             &[[OP_CONST, 0, 0, 0], [OP_STORE_CODE, 6, 0, 0]],
         ]);
-        assert_eq!(planes(&program, 12), vec![0b001, 0b111, 0b001]);
-        assert_eq!(planes(&program, 4), vec![u32::MAX], "one plane takes every channel");
+        assert_eq!(texels(&program, 12), vec![0b001, 0b111, 0b001]);
+        assert_eq!(texels(&program, 4), vec![u32::MAX], "one texel takes every channel");
     }
 
     #[test]
@@ -530,7 +529,7 @@ mod tests {
         assert!(wgsl.starts_with("const ROW_WORDS: u32 = 16u;"), "{wgsl}");
         assert_eq!(glsl_row_words(&glsl), Some(16), "{glsl}");
         for text in [&wgsl, &glsl] {
-            for name in ["k_load_words(", "k_channels(", "k_run(", "k_output(", "(k_mask() & plane & 2u)"] {
+            for name in ["k_load_words(", "k_channels(", "k_run(", "k_output(", "(k_mask() & texel & 2u)"] {
                 assert!(text.contains(name), "{name} in {text}");
             }
         }

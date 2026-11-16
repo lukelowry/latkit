@@ -1438,7 +1438,8 @@ with `$` reads that field, and any other string is a CSS color. An object comput
 `interface FieldNode`
 
 A field's value in each row, from the mark's own table. With `from`, it reads another dataset's
-table, joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
+table, joined by row id. With `of`, it reads the row a reference field names. `"$name"` is the
+short form of `{ "field": "name" }`.
 
 {#fieldnode-field .member}
 **`field`**`: string` [¶](#fieldnode-field){.headerlink}
@@ -1447,6 +1448,11 @@ table, joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
 {#fieldnode-from .member}
 **`from`**`?:` [`TableInput`](#tableinput) `| null` [¶](#fieldnode-from){.headerlink}
 : The dataset and table the field is read from, joined by row id.
+
+{#fieldnode-of .member}
+**`of`**`?: string | null` [¶](#fieldnode-of){.headerlink}
+: The reference field of the mark's table whose row the field is read from. Many rows can name one
+  row. A row whose reference names no row reads a missing value.
 
 {#fieldnode-step .member}
 **`step`**`?: boolean` [¶](#fieldnode-step){.headerlink}

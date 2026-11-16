@@ -422,11 +422,7 @@ mod tests {
 
     #[test]
     fn gpu_distance_fields_match_the_exact_field() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         // A soft disc, a hairline of half coverage, a faint speck, and an odd width.
         let (width, height) = (41, 26);
         let mut coverage = vec![0_u8; width * height];
@@ -526,11 +522,7 @@ mod tests {
                 }
             }
         }
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let counting = Counting(std::sync::atomic::AtomicU32::new(0));
         let rasters = || counting.0.load(std::sync::atomic::Ordering::Relaxed);
         let host: Option<&dyn Host> = Some(&counting);

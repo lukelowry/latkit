@@ -595,17 +595,27 @@ impl std::fmt::Debug for Gpu {
     }
 }
 
+/// The device every GPU test of the crate asks for in one way.
+#[cfg(test)]
+pub(crate) mod testing {
+    /// A device, or `None` on a machine without one, where the test passes without running. With
+    /// `LATKIT_REQUIRE_GPU` set, as in CI, a missing device panics instead.
+    pub(crate) fn gpu() -> Option<crate::Gpu> {
+        match pollster::block_on(crate::Gpu::new()) {
+            Ok(gpu) => Some(gpu),
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Ask, Error, Ledger, Raised};
 
     #[test]
     fn a_device_out_of_memory_is_given_up_without_an_error() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = super::testing::gpu() else { return };
         let granted = 48 << 20;
         gpu.0.lock().arena.refuse(granted);
         gpu.give_up_if_refused();

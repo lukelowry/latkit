@@ -17,13 +17,21 @@
 //!
 //! Without an ease, a flowing mark whose rows moved still begins a zero-length transition: it shows
 //! the new state at once, and its comets carry their travel over to the rows' new places.
+//!
+//! A transition eases only the row blocks whose rows change. When values change and no row moves,
+//! the transition lists the blocks written. The frame it starts in freezes every row once, into
+//! the frozen and the settled words alike, so the settled words hold each row's state and channels
+//! evaluate only what changed. From then on the ease pass covers the listed blocks alone. A block
+//! whose rows evaluate while the transition runs joins it, and a change that begins another
+//! transition freezes only the blocks eased. When it ends, only those blocks evaluate their final
+//! state. Rows that moved, a new scene, and domains fitted over every row ease every block.
 
 use std::sync::Arc;
 
 use super::View;
 use super::clock::Clock;
 use super::drawing::{Drawing, Holds};
-use super::marks::{Holding, Shown};
+use super::marks::{Blocks, Holding, Shown};
 use super::variants::Stage;
 use super::words::Kept;
 use crate::data::{RowIds, Table};
@@ -31,10 +39,12 @@ use crate::gpu::Inner;
 use crate::gpu::shaders::{self as wgsl, PAGE_ROWS};
 use crate::scene::mark::MarkKind;
 
-/// A running transition: its start on the view's clock and its length in seconds.
+/// A running transition: its start on the view's clock, its length in seconds, and the row blocks
+/// it eases. Rows of other blocks show their state, which nothing changed.
 pub(crate) struct Transition {
     start: f64,
     seconds: f64,
+    pub(crate) blocks: Blocks,
 }
 
 /// A transition waiting for the frame that freezes it.
@@ -44,6 +54,8 @@ pub(crate) struct Begin {
     sources: Option<Vec<u32>>,
     /// Whether no new row matches one shown before, so rows only fade in and out.
     fades: bool,
+    /// The row blocks whose rows change: those written, when no row moved, else every block.
+    blocks: Blocks,
 }
 
 impl Transition {
@@ -228,8 +240,12 @@ impl Shown {
     }
 
     /// Begins a transition from the mark's current state, with rows moved as `moved` says, if they
-    /// moved. Does nothing when the mark showed no rows.
-    pub(crate) fn begin(&mut self, moved: Option<(Vec<u32>, Vec<u32>)>) {
+    /// moved. `changed` lists the row blocks whose rows changed values, when only those did: the
+    /// transition then eases those blocks, and the channels that read the change evaluate there
+    /// (see [`columns_changed`](Shown::columns_changed)). Otherwise every row eases and evaluates:
+    /// rows moved, the mark itself changed, or a domain is fitted over every row. Does nothing
+    /// when the mark showed no rows.
+    pub(crate) fn begin(&mut self, moved: Option<(Vec<u32>, Vec<u32>)>, changed: Option<&[u32]>) {
         if self.before == 0 {
             return;
         }
@@ -242,8 +258,18 @@ impl Shown {
         if sources.is_none() {
             self.exits = 0;
         }
-        self.begin = Some(Begin { sources, fades });
-        self.all_dirty();
+        let mut blocks = match changed.filter(|_| sources.is_none() && self.reductions() == 0) {
+            Some(changed) => Blocks::Listed(changed.to_vec()),
+            None => Blocks::All,
+        };
+        // A change that began one earlier this frame eases its blocks too.
+        if let Some(waiting) = &self.begin {
+            blocks.merge(&waiting.blocks);
+        }
+        if blocks == Blocks::All {
+            self.all_dirty();
+        }
+        self.begin = Some(Begin { sources, fades, blocks });
     }
 
     /// Restarts the running transition from the mark's current state, as slots `bound` receive
@@ -257,7 +283,7 @@ impl Shown {
         }
         // Exits were held after the live rows when the frame began.
         sources.extend(self.before.saturating_sub(self.exits)..self.before);
-        self.begin = Some(Begin { sources: Some(sources), fades: false });
+        self.begin = Some(Begin { sources: Some(sources), fades: false, blocks: Blocks::All });
     }
 }
 
@@ -285,10 +311,20 @@ impl View {
             });
         }
         if !starting.is_empty() {
-            self.write_remap(&starting);
+            let begun = self.write_remap(&starting);
             let start = self.clock.now();
-            for &i in &starting {
-                self.marks[i].transition = Some(Transition { start, seconds });
+            for (&i, mut blocks) in starting.iter().zip(begun) {
+                let shown = &mut self.marks[i];
+                // With none running, the frozen and settled words are new: every row is frozen,
+                // and unless every row evaluates, written to the settled words as well. A running
+                // transition goes on easing its blocks, frozen again from where they are now.
+                let running = shown.transition.take();
+                shown.settles = running.is_none() && blocks != Blocks::All;
+                if let Some(running) = &running {
+                    blocks.merge(&running.blocks);
+                }
+                shown.frozen = if running.is_some() { blocks.clone() } else { Blocks::All };
+                shown.transition = Some(Transition { start, seconds, blocks });
             }
         }
         for (i, shown) in self.marks.iter_mut().enumerate() {
@@ -296,10 +332,13 @@ impl View {
             // A transition beginning this frame runs through it, as a zero-length one must for its
             // comets.
             if transition.done(&self.clock) && !starting.contains(&i) {
-                // One more evaluation writes every row's final state.
-                shown.transition = None;
+                // One more evaluation writes the final state of every row it eased.
+                let done = shown.transition.take().expect("running");
                 shown.exits = 0;
-                shown.all_dirty();
+                match done.blocks.listed() {
+                    Some(blocks) => shown.dirty_rows(shown.every_channel(), Some(blocks)),
+                    None => shown.all_dirty(),
+                }
                 shown.packed = false;
                 if shown.tables.frozen().is_some() {
                     shown.tables.thaw(inner);
@@ -314,8 +353,8 @@ impl View {
     /// Writes the remap words from which the raster pass freezes each starting mark's shown state
     /// into its frozen words, per mark: its state pages as the frame began, how many rows showed,
     /// each new row's old row when rows moved, and where the vertices its endpoints reference
-    /// moved, if they did.
-    fn write_remap(&mut self, starting: &[usize]) {
+    /// moved, if they did. Returns the row blocks each starting mark's change eases.
+    fn write_remap(&mut self, starting: &[usize]) -> Vec<Blocks> {
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         let mut words: Vec<u32> = Vec::new();
@@ -338,6 +377,7 @@ impl View {
                 }
             }
         }
+        let mut begun = Vec::with_capacity(starting.len());
         for &i in starting {
             let shown = &mut self.marks[i];
             let begin = shown.begin.take().expect("starting");
@@ -347,6 +387,7 @@ impl View {
             let sources =
                 if before.width == width { begin.sources } else { Some(vec![wgsl::NONE; shown.held() as usize]) };
             shown.carry = sources.is_some();
+            begun.push(if sources.is_some() { Blocks::All } else { begin.blocks });
             let header = words.len();
             words.extend([0; 4]);
             words[header] = words.len() as u32;
@@ -380,6 +421,7 @@ impl View {
         }
         let resources = self.resources.as_mut().expect("created before transitions");
         resources.write_remap(device, queue, &words);
+        begun
     }
 
     /// Allocates frozen and settled words for every held row of each mark whose transition starts

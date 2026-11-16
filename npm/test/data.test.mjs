@@ -181,6 +181,32 @@ test('each change applies on its own, and tables write as their JSON form', () =
   data.destroy();
 });
 
+test('typed arrays for numbered rows write what the same patch writes', () => {
+  const [x, kv] = [Float32Array.of(1, 2, 3), Float64Array.of(138, 230, 500)];
+  const moved = Float32Array.of(30, 40);
+  const typed = new Data('grid')
+    .set('Bus', { x, kv })
+    .set('Bus', Uint32Array.of(2, 3), { x: moved });
+  const patched = new Data('grid')
+    .apply(new Patch().set('Bus', { x, kv }))
+    .apply(new Patch().set('Bus', [2, 3], { x: moved }));
+  assert.deepEqual(ids(typed, 'Bus'), [0, 1, 2, 3], 'an id past the last row adds a row');
+  assert.equal(typed.get('Bus', 3, 'x'), 40);
+  assert.equal(typed.get('Bus', 3, 'kv'), null, 'a field not written is missing in the new row');
+  assert.deepEqual(typed.toBytes(), patched.toBytes());
+  const fewer = Float32Array.of(7, 8);
+  typed.replace('Bus', { count: 2 }, { x: fewer });
+  patched.apply(new Patch().replace('Bus', { count: 2 }, { x: fewer }));
+  assert.deepEqual(ids(typed, 'Bus'), [0, 1]);
+  assert.deepEqual(typed.toBytes(), patched.toBytes());
+  assert.throws(() => typed.set('Bus', { count: 2 }, { x: Float32Array.of(1) }), {
+    code: 'invalid',
+  });
+  assert.equal(typed.get('Bus', 1, 'x'), 8, 'a failed write changes nothing');
+  typed.destroy();
+  patched.destroy();
+});
+
 test('appended frames retain their values', () => {
   const frame = new Float32Array(2);
   const patch = new Patch().replace('Bus', [1, 2], { x: [1, 2] });

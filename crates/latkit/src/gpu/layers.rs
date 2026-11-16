@@ -114,11 +114,7 @@ mod tests {
 
     #[test]
     fn layers_grow_for_new_keys_and_stop_at_the_device_limit() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         let texel = || vec![255; 4];
         let mut layers = Layers::<u32>::new(device, "tests", [1, 1], 1);

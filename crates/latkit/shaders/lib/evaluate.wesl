@@ -13,7 +13,7 @@ import package::lib::focus::{is_selected, is_hovered, is_related};
 import package::lib::color::{scale, colormap};
 import package::lib::project::{project, to_screen};
 import package::lib::reduce::{ordered, unordered};
-import package::lib::words::{word_read, word_four, word_quad};
+import package::lib::words::{word_read, word_quad};
 import package::lib::types::STATE_WORDS;
 
 // Two words per fitted domain: the complement of its least value's order-preserving bits, then its
@@ -240,16 +240,17 @@ fn finish_channels(row: u32) {
 // translation to GLSL unchanged, which the build checks, so a kernel written in GLSL links against
 // a shader translated ahead of time.
 
-// A kernel replaces these four: loading a row's words, evaluating the `channels` its pass writes,
-// running reduction `start`, and reading the four words from `word`. A kernel reads and writes its
-// row's words at constant indices only, so the driver keeps them in registers.
+// A kernel replaces these four: loading a row's words, evaluating the `channels` its texel depends
+// on, running reduction `start`, and reading the four words from `word`. A kernel reads and writes
+// its row's words at constant indices only, so the driver keeps them in registers. A row is whole
+// texels, so each fetch reads four of its words.
 fn k_output(word: u32) -> vec4u {
     return vec4u(row_words[word], row_words[word + 1u], row_words[word + 2u], row_words[word + 3u]);
 }
 fn k_load_words(at: u32) {
     let width = min(mark.stride + mark.extras, ROW_WORDS);
     for (var w = 0u; w < width; w += 4u) {
-        let values = word_four(pages, at + w);
+        let values = word_quad(pages, at + w);
         row_words[w] = values.x;
         row_words[w + 1u] = values.y;
         row_words[w + 2u] = values.z;
@@ -261,7 +262,6 @@ fn k_run(row: u32, start: u32, end: u32) -> Reduction { return Reduction(NONE, v
 
 fn k_set(w: u32, value: u32) { row_words[w] = value; }
 fn k_quad(at: u32) -> vec4u { return word_quad(pages, at); }
-fn k_four(at: u32) -> vec4u { return word_four(pages, at); }
 fn k_load_row(row: u32, clear: bool) { load_row(row, clear); }
 fn k_finish(row: u32) { finish_channels(row); }
 fn k_mask() -> u32 { return mark.mask; }

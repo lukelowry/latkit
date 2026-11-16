@@ -7,6 +7,7 @@
 //! | ------------------------------------------------------------ | ---------------------------------- |
 //! | `"$x"`                                                       | `field("x")`                       |
 //! | `{ "field": "x", "from": ["data", "Table"], "step": true }`  | `field("x").from_table(..).step()` |
+//! | `{ "field": "x", "of": "from" }`                             | `field("x").of("from")`            |
 //! | `"#ffb000"`, `"rebeccapurple"`                               | a [`Color`]                        |
 //! | `null`                                                       | `Expr::missing()`                  |
 //! | `{ "state": "selected" }`                                    | `selected()`, `hovered()`, …       |
@@ -178,6 +179,7 @@ form! {
     scale "scale": [f64; 2],
     colormap "colormap": Colormap,
     from "from": (Name, Name),
+    of "of": Name,
     step "step": bool,
     otherwise "otherwise": Expr as value,
     value "value": Expr as value,
@@ -254,14 +256,16 @@ impl Form {
         };
         let kind = own[0];
         self.only(kind, own)?;
-        let Form { field, state, when, scale, colormap, from, step, otherwise, value, domain, .. } = self;
+        let Form { field, state, when, scale, colormap, from, of, step, otherwise, value, domain, .. } = self;
         let needs = |key: &str| format!("{kind} needs {key}");
         Ok(match kind {
             "field" => {
                 let expr = super::field(field.expect("present"));
-                let expr = match from {
-                    Some((data, table)) => expr.from_table(data, table),
-                    None => expr,
+                let expr = match (from, of) {
+                    (Some(_), Some(_)) => return Err("a field is read from a table or of a reference, not both".into()),
+                    (Some((data, table)), None) => expr.from_table(data, table),
+                    (None, Some(reference)) => expr.of(reference),
+                    (None, None) => expr,
                 };
                 if step == Some(true) { expr.step() } else { expr }
             }
@@ -369,7 +373,8 @@ macro_rules! kinds {
 
 kinds! {
     /// A field's value in each row, from the mark's own table. With `from`, it reads another
-    /// dataset's table, joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
+    /// dataset's table, joined by row id. With `of`, it reads the row a reference field names.
+    /// `"$name"` is the short form of `{ "field": "name" }`.
     FieldNode {
         /// The field's name.
         field: Name,
@@ -377,6 +382,10 @@ kinds! {
         #[serde(default)]
         #[schemars(extend("tsType" = "TableInput"))]
         from: Option<(Name, Name)>,
+        /// The reference field of the mark's table whose row the field is read from. Many rows can
+        /// name one row. A row whose reference names no row reads a missing value.
+        #[serde(default)]
+        of: Option<Name>,
         /// For a sampled field, reads the last frame at or before the shown coordinate instead of
         /// interpolating. Defaults to `false`.
         #[serde(default)]

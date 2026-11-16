@@ -43,9 +43,10 @@ const most = (phases: Phases, names: string[], of: (m: Phases[string]) => number
 const quote = (cell: string) => (/[",]/.test(cell) ? `"${cell.replaceAll('"', '""')}"` : cell);
 
 const rows = [['Scenario', 'Largest', 'Open (ms)', 'Frame (ms)', 'GPU (ms)', 'Pick (ms)']];
-for (const [name, sizes] of Object.entries(baseline.times)) {
-  const scenario = scenarios[name];
-  if (!scenario) continue;
+// In the scenarios' order, whatever order the baseline recorded them in.
+for (const [name, scenario] of Object.entries(scenarios)) {
+  const sizes = baseline.times[name];
+  if (!sizes) continue;
   const largest = Object.keys(sizes)
     .map(Number)
     .sort((a, b) => a - b)

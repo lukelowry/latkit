@@ -46,7 +46,6 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::lengths", variants: &[("main", &[])] },
     Entry { module: "raster::order", variants: &[("main", &[]), ("scatter", &["scatter"])] },
     Entry { module: "raster::state", variants: &[("main", &[])] },
-    Entry { module: "raster::pack", variants: &[("main", &[])] },
     Entry { module: "raster::bounds", variants: &[("main", &[])] },
     Entry { module: "raster::probe", variants: &[("main", &[])] },
     Entry { module: "raster::boxed", variants: &[("main", &[])] },
@@ -114,7 +113,6 @@ const KERNEL_ROWS: [u32; 2] = [16, 32];
 const KERNEL_CALLS: &[&str] = &[
     "k_set",
     "k_quad",
-    "k_four",
     "k_load_row",
     "k_finish",
     "k_mask",
@@ -150,17 +148,17 @@ fn reference_kernel(rows: u32) -> String {
         r"const ROW_WORDS: u32 = {rows}u;
 fn k_load_words(at: u32) {{
     let q = k_quad(at);
-    let f = k_four(at + 4u);
+    let f = k_quad(at + 4u);
     k_set(0u, q.x); k_set(1u, q.y); k_set(4u, f.x); k_set(5u, f.w);
 }}
-fn k_output(plane: u32) -> vec4u {{
-    switch plane {{
+fn k_output(first: u32) -> vec4u {{
+    switch first {{
         case 0u: {{ return vec4u(k_load(0u, 0u), k_load(0u, 1u), k_load(0u, 2u), k_load(0u, 3u)); }}
         default: {{ return vec4u(0u); }}
     }}
 }}
-fn k_channels(row: u32, clear: bool, plane: u32) {{
-    _ = k_run(row, plane, plane);
+fn k_channels(row: u32, clear: bool, channels: u32) {{
+    _ = k_run(row, channels, channels);
 }}
 fn k_run(row: u32, start: u32, end: u32) -> Reduction {{
     k_load_row(row, start == 0u);

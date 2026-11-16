@@ -53,12 +53,14 @@ pub(crate) enum Node {
     Colormap { input: Expr, colormap: Colormap, domain: Domain },
 }
 
-/// A field reference: a field of the mark's own table, or of another dataset's table joined by row
-/// id.
+/// A field reference: a field of the mark's own table, of another dataset's table joined by row
+/// id, or of the row that a reference field of the mark's table names.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct FieldRef {
     pub(crate) name: Name,
     pub(crate) from: Option<(Name, Name)>,
+    /// The reference field of the mark's table whose row the field is read from.
+    pub(crate) of: Option<Name>,
     pub(crate) step: bool,
     /// The component read from a point field: 0 for x, 1 for y.
     pub(crate) component: Option<u8>,
@@ -144,7 +146,7 @@ pub(crate) fn holds(text: &str, needle: &str) -> bool {
 
 /// The value of field `name` in each row, written `"$name"` in JSON.
 pub fn field(name: impl Into<Name>) -> Expr {
-    node(Node::Field(FieldRef { name: name.into(), from: None, step: false, component: None }))
+    node(Node::Field(FieldRef { name: name.into(), from: None, of: None, step: false, component: None }))
 }
 
 /// Starts a conditional: `when(c).then(a).when(d).then(b).otherwise(e)`.
@@ -312,6 +314,19 @@ impl Expr {
         self.map_fields(&|f| FieldRef { from: Some(from.clone()), ..f.clone() })
     }
 
+    /// Reads this expression's fields from the row that reference field `reference` of the mark's
+    /// table names, such as `field("kv").of("from")` for an edge's first bus. Many rows can name
+    /// one row, so writing that row's fields changes them all. A row whose reference names no row
+    /// reads missing values.
+    ///
+    /// A table too large to draw at once is paged by its rows' own position fields. A position
+    /// that adds a field read through a reference moves its rows without paging the table again.
+    #[must_use]
+    pub fn of(self, reference: impl Into<Name>) -> Expr {
+        let reference = reference.into();
+        self.map_fields(&|f| FieldRef { of: Some(reference.clone()), ..f.clone() })
+    }
+
     /// Reads sampled fields at the last frame at or before the shown coordinate, without
     /// interpolating to the next.
     #[must_use]
@@ -334,7 +349,8 @@ impl Expr {
     }
 
     pub(crate) fn component(name: impl Into<Name>, component: u8) -> Expr {
-        node(Node::Field(FieldRef { name: name.into(), from: None, step: false, component: Some(component) }))
+        let name = name.into();
+        node(Node::Field(FieldRef { name, from: None, of: None, step: false, component: Some(component) }))
     }
 
     fn map_fields(&self, f: &impl Fn(&FieldRef) -> FieldRef) -> Expr {
@@ -398,7 +414,7 @@ impl Expr {
     /// The field's name, when the expression is a plain field of the mark's own table.
     pub(crate) fn field_name(&self) -> Option<&Name> {
         match &*self.0 {
-            Node::Field(f) if f.from.is_none() && f.component.is_none() => Some(&f.name),
+            Node::Field(f) if f.from.is_none() && f.of.is_none() && f.component.is_none() => Some(&f.name),
             _ => None,
         }
     }

@@ -436,7 +436,6 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.add_all(Stage::Changes, [Asked::Shader(EASE), Asked::Shader(GATHER)]);
     }
     if !scene.marks.is_empty() {
-        stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Pack, "pack")));
         stages.add(Stage::Draw, Asked::Shader(PAGES));
         if any(&|mark| matches!(mark, Mark::Edges(_))) {
             stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::State, "ends")));
@@ -634,11 +633,7 @@ mod tests {
 
     #[test]
     fn a_view_needing_a_refused_pipeline_says_why_once_and_draws_nothing() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("g", "V")));
         assert!(view.ready_for(format, 1.0, false));
@@ -658,11 +653,7 @@ mod tests {
 
     #[test]
     fn opaque_draws_come_with_drawing_and_only_a_view_whose_depth_varies_asks_for_height_sorts() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let opaque = |need: &Asked| need.label().contains("Opaque");
         let edges = || Edges::of("g", "E").ends("a", "b");
@@ -694,11 +685,7 @@ mod tests {
 
     #[test]
     fn only_a_fit_that_measures_rows_waits_for_the_passes_measuring_them() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("g", "V")));
         view.fit(crate::Fit::Bounds { min: [-1.0, -1.0, 0.0], max: [1.0, 1.0, 0.0] });
@@ -720,11 +707,7 @@ mod tests {
 
     #[test]
     fn a_new_scene_draws_once_its_pipelines_land_and_the_scene_before_draws_meanwhile() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("g", "V")));
         assert!(view.ready_for(format, 1.0, true));
@@ -766,11 +749,7 @@ mod tests {
 
     #[test]
     fn a_view_waits_only_for_the_pipelines_its_frames_draw_with() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("g", "V")));
         assert!(view.ready_for(format, 1.0, true));
