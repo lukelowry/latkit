@@ -68,9 +68,11 @@ struct Unplaced {
     rows: Vec<bool>,
 }
 
-/// A field a vertex table's position reads, as of a check: where it is, and the field itself.
+/// A field a vertex table's position reads, as of a check: where it is, the reference field it is
+/// read through if any, and the field itself.
 struct Read {
     at: (Name, Name, Name),
+    of: Option<Name>,
     field: Option<Field>,
 }
 
@@ -180,6 +182,7 @@ impl Places {
             input.positions(vm.mark, &mut |read| {
                 fields.push(Read {
                     at: (read.data.clone(), read.table.clone(), read.name.into()),
+                    of: read.of.cloned(),
                     field: read.field.cloned(),
                 });
             });
@@ -296,24 +299,40 @@ impl Places {
 }
 
 /// The rows of `vm`'s table to check again since `was`: the rows each changed position field
-/// wrote, and the rows added. `None` when every row needs checking: rows were removed, the
-/// position reads other fields, or a changed field is not one whose writes are known.
+/// wrote, the rows naming a row written in a table read through a reference, the rows wired again,
+/// and the rows added. `None` when every row needs checking: rows were removed, the position
+/// reads other fields, a changed field is not one whose writes are known, or the rows to check
+/// outnumber the table's.
 fn rechecks(was: &Unplaced, vm: &VertexMark<'_>, fields: &[Read]) -> Option<Vec<usize>> {
     if was.order != vm.table.order || was.fields.len() != fields.len() {
         return None;
     }
-    let mut rows: Vec<usize> = (was.rows.len()..vm.table.len()).collect();
+    let len = vm.table.len();
+    let mut rows: Vec<usize> = (was.rows.len()..len).collect();
     for (then, now) in was.fields.iter().zip(fields) {
-        if then.at != now.at {
+        if then.at != now.at || then.of != now.of {
             return None;
         }
         if then.field.as_ref().map(Field::version) == now.field.as_ref().map(Field::version) {
             continue;
         }
         let own = now.at.0 == *vm.data.name() && now.at.1 == *vm.table.name();
-        match (&then.field, &now.field) {
-            (Some(Field::Values(before, _)), Some(Field::Values(after, _))) if own => {
-                rows.extend(after.written_since(before).into_iter().filter(|&row| row < vm.table.len()));
+        match (&then.field, &now.field, &now.of) {
+            (Some(Field::Values(before, _)), Some(Field::Values(after, _)), None) if own => {
+                rows.extend(after.written_since(before).into_iter().filter(|&row| row < len));
+            }
+            (Some(Field::Values(before, _)), Some(Field::Values(after, _)), Some(of)) => {
+                let Some(Field::Reference(reference)) = vm.table.field_named(of) else { return None };
+                let naming = reference.inverse();
+                for written in after.written_since(before) {
+                    rows.extend(naming.of(written).iter().map(|&row| row as usize));
+                    if rows.len() > len {
+                        return None;
+                    }
+                }
+            }
+            (Some(Field::Reference(before)), Some(Field::Reference(after)), None) if own => {
+                rows.extend(after.rows.written_since(&before.rows).into_iter().filter(|&row| row < len));
             }
             _ => return None,
         }
@@ -331,7 +350,7 @@ mod tests {
     use super::*;
     use crate::derive::testing::Failing;
     use crate::gpu::work::Counters;
-    use crate::{Data, Ids, Plane, Scene, Stress, Table, Vertices, field};
+    use crate::{Data, Ids, Patch, Plane, Scene, Stress, Table, Vertices, field};
 
     /// One frame of `places` for `scene` over `data`, with `budget` microseconds of frame work.
     fn frame(places: &mut Places, scene: &Scene, data: &Data, host: &Failing, budget: u32) -> bool {
@@ -378,5 +397,32 @@ mod tests {
         data.apply(Table::new("V", vec![0_u64]).field("x", vec![None::<f64>])).expect("valid");
         assert!(frame(&mut places, &scene, &data, &host, u32::MAX));
         assert!(matches!(laid(&places, 0), Some(Value::Number(_))), "the row that lost its position is placed");
+    }
+
+    #[test]
+    fn a_position_read_through_a_reference_follows_the_row_it_names() {
+        let data = Data::new("g");
+        let rows = Table::new("V", Ids::count(3)).field("x", vec![0.0; 3]).field("y", vec![0.0; 3]).reference(
+            "cell",
+            "Cell",
+            vec![0_u64, 1, 1],
+        );
+        data.apply(Patch::new().set(Table::new("Cell", Ids::count(2)).field("dx", vec![1.0, 2.0])).set(rows))
+            .expect("valid");
+        let scene = Scene::new(Plane::default())
+            .layout(Stress::default())
+            .draw(Vertices::of("g", "V").position(field("x") + field("dx").of("cell"), field("y")));
+        let (host, mut places) = (Failing::default(), Places::default());
+        let unplaced = |places: &Places| places.unplaced[&("g".into(), "V".into())].rows.clone();
+        frame(&mut places, &scene, &data, &host, u32::MAX);
+        assert_eq!(unplaced(&places), [false; 3], "every row's data gives a position");
+        // A cell that loses its value leaves the rows naming it without a position.
+        data.apply(Table::new("Cell", vec![1_u64]).field("dx", vec![None::<f64>])).expect("valid");
+        frame(&mut places, &scene, &data, &host, u32::MAX);
+        assert_eq!(unplaced(&places), [false, true, true]);
+        // A row wired to another cell reads that one.
+        data.apply(Table::new("V", vec![2_u64]).reference("cell", "Cell", vec![0_u64])).expect("valid");
+        frame(&mut places, &scene, &data, &host, u32::MAX);
+        assert_eq!(unplaced(&places), [false, true, false]);
     }
 }

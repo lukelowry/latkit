@@ -562,14 +562,12 @@ fn column_of<'t>(table: &'t Table, name: &Name) -> Option<&'t Column> {
     }
 }
 
-/// The fields `expr` reads of its mark's own table.
+/// The fields `expr` reads of its mark's own table. A field of another table, joined by id or read
+/// through a reference, places no row of this one: writing it leaves the table's order alone.
 fn fields_of(expr: &Expr, out: &mut Vec<Name>) {
     expr.for_each_field(&mut |f| {
-        match (&f.from, &f.of) {
-            (None, None) => out.push(f.name.clone()),
-            // A field of the row a reference names changes with the reference.
-            (None, Some(reference)) => out.push(reference.clone()),
-            (Some(_), _) => {}
+        if f.from.is_none() && f.of.is_none() {
+            out.push(f.name.clone());
         }
     });
 }
@@ -672,7 +670,17 @@ fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, Named<[f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Data, Ids, Patch};
+    use crate::{Data, Ids, Patch, field};
+
+    #[test]
+    fn a_field_of_another_table_places_no_row_of_this_one() {
+        // An offset read through a reference, and a field joined by id: writing either leaves the
+        // table's order alone.
+        let x = field("x") + field("dx").of("cell") + field("wind").from_table("weather", "Bus");
+        let mut fields = Vec::new();
+        fields_of(&x, &mut fields);
+        assert_eq!(fields, [Name::from("x")]);
+    }
 
     #[test]
     fn a_sample_lifts_the_endpoints_of_its_sampled_edges() {

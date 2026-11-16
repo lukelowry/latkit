@@ -61,6 +61,9 @@ export class Expr {
    * Reads this expression's fields from the row that reference field `reference` of the mark's table
    * names, such as `field('kv').of('from')` for an edge's first bus. Writing that row's fields
    * changes every row that names it. A row whose reference names no row reads missing values.
+   *
+   * A table too large to draw at once is paged by its rows' own position fields. A position that
+   * adds a field read through a reference moves its rows without paging the table again.
    */
   of(reference: string): Expr {
     return new Expr(mapFields(this.node, (f) => ({ ...f, of: reference })));

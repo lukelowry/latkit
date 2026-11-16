@@ -47,6 +47,9 @@ impl View {
     ///
     /// Uploads stream within the GPU's per-frame budget. A mark shows a new data version once all
     /// of its changed pages are on the GPU, and draws the previous version until then.
+    ///
+    /// Submit the encoder before the view renders again. What a frame reads is written when its
+    /// encoder is submitted, so two frames of one view in one submission both draw the later one.
     pub fn render(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>) {
         self.record(encoder, frame, true);
     }

@@ -318,6 +318,9 @@ impl Expr {
     /// table names, such as `field("kv").of("from")` for an edge's first bus. Many rows can name
     /// one row, so writing that row's fields changes them all. A row whose reference names no row
     /// reads missing values.
+    ///
+    /// A table too large to draw at once is paged by its rows' own position fields. A position
+    /// that adds a field read through a reference moves its rows without paging the table again.
     #[must_use]
     pub fn of(self, reference: impl Into<Name>) -> Expr {
         let reference = reference.into();

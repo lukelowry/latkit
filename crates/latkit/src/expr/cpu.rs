@@ -2,7 +2,7 @@
 //! domains of paged tables, and queries (filters, sort keys, and selections). The GPU evaluates the same expressions
 //! for drawing. Here they read only fields, with sampled fields read at one axis coordinate.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
@@ -23,11 +23,20 @@ pub(crate) struct Rows<'a> {
     fitted: RefCell<FxHashMap<*const Node, [f64; 2]>>,
     /// The texts `contains` looks for, lowercased once.
     lowered: RefCell<FxHashMap<Arc<str>, Arc<str>>>,
+    /// The dataset that holds `table`, found the first time a field is read through a reference.
+    home: OnceCell<Option<&'a Snapshot>>,
 }
 
 impl<'a> Rows<'a> {
     pub(crate) fn new(table: &'a Table, all: &'a [Snapshot]) -> Rows<'a> {
-        Rows { table, all, at: f64::INFINITY, fitted: RefCell::default(), lowered: RefCell::default() }
+        Rows {
+            table,
+            all,
+            at: f64::INFINITY,
+            fitted: RefCell::default(),
+            lowered: RefCell::default(),
+            home: OnceCell::new(),
+        }
     }
 
     /// `text` lowercased for `contains`, cached.
@@ -88,8 +97,8 @@ impl<'a> Rows<'a> {
 
     /// The table named `name` in the dataset that holds these rows' table.
     fn beside(&self, name: &Name) -> Option<&'a Table> {
-        let own = |d: &&Snapshot| d.table(self.table.name()).is_some_and(|t| t.structure == self.table.structure);
-        self.all.iter().find(own)?.table(name)
+        let holds = |d: &&Snapshot| d.table(self.table.name()).is_some_and(|t| t.structure == self.table.structure);
+        (*self.home.get_or_init(|| self.all.iter().find(holds)))?.table(name)
     }
 
     /// Field `f`'s value in `row`: from the table, from the joined table's row with the same id, or

@@ -69,8 +69,8 @@ impl Data {
     ) -> Result<(), Error> {
         let ids = ids.map_or_else(|| latkit::Ids::count(count), latkit::Ids::from);
         let mut rows = latkit::Table::new(table, ids);
-        for (name, column) in names.into_iter().zip(&columns) {
-            rows = rows.field(name, convert::numbers(column)?);
+        for (name, column) in names.into_iter().zip(columns) {
+            rows = rows.field(name, convert::numbers(&column)?);
         }
         let patch = latkit::Patch::new();
         Ok(self.0.apply(if replace { patch.replace(rows) } else { patch.set(rows) })?)

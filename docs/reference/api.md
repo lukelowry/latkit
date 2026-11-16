@@ -768,6 +768,9 @@ a conditional that chooses between colors.
   names, such as `field('kv').of('from')` for an edge's first bus. Writing that row's fields
   changes every row that names it. A row whose reference names no row reads missing values.
 
+  A table too large to draw at once is paged by its rows' own position fields. A position that
+  adds a field read through a reference moves its rows without paging the table again.
+
 {#expr-step .member}
 **`step`**`(): Expr` [¶](#expr-step){.headerlink}
 : Reads this expression's sampled fields at the last frame at or before the view's `at`, without

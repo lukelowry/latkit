@@ -1848,4 +1848,24 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_join_lists_the_blocks_reading_each_page_and_tables_listing_the_same_ids_need_none() {
+        let from: (Name, Name) = ("other".into(), "T".into());
+        let rows = 2 * u64::from(wgsl::PAGE_ROWS) + 10;
+        let listing = |ids: Vec<u64>| {
+            let data = crate::Data::new("d");
+            data.apply(Table::new("T", ids)).expect("valid");
+            data.snapshot()
+        };
+        let table = |data: &Snapshot| data.table("T").expect("the table").clone();
+        let (own, same) = (table(&listing((0..rows).collect())), table(&listing((0..rows).collect())));
+        assert!(Join::of(&from, &own, Some(&same)).rows.is_none(), "every row reads its own");
+        // The other table lists the ids in reverse, so its first page holds the last rows' ids.
+        let join = Join::of(&from, &own, Some(&table(&listing((0..rows).rev().collect()))));
+        assert_eq!(join.readers(&[0]), [1, 2]);
+        assert_eq!(join.readers(&[2]), [0]);
+        assert_eq!(join.readers(&[1, 2]), [0, 1]);
+        assert_eq!(Join::of(&from, &own, None).readers(&[0]), [0_u32; 0], "no table to read");
+    }
 }

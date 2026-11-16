@@ -596,9 +596,11 @@ impl Canvas {
         let canvas = Canvas::with_target(gpu, Target::Element(element.clone()), surface);
         canvas.set_layout(layout)?;
         let weak = Rc::downgrade(&canvas.0);
+        // The observer also reports the element's box when it starts observing, and whenever the
+        // box changes without changing the canvas's pixels. The next frame measures the canvas and
+        // draws only if its size changed.
         let resized = Closure::<dyn FnMut(JsValue)>::new(move |_: JsValue| {
             let Some(state) = weak.upgrade().filter(|_| !stopped()) else { return };
-            state.borrow_mut().due = true;
             schedule(&state.borrow().frames);
         });
         let observer = ResizeObserver::new(resized.as_ref().unchecked_ref())

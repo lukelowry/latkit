@@ -311,7 +311,7 @@ impl Input<'_> {
         let own = (&mark.style.data, &mark.style.table);
         match &mark.position {
             Some(xy) => xy.iter().for_each(|expr| self.read_expr(own, expr, read)),
-            None => self.read_field(own, mark.point_field(), read),
+            None => self.read_field(own, mark.point_field(), None, read),
         }
     }
 
@@ -320,32 +320,38 @@ impl Input<'_> {
     pub(crate) fn links<'a>(&'a self, mark: &'a crate::Edges, read: &mut impl FnMut(Read<'a>)) {
         let own = (&mark.style.data, &mark.style.table);
         for name in mark.ends.iter().flat_map(|(from, to)| [from, to]) {
-            self.read_field(own, name, read);
+            self.read_field(own, name, None, read);
         }
         if let Some((members, reference)) = &mark.joins {
-            self.read_field((&mark.style.data, members), reference, read);
+            self.read_field((&mark.style.data, members), reference, None, read);
         }
     }
 
     /// Calls `read` with every field that `expr` reads, for a mark drawing `table`.
     fn read_expr<'a>(&'a self, table: (&'a Name, &'a Name), expr: &'a crate::Expr, read: &mut impl FnMut(Read<'a>)) {
         expr.for_each_field(&mut |f| {
-            let Some(reference) = &f.of else {
-                return self.read_field(f.from.as_ref().map_or(table, |(d, t)| (d, t)), &f.name, read);
+            let Some(of) = &f.of else {
+                return self.read_field(f.from.as_ref().map_or(table, |(d, t)| (d, t)), &f.name, None, read);
             };
             // A field of the row a reference names: the reference, then the field in its table.
-            self.read_field(table, reference, read);
+            self.read_field(table, of, None, read);
             let own = self.data(table.0).and_then(|d| d.table(table.1));
-            if let Some(Field::Reference(reference)) = own.and_then(|t| t.field_named(reference)) {
-                self.read_field((table.0, &reference.to), &f.name, read);
+            if let Some(Field::Reference(reference)) = own.and_then(|t| t.field_named(of)) {
+                self.read_field((table.0, &reference.to), &f.name, Some(of), read);
             }
         });
     }
 
-    /// Calls `read` with field `name` of `table`.
-    fn read_field<'a>(&'a self, (data, table): (&'a Name, &'a Name), name: &'a str, read: &mut impl FnMut(Read<'a>)) {
+    /// Calls `read` with field `name` of `table`, read through reference field `of` if any.
+    fn read_field<'a>(
+        &'a self,
+        (data, table): (&'a Name, &'a Name),
+        name: &'a str,
+        of: Option<&'a Name>,
+        read: &mut impl FnMut(Read<'a>),
+    ) {
         let field = self.data(data).and_then(|d| d.table(table)).and_then(|t| t.field_named(name));
-        read(Read { data, table, name, field });
+        read(Read { data, table, name, of, field });
     }
 }
 
@@ -354,6 +360,9 @@ pub(crate) struct Read<'a> {
     pub(crate) data: &'a Name,
     pub(crate) table: &'a Name,
     pub(crate) name: &'a str,
+    /// The reference field of the mark's table whose rows the field is read from, when each row
+    /// reads the row its reference names.
+    pub(crate) of: Option<&'a Name>,
     pub(crate) field: Option<&'a Field>,
 }
 

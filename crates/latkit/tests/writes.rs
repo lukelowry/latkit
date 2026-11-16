@@ -1,7 +1,8 @@
 //! Writes: a row written into an unpaged table uploads its own texel into the page the GPU already
-//! holds. However often a column is written, nothing is allocated. A row that reads a field of the
-//! row it references follows writes to that row. A view drawing an earlier version keeps it, and
-//! rows that come, go, or come back draw as written.
+//! holds. However often a column is written, nothing is allocated. A row that reads a field of
+//! another table, joined by id or through a reference, follows writes to the row it reads, and only
+//! the rows reading a written row evaluate. A view drawing an earlier version keeps it, and rows
+//! that come, go, or come back draw as written.
 
 #![cfg(feature = "gpu")]
 
@@ -51,11 +52,11 @@ fn scene(marks: impl IntoIterator<Item = Vertices>) -> Scene {
     marks.into_iter().fold(plain, Scene::draw)
 }
 
-/// A view of `scene` drawing `source`, with its first frames drawn.
-fn shown(gpu: &Gpu, scene: Scene, source: impl Into<Source>) -> View {
+/// A view of `scene` drawing `sources`, with its first frames drawn.
+fn shown<S: Into<Source>>(gpu: &Gpu, scene: Scene, sources: impl IntoIterator<Item = S>) -> View {
     let mut view = View::new(gpu, scene);
     view.set_camera(camera());
-    view.set_sources([source]).expect("a source");
+    view.set_sources(sources).expect("the sources");
     frame(gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     view
@@ -75,7 +76,7 @@ fn pixel(pixels: &[[u8; 4]], dx: u32) -> [u8; 4] {
 fn a_written_row_uploads_its_texel_into_the_page_it_was_in() {
     let Some(gpu) = gpu() else { return };
     let data = points();
-    let mut view = shown(&gpu, scene([gray()]), &data);
+    let mut view = shown(&gpu, scene([gray()]), [&data]);
     let (before, resident) = (gpu.work(), gpu.resident());
     write(&data, 1.0);
     let pixels = frame(&gpu, &mut view);
@@ -90,7 +91,7 @@ fn a_written_row_uploads_its_texel_into_the_page_it_was_in() {
 fn a_column_written_every_frame_leaves_the_pool_as_it_was() {
     let Some(gpu) = gpu() else { return };
     let data = points();
-    let mut view = shown(&gpu, scene([gray()]), &data);
+    let mut view = shown(&gpu, scene([gray()]), [&data]);
     let (before, resident) = (gpu.work(), gpu.resident());
     let writes = 20;
     for step in 1..=writes {
@@ -114,7 +115,7 @@ fn marks_reading_one_field_rewrite_its_page_once() {
         .position(field("x"), field("y"))
         .radius(field("v") / 0.5 + 2.0)
         .color(Color::rgb(1.0, 0.0, 0.0));
-    let mut view = shown(&gpu, scene([sized, gray()]), &data);
+    let mut view = shown(&gpu, scene([sized, gray()]), [&data]);
     let (before, resident) = (gpu.work(), gpu.resident());
     write(&data, 1.0);
     let pixels = frame(&gpu, &mut view);
@@ -133,7 +134,7 @@ fn written_texts_and_positions_rewrite_in_place() {
         .position(field("x"), field("y"))
         .radius(6.0)
         .color(when(field("kind").is("on")).then(Color::WHITE).otherwise(red));
-    let mut view = shown(&gpu, scene([mark]), &data);
+    let mut view = shown(&gpu, scene([mark]), [&data]);
     let resident = gpu.resident();
     // A text the field has not held before: its code is written into the page of codes. The
     // color it selects is opaque white, whose bits a text's code starts with.
@@ -153,6 +154,38 @@ fn written_texts_and_positions_rewrite_in_place() {
 }
 
 #[test]
+fn a_write_through_a_join_evaluates_the_rows_reading_it() {
+    let Some(gpu) = gpu() else { return };
+    let rows = u64::from(ROWS);
+    // The joined table lists the points' ids in their order, or with its first two swapped.
+    let aligned: Vec<u64> = (0..rows).collect();
+    let swapped: Vec<u64> = [1, 0].into_iter().chain(2..rows).collect();
+    let mut loads = Vec::new();
+    for ids in [aligned, swapped] {
+        let (data, other) = (points(), Data::new("loads"));
+        other.apply(Table::new("P", ids).field("load", vec![0.0_f32; ROWS as usize])).expect("valid");
+        let color = field("load").from_table("loads", "P").colormap(Colormap::GRAYS).domain(0.0..=1.0);
+        let mark = Vertices::of("points", "P").position(field("x"), field("y")).radius(6.0).color(color);
+        let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::from_millis(50)).draw(mark);
+        let before = gpu.work();
+        let mut view = shown(&gpu, scene, [&data, &other]);
+        loads.push((gpu.work() - before).uploaded);
+        // The write eases in. Only the page of rows reading the written row freezes, evaluates,
+        // and eases: once as the transition begins and once as it ends.
+        let before = gpu.work();
+        other.apply(Table::new("P", vec![u64::from(SHOWN)]).field("load", vec![1.0_f32])).expect("valid");
+        let pixels = frame(&gpu, &mut view);
+        let work = gpu.work() - before;
+        assert!(close(pixel(&pixels, 0), WHITE), "the row reads the joined row: {:?}", pixel(&pixels, 0));
+        assert_eq!(work.uploaded, 16, "one texel of the joined page");
+        assert!(work.evaluated <= 2 * u64::from(LAST), "only the page reading it evaluates: {}", work.evaluated);
+        assert_eq!(errors(&mut view), []);
+    }
+    // Tables listing the same ids in the same order join without a table of rows on the GPU.
+    assert_eq!(loads[1] - loads[0], rows * 4, "the join's rows upload only where the orders differ");
+}
+
+#[test]
 fn a_field_of_a_referenced_row_follows_that_row() {
     let Some(gpu) = gpu() else { return };
     let data = points();
@@ -167,7 +200,7 @@ fn a_field_of_a_referenced_row_follows_that_row() {
         .position(field("x"), field("y"))
         .radius(6.0)
         .color(field("v").of("of").colormap(Colormap::GRAYS).domain(0.0..=1.0));
-    let mut view = shown(&gpu, scene([tags]), &data);
+    let mut view = shown(&gpu, scene([tags]), [&data]);
     // Writing the point changes the tag naming it: one texel uploads, and only the tags evaluate.
     let before = gpu.work();
     write(&data, 1.0);
@@ -188,8 +221,8 @@ fn a_view_of_an_earlier_version_keeps_drawing_it() {
     let Some(gpu) = gpu() else { return };
     let data = points();
     let earlier = data.snapshot();
-    let mut live = shown(&gpu, scene([gray()]), &data);
-    let mut kept = shown(&gpu, scene([gray()]), &earlier);
+    let mut live = shown(&gpu, scene([gray()]), [&data]);
+    let mut kept = shown(&gpu, scene([gray()]), [&earlier]);
     // The earlier version's view pins the page, so the written page uploads whole beside it.
     let before = gpu.work();
     write(&data, 1.0);
@@ -209,7 +242,7 @@ fn a_view_of_an_earlier_version_keeps_drawing_it() {
 fn rows_appended_removed_and_restored_draw_as_written() {
     let Some(gpu) = gpu() else { return };
     let data = points();
-    let mut view = shown(&gpu, scene([gray()]), &data);
+    let mut view = shown(&gpu, scene([gray()]), [&data]);
     write(&data, 1.0);
     frame(&gpu, &mut view);
     let written = data.snapshot();
