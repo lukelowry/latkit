@@ -20,11 +20,19 @@
 //! column that lists pages reports which pages of rows read changed pages, so only those rows
 //! evaluate again. While a mark eases, its geometry column keeps the table it had when the
 //! transition began, packed after the rest, so paths morph from it.
+//!
+//! A page of an unpaged table that was written over the page a column reads now is not uploaded
+//! again. When the dataset swaps in, the page takes the block of the page it was written over, and
+//! only the rows written upload (see [`Rewrite`]). Its offset stays, so the column's page table
+//! does not change. A page the swap replaces otherwise is freed, since no table reads that version
+//! again.
 
 use std::sync::Arc;
 
+use rustc_hash::{FxHashMap, FxHashSet};
+
 use super::drawing::{Drawing, Holds};
-use crate::data::{Column, Field, PageId, Run, Samples, Values, Version, detail};
+use crate::data::{Column, Field, Page, PageId, Run, Samples, Values, Version, detail};
 use crate::derive::order::Order;
 use crate::derive::shapes::PagedShapes;
 use crate::derive::stamp_of;
@@ -34,7 +42,7 @@ use crate::gpu::Inner;
 use crate::gpu::arena::{Ask, Content, PageKey, PathPage, path_pieces};
 use crate::gpu::packed::{self, Packing};
 use crate::gpu::shaders as wgsl;
-use crate::gpu::work::Count;
+use crate::gpu::work::{Count, Queue};
 use crate::scene::mark::Style;
 use crate::{Name, Snapshot, Table};
 
@@ -123,10 +131,27 @@ impl Rows<'_> {
     }
 }
 
+/// A page written over the page a column reads now, which the GPU holds. When the column's dataset
+/// swaps in, the page takes that page's block and uploads only the rows written, so it needs no
+/// block of its own and the word naming it never changes. Until then the table it replaces keeps
+/// drawing the block as it was. If a table outside the swap pins the block by then, `ask` reserves
+/// the page whole instead.
+struct Rewrite {
+    /// The word of the table that holds the block's offset.
+    at: usize,
+    /// The page written over.
+    from: PageKey,
+    /// The rows written since `from`, as ascending offsets into the page.
+    rows: Vec<u32>,
+    /// The page, with its whole content.
+    ask: Ask,
+}
+
 /// One column on the GPU: its descriptor (whose table offsets are relative to `words`), its page
 /// table or cursors in `words`, and the pages it reads. Until its dataset reserves them, `asks`
 /// lists the pages it needs, each with the word that receives its offset. After that, `pins` lists
-/// its pinned pages, and `missing` the words still waiting for an offset.
+/// its pinned pages, and `missing` the words still waiting for an offset. `rewrites` lists the
+/// pages that take over a block when the table swaps in. They wait for nothing.
 struct ColumnTable {
     stamp: Stamp,
     /// Publication that last replaced this column, independent of changes to other columns.
@@ -138,6 +163,7 @@ struct ColumnTable {
     /// Direct cursors patched when packing: destination word, page-offset word, offset in page.
     cursors: Vec<(usize, usize, u32)>,
     asks: Vec<(usize, Ask)>,
+    rewrites: Vec<Rewrite>,
     pins: Vec<PageKey>,
     /// Words waiting for a page's offset: the word, the page, and the words the page must hold.
     missing: Vec<(usize, PageKey, u32)>,
@@ -151,6 +177,41 @@ struct ColumnTable {
 }
 
 impl ColumnTable {
+    /// Whether the pages it lists are the ones it pins, one per page of its table's rows: a column
+    /// of an unpaged table's values, or of references to one. A page written over one of them can
+    /// take over its block. A drawing's slots hold other rows, and references into a paged table
+    /// pin pages of ranks.
+    fn rewritable(&self) -> bool {
+        self.held == 0 && matches!(self.stamp, Stamp::Field(_, 0))
+    }
+
+    /// Moves each page it rewrites into the block of the page that page was written over, as the
+    /// table swaps in. The block's pin passes to this table.
+    fn rewrite(&mut self, gpu: &mut Inner, queue: &Queue) {
+        for rewrite in std::mem::take(&mut self.rewrites) {
+            gpu.arena.rewrite(queue, rewrite.from, &rewrite.rows, &rewrite.ask);
+            self.pins.push(rewrite.ask.key);
+        }
+    }
+
+    /// Releases the pins of this table, which `next` replaced. A page of rows that `next` reads
+    /// another version of is freed, since nothing reads this version again. Any other page stays
+    /// cached. A page rewritten in place is no longer in the pool under its old key, so releasing
+    /// it does nothing.
+    fn retire(&self, next: &ColumnTable, gpu: &mut Inner) {
+        let superseded: FxHashSet<PageId> = match (&self.pages, &next.pages) {
+            (Some(pages), Some(now)) if self.rewritable() && next.rewritable() => pages
+                .iter()
+                .enumerate()
+                .filter_map(|(p, page)| page.filter(|page| now.get(p) != Some(&Some(*page))))
+                .collect(),
+            _ => FxHashSet::default(),
+        };
+        for &key in &self.pins {
+            if superseded.contains(&key.page) { gpu.arena.discard(key) } else { gpu.arena.unpin(key) }
+        }
+    }
+
     /// Keep overlapping trace records at their previous physical positions. The logical
     /// window moves through a power-of-two ring; unused records are unreachable and pin no
     /// pages. Packing can then upload only changed texels instead of shifting the window.
@@ -294,14 +355,17 @@ impl Staged {
 
     /// Reserves every page the staged tables need, all or none. Returns `false` when the arena has
     /// no space for them now. A table that needs a page the arena has since dropped, and has no
-    /// content to upload for it, is discarded and rebuilt later.
-    pub(crate) fn reserve(&mut self, gpu: &mut Inner, device: &wgpu::Device, queue: &crate::gpu::work::Queue) -> bool {
+    /// content to upload for it, is discarded and rebuilt later. A page rewritten in place needs
+    /// nothing reserved while only the tables it replaces pin the block it takes (see
+    /// [`settle`](Staged::settle)).
+    pub(crate) fn reserve(&mut self, gpu: &mut Inner, device: &wgpu::Device, queue: &Queue) -> bool {
         let gone = |table: &ColumnTable| {
             table.asks.iter().any(|(_, a)| a.content.is_none() && !gpu.arena.holds(a.key, a.need))
         };
         for (_, rebuilt) in &mut self.marks {
             rebuilt.tables.retain(|(_, table)| !gone(table));
         }
+        self.settle(gpu);
         let mut asks: Vec<Ask> = Vec::new();
         let mut owners: Vec<(usize, usize, usize)> = Vec::new();
         for (m, (_, rebuilt)) in self.marks.iter_mut().enumerate() {
@@ -328,10 +392,56 @@ impl Staged {
         reserved
     }
 
-    /// Whether every page each staged table reads is resident, filling in the offsets of those that
-    /// arrived.
-    pub(crate) fn ready(&mut self, gpu: &Inner) -> bool {
+    /// Keeps each rewrite only while the swap would replace every table that pins the page it
+    /// writes over, and nothing has made the new page resident or asks for it whole. Marks that
+    /// read one field pin its pages together and rewrite them together, so the pins on a page then
+    /// equal the staged rewrites naming it. Any other rewrite becomes a page to reserve whole:
+    /// another view, or a view drawing a snapshot of the version before, still reads the block.
+    /// Returns whether any rewrite became a page to reserve.
+    fn settle(&mut self, gpu: &Inner) -> bool {
+        let tables = || self.marks.iter().flat_map(|(_, rebuilt)| &rebuilt.tables).map(|(_, table)| table);
+        if tables().all(|table| table.rewrites.is_empty()) {
+            return false;
+        }
+        let mut naming: FxHashMap<PageKey, u32> = FxHashMap::default();
+        for rewrite in tables().flat_map(|table| &table.rewrites) {
+            *naming.entry(rewrite.from).or_default() += 1;
+        }
+        let asked: FxHashSet<PageKey> = tables().flat_map(|table| &table.asks).map(|(_, ask)| ask.key).collect();
+        let sole = |rewrite: &Rewrite| {
+            let block = gpu.arena.block_of(rewrite.from, rewrite.ask.need);
+            !asked.contains(&rewrite.ask.key)
+                && !gpu.arena.holds(rewrite.ask.key, 0)
+                && block.is_some_and(|(_, pins)| pins == naming[&rewrite.from])
+        };
+        let mut asks = false;
+        for (_, rebuilt) in &mut self.marks {
+            for (_, table) in &mut rebuilt.tables {
+                for rewrite in table.rewrites.extract_if(.., |rewrite| !sole(rewrite)) {
+                    table.words[rewrite.at] = wgsl::NONE;
+                    table.asks.push((rewrite.at, rewrite.ask));
+                    asks = true;
+                }
+            }
+        }
+        asks
+    }
+
+    /// Whether the staged tables can swap in now: every page each one reads is resident, and each
+    /// page rewritten in place still has its block to itself. Fills in the offsets of the pages
+    /// that arrived. Other datasets reserve pages after this one does, so the rewrites are checked
+    /// again here, right before the swap. One that lost its block reserves its page whole, and the
+    /// tables wait for it unless it is resident already.
+    pub(crate) fn ready(&mut self, gpu: &mut Inner, device: &wgpu::Device, queue: &Queue) -> bool {
+        if self.settle(gpu) && !self.reserve(gpu, device, queue) {
+            return false;
+        }
         self.marks.iter_mut().fold(true, |ready, (_, rebuilt)| rebuilt.ready(gpu) && ready)
+    }
+
+    /// Whether a staged table still has pages to reserve, for lack of space.
+    pub(crate) fn unreserved(&self) -> bool {
+        self.marks.iter().flat_map(|(_, rebuilt)| &rebuilt.tables).any(|(_, table)| !table.asks.is_empty())
     }
 
     /// Removes and returns mark `mark`'s staged tables, to publish them.
@@ -494,22 +604,26 @@ impl Tables {
             if !reshape && latest.is_some_and(|t| t.stamp == stamp && t.held == paged) {
                 continue;
             }
-            let mut builder = Builder::new(gpu);
-            let descriptor = match use_ {
+            let mut table = match use_ {
                 Use::Field { column, join } => {
                     let rows = if column.from.is_none() { rows } else { Rows::Own };
+                    // The pages the GPU holds for the column now, which this table's pages may have
+                    // been written over. A staged table's pages were never drawn.
+                    let drawn = self.current.get(i).filter(|t| !reshape && !reshaped && paged == 0 && t.rewritable());
+                    let mut builder = Builder::new(gpu, drawn.and_then(|t| t.pages.as_deref()));
                     let mut descriptor = builder.column(column, source, rows, inputs);
                     descriptor[wgsl::COLUMN_JOIN as usize] = *join;
-                    descriptor
+                    builder.finish(stamp, paged, descriptor)
                 }
                 Use::Join(from) => {
                     let join = self.join(from, source, inputs.all);
+                    let mut builder = Builder::new(gpu, None);
                     let descriptor = builder.join(&join, from, source, rows, inputs.all);
+                    let table = builder.finish(stamp, paged, descriptor);
                     self.remember(join);
-                    descriptor
+                    table
                 }
             };
-            let mut table = builder.finish(stamp, paged, descriptor);
             if let Some(before) = waiting.map(|(_, t)| t).or(self.current.get(i)) {
                 table.retain_trace(before);
             }
@@ -518,14 +632,23 @@ impl Tables {
         (reshape || !rebuilt.is_empty()).then_some(Rebuilt { tables: rebuilt, reshape })
     }
 
-    /// Swaps in the `rebuilt` tables, whose pages are all resident, and unpins the replaced ones.
-    /// The replaced table of geometry column `geometry` stays frozen instead, for the mark to ease
-    /// from.
-    pub(crate) fn publish(&mut self, rebuilt: Rebuilt, program: &Program, geometry: u32, gpu: &mut Inner) -> Published {
+    /// Swaps in the `rebuilt` tables, whose pages are all resident, and releases the replaced ones.
+    /// Pages rewritten in place take over their blocks now, written through `queue` before this
+    /// frame's passes read them. The replaced table of geometry column `geometry` stays frozen
+    /// instead, for the mark to ease from.
+    pub(crate) fn publish(
+        &mut self,
+        rebuilt: Rebuilt,
+        program: &Program,
+        geometry: u32,
+        gpu: &mut Inner,
+        queue: &Queue,
+    ) -> Published {
         let Rebuilt { tables: mut rebuilt, reshape } = rebuilt;
         self.generation += 1;
         for (_, table) in &mut rebuilt {
             table.generation = self.generation;
+            table.rewrite(gpu, queue);
         }
         let joins = joins(program);
         let published = if reshape {
@@ -562,7 +685,7 @@ impl Tables {
                     self.thaw(gpu);
                     self.frozen = Some(old);
                 } else {
-                    unpin(&old.pins, gpu);
+                    old.retire(&self.current[i], gpu);
                 }
             }
             published
@@ -823,28 +946,34 @@ struct Builder<'g> {
     words: Vec<u32>,
     cursors: Vec<(usize, usize, u32)>,
     asks: Vec<(usize, Ask)>,
+    rewrites: Vec<Rewrite>,
     plan: Option<Plan>,
     points: u32,
     /// The page each page of rows reads, while every row reads only its own page.
     pages: Option<Vec<Option<PageId>>>,
+    /// The page each page of rows reads in the table the GPU draws now, which this one replaces,
+    /// when that table pins the pages it lists (see `ColumnTable::rewritable`).
+    drawn: Option<&'g [Option<PageId>]>,
     gpu: &'g mut Inner,
 }
 
 impl<'g> Builder<'g> {
-    fn new(gpu: &'g mut Inner) -> Builder<'g> {
+    fn new(gpu: &'g mut Inner, drawn: Option<&'g [Option<PageId>]>) -> Builder<'g> {
         Builder {
             words: Vec::new(),
             cursors: Vec::new(),
             asks: Vec::new(),
+            rewrites: Vec::new(),
             plan: None,
             points: 0,
             pages: Some(Vec::new()),
+            drawn,
             gpu,
         }
     }
 
     fn finish(self, stamp: Stamp, held: u64, descriptor: [u32; WORDS]) -> ColumnTable {
-        let Builder { words, cursors, asks, plan, points, pages, gpu: _ } = self;
+        let Builder { words, cursors, asks, rewrites, plan, points, pages, drawn: _, gpu: _ } = self;
         ColumnTable {
             stamp,
             generation: 0,
@@ -853,12 +982,41 @@ impl<'g> Builder<'g> {
             words,
             cursors,
             asks,
+            rewrites,
             pins: Vec::new(),
             missing: Vec::new(),
             plan,
             points,
             pages,
         }
+    }
+
+    /// Appends a word for the offset of `page`, page `p` of a column of an unpaged table, read as
+    /// `words`. A page written over the one the GPU draws there takes over its block when the
+    /// dataset swaps in, so the word holds that block's offset now (see [`Rewrite`]). Any other
+    /// page is requested whole. `content` builds the page's upload.
+    fn page(&mut self, p: usize, page: &Page, words: Words, low: bool, content: impl FnOnce() -> Content) {
+        let (key, need) = (PageKey::of(page.id, words, low), page.values.len() as u32);
+        let Some((from, offset, rows)) = self.written_over(p, page, key, need) else {
+            return self.push(key, need, content);
+        };
+        let ask = Ask { key, need, content: Some(content()) };
+        self.rewrites.push(Rewrite { at: self.words.len(), from, rows, ask });
+        self.words.push(offset);
+    }
+
+    /// The page the GPU draws as page `p` of the column, when `page` was written over it and can
+    /// take over its block: its key, where its block lies, and the rows written since. `None` when
+    /// the page is new to the column or already resident, when it no longer remembers the page it
+    /// was written over, or when that page's block is uploading or too small.
+    fn written_over(&self, p: usize, page: &Page, key: PageKey, need: u32) -> Option<(PageKey, u32, Vec<u32>)> {
+        let drawn = (*self.drawn?.get(p)?)?;
+        if drawn == page.id || self.gpu.arena.holds(key, 0) {
+            return None;
+        }
+        let from = PageKey { page: drawn, ..key };
+        let (offset, _) = self.gpu.arena.block_of(from, need)?;
+        Some((from, offset, page.rows_since(drawn)?))
     }
 
     /// Requests page `key`, holding `need` words, whose offset goes to word `at` once it arrives.
@@ -914,12 +1072,11 @@ impl<'g> Builder<'g> {
         match field {
             Some(Field::Values(values, _)) if column.words == Words::Codes => {
                 let field = (data, &table.name, &column.name);
-                for page in values.pages() {
+                for (p, page) in values.pages().iter().enumerate() {
                     self.list(Some(page.id));
-                    let key = PageKey::of(page.id, Words::Codes, false);
                     // Each page is coded once, resident or not, so the dictionary holds its texts.
                     let codes = self.gpu.dictionaries.field(field.0, field.1, field.2).codes(page);
-                    self.push(key, page.values.len() as u32, || Content::Computed(codes.to_vec()));
+                    self.page(p, page, Words::Codes, false, || Content::Computed(codes.to_vec()));
                 }
             }
             Some(Field::Values(values, _)) if column.words == Words::Path => self.path(values),
@@ -1123,11 +1280,11 @@ impl<'g> Builder<'g> {
         d
     }
 
+    /// Appends a word for each page of `column`, a column of an unpaged table, read as `words`.
     fn pages(&mut self, column: &Column, words: Words, low: bool) {
-        for page in column.pages() {
-            let key = PageKey::of(page.id, words, low);
+        for (p, page) in column.pages().iter().enumerate() {
             let values = page.values.clone();
-            self.push(key, values.len() as u32, || Content::Values { values, words, low });
+            self.page(p, page, words, low, || Content::Values { values, words, low });
         }
     }
 
@@ -1419,11 +1576,7 @@ mod tests {
 
     #[test]
     fn direct_trace_cursors_pack_aligned_across_row_pages_steps_and_buckets() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let mut inner = gpu.0.lock();
         for level in [0, 1] {
             let first = 1_u64 << 40;
@@ -1445,7 +1598,7 @@ mod tests {
                 samples.insert(&run, &coordinates, &values, rows).unwrap();
             }
             for steps in [0, wgsl::STEP_BEFORE, wgsl::STEP_AFTER] {
-                let mut builder = Builder::new(&mut inner);
+                let mut builder = Builder::new(&mut inner, None);
                 let mut d = descriptor(0);
                 builder.trace(
                     &mut d,
@@ -1462,7 +1615,7 @@ mod tests {
                 }
                 let plan = table.plan.clone().unwrap();
                 // A preceding odd-sized table exercises both descriptor and body padding.
-                let mut prefix = Builder::new(&mut inner);
+                let mut prefix = Builder::new(&mut inner, None);
                 prefix.words.extend([1, 2, 3]);
                 let tables = Tables {
                     current: vec![prefix.finish(Stamp::Missing, 0, descriptor(0)), table],
@@ -1502,11 +1655,7 @@ mod tests {
 
     #[test]
     fn moving_trace_windows_keep_records_through_wrap_and_growth() {
-        let gpu = match pollster::block_on(crate::Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let mut inner = gpu.0.lock();
         let rows = wgsl::PAGE_ROWS as usize + 1;
         let coordinates: Vec<_> = (0..64).map(f64::from).collect();
@@ -1521,7 +1670,7 @@ mod tests {
                     .into_iter()
                     .enumerate()
             {
-                let mut builder = Builder::new(&mut inner);
+                let mut builder = Builder::new(&mut inner, None);
                 let mut descriptor = descriptor(0);
                 builder.trace(
                     &mut descriptor,

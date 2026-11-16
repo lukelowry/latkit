@@ -62,6 +62,8 @@ timings need a GPU.
   which are paged like any large table, so only the pages those rows fill upload and evaluate.
   Tiles split by the area they cover on screen, so the globe's edge and a tilted horizon stay
   coarse. When the tile budget runs out, the tiles drawn largest split first.
-- A write updates only the pages that hold the rows it changed, and an append updates only the page
-  the new rows go into. A paged table rebuilds its spatial tiles only once the rows appended since
-  the last build reach an eighth of the rows that build used.
+- A write evaluates only the pages that hold the rows it changed, and an append only the page the
+  new rows go into. In a table drawn whole, only the rows written upload, into the pages the GPU
+  already holds, so a field written every frame allocates nothing. A paged table uploads the pages
+  that hold the rows written, and rebuilds its spatial tiles only once the rows appended since the
+  last build reach an eighth of the rows that build used.

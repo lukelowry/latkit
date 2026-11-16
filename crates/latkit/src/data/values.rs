@@ -310,6 +310,14 @@ impl Values {
         }
     }
 
+    /// The values as stored, when they are `f32` numbers and none is missing.
+    pub(crate) fn floats(&self) -> Option<&[f32]> {
+        match (&self.array, &self.valid) {
+            (Array::F32(values), None) => Some(&values[..]),
+            _ => None,
+        }
+    }
+
     pub(crate) fn text(&self) -> Option<&Text> {
         match &self.array {
             Array::Text(t) => Some(t),

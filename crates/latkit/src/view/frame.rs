@@ -349,8 +349,13 @@ impl View {
 
     /// Keeps the view's GPU memory within its budget share. Counts each page its tables pin once,
     /// plus the marks' word pages, minus idle pages. Idle pages stay only while there is space and
-    /// go first when the plan shrinks.
+    /// go first when the plan shrinks. Only a plan that left out rows a paged table needs can
+    /// shrink, so a view without one counts nothing, however often its data publishes.
     fn hold_to_share(&mut self, inner: &Inner) {
+        let capped = self.choices.values().any(|c| c.capped);
+        if !capped {
+            return;
+        }
         let mut pins: Vec<crate::gpu::arena::PageKey> = self.marks.iter().flat_map(|m| m.tables.pins()).collect();
         pins.sort_unstable_by_key(|key| (key.page, key.low, key.words as u8));
         pins.dedup();
@@ -362,7 +367,7 @@ impl View {
             .filter_map(|(key, drawn)| Some(self.planning.page_bytes(key, drawn.current.as_ref()?.idle.len() as u32)))
             .sum();
         let needed = ((pages + words) as f64 - idle).max(0.0);
-        self.planning.held(needed as u64, self.choices.values().any(|c| c.capped));
+        self.planning.held(needed as u64, capped);
     }
 
     /// Takes the results that arrived since the last frame: GPU timing, fits, probes, queries, and
@@ -606,6 +611,7 @@ impl View {
     /// never end at another drawing's vertices and a data version appears all at once. Returns
     /// whether any tables were swapped in.
     fn publish(&mut self, inner: &mut Inner) -> bool {
+        let gpu = self.gpu.clone();
         let mut datasets: Vec<Name> =
             self.marks.iter().filter(|m| m.compiled.is_some()).map(|m| m.mark.style().data.clone()).collect();
         datasets.sort();
@@ -616,7 +622,16 @@ impl View {
             let marks: Vec<usize> = (0..self.marks.len())
                 .filter(|&i| self.marks[i].compiled.is_some() && self.marks[i].mark.style().data == name)
                 .collect();
-            if self.staged.get_mut(&name).is_some_and(|s| !s.ready(inner)) {
+            let (ready, short) = self.staged.get_mut(&name).map_or((true, false), |staged| {
+                let reserved = !staged.unreserved();
+                let ready = staged.ready(inner, &gpu.0.device, &gpu.0.queue);
+                (ready, reserved && staged.unreserved())
+            });
+            // A page that a rewrite reserved whole just now found no space.
+            if short {
+                self.found_no_room(inner);
+            }
+            if !ready {
                 continue;
             }
             if !marks.iter().all(|&i| self.room_for(i, inner)) {
@@ -685,7 +700,8 @@ impl View {
         let Some(data) = self.snapshots.iter().find(|d| *d.name() == key.0) else { return };
         let Some(table) = data.table(&key.1) else { return };
         let drawing = self.drawings.get(&key).and_then(|d| d.current.clone());
-        let published = rebuilt.map(|rebuilt| shown.tables.publish(rebuilt, &program, geometry, inner));
+        let queue = &self.gpu.0.queue;
+        let published = rebuilt.map(|rebuilt| shown.tables.publish(rebuilt, &program, geometry, inner, queue));
         let holding = Holding { origin: data.origin(), table: table.clone(), drawing: drawing.clone() };
         if published.is_none() && shown.holding.as_ref().is_some_and(|h| holds_alike(h, &holding)) {
             return;

@@ -484,16 +484,12 @@ impl Shown {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Camera, Color, Data, Frame, Gpu, Grid, Ids, Lines, Plane, Scene, Table, field};
+    use crate::{Camera, Color, Data, Frame, Grid, Ids, Lines, Plane, Scene, Table, field};
 
     #[test]
     fn curved_lists_keep_counts_for_unreferenced_appends_but_follow_changed_endpoints() {
         use crate::{Earth, Edges, Patch, Vertices};
-        let gpu = match pollster::block_on(Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let data = Data::new("d");
         data.apply(
             Patch::new()
@@ -566,11 +562,7 @@ mod tests {
     #[test]
     fn heights_changing_every_frame_sort_at_most_every_resort_and_end_in_order() {
         use crate::Vertices;
-        let gpu = match pollster::block_on(Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let data = Data::new("d");
         let node = |z: f64| Table::new("Node", vec![0_u64, 1, 2]).field("z", vec![0.0, z, 2.0]);
         data.apply(node(1.0).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3])).unwrap();
@@ -634,11 +626,7 @@ mod tests {
 
     #[test]
     fn path_lists_track_geometry_and_length_styles_but_not_color_updates() {
-        let gpu = match pollster::block_on(Gpu::new()) {
-            Ok(gpu) => gpu,
-            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
-            Err(_) => return,
-        };
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let data = Data::new("d");
         data.apply(
             Table::new("Path", Ids::count(1))
