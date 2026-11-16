@@ -24,7 +24,7 @@ You need Rust (pinned in `rust-toolchain.toml`), Node.js 24, pnpm 10.30, and uv 
 ```sh
 pnpm install
 cargo xtask examples --open   # the example pages at http://127.0.0.1:5200
-cargo xtask check             # every CI job's steps: format, lint, test, browser gate, package
+cargo xtask check             # every CI job's steps: format, lint, test, browser gate
 cargo xtask bench --quick     # every benchmark scenario once, at its smallest size
 ```
 

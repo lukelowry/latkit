@@ -6,11 +6,12 @@
 //!   - `format`: Prettier over every file. CI's `format` job has no Rust toolchain, so it runs
 //!     `pnpm format:check` itself.
 //!   - `rust`: formats, lints, tests (with GPU tests required), documents, and packages the crates.
-//!     Lints both browser builds: the npm package's, and the driver tests', with `wgsl`.
+//!     Lints the native build with every feature, and the npm package's browser build.
 //!   - `native-cli`: tests the CLI's native code, which CI runs on Windows, and on macOS when it
 //!     changes.
-//!   - `npm`: builds the npm package with `wasm --dev`, then lints, documents, type-checks, and
-//!     tests it. Runs the browser gate over that build, then `package` and `package-test`.
+//!   - `npm`: builds the npm package as a release does and holds its WebAssembly to its size
+//!     budget, then lints, documents, type-checks, and tests it, and runs the browser gate over
+//!     that build. The release runs `package` and `package-test`.
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`. Checks
 //!   that every shader variant's pipelines compile in Chrome within budget, and that every example
 //!   page draws and responds to the pointer without errors or missed frames. On `SwiftShader`,
@@ -134,15 +135,9 @@ fn rust() -> Result {
     let gpu = [("LATKIT_REQUIRE_GPU", "1")];
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"])?;
-    cargo(&["clippy", "--locked", "-p", "latkit", "--no-default-features", "--all-targets", "--", "-D", "warnings"])?;
-    // The browser builds: the npm package's, and the driver tests', whose latkit has `wgsl`. Each
-    // lints alone, since one build would unify their features.
-    for package in [&["-p", "latkit-js", "-p", "latkit-wgsl"][..], &["-p", "latkit-browser-tests"]] {
-        let mut args = vec!["clippy", "--locked"];
-        args.extend(package);
-        args.extend(["--target", "wasm32-unknown-unknown", "--", "-D", "warnings"]);
-        cargo(&args)?;
-    }
+    // The npm package's browser build, which the native lint does not compile.
+    let browser = ["-p", "latkit-js", "-p", "latkit-wgsl", "--target", "wasm32-unknown-unknown"];
+    cargo(&[&["clippy", "--locked"][..], &browser, &["--", "-D", "warnings"]].concat())?;
     run_with(env!("CARGO"), &["test", "--locked", "--workspace"], &gpu)?;
     run_with(
         env!("CARGO"),
@@ -180,15 +175,15 @@ fn native_cli() -> Result {
 }
 
 fn npm() -> Result {
-    // The release build, which `package` then packs without compiling again.
+    // The release build. Its size is checked here, so growth shows before a release. The release
+    // packs the tarball and tests it in a consumer, once.
     let shaders = wasm(false)?;
+    run("node", &["npm/build.mjs", "budget", "npm"])?;
     pnpm(&["lint"])?;
     run("node", &["npm/docs.mjs", "--check"])?;
     pnpm(&["typecheck"])?;
     pnpm(&["test"])?;
-    browser_gate(&shaders)?;
-    package()?;
-    package_test()
+    browser_gate(&shaders)
 }
 
 /// Builds the wasm package, then runs the browser gate over the shaders the build linked.

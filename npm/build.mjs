@@ -14,11 +14,33 @@ import { typescript } from './schema.mjs';
 const root = path.resolve(import.meta.dirname, '..');
 const output = path.join(root, 'target/npm');
 /** The most bytes each WebAssembly asset may have, raw and with brotli, which is what a
- * page downloads. A release over either fails its package step, so growth is a choice. */
+ * page downloads. A build over either fails CI, and a release its package step, so growth is a
+ * choice. */
 const BUDGET = {
   'pkg/latkit_bg.wasm': { raw: 3_855_000, brotli: 1_265_000 },
   'pkg/latkit_wgsl_bg.wasm': { raw: 1_320_000, brotli: 345_000 },
 };
+
+/** The sizes and hash of a file's `bytes`. */
+const measured = (bytes) => ({
+  raw: bytes.length,
+  gzip: gzipSync(bytes, { level: 9 }).length,
+  brotli: brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } }).length,
+  sha256: createHash('sha256').update(bytes).digest('hex'),
+});
+
+/** Fails when a WebAssembly asset is missing from `sizes` or over its budget. */
+function budgeted(sizes) {
+  for (const [file, most] of Object.entries(BUDGET)) {
+    const size = sizes[file];
+    assert(size, `${file} is missing from the package`);
+    for (const measure of /** @type {const} */ (['raw', 'brotli']))
+      assert(
+        size[measure] <= most[measure],
+        `${file} is ${size[measure]} bytes ${measure === 'raw' ? 'raw' : 'with brotli'}, over its budget of ${most[measure]}: shrink it, or raise BUDGET in npm/build.mjs`,
+      );
+  }
+}
 const [mode, directory, version] = process.argv.slice(2);
 const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const write = (file, value) => fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
@@ -108,14 +130,7 @@ if (mode === 'prepare') {
   for (const folder of ['dist', 'pkg']) {
     for (const file of fs.readdirSync(path.join(stage, folder)).sort()) {
       if (!/\.(js|wasm)$/.test(file)) continue;
-      const bytes = fs.readFileSync(path.join(stage, folder, file));
-      sizes[`${folder}/${file}`] = {
-        raw: bytes.length,
-        gzip: gzipSync(bytes, { level: 9 }).length,
-        brotli: brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } })
-          .length,
-        sha256: createHash('sha256').update(bytes).digest('hex'),
-      };
+      sizes[`${folder}/${file}`] = measured(fs.readFileSync(path.join(stage, folder, file)));
     }
   }
   const report = {
@@ -139,15 +154,17 @@ if (mode === 'prepare') {
   };
   write(path.join(output, 'package.json'), report);
   console.log(JSON.stringify(report, null, 2));
-  for (const [file, most] of Object.entries(BUDGET)) {
-    const size = sizes[file];
-    assert(size, `${file} is missing from the package`);
-    for (const measure of /** @type {const} */ (['raw', 'brotli']))
-      assert(
-        size[measure] <= most[measure],
-        `${file} is ${size[measure]} bytes ${measure === 'raw' ? 'raw' : 'with brotli'}, over its budget of ${most[measure]}: shrink it, or raise BUDGET in npm/build.mjs`,
-      );
-  }
+  budgeted(sizes);
+} else if (mode === 'budget') {
+  // The WebAssembly of the package built in `directory`, without packing it.
+  const built = path.resolve(root, directory);
+  const present = Object.keys(BUDGET).filter((file) => fs.existsSync(path.join(built, file)));
+  const sizes = Object.fromEntries(
+    present.map((file) => [file, measured(fs.readFileSync(path.join(built, file)))]),
+  );
+  for (const [file, size] of Object.entries(sizes))
+    console.log(`${file}: ${size.raw} bytes, ${size.brotli} with brotli`);
+  budgeted(sizes);
 } else if (mode === 'consumer') {
   const report = read(path.join(output, 'package.json'));
   assert.equal(

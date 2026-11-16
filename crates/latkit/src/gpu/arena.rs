@@ -1027,13 +1027,13 @@ mod tests {
         let mut values = vec![1.0; 120];
         values[100..].fill(2.0);
         let new = page(values);
-        let appended = [100..120];
-        arena.rewrite(queue, [(old, &appended[..], &new)]);
+        let appended = 100..120;
+        arena.rewrite(queue, [(old, std::slice::from_ref(&appended), &new)]);
         assert_eq!(arena.offset(new.key, 120), Some(offset), "the page grew where it was");
         assert_eq!(read(&gpu, &arena, offset + 96, 8), [1.0_f32, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0].map(f32::to_bits));
         // Another table replaced in the same swap rewrites the same page: the block already moved.
         let before = gpu.work();
-        arena.rewrite(queue, [(old, &appended[..], &new)]);
+        arena.rewrite(queue, [(old, std::slice::from_ref(&appended), &new)]);
         assert_eq!((gpu.work() - before).uploaded, 0);
         assert_eq!(arena.block_of(new.key, 120), Some((offset, 1)), "and its pins are unchanged");
     }
@@ -1051,9 +1051,9 @@ mod tests {
         let offsets = olds.map(|key| arena.offset(key, 64).expect("uploaded"));
         assert_eq!(offsets[1], offsets[0] + 64, "the pages lie side by side");
         let news = [page(vec![3.0; 64]), page(vec![4.0; 64])];
-        let every = [0..64];
+        let every = std::slice::from_ref(&(0..64));
         let before = gpu.work();
-        arena.rewrite(queue, [(olds[1], &every[..], &news[1]), (olds[0], &every[..], &news[0])]);
+        arena.rewrite(queue, [(olds[1], every, &news[1]), (olds[0], every, &news[0])]);
         let work = gpu.work() - before;
         assert_eq!((work.uploaded, work.uploads), (2 * 64 * 4, 2), "both pages, in whatever order they came");
         let across = [3.0_f32, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0, 4.0].map(f32::to_bits);

@@ -1,15 +1,17 @@
 name: CI
 
 # What a release depends on: the crates build, pass their tests, document, and package on every
-# platform they ship to; the npm tarball works in a consumer; the docs build. The jobs that build
-# Rust run their steps as `cargo xtask ci <job>`, and `cargo xtask check` runs every job's steps.
-# Frame budgets and the benchmark need a GPU, which runners lack: run `cargo xtask check` and
-# `cargo xtask bench` locally.
+# platform they ship to; the npm package builds within its size budget, passes its tests, and
+# compiles every pipeline; the docs build. The jobs that build Rust run their steps as
+# `cargo xtask ci <job>`, and `cargo xtask check` runs every job's steps. Frame budgets and the
+# benchmark need a GPU, which runners lack: run `cargo xtask check` and `cargo xtask bench` locally.
 #
 # CI checks pull requests. Branch protection requires `CI passed` on a branch up to date with main,
-# so every commit on main is a tree that passed, and the release publishes it without checking it
-# again. A push to main that changes dependencies runs everything once more, to save the caches
-# pull requests restore.
+# so every commit on main is a tree that passed. The release packs the npm tarball and draws it in a
+# consumer, once, as it publishes. A push to main that changes dependencies or the toolchain runs
+# everything once more, to save the caches pull requests restore. The version commit changes only
+# versions, which changes no cache, so it checks formatting alone. If the caches are ever evicted,
+# dispatch this workflow on main to save them again.
 on:
   pull_request:
   push:
@@ -33,21 +35,24 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # What a pull request touched; a push to main checks everything. The version pull request changes
-  # only versions and the changelog, so it checks formatting alone: the release packages and tests
-  # what it publishes. macOS, whose runners queue for minutes, runs when native code changes, which
-  # holds all of its platform code.
+  # What a pull request touched; a push to main checks everything. The version pull request, and
+  # its commit on main, change only versions and the changelog, so they check formatting alone: the
+  # release packages and tests what it publishes. macOS, whose runners queue for minutes, runs when
+  # native code changes, which holds all of its platform code.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
+    env:
+      # Quoted, since the commit's title holds a colon.
+      VERSIONS: "${{ github.head_ref == 'changeset-release/main' || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore: version packages')) }}"
     outputs:
-      rust: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true') }}
-      native: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.native == 'true') }}
-      npm: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.npm == 'true') }}
-      docs: ${{ github.head_ref != 'changeset-release/main' && (github.event_name != 'pull_request' || steps.filter.outputs.docs == 'true') }}
+      rust: ${{ env.VERSIONS != 'true' && (github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true') }}
+      native: ${{ env.VERSIONS != 'true' && (github.event_name != 'pull_request' || steps.filter.outputs.native == 'true') }}
+      npm: ${{ env.VERSIONS != 'true' && (github.event_name != 'pull_request' || steps.filter.outputs.npm == 'true') }}
+      docs: ${{ env.VERSIONS != 'true' && (github.event_name != 'pull_request' || steps.filter.outputs.docs == 'true') }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
@@ -138,8 +143,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo xtask ci native-cli
 
-  # The npm package: built once from the crate in release, checked, tested, every pipeline compiled
-  # in Chrome on SwiftShader, and that build packed, installed, and drawn in a consumer.
+  # The npm package: built once from the crate in release, held to its size budget, checked, tested,
+  # and every pipeline compiled in Chrome on SwiftShader. The release packs it and draws it in a
+  # consumer.
   npm:
     needs: changes
     if: needs.changes.outputs.npm == 'true'
