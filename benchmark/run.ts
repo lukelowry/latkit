@@ -1,24 +1,29 @@
 /**
- * The benchmark runner. It runs each scenario at increasing sizes, each run in a fresh page, then
- * judges and reports the results.
+ * The benchmark runner. It visits each scenario at each of its sizes, each visit in a fresh page,
+ * then judges and reports the results.
  *
  *   cargo xtask bench [--quick] [--only a,b] [--repeats n] [--update] [--software]
  *                     [--firefox | --webkit]
  *
- * `--quick` runs each scenario once at its smallest size. It checks every phase and the work
- * baseline in under a minute on a GPU. Growth and times are judged only in a full sweep.
- * `--repeats` sets the runs per size (3 by default). `--update` merges this run's results into the
- * committed baselines, keeping entries it did not run. Only a full sweep on the GPU writes times,
- * into the baseline of that GPU, `baselines/<renderer>.json`. A full sweep on a GPU without one
- * fails until `--update` records it. `--software` draws with SwiftShader on the CPU, as Linux
- * always does. Work counts the same there, times are only reported, and no shader can hang the GPU.
- * `--firefox` and `--webkit` run in that browser instead of Chrome, with the same work baseline and
- * a times baseline of their own. `LATKIT_ANGLE` picks the backend Chrome draws with.
+ * A scenario lists few sizes, and each is visited once. Work counts repeat exactly, so one visit
+ * judges them. Times do not: a machine stall slows one visit, while a regression slows every one.
+ * So a size whose times read slower than this GPU's baseline or its order allows is visited again,
+ * up to `--repeats` visits (3 by default), and its fastest visit counts. A machine can stay slow
+ * for seconds, so those visits come after the rest of the sweep, not at once.
  *
- * A scenario moves to its next size only while every phase's fastest repeat at the last size,
- * scaled up by the phase's order, stays within `LIMIT`. The fastest repeat is used because a
- * machine stall slows one repeat, while a scenario too large for the next size slows every one. A
- * failure ends its scenario. A lost device or a page that stops responding ends the sweep, since
+ * `--quick` visits each scenario once at its smallest size. It checks every phase and the work
+ * baseline in half a minute on a GPU. Growth and times are judged only in a sweep. `--update`
+ * merges this run's results into the committed baselines. It keeps the scenarios it did not run,
+ * drops the sizes no longer visited, and visits every size `--repeats` times, to record the
+ * fastest. Only a sweep on the GPU writes times, into the baseline of that GPU,
+ * `baselines/<renderer>.json`. A sweep on a GPU without one fails until `--update` records it.
+ * `--software` draws with SwiftShader on the CPU, as Linux always does. Work counts the same there,
+ * times are only reported, and no shader can hang the GPU. `--firefox` and `--webkit` run in that
+ * browser instead of Chrome, with the same work baseline and a times baseline of their own.
+ * `LATKIT_ANGLE` picks the backend Chrome draws with.
+ *
+ * A scenario with a phase that took more than `LIMIT` at one size is not visited at a larger one.
+ * A failure ends its scenario. A lost device or a page that stops responding ends the sweep, since
  * the next scenario would meet a resetting driver, and repeated resets are what wedge a driver.
  * Every wait races a deadline.
  */
@@ -75,6 +80,36 @@ const PAGE = { viewport: { width: 800, height: 500 }, deviceScaleFactor: 2 };
  * acts and settles within its own limits. */
 const QUIET = 2 * LIMIT + 20_000;
 
+const read = <T>(file: string): T | undefined =>
+  fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as T) : undefined;
+const write = (file: string, value: unknown) =>
+  fs.writeFileSync(file, `${JSON.stringify(value, null, 1)}\n`);
+const workFile = path.join(baselines, 'work.json');
+/** The times baseline of `machine`. Times belong to the GPU and the browser, so the file is named
+ * by the renderer, and the browser unless Chrome. A browser update keeps it, and the judge notes
+ * the change. */
+const timesFile = (machine: string) =>
+  path.join(
+    baselines,
+    `${machine
+      .replace(/ · Chrome \S+$/, '')
+      .replace(/ · (\w+) \S+$/, ' $1')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')}.json`,
+  );
+// Times are held to a baseline, and written to one, only by a sweep on the GPU. A quick run makes
+// one visit per scenario without a warm-up, and SwiftShader's times measure the CPU.
+const timed = !flags.quick && !software;
+const workBase = read<WorkBaseline>(workFile);
+/** The baselines a run on `machine` is held to. */
+const base = (machine: string) => ({
+  work: workBase,
+  times: timed ? read<TimeBaseline>(timesFile(machine)) : undefined,
+  timed,
+  updating: !!flags.update,
+});
+
 /** A failed run. A `fatal` failure stops the sweep. */
 class Failure extends Error {
   readonly fatal: boolean;
@@ -95,22 +130,6 @@ function watched<T>(work: Promise<T>, heard: () => number, what: string): Promis
     }, 1_000);
   });
   return Promise.race([work, silent]).finally(() => clearInterval(timer));
-}
-
-/** Finds the first phase that would exceed `LIMIT` at `size`. Each phase's fastest time among the
- * repeats `last`, all at one size, is scaled to `size` by its time order, linearly if it has none.
- * Returns that phase and its fastest time. */
-function outgrown(
-  last: Run[],
-  size: number,
-  orders: Listed['orders'],
-): [string, number] | undefined {
-  const from = last[0]!.size;
-  for (const phase of Object.keys(last[0]!.phases)) {
-    const ms = Math.min(...last.map((run) => run.phases[phase]?.ms ?? Infinity));
-    if (ms * (size / from) ** (orders[phase]?.time ?? 1) > LIMIT) return [phase, ms];
-  }
-  return undefined;
 }
 
 const { url, close } = await serve(here, 5230, 'the bench');
@@ -165,6 +184,36 @@ async function visit(chrome: Chrome, scenario: Listed, size: number): Promise<Ru
   }
 }
 
+/** Visits `scenario` at each of `sizes`, and returns those it reached. With `first`, an unmeasured
+ * visit comes before them: it fills the shader cache, so the measured ones load warm. Only cold
+ * scenarios (`start`) load cold. */
+async function sweep(
+  warm: Chrome,
+  scenario: Listed,
+  sizes: readonly number[],
+  first: boolean,
+): Promise<number[]> {
+  if (first && !scenario.cold && !flags.quick) await measure(warm, scenario, sizes[0]!);
+  const reached: number[] = [];
+  for (const size of sizes) {
+    const run = await measure(warm, scenario, size);
+    console.log(
+      `  ${scenario.name} at ${size}: loaded in ${run.phases.load?.ms.toFixed(0)} ms` +
+        (first ? '' : ', again') +
+        (run.errors.length ? `, ${run.errors.length} errors` : ''),
+    );
+    runs.push(run);
+    reached.push(size);
+    const long = Object.entries(run.phases).find(([, cost]) => cost.ms > LIMIT);
+    if (long && size !== sizes.at(-1)) {
+      const [phase, cost] = long;
+      notes.push(`${scenario.name} stops at ${size}: its ${phase} took ${cost.ms.toFixed(0)} ms`);
+      break;
+    }
+  }
+  return reached;
+}
+
 const warm = await launch(FLAGS, software, engine);
 try {
   const page = await deadline(warm.browser.newPage(PAGE), STEP, 'open a page');
@@ -186,54 +235,44 @@ try {
     throw new Error(
       `no scenario ${unknown.join(', ')}; there are ${list.map((s) => s.name).join(', ')}`,
     );
-  for (const scenario of list.filter((s) => !only || only.includes(s.name))) {
-    const sizes = flags.quick ? scenario.sizes.slice(0, 1) : scenario.sizes;
-    try {
-      // An unmeasured first run fills the shader cache, so the measured runs load warm. Only cold
-      // scenarios (`start`) load cold.
-      if (!scenario.cold && !flags.quick) await measure(warm, scenario, sizes[0]!);
-      let last: Run[] = [];
-      for (const size of sizes) {
-        const outgrew = last.length ? outgrown(last, size, scenario.orders) : undefined;
-        if (outgrew) {
-          const [phase, ms] = outgrew;
-          notes.push(
-            `${scenario.name} stops before ${size}: its ${phase} took ${ms.toFixed(0)} ms at ${last[0]!.size}`,
+  /** The sizes still to visit, by scenario: all of them, then those whose times read slow. */
+  let due = list
+    .filter((s) => !only || only.includes(s.name))
+    .map((s): [Listed, readonly number[]] => [s, flags.quick ? s.sizes.slice(0, 1) : s.sizes]);
+  sweeps: for (let made = 0; made < repeats && due.length; made++) {
+    const reached: [Listed, number[]][] = [];
+    for (const [scenario, sizes] of due) {
+      try {
+        reached.push([scenario, await sweep(warm, scenario, sizes, made === 0)]);
+      } catch (error) {
+        // A failure ends its scenario.
+        const failure = error instanceof Failure ? error : new Failure(String(error), true);
+        failures.push(failure.message.slice(0, 400));
+        console.log(`  ${failure.message.slice(0, 300)}`);
+        if (failure.fatal) {
+          failures.push(
+            'the GPU device was lost or the page stopped responding, so the sweep stopped. Reset the driver before running again',
           );
-          break;
+          break sweeps;
         }
-        last = [];
-        for (let r = 0; r < repeats; r++) {
-          const run = await measure(warm, scenario, size);
-          console.log(
-            `  ${scenario.name} at ${size}: loaded in ${run.phases.load?.ms.toFixed(0)} ms` +
-              (run.errors.length ? `, ${run.errors.length} errors` : ''),
-          );
-          runs.push(run);
-          last.push(run);
-        }
-      }
-    } catch (error) {
-      const failure = error instanceof Failure ? error : new Failure(String(error), true);
-      failures.push(failure.message.slice(0, 400));
-      console.log(`  ${failure.message.slice(0, 300)}`);
-      if (failure.fatal) {
-        failures.push(
-          'the GPU device was lost or the page stopped responding, so the sweep stopped. Reset the driver before running again',
-        );
-        break;
       }
     }
+    // A run that records baselines makes every visit. Any other visits again only what read slow.
+    const slow = flags.update || !runs.length ? [] : judge(runs, list, base(runs[0]!.machine)).slow;
+    const again = (scenario: Listed, size: number) =>
+      flags.update || slow.some(([name, n]) => name === scenario.name && n === size);
+    due = reached
+      .map(([scenario, sizes]): [Listed, readonly number[]] => [
+        scenario,
+        sizes.filter((size) => again(scenario, size)),
+      ])
+      .filter(([, sizes]) => sizes.length);
   }
 } finally {
   await warm.close();
   await close();
 }
 
-const read = <T>(file: string): T | undefined =>
-  fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as T) : undefined;
-const write = (file: string, value: unknown) =>
-  fs.writeFileSync(file, `${JSON.stringify(value, null, 1)}\n`);
 const machines = [...new Set(runs.map((r) => r.machine))];
 if (machines.length > 1)
   failures.push(
@@ -241,30 +280,12 @@ if (machines.length > 1)
   );
 if (!runs.length) failures.push('nothing ran');
 const machine = machines[0] ?? 'unknown';
-// Times belong to the GPU and the browser, so its baseline is named by the renderer, and the
-// browser unless Chrome. A browser update keeps it, and the judge notes the change.
-const slug = machine
-  .replace(/ · Chrome \S+$/, '')
-  .replace(/ · (\w+) \S+$/, ' $1')
-  .toLowerCase()
-  .replace(/[^a-z0-9]+/g, '-')
-  .replace(/^-|-$/g, '');
-const workFile = path.join(baselines, 'work.json');
-const timesFile = path.join(baselines, `${slug}.json`);
-// Times are held to a baseline, and written to one, only by a full sweep on the GPU. A quick run
-// makes one run per scenario without a warm-up, and SwiftShader's times measure the CPU.
-const timed = !flags.quick && !software && runs.length > 0;
-const timesBase = timed ? read<TimeBaseline>(timesFile) : undefined;
-if (timed && !timesBase && !flags.update)
+const held = base(machine);
+if (timed && runs.length && !held.times && !flags.update)
   failures.push(
-    `no times baseline for ${machine} (${path.relative(process.cwd(), timesFile)}): record one with a full sweep and --update`,
+    `no times baseline for ${machine} (${path.relative(process.cwd(), timesFile(machine))}): record one with a sweep and --update`,
   );
-const verdict = judge(runs, list, {
-  work: read<WorkBaseline>(workFile),
-  times: timesBase,
-  timed,
-  updating: !!flags.update,
-});
+const verdict = judge(runs, list, held);
 console.log(`\n${machine}`);
 console.log(report(list, verdict));
 if (runs.length) {
@@ -278,8 +299,8 @@ if (flags.update) {
     failures.push('baselines not written: a run failed or reported errors');
   } else {
     fs.mkdirSync(baselines, { recursive: true });
-    write(workFile, work(verdict, read<WorkBaseline>(workFile)));
-    if (timed) write(timesFile, times(verdict, machine, timesBase));
+    write(workFile, work(verdict, list, held.work));
+    if (timed) write(timesFile(machine), times(verdict, machine, list, held.times));
   }
 }
 console.log('');

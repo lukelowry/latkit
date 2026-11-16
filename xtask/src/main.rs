@@ -19,11 +19,11 @@
 //!   a GPU. Then checks WebGL2 itself (`gate/webgl2*.ts`): integer scans and sorts against a CPU
 //!   reference, the package's views, exports, and recovery, and the device through the Rust API.
 //! - `bench [--quick] [--only a,b] [--repeats n] [--update] [--software]`: the benchmark
-//!   (`benchmark/`) over a release `wasm`. Runs every scenario at increasing sizes in Chrome while
-//!   the last size stays within budget. Measures each phase's time, CPU and GPU time per frame, and
-//!   exact work, and judges them against their allowed growth with size, the committed work, and
-//!   this machine's times. A lost device stops the sweep. `--quick` runs each scenario once at its
-//!   smallest size. See `benchmark/run.ts`.
+//!   (`benchmark/`) over a release `wasm`. Visits every scenario in Chrome at the few sizes that
+//!   draw differently, once each, and again where a time reads slow. Measures each phase's time,
+//!   CPU and GPU time per frame, and exact work, and judges them against their allowed growth with
+//!   size, the committed work, and this machine's times. A lost device stops the sweep. `--quick`
+//!   visits each scenario once at its smallest size. See `benchmark/run.ts`.
 //! - `wasm [--dev]`: builds `latkit-js`, binds it with the `wasm-bindgen` CLI version in
 //!   `Cargo.lock`, and compiles the npm wrapper. `--dev` builds faster, without link-time
 //!   optimization.

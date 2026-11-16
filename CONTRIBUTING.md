@@ -2,17 +2,17 @@
 
 ## Repository
 
-| Part                              | What it is                                                              |
-| --------------------------------- | ----------------------------------------------------------------------- |
-| [`latkit`](crates/latkit)         | The Rust library: data, expressions, scenes, views, and video           |
-| [`latkit-js`](crates/latkit-js)   | The WebAssembly bindings the npm package wraps                          |
-| [npm `latkit`](npm)               | The library in the browser, with types for every scene                  |
-| [`latkit-cli`](crates/latkit-cli) | Pictures and video of scenes, from JSON or binary data                  |
-| [Examples](npm/examples)          | Small examples to copy, and the browser gate that tests them            |
-| [Benchmark](benchmark)            | Every scenario at increasing sizes, checked against committed baselines |
-| [Docs](docs)                      | The site on [Read the Docs](https://latkit.readthedocs.io)              |
-| [Gallery](docs/gallery)           | The documentation's pictures, each drawn by latkit                      |
-| [`xtask`](xtask)                  | Repository tasks, run as `cargo xtask <task>`                           |
+| Part                              | What it is                                                         |
+| --------------------------------- | ------------------------------------------------------------------ |
+| [`latkit`](crates/latkit)         | The Rust library: data, expressions, scenes, views, and video      |
+| [`latkit-js`](crates/latkit-js)   | The WebAssembly bindings the npm package wraps                     |
+| [npm `latkit`](npm)               | The library in the browser, with types for every scene             |
+| [`latkit-cli`](crates/latkit-cli) | Pictures and video of scenes, from JSON or binary data             |
+| [Examples](npm/examples)          | Small examples to copy, and the browser gate that tests them       |
+| [Benchmark](benchmark)            | Every scenario at a few sizes, checked against committed baselines |
+| [Docs](docs)                      | The site on [Read the Docs](https://latkit.readthedocs.io)         |
+| [Gallery](docs/gallery)           | The documentation's pictures, each drawn by latkit                 |
+| [`xtask`](xtask)                  | Repository tasks, run as `cargo xtask <task>`                      |
 
 The `@latkit/*` TypeScript packages, a lighter alternative without WebAssembly, are maintained on
 the [`npm/js`](https://github.com/lukelowry/latkit/tree/npm/js) branch.

@@ -61,8 +61,8 @@ const MOST = 600;
 const IDLE = 10;
 /** Maximum milliseconds a frame, or a wait for work to finish, may take. Longer means a hang. */
 const DEADLINE = 30_000;
-/** Milliseconds a phase should take at most. The runner stops growing a scenario's size once a
- * phase would exceed it. */
+/** Milliseconds a phase should take at most. A scenario with a phase over it at one size is not
+ * visited at a larger one. */
 export const LIMIT = 10_000;
 /** Frames a steady phase runs before it starts measuring. */
 export const WARM = 10;
@@ -194,6 +194,12 @@ export class Stage {
   /** Applies a patch to dataset `name`. Every view draws the change from the next frame. */
   apply(name: string, write: Write): void {
     this.#data.get(name)!.apply(write(new Patch()));
+  }
+
+  /** Writes `fields` for every row of `table` in dataset `name`, as typed arrays, the way an
+   * application feeds a field each frame. */
+  set(name: string, table: string, fields: Record<string, Float32Array>): void {
+    this.#data.get(name)!.set(table, fields);
   }
 
   /** Dispatches a pointer event at `[x, y]`, in CSS pixels in the first view, as a real pointer

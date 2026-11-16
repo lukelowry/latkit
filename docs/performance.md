@@ -4,8 +4,8 @@ Each row is a benchmark scenario at the largest size it ran, in Chrome on one GP
 time from creating the view until it has drawn everything. **Frame** and **GPU** are the median CPU
 and GPU milliseconds per frame in the scenario's slowest phase with a moving view. GPU time counts
 the GPU's work on the frame's commands, not its waits between them. **Pick** is the
-time to answer a pick or hover. `cargo xtask bench` runs every scenario at increasing sizes and
-checks it against the committed baselines. `node benchmark/docs.ts` writes this table from those
+time to answer a pick or hover. `cargo xtask bench` runs every scenario at a few sizes and checks
+it against the committed baselines. `node benchmark/docs.ts` writes this table from those
 baselines, measured with WebGL2 through ANGLE on Direct3D 11.
 
 ```{csv-table}
