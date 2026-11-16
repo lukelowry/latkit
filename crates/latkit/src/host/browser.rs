@@ -10,7 +10,8 @@ use super::{Host, Job, Raster, Request, TextRun};
 use crate::{Encoding, Error, Image, ImageFormat, Pending};
 
 /// The browser host. Text is rasterized with a 2D canvas in the page's fonts, pictures are encoded
-/// by one, and bytes are fetched with `fetch`. Jobs run with the runner
+/// by one where it writes them exactly and in a job where it cannot, and bytes are fetched with
+/// `fetch`. Jobs run with the runner
 /// [`set_jobs`](Browser::set_jobs) provides, the page's workers, and fail as unsupported without
 /// one: the code that does a job's work is theirs to load, not the page's. Video is encoded with
 /// WebCodecs once [`set_encoder`](Browser::set_encoder) provides an encoder. Custom markers' WGSL
@@ -413,7 +414,7 @@ impl Layout {
 }
 
 /// The bytes of the file that `blob`, a promise of a `Blob`, resolves to. The file must be of MIME
-/// type `kind`: a browser that cannot write `format` writes PNG instead, which is refused.
+/// type `kind`: a browser that cannot write a format writes PNG instead, which is refused.
 async fn file(blob: Result<js_sys::Promise, JsValue>, kind: &str, format: ImageFormat) -> crate::Result<Vec<u8>> {
     let failed = |error: JsValue| failure(&error, &format!("the browser could not encode {format}"));
     let blob = wasm_bindgen_futures::JsFuture::from(blob.map_err(failed)?).await.map_err(failed)?;
@@ -436,20 +437,28 @@ impl Host for Browser {
         pending
     }
 
-    /// Encodes with a canvas, as the browser's own encoder writes the format: PNG as is, JPEG at
-    /// the format's quality, and WebP at full quality, which Chrome writes lossless. A canvas keeps
-    /// its colors multiplied by alpha, so the colors of pixels that are not opaque may differ by a
-    /// step, and clear pixels keep none.
+    /// A canvas, the browser's own encoder, writes the files it writes exactly: JPEG, which blends
+    /// pixels that are not opaque over black, and PNG of an opaque picture. A canvas keeps its
+    /// colors multiplied by alpha, which rounds those of a picture that is not opaque, and not
+    /// every browser's canvas writes WebP. A job writes those: PNG with alpha, and lossless WebP.
     fn encode(&self, image: &Image, format: ImageFormat) -> Pending<Vec<u8>> {
-        let (kind, quality) = match format {
-            ImageFormat::Png => ("image/png", None),
-            ImageFormat::Jpeg { quality } => ("image/jpeg", Some(f64::from(quality) / 100.0)),
-            ImageFormat::WebP => ("image/webp", Some(1.0)),
+        let canvas = match format {
+            ImageFormat::Jpeg { quality } => Some(("image/jpeg", Some(f64::from(quality) / 100.0))),
+            ImageFormat::Png if image.opaque() => Some(("image/png", None)),
+            ImageFormat::Png | ImageFormat::WebP => None,
+        };
+        let (pending, resolver) = Pending::new();
+        let Some((kind, quality)) = canvas else {
+            let job = self.spawn(Job::encode(image, format));
+            wasm_bindgen_futures::spawn_local(async move {
+                let unwritten = || Error::invalid(format!("the image could not be encoded as {format}"));
+                resolver.resolve(job.await.and_then(|file| if file.is_empty() { Err(unwritten()) } else { Ok(file) }));
+            });
+            return pending;
         };
         let blob = Canvas2d::new(image.size)
             .ok_or_else(|| JsValue::from_str("no 2D canvas"))
             .and_then(|canvas| canvas.put(image).and_then(|()| canvas.blob(kind, quality)));
-        let (pending, resolver) = Pending::new();
         wasm_bindgen_futures::spawn_local(async move {
             resolver.resolve(file(blob, kind, format).await);
         });

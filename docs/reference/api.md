@@ -30,6 +30,10 @@ load. Options they pass must equal the first call's, or they reject with an `io`
 load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
 also creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
 
+The assets come as a set. Without options, latkit finds each beside its own module. A page that
+gives the URL of `wasm` gives `jobs` and `worker` too, or the call rejects with an `invalid`
+error: a job would otherwise fail only when a view first has one.
+
 {#load-wasm .member}
 **`wasm`**`?: string | URL | WebAssembly.Module` [¶](#load-wasm){.headerlink}
 : The URL of this version's `latkit/wasm` asset, or that asset compiled. It carries the
@@ -1701,11 +1705,9 @@ A picture's RGBA pixels, with straight alpha, rows top to bottom.
 
 {#image-encode .member}
 **`encode`**`(format:` [`ImageFormat`](#imageformat)`, options?: { quality?: number } &` [`Wait`](#wait)`): Promise<Uint8Array>` [¶](#image-encode){.headerlink}
-: Encodes the image as a file with the browser's own encoder. PNG keeps alpha. JPEG drops it.
-  WebP keeps alpha and is smaller than PNG, written at full quality, which is lossless in
-  Chrome. A browser that cannot write a format, as Safari cannot write WebP, rejects with an
-  `unsupported` error. Where a pixel is not opaque, its color may differ from the image's by a
-  step.
+: Encodes the image as a file. PNG is lossless with alpha. JPEG drops alpha: pixels that are not
+  opaque blend over black. WebP is lossless with alpha and smaller than PNG. The browser's own
+  encoder writes JPEG, and PNG of an opaque image. A worker writes the rest.
 
   {#image-encode-quality .member}
   **`quality`**`?: number` [¶](#image-encode-quality){.headerlink}

@@ -569,6 +569,9 @@ import workerUrl from 'latkit/worker?url';
 await load({ wasm: wasmUrl, jobs: jobsUrl, wgsl: wgslUrl, worker: workerUrl });
 ```
 
+The assets come as a set: a page that gives the URL of `wasm` gives `jobs` and `worker` too, or
+`load` rejects with an `invalid` error.
+
 A browser starts workers only from the page's origin, so the page fetches a worker on another
 origin, such as a CDN or a webview's resources, and starts it from a Blob URL. Workers start when
 needed and stop after 30 idle seconds. Each job runs in a worker, so a view draws what a job

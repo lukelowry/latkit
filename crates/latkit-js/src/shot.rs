@@ -38,8 +38,8 @@ impl Image {
         js_sys::Uint8Array::from(self.0.rgba.as_ref())
     }
 
-    /// Encodes the image with the browser's encoder as a `png`, `jpeg` (at `quality` 1 to 100,
-    /// default 90), or `webp` file.
+    /// Encodes the image as a `png`, `jpeg` (at `quality` 1 to 100, default 90), or `webp` file,
+    /// with the browser's encoder where it writes the file exactly and in a worker where not.
     pub fn encode(&self, format: &str, quality: Option<f64>) -> Result<Task, Error> {
         let quality = match quality {
             None => 90,

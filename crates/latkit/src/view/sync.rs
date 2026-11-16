@@ -257,6 +257,10 @@ struct ColumnTable {
     /// For a field of another table, the column it pages, which tells the rows written between
     /// this table and the one it replaces.
     read: Option<Column>,
+    /// Whether any row it reads holds a value. False only for a derived field that holds none, such
+    /// as places before a layout lands: its rows draw nothing, so the table that replaces it gives
+    /// them their first values, with nothing to ease from.
+    valued: bool,
 }
 
 impl ColumnTable {
@@ -610,11 +614,14 @@ pub(crate) struct Tables {
 }
 
 /// What publishing rebuilt tables changed. Bit `i` of `columns` is set for each program column
-/// whose table changed. Bit `i` of `data` is set for each whose data changed, not only its paging.
-/// `blocks` lists the row blocks whose pages changed, or is `None` when every row changed.
+/// whose table changed. Bit `i` of `data` is set for each whose data changed, not only its paging,
+/// and of `valued` for each of those that held a value in some row before: a derived column that
+/// held none, such as places before a layout lands, changes without anything to ease from. `blocks`
+/// lists the row blocks whose pages changed, or is `None` when every row changed.
 pub(crate) struct Published {
     pub(crate) columns: u64,
     pub(crate) data: u64,
+    pub(crate) valued: u64,
     pub(crate) blocks: Option<Vec<u32>>,
 }
 
@@ -822,9 +829,9 @@ impl Tables {
                 tables[i] = Some(table);
             }
             self.current = tables.into_iter().map(|t| t.expect("every table rebuilt")).collect();
-            Published { columns: u64::MAX, data: u64::MAX, blocks: None }
+            Published { columns: u64::MAX, data: u64::MAX, valued: u64::MAX, blocks: None }
         } else {
-            let mut published = Published { columns: 0, data: 0, blocks: Some(Vec::new()) };
+            let mut published = Published { columns: 0, data: 0, valued: 0, blocks: Some(Vec::new()) };
             let mut changes: Vec<(usize, Option<Changed>)> = Vec::new();
             for (i, table) in rebuilt {
                 changes.push((i, changed(&self.current[i], &table)));
@@ -835,6 +842,9 @@ impl Tables {
                 published.columns |= bits;
                 if table.stamp != self.current[i].stamp {
                     published.data |= bits;
+                    if self.current[i].valued {
+                        published.valued |= bits;
+                    }
                 }
                 let old = std::mem::replace(&mut self.current[i], table);
                 if i as u32 == geometry {
@@ -1272,6 +1282,9 @@ struct Builder<'g> {
     /// when that table pins the pages it lists (see `ColumnTable::rewritable`).
     drawn: Option<&'g [Option<PageId>]>,
     read: Option<Column>,
+    /// Whether any row read holds a value. Assumed unless the table reads a derived field that holds
+    /// none.
+    valued: bool,
     gpu: &'g mut Inner,
 }
 
@@ -1287,12 +1300,13 @@ impl<'g> Builder<'g> {
             pages: Some(Vec::new()),
             drawn,
             read: None,
+            valued: true,
             gpu,
         }
     }
 
     fn finish(self, stamp: Stamp, held: u64, descriptor: [u32; WORDS]) -> ColumnTable {
-        let Builder { words, cursors, asks, rewrites, plan, points, pages, drawn: _, read, gpu: _ } = self;
+        let Builder { words, cursors, asks, rewrites, plan, points, pages, drawn: _, read, valued, gpu: _ } = self;
         ColumnTable {
             stamp,
             generation: 0,
@@ -1308,6 +1322,7 @@ impl<'g> Builder<'g> {
             points,
             pages,
             read,
+            valued,
         }
     }
 
@@ -1369,15 +1384,27 @@ impl<'g> Builder<'g> {
         {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
             let packing = packing(drawing, source, &source.table.name, column.name.clone(), Words::Path);
+            let pointed = |shapes: &Values| shapes.geometry().is_some_and(|geometry| !geometry.coords().is_empty());
+            self.valued = shapes.pages.values().any(|page| pointed(&page.shapes)) || shapes.kept.values().any(pointed);
             self.shaped(shapes, drawing, &packing);
             return d;
         }
         let Some((data, table)) = source.table_of(column, inputs.all) else {
             self.pages = None;
+            self.valued = !column.derived;
             return d;
         };
         d[wgsl::COLUMN_ROWS as usize] = table.len() as u32;
         let field = table.field_named(&column.name);
+        // A row with no place or shape draws nothing, so a derived field that holds none has
+        // nothing to ease from. A missing value of the data draws with the theme's look, which a
+        // change eases from.
+        self.valued = !column.derived
+            || match field {
+                Some(Field::Values(values, _)) => values.holds_any(),
+                Some(_) => true,
+                None => false,
+            };
         if column.from.is_some() {
             self.read = match field {
                 Some(Field::Values(values, _)) => Some(values.clone()),

@@ -30,15 +30,20 @@ test('installed package imports without WASM, retries failures, and shares initi
     code: 'unloaded',
   });
   assert.equal(requests, 0);
-  const first = load({ wasm: 'https://example.invalid/latkit.wasm' });
+  // A page that says where the WebAssembly is says where the jobs module is too.
+  const wasm = 'https://example.invalid/latkit.wasm';
+  const jobs = 'https://example.invalid/latkit_jobs.wasm';
+  await assert.rejects(load({ wasm }), { code: 'invalid', path: 'jobs' });
+  assert.equal(requests, 0);
+  const first = load({ wasm, jobs });
   assert.equal(first, load());
   await assert.rejects(first, { code: 'io' });
-  const retry = load({ wasm: new URL('https://example.invalid/latkit.wasm') });
-  assert.equal(retry, load({ wasm: 'https://example.invalid/latkit.wasm' }));
+  const retry = load({ wasm: new URL(wasm), jobs });
+  assert.equal(retry, load({ wasm, jobs }));
   await retry;
   assert.equal(load(), retry, 'loaded once');
-  assert.equal(requests, 2);
-  await assert.rejects(load({ wasm: 'https://example.invalid/other.wasm' }), { code: 'io' });
+  assert.equal(requests, 2, 'the jobs module waits for a first job');
+  await assert.rejects(load({ wasm: 'https://example.invalid/other.wasm', jobs }), { code: 'io' });
   await assert.rejects(
     load({
       worker: () => {

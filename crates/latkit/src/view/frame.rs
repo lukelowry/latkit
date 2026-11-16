@@ -742,7 +742,9 @@ impl View {
         // Without an ease, a flowing mark whose rows moved still begins a zero-length transition,
         // so its comets follow the rows.
         let carries = shown.mark.flows() && moved.is_some();
-        let eased = published.as_ref().is_some_and(|p| shown.static_columns(p.data));
+        // A derived column that held no value gives rows their first: places as a layout lands,
+        // triangles as a job shapes them. Those rows drew nothing, so nothing eases.
+        let eased = published.as_ref().is_some_and(|p| shown.static_columns(p.data & p.valued));
         if (easing || carries) && shown.before > 0 && (moved.is_some() || eased) {
             shown.begin(moved, published.as_ref().and_then(|p| p.blocks.as_deref()));
         } else if moved.is_some() {

@@ -6,7 +6,8 @@
 //!
 //! A row's lane and its family size share one 32-bit word: twice the lane plus `HALF` in the high
 //! 16 bits, the family size in the low 16. Lanes are recomputed only when the table's rows or
-//! endpoints change, in a job. A table whose edges
+//! endpoints change: on the frame for a table of up to [`ON_FRAME`] rows, else in a job. A table
+//! whose edges
 //! share no endpoints gets no lane field, and neither does any table while the theme's `bow` is 0:
 //! nothing bows then, so edges joining the same vertices draw straight, one over another.
 //!
@@ -21,6 +22,10 @@ use crate::Pending;
 use crate::data::{Field, Keyed, Name, Reference, Table, UNWIRED, Values};
 use crate::host::Job;
 
+/// The most rows whose lanes are assigned on the frame. That takes under two milliseconds, once,
+/// by code small enough for the module that draws to carry, so a graph of this size opens without
+/// waiting for a worker. A larger table goes to a job.
+const ON_FRAME: usize = 1 << 15;
 /// The offset added to twice the lane, so the high half of a lane word is never negative.
 const HALF: u32 = 1 << 15;
 /// The largest family size a lane word stores. Larger families store this.
@@ -82,6 +87,12 @@ impl Derive for Lanes {
             let stamp = stamp_of((table.structure, table.order, a.version, b.version));
             let made = self.made.entry(key.clone()).or_default();
             if made.due(stamp) {
+                if table.len() <= ON_FRAME {
+                    let (laned, kept) = keep(&mut self.tables, key, table, words(&a.targets(), &b.targets()));
+                    made.make(stamp, laned);
+                    changed |= kept;
+                    continue;
+                }
                 made.start(stamp, jobs.spawn(Job::lanes(table.len(), a, b)));
             }
             // A job the host finishes at once lands before the frame draws.

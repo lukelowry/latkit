@@ -375,6 +375,14 @@ impl Column {
         })
     }
 
+    /// Whether any row holds a value: one that is not missing, and for a geometry, one with points.
+    pub(crate) fn holds_any(&self) -> bool {
+        self.pages.iter().any(|page| match page.values.geometry() {
+            Some(_) => page.points() > 0,
+            None => !page.values.is_empty() && page.values.valid.as_ref().is_none_or(super::bits::Bits::any),
+        })
+    }
+
     /// The rows written or added since `before`. For each page that differs from `before`'s, these
     /// are the rows it remembers writing since, or all its rows if it does not remember `before`'s
     /// page. A page that `before` lacks counts in full. Rows of `before` past this column's end are
@@ -476,6 +484,14 @@ mod tests {
         let far = near.write(near.len(), &[(7, 0)], &values).expect("numbers");
         assert_eq!(rows_written(&far, &column), (0..PAGE_ROWS).chain([PAGE_ROWS + 4]).collect::<Vec<_>>());
         assert_eq!(rows_written(&far, &near), vec![7]);
+    }
+
+    #[test]
+    fn a_column_holds_a_value_once_a_row_is_not_missing_or_a_shape_has_points() {
+        assert!(!Column::new(&Values::from(vec![None::<f64>; 3])).holds_any());
+        assert!(Column::new(&Values::from(vec![None, Some(1.0)])).holds_any());
+        let shapes = |points: Vec<[f64; 2]>| Column::new(&Values::from(vec![points, Vec::new()]));
+        assert!(!shapes(Vec::new()).holds_any() && shapes(vec![[0.0, 0.0], [1.0, 1.0]]).holds_any());
     }
 
     #[test]

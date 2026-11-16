@@ -1,8 +1,8 @@
 //! Derived data: tables the view computes from the scene and data.
 //!
 //! Every derivation works the same way. It stamps its inputs and recomputes only when the stamp
-//! changes. Work that scales with the data (lanes, layouts, triangles, pyramids, decoding) runs as
-//! a host [`Job`], off the frame, and its result is kept only while its inputs are unchanged. A
+//! changes. Work that scales with the data (layouts, triangles, pyramids, decoding, and the lanes
+//! of a large table) runs as a host [`Job`], off the frame, and its result is kept only while its inputs are unchanged. A
 //! job the host finishes at once lands in the frame that asked for it. Results are tables that
 //! stand beside the drawn tables, row for row, and marks read them like data. GPU preparations use
 //! the same stamps; only results needed by the host, such as requested label texts, are read back.

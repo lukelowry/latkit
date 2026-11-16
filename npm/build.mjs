@@ -18,7 +18,7 @@ const output = path.join(root, 'target/npm');
  * choice. */
 const BUDGET = {
   'pkg/latkit_bg.wasm': { raw: 3_535_000, brotli: 1_133_000 },
-  'pkg/latkit_jobs_bg.wasm': { raw: 597_000, brotli: 193_000 },
+  'pkg/latkit_jobs_bg.wasm': { raw: 648_000, brotli: 208_000 },
   'pkg/latkit_wgsl_bg.wasm': { raw: 1_320_000, brotli: 345_000 },
 };
 

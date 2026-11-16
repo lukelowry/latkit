@@ -1,12 +1,13 @@
 //! Jobs: work that scales with the data, handed to the host to run in the background. Jobs lay
 //! out graphs (layered or stress), triangulate areas, assign edge lanes, group a large table's rows
-//! into tiles, and decode vector tiles and GeoJSON.
+//! into tiles, decode vector tiles and GeoJSON, and encode the pictures a host cannot write
+//! exactly itself.
 //!
 //! A job is bytes in and bytes out, so a thread, or a worker with a module of its own, can run it
 //! with nothing shared. Only [`Job::run`] reaches the code that does a job's work, so a module
 //! that never calls it, as the browser's drawing module does not, carries none of that code.
 //! Layout, tile, and GeoJSON jobs return a [`Patch`] of rows by id. Other jobs return their own
-//! format: lane words, shape columns, or each table's pyramid (order and tiles).
+//! format: lane words, shape columns, each table's pyramid (order and tiles), or an image file.
 
 use std::sync::Arc;
 
@@ -40,9 +41,10 @@ enum Kind {
     GeoJson,
     Lanes,
     Pyramid,
+    Image,
 }
 
-codes!(Kind { Layered = 1, Stress = 2, Shapes = 3, Tile = 4, GeoJson = 5, Lanes = 6, Pyramid = 7 });
+codes!(Kind { Layered = 1, Stress = 2, Shapes = 3, Tile = 4, GeoJson = 5, Lanes = 6, Pyramid = 7, Image = 8 });
 
 /// The shapes computed from each row's geometry, for the space they draw in. On the earth they
 /// follow its projection, so a scene that changes projection shapes its rows again.
@@ -157,12 +159,14 @@ impl Job {
         self.0
     }
 
-    /// Runs the job and returns its result: a patch of rows by id, lane words, shape columns, or a
-    /// pyramid's order and tiles. Returns no bytes if the job is malformed or fails.
+    /// Runs the job and returns its result: a patch of rows by id, lane words, shape columns, a
+    /// pyramid's order and tiles, or an image file. Returns no bytes if the job is malformed or
+    /// fails.
     pub fn run(self) -> Vec<u8> {
         let mut input = In::new(&self.0);
         let Some(kind) = input.u32().and_then(Kind::from_code) else { return Vec::new() };
         let answer = match kind {
+            Kind::Image => return run_image(&mut input).unwrap_or_default(),
             Kind::Lanes => return run_lanes(&mut input).unwrap_or_default(),
             Kind::Pyramid => return run_pyramid(&mut input).unwrap_or_default(),
             Kind::Shapes => return run_shapes(&mut input).unwrap_or_default(),
@@ -235,6 +239,19 @@ impl Job {
             }
         }
         out.bytes(bytes);
+        Job(out.0)
+    }
+
+    /// A job encoding `image` as a PNG or lossless WebP file, for a host that cannot write that
+    /// file exactly itself, as the browser's cannot. Its result is the file's bytes, or no bytes if
+    /// the image cannot be encoded. No job writes JPEG, which a host's own encoder does.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    pub(crate) fn encode(image: &crate::Image, format: crate::ImageFormat) -> Job {
+        let mut out = job(Kind::Image, 12 + image.rgba.len());
+        out.u32(format.code());
+        out.u32(image.size[0]);
+        out.u32(image.size[1]);
+        out.bytes(&image.rgba);
         Job(out.0)
     }
 
@@ -406,6 +423,19 @@ fn run_tile(input: &mut In<'_>) -> Option<Patch> {
     decode(input.rest(), key, &tables)
 }
 
+fn run_image(input: &mut In<'_>) -> Option<Vec<u8>> {
+    let format = crate::ImageFormat::from_code(input.u32()?)?;
+    let size = [input.u32()?, input.u32()?];
+    let image = crate::Image::new(size, input.rest()).ok()?;
+    let mut file = Vec::new();
+    match format {
+        crate::ImageFormat::Png => image.write_png(&mut file).ok()?,
+        crate::ImageFormat::WebP => image.write_webp(&mut file).ok()?,
+        crate::ImageFormat::Jpeg { .. } => return None,
+    }
+    Some(file)
+}
+
 fn run_geojson(input: &mut In<'_>) -> Option<Patch> {
     crate::geo::geojson_patch(input.rest()).ok()
 }
@@ -519,6 +549,15 @@ mod tests {
         assert_eq!(answered(&answer, "V", 7, "y"), Some(Value::Number(ranked[0][1])));
         let stress = Job::layout(&Layout::Stress(crate::Stress::default()), &placement).run();
         assert!(matches!(answered(&stress, "V", 7, "x"), Some(Value::Number(_))), "stress layouts return rows too");
+    }
+
+    #[test]
+    fn an_image_job_writes_the_files_a_canvas_cannot_write_exactly() {
+        let image = crate::Image::new([2, 1], vec![255, 0, 0, 128, 0, 0, 255, 255]).expect("an image");
+        assert!(!image.opaque());
+        let png = Job::from_bytes(Job::encode(&image, crate::ImageFormat::Png).into_bytes()).run();
+        assert_eq!(crate::Image::from_png(&png).expect("a PNG"), image, "colors under alpha are kept");
+        assert_eq!(&Job::encode(&image, crate::ImageFormat::WebP).run()[..4], b"RIFF");
     }
 
     #[test]

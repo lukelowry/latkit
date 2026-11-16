@@ -24,6 +24,10 @@ let first: Promise<bindings.Gpu> | undefined;
  * load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
  * load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
  * also creates the first WebGL2 device for `Gpu.create()`.
+ *
+ * The assets come as a set. Without options, latkit finds each beside its own module. A page that
+ * gives the URL of `wasm` gives `jobs` and `worker` too, or the call rejects with an `invalid`
+ * error: a job would otherwise fail only when a view first has one.
  */
 export function load(
   options: {
@@ -61,6 +65,19 @@ export function load(
     wgsl: text(options.wgsl),
     worker: text(options.worker),
   };
+  if (typeof asked.wasm === 'string') {
+    // Where no worker can start, jobs run on this thread and need only their module.
+    const set = typeof Worker === 'function' ? (['jobs', 'worker'] as const) : (['jobs'] as const);
+    const missing = set.find((asset) => asked[asset] === undefined);
+    if (missing)
+      return Promise.reject(
+        thrown({
+          code: 'invalid',
+          path: missing,
+          message: `load() was given the URL of wasm: give it ${missing} from the same version too`,
+        }),
+      );
+  }
   if (loading) {
     const differs = (Object.keys(asked) as (keyof Configured)[]).some(
       (key) => asked[key] !== undefined && asked[key] !== configured?.[key],

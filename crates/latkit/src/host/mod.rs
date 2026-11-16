@@ -5,8 +5,8 @@
 //! A [`Gpu`](crate::Gpu) gets its host from [`Gpu::set_host`](crate::Gpu::set_host). Without one,
 //! views draw no text, run jobs immediately, fetch nothing, and encode no video. In a browser the
 //! host is `Browser` (the `web` feature on `wasm32`). It runs jobs in the page's workers, which
-//! load a module of their own, and encodes pictures with a canvas, so the module that draws carries
-//! neither the jobs' code nor an image encoder. Natively, the `native` feature supplies `Native`.
+//! load a module of their own, and encodes pictures with a canvas or in a job, so the module that
+//! draws carries neither the jobs' code nor an image encoder. Natively, the `native` feature supplies `Native`.
 //! It loads fonts on first use, runs jobs, reads files, and encodes pictures on a worker pool, and
 //! encodes H.264 with Media Foundation on Windows. It needs no window or network client.
 
