@@ -10,8 +10,8 @@ export default [
   { "space": "plot" },
   { "space": "plane", "layout": "stress" },
   { "space": { "plane": { "grid": "off" } } },
-  { "space": { "plane": { "grid": { "dots": { "pitch": 10 } } } }, "layout": { "layered": { "direction": "down", "rankGap": 60 } } },
-  { "space": { "earth": { "projection": "globe", "graticule": false } }, "theme": { "earth": { "ground": "#203040" } } },
+  { "space": { "plane": { "grid": { "dots": { "step": 10 } } } }, "layout": { "layered": { "direction": "down", "rankGap": 60 } } },
+  { "space": { "earth": { "projection": "globe", "grid": "off" } }, "theme": { "earth": { "ground": "#203040" } } },
   {
     "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
     "marks": [
@@ -80,7 +80,7 @@ export default [
     }
   },
   {
-    "space": { "plane": { "grid": { "lines": { "pitch": 1 } } } },
+    "space": { "plane": { "grid": { "lines": { "step": 1 } } } },
     "controls": { "gestures": { "secondary": "none", "shift+primary": "pan", "twist": "turn", "slide": "tilt" }, "pickRadius": 14 },
     "marks": [
       { "edges": ["mesh", "Spring"], "ends": ["a", "b"], "color": "#ffffff14" },

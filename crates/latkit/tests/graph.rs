@@ -107,7 +107,7 @@ fn edges_along_great_circles_settle_while_their_vertices_pulse() {
     // depend on moves.
     let pulse = latkit::elapsed().sin().colormap(latkit::Colormap::VIRIDIS).domain(-1.0..=1.0);
     let scene = Scene::new(latkit::Earth {
-        graticule: false,
+        grid: latkit::Grid::Off,
         ..latkit::Earth::default().projection(latkit::Projection::Globe)
     })
     .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))

@@ -252,9 +252,10 @@ export class View extends Handle {
    * space, such as a plot camera on a map, is ignored.
    *
    * Camera moves stay within the camera's zoom and pan limits. On the earth, the space sets the
-   * limits inside the insets, as `Earth` describes. A fit narrows them to 3 zoom levels out and 8
-   * in from the box it framed, with the center near that box. When a resize, new insets, or a new
-   * space moves the camera back within its limits, a `camera` event reports it.
+   * limits inside the insets, as `Earth` describes. A fit narrows them as far as the scene's
+   * `controls.reach` says: unless it says otherwise, to 3 zoom levels out from the box the fit
+   * framed, with the center near that box. When a resize, new insets, or a new space moves the
+   * camera back within its limits, a `camera` event reports it.
    */
   get camera(): Camera {
     return JSON.parse(view(this).camera) as Camera;

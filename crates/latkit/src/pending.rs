@@ -165,6 +165,12 @@ impl Watchers {
         watchers.len()
     }
 
+    /// Whether nothing is watching.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).is_empty()
+    }
+
     /// Wakes every watcher.
     pub(crate) fn wake_all(&self) {
         let wakers: Vec<Waker> =

@@ -15,7 +15,7 @@
 //! decodes them, as a field beside their rows. Their tables are paged and read that field one page
 //! of their order at a time, like any other, so nothing shapes those rows again.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use super::order::Order;
 use super::{Input, Jobs, Paged, Tables, Working, beside, stamp_of};
@@ -440,14 +440,10 @@ impl Shaped {
         paging.order = order.clone();
         // Remake the pages holding rows written since, and reshape those rows where kept.
         if !paging.column.shares(column) {
-            let written = column.written_since(&paging.column);
-            for &row in written.iter().filter(|&&row| row < order.len() as usize) {
-                paging.shapes.pages.remove(&(order.rank(row as u32) / PAGE_ROWS));
-            }
-            if !paging.shapes.kept.is_empty() {
-                let written: FxHashSet<u32> = written.into_iter().map(|row| row as u32).collect();
-                paging.shapes.kept.retain(|&d, _| !written.contains(&order.source(d)));
-            }
+            let rows = column.written_since(&paging.column);
+            let written = order.written(&rows);
+            paging.shapes.pages.retain(|&page, _| !written.holds(page));
+            paging.shapes.kept.retain(|&d, _| !rows.contains(order.source(d)));
             (paging.source, paging.column) = (source.clone(), column.clone());
         }
         paging.shapes.kept.retain(|d, _| paged.kept.binary_search(d).is_ok());

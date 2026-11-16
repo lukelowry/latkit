@@ -2,9 +2,9 @@ use std::f64::consts::{PI, TAU};
 
 use glam::{DMat3, DMat4, DVec3, DVec4};
 
-use crate::Space;
 use crate::geo::mercator::{self, MAX_LATITUDE, latitude};
 use crate::gpu::shaders as wgsl;
+use crate::{Reach, Space};
 
 /// Where a view looks.
 #[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -100,7 +100,7 @@ fn pixels_per_unit(space: &Space, zoom: f64) -> f64 {
 pub(crate) type Area = [f64; 4];
 
 /// The box fits have framed: the last fit to everything, grown by any rows fitted since. It
-/// narrows the camera's [`Reach`].
+/// narrows the camera's [`Limits`].
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Bounds {
     pub(crate) min: [f64; 3],
@@ -127,29 +127,28 @@ impl Bounds {
 /// frames. Its center stays where, seen from above, the world's edges stay outside that area.
 /// Along an axis where the world is no wider than the area, the center stays on the world's middle.
 /// The globe zooms out until it spans a third of the area's shorter side, and its longitude wraps.
-/// A plane and a plot set no limits. Fits limit the zoom to 3 levels out past the
-/// widest fit and 8 in past the closest. They keep the center within one box size of the framed
-/// box, or half a view at the widest fit's zoom for a smaller box, and its elevation within the
-/// box's. Where the space and the fits disagree, the space wins.
+/// A plane and a plot set no limits. Fits narrow the limits as far as the scene's
+/// [`Reach`] says: the zoom to so many levels out past the widest fit and in past the closest,
+/// and the center to so many box sizes from the framed box, or as many half views at the widest
+/// fit's zoom for a smaller box, with its elevation within the box's. Where the space and the fits
+/// disagree, the space wins.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) struct Reach {
+pub(crate) struct Limits {
     /// The lowest and highest zoom.
     pub(crate) zoom: [f64; 2],
-    /// The box fits have framed.
-    framed: Option<Bounds>,
-    /// The least distance the center may stray from the framed box: half the view's span at the
-    /// widest fit's zoom, in units of position.
-    slack: f64,
+    /// The box fits have framed, and how far from it the center may stray, in units of position.
+    /// `None` when no fit framed a box, or the reach lets the center go anywhere.
+    near: Option<(Bounds, f64)>,
     /// On a flat map, the size in CSS pixels of the area the camera frames. The world's edges stay
     /// outside it.
     world: Option<[f64; 2]>,
 }
 
-impl Reach {
+impl Limits {
     /// The limits of a camera looking at `space` that frames an area of `room` CSS pixels, narrowed
-    /// by the box fits `framed`. Without `room`, as before a view's first frame, the space sets no
-    /// limits.
-    pub(crate) fn new(space: &Space, room: Option<[f64; 2]>, framed: Option<Bounds>) -> Reach {
+    /// by the box fits `framed` as far as `reach` says. Without `room`, as before a view's first
+    /// frame, the space sets no limits.
+    pub(crate) fn new(space: &Space, room: Option<[f64; 2]>, framed: Option<Bounds>, reach: Reach) -> Limits {
         let projection = match space {
             Space::Earth(earth) => Some(earth.projection),
             _ => None,
@@ -162,17 +161,19 @@ impl Reach {
         };
         let (mut low, mut high) = (least.max(-MAX_ZOOM), MAX_ZOOM);
         if let Some(framed) = framed {
-            low = low.max(framed.zoom[0] - 3.0);
-            high = high.min(framed.zoom[1] + 8.0);
+            low = reach.zoom_out.map_or(low, |levels| low.max(framed.zoom[0] - levels.max(0.0)));
+            high = reach.zoom_in.map_or(high, |levels| high.min(framed.zoom[1] + levels.max(0.0)));
         }
-        let slack = match (framed, room) {
-            (Some(framed), Some([w, h])) => 0.5 * w.max(h) / pixels_per_unit(space, framed.zoom[0]),
-            _ => 0.0,
-        };
-        Reach {
+        // The center strays the larger of the box's size and half the view's span at the widest
+        // fit's zoom, as many times over as the reach says.
+        let near = framed.zip(reach.pan).map(|(framed, pan)| {
+            let view = room.map_or(0.0, |[w, h]| 0.5 * w.max(h) / pixels_per_unit(space, framed.zoom[0]));
+            let size = (0..2).map(|k| framed.max[k] - framed.min[k]).fold(view, f64::max).max(1e-9);
+            (framed, pan.max(0.0) * size)
+        });
+        Limits {
             zoom: [low, high.max(low)],
-            framed,
-            slack,
+            near,
             world: room.filter(|_| projection == Some(crate::Projection::Mercator)),
         }
     }
@@ -294,9 +295,9 @@ impl Camera {
     }
 
     /// The camera zoomed in by `levels` (out when negative) toward `anchor`, which keeps its screen
-    /// position. A map's zoom is clamped to the zoom range of `reach` before the center moves, so a
+    /// position. A map's zoom is clamped to the zoom range of `limits` before the center moves, so a
     /// zoom at its limit moves nothing.
-    pub(crate) fn zoomed(&self, view: &Projected, anchor: [f64; 3], levels: f64, reach: &Reach) -> Camera {
+    pub(crate) fn zoomed(&self, view: &Projected, anchor: [f64; 3], levels: f64, limits: &Limits) -> Camera {
         match *self {
             Camera::Plot { x, y } => {
                 let scale = (-levels).exp2();
@@ -306,7 +307,7 @@ impl Camera {
                 Camera::Plot { x: about(x, anchor[0]), y: y.map(|y| about(y, anchor[1])) }
             }
             Camera::Map { center, zoom, pitch, bearing } => {
-                let [least, most] = reach.zoom;
+                let [least, most] = limits.zoom;
                 // A zoom already past a limit stays put rather than snapping back to it.
                 let to = (zoom + levels).clamp(least.min(zoom), most.max(zoom));
                 if to == zoom {
@@ -327,18 +328,17 @@ impl Camera {
         }
     }
 
-    /// The camera clamped to `reach`. Clamps the zoom first, then the center to the fits' box and
+    /// The camera clamped to `limits`. Clamps the zoom first, then the center to the fits' box and
     /// to a flat map's world at that zoom, and pitch to `0..=MAX_PITCH`. A camera already within
     /// the limits comes back unchanged.
-    pub(crate) fn within(&self, reach: &Reach) -> Camera {
+    pub(crate) fn within(&self, limits: &Limits) -> Camera {
         let Camera::Map { mut center, zoom, pitch, bearing } = *self else { return *self };
-        let zoom = zoom.clamp(reach.zoom[0], reach.zoom[1]);
-        if let Some(framed) = reach.framed {
-            let span = (0..2).map(|k| framed.max[k] - framed.min[k]).fold(reach.slack, f64::max).max(1e-9);
-            let across = |k: usize| center[k].clamp(framed.min[k] - span, framed.max[k] + span);
+        let zoom = zoom.clamp(limits.zoom[0], limits.zoom[1]);
+        if let Some((framed, stray)) = limits.near {
+            let across = |k: usize| center[k].clamp(framed.min[k] - stray, framed.max[k] + stray);
             center = [across(0), across(1), center[2].clamp(framed.min[2], framed.max[2])];
         }
-        if let Some([w, h]) = reach.world {
+        if let Some([w, h]) = limits.world {
             // The world is 256 · 2^zoom CSS pixels across. Its edges stay outside the framed area
             // while the center stays half the area's width and height from them.
             let world = 256.0 * zoom.exp2();
@@ -887,7 +887,7 @@ mod tests {
         let camera = Camera::Map { center: [0.0; 3], zoom: 3.0, pitch: 2.0, bearing: 10.0 };
         let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
         let at = to_screen(&view, anchor);
-        let reach = Reach::new(&plane(), Some(SIZE), None);
+        let limits = Limits::new(&plane(), Some(SIZE), None, Reach::default());
         let check = |moved: Camera, want: [f64; 2]| {
             let after = Projected::new(&plane(), &moved, SIZE, AREA, 0.0);
             let s = to_screen(&after, anchor);
@@ -896,7 +896,7 @@ mod tests {
         check(camera.panned(&view, anchor, [60.0, -30.0]), [at[0] + 60.0, at[1] - 30.0]);
         check(camera.turned(&view, anchor, [15.0, 5.0]), at);
         check(camera.turned(&view, anchor, [0.0, 20.0]), at);
-        check(camera.zoomed(&view, anchor, 1.0, &reach), at);
+        check(camera.zoomed(&view, anchor, 1.0, &limits), at);
         let globe = globe();
         let camera = Camera::Map { center: [-97.0, 31.0, 0.0], zoom: 4.0, pitch: 0.0, bearing: 0.0 };
         let view = Projected::new(&globe, &camera, SIZE, AREA, 1.0);
@@ -930,11 +930,11 @@ mod tests {
             let s = to_screen(&after, anchor);
             assert!((s[0] - want[0]).abs() < 1e-6 && (s[1] - want[1]).abs() < 1e-6, "{s:?} for {want:?}");
         };
-        let reach = Reach::new(&plane(), Some(SIZE), None);
+        let limits = Limits::new(&plane(), Some(SIZE), None, Reach::default());
         check(camera.panned(&view, anchor, [120.0, -50.0]), [at[0] + 120.0, at[1] - 50.0]);
         check(camera.turned(&view, anchor, [35.0, 12.0]), at);
-        check(camera.zoomed(&view, anchor, 1.5, &reach), at);
-        check(camera.zoomed(&view, anchor, -2.0, &reach), at);
+        check(camera.zoomed(&view, anchor, 1.5, &limits), at);
+        check(camera.zoomed(&view, anchor, -2.0, &limits), at);
     }
 
     #[test]
@@ -977,10 +977,10 @@ mod tests {
             let s = to_screen(&after, anchor);
             assert!((s[0] - want[0]).abs() < 0.5 && (s[1] - want[1]).abs() < 0.5, "{s:?} for {want:?}");
         };
-        let reach = Reach::new(&space, Some(SIZE), None);
+        let limits = Limits::new(&space, Some(SIZE), None, Reach::default());
         check(camera.panned(&view, anchor, [-90.0, 40.0]), [at[0] - 90.0, at[1] + 40.0]);
-        check(camera.zoomed(&view, anchor, 1.25, &reach), at);
-        check(camera.zoomed(&view, anchor, -0.75, &reach), at);
+        check(camera.zoomed(&view, anchor, 1.25, &limits), at);
+        check(camera.zoomed(&view, anchor, -0.75, &limits), at);
         check(camera.turned(&view, anchor, [25.0, 10.0]), at);
     }
 
@@ -999,29 +999,33 @@ mod tests {
 
     #[test]
     fn a_flat_map_zooms_out_until_the_whole_world_fits() {
-        assert_eq!(Reach::new(&flat(), None, None).zoom, [-MAX_ZOOM, MAX_ZOOM], "a view without a size");
-        let reach = Reach::new(&flat(), Some(SIZE), None);
+        assert_eq!(
+            Limits::new(&flat(), None, None, Reach::default()).zoom,
+            [-MAX_ZOOM, MAX_ZOOM],
+            "a view without a size"
+        );
+        let limits = Limits::new(&flat(), Some(SIZE), None, Reach::default());
         // The world is 256 · 2^zoom pixels across. All the way out, it fits the view's 600 pixels
         // of height, and the center sits on the world's middle.
-        assert!((reach.zoom[0] - (600.0_f64 / 256.0).log2()).abs() < 1e-12, "{:?}", reach.zoom);
+        assert!((limits.zoom[0] - (600.0_f64 / 256.0).log2()).abs() < 1e-12, "{:?}", limits.zoom);
         let out = Camera::Map { center: [170.0, 80.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 };
-        let fitted = out.within(&reach);
+        let fitted = out.within(&limits);
         let Camera::Map { center, zoom, .. } = fitted else { panic!("a map camera") };
-        assert!((zoom - reach.zoom[0]).abs() < 1e-12, "{fitted:?}");
+        assert!((zoom - limits.zoom[0]).abs() < 1e-12, "{fitted:?}");
         assert!(center[0].abs() < 1e-9 && center[1].abs() < 1e-9, "the world's middle: {fitted:?}");
-        assert_eq!(fitted.within(&reach), fitted, "a camera within reach stays put");
+        assert_eq!(fitted.within(&limits), fitted, "a camera within limits stays put");
         // Stopped at its limit, a zoom out moves nothing, wherever it is anchored.
         let view = Projected::new(&flat(), &fitted, SIZE, AREA, 0.0);
         let anchor = view.position(view.ground([600.0, 200.0]).expect("the map"));
-        assert_eq!(fitted.zoomed(&view, anchor, -1.0, &reach), fitted);
+        assert_eq!(fitted.zoomed(&view, anchor, -1.0, &limits), fitted);
     }
 
     #[test]
     fn a_flat_map_keeps_the_world_s_edges_outside_the_view() {
-        let reach = Reach::new(&flat(), Some(SIZE), None);
+        let limits = Limits::new(&flat(), Some(SIZE), None, Reach::default());
         let near = Camera::Map { center: [170.0, 80.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
-        let kept = near.within(&reach);
-        assert_eq!(kept.within(&reach), kept, "a camera within reach stays put");
+        let kept = near.within(&limits);
+        assert_eq!(kept.within(&limits), kept, "a camera within limits stays put");
         let view = Projected::new(&flat(), &kept, SIZE, AREA, 0.0);
         let [east, _] = to_screen(&view, [180.0, 0.0, 0.0]);
         let [_, north] = to_screen(&view, [0.0, MAX_LATITUDE, 0.0]);
@@ -1039,44 +1043,47 @@ mod tests {
         let panned = camera.panned(&view, anchor, [-1000.0, 0.0]);
         let Camera::Map { center, .. } = panned else { panic!("a map camera") };
         assert!(center[0] > 180.0, "{center:?}");
-        let reach = Reach::new(&flat(), Some(SIZE), None);
-        let Camera::Map { center, .. } = panned.within(&reach) else { panic!("a map camera") };
+        let limits = Limits::new(&flat(), Some(SIZE), None, Reach::default());
+        let Camera::Map { center, .. } = panned.within(&limits) else { panic!("a map camera") };
         assert!((center[0] - 180.0 * (1.0 - 800.0 / (256.0 * 64.0))).abs() < 1e-9, "{center:?}");
     }
 
     #[test]
     fn the_globe_zooms_out_until_it_spans_a_third_of_the_view() {
-        let reach = Reach::new(&globe(), Some(SIZE), None);
+        let limits = Limits::new(&globe(), Some(SIZE), None, Reach::default());
         // The globe is 256 · 2^zoom / π pixels across.
-        let across = 256.0 * reach.zoom[0].exp2() / PI;
+        let across = 256.0 * limits.zoom[0].exp2() / PI;
         assert!((across - 200.0).abs() < 1e-9, "{across}");
         // Its longitude wraps, so any center is within the limits.
         let far = Camera::Map { center: [179.0, 60.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
-        assert_eq!(far.within(&reach), far);
+        assert_eq!(far.within(&limits), far);
     }
 
     #[test]
-    fn fits_narrow_the_reach_and_the_space_bounds_it() {
+    fn fits_narrow_the_limits_as_the_reach_says_and_the_space_bounds_them() {
         let framed = Bounds { min: [170.0, -5.0, 0.0], max: [179.0, 5.0, 0.0], zoom: [5.0; 2] };
-        let reach = Reach::new(&flat(), Some(SIZE), Some(framed));
-        assert_eq!(reach.zoom, [2.0, 13.0], "3 levels out and 8 in from the framing");
+        let limits = Limits::new(&flat(), Some(SIZE), Some(framed), Reach::default());
+        assert_eq!(limits.zoom, [2.0, MAX_ZOOM], "3 levels out from the framing, and in as far as the space allows");
+        let close = Reach { zoom_in: Some(8.0), ..Reach::default() };
+        assert_eq!(Limits::new(&flat(), Some(SIZE), Some(framed), close).zoom, [2.0, 13.0]);
+        let free = Limits::new(&flat(), Some(SIZE), Some(framed), Reach::space());
+        assert_eq!(free, Limits::new(&flat(), Some(SIZE), None, Reach::default()), "only the space limits it");
         // The fit lets the center go as far again as the box is wide, past the antimeridian, but
         // the world's edge stops it first.
         let east = Camera::Map { center: [200.0, 0.0, 0.0], zoom: 2.0, pitch: 0.0, bearing: 0.0 };
-        let Camera::Map { center, .. } = east.within(&reach) else { panic!("a map camera") };
+        let Camera::Map { center, .. } = east.within(&limits) else { panic!("a map camera") };
         assert!((center[0] - 180.0 * (1.0 - 800.0 / 1024.0)).abs() < 1e-9, "{center:?}");
         // A plane sets no limits, so only the fit limits its camera. At zoom 5 the view spans 25
         // units, so the center may stray half of that from a box only 10 units wide.
         let framed = Bounds { min: [0.0; 3], max: [10.0, 10.0, 0.0], zoom: [5.0; 2] };
         let far = Camera::Map { center: [100.0, -100.0, 5.0], zoom: -10.0, pitch: 90.0, bearing: 0.0 };
-        let held = far.within(&Reach::new(&plane(), Some(SIZE), Some(framed)));
+        let held = far.within(&Limits::new(&plane(), Some(SIZE), Some(framed), Reach::default()));
         assert_eq!(held, Camera::Map { center: [22.5, -12.5, 0.0], zoom: 2.0, pitch: MAX_PITCH, bearing: 0.0 });
         // A fit of one point still pans half a view from it.
         let point = Bounds { min: [3.0, 4.0, 0.0], max: [3.0, 4.0, 0.0], zoom: [0.0; 2] };
         let far = Camera::Map { center: [1000.0, 4.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 };
-        let Camera::Map { center, .. } = far.within(&Reach::new(&plane(), Some(SIZE), Some(point))) else {
-            panic!("a map camera")
-        };
+        let limits = Limits::new(&plane(), Some(SIZE), Some(point), Reach::default());
+        let Camera::Map { center, .. } = far.within(&limits) else { panic!("a map camera") };
         assert_eq!(center, [403.0, 4.0, 0.0]);
     }
 

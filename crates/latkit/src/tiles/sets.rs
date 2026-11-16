@@ -13,13 +13,15 @@ use crate::derive::tiled::{Choices, Draw, Plans};
 use crate::derive::{Input, Jobs};
 use crate::{Error, Tiles};
 
-/// What a view reads of sampled fields. It holds the plot window that lines trace across (`across`)
-/// and its width in pixel columns, and the coordinate at which fields are shown (`at`). It also
-/// holds each field that marks read, by dataset, table, and name, with whether a line traces it.
+/// What a view reads of sampled fields. It holds the plot window that lines trace across
+/// (`across`), its width in pixel columns, and the most entries a trace may hold (`most`), and the
+/// coordinate at which fields are shown (`at`). It also holds each field that marks read, by
+/// dataset, table, and name, with whether a line traces it.
 #[derive(Default)]
 pub(crate) struct Reading {
     pub(crate) across: Option<[f64; 2]>,
     pub(crate) columns: u32,
+    pub(crate) most: u64,
     pub(crate) at: f64,
     pub(crate) fields: Vec<(Name, Name, Name, bool)>,
 }

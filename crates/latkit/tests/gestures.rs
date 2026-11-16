@@ -542,11 +542,12 @@ fn the_wheel_zooms_as_the_controls_say() {
 #[test]
 fn zooming_at_the_zoom_limit_moves_nothing() {
     let Some(gpu) = gpu() else { return };
-    let mut view = view(&gpu, Controls { motion: Motion::Reduced, ..Controls::default() });
+    let reach = latkit::Reach { zoom_in: Some(8.0), ..latkit::Reach::default() };
+    let mut view = view(&gpu, Controls { motion: Motion::Reduced, reach, ..Controls::default() });
     view.fit(latkit::Fit::All);
     frame(&gpu, &mut view);
     let Camera::Map { zoom: framed, .. } = *view.camera() else { panic!("a map camera") };
-    // Just short of the deepest zoom the framed content allows, the wheel zooms toward a corner.
+    // Just short of the deepest zoom the reach allows past the fit, the wheel zooms toward a corner.
     let near = Camera::Map { center: [5.0, -3.0, 0.0], zoom: framed + 7.95, pitch: 0.0, bearing: 0.0 };
     view.set_camera(near);
     let wheel = Input::Wheel { point: [C + 30.0, C - 20.0], delta: [0.0, -400.0], modifiers: Modifiers::default() };

@@ -13,7 +13,7 @@ import {
   type Wait,
 } from './internal.js';
 import { load } from './load.js';
-import type { Description, Value } from './outputs.js';
+import type { Description, TilesDescription, Value } from './outputs.js';
 import { framed, Patch, rows, type Fields, type RowIds, type Run, type Values } from './patch.js';
 
 /**
@@ -359,6 +359,11 @@ const tiled = new WeakMap<Tiles, { fetch?: TilesOptions['fetch']; bound?: bindin
  *   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
  *   that kind regardless of the marks. Each tile that arrives appends its rows to the view's
  *   dataset. Rows of tiles no longer drawn are kept until they outnumber the rows drawn.
+ *
+ * A GPU keeps what it fetched and decoded while the `Tiles` object lives, so a view that stops
+ * drawing the tiles and starts again fetches nothing twice. Every `Tiles` on a GPU shares its
+ * `budget.tiles` bytes. Past them, the pieces no view draws are dropped, least recently drawn
+ * first.
  */
 export class Tiles {
   /** The name of the dataset the tiles are drawn as. */
@@ -388,21 +393,38 @@ export class Tiles {
   refresh(): void {
     tiled.get(this)!.bound?.refresh();
   }
+
+  /**
+   * Resolves to what the source holds, read from its index: the credit it asks to be shown, the
+   * zooms and area it covers, and its layers with their fields. A PMTiles archive and a TileJSON
+   * document say these. A URL template says only the default zooms, and time tiles say none.
+   * Rejects when the index can't be fetched or read.
+   *
+   * ```ts
+   * const { attribution, layers } = await tiles.describe();
+   * ```
+   */
+  async describe(wait: Wait = {}): Promise<TilesDescription> {
+    const until = due(wait);
+    await waited(load(), until, 'loading latkit');
+    const described = waited<string>(bound(this).describe(), until, 'describing tiles');
+    return JSON.parse(await described) as TilesDescription;
+  }
 }
 
 /** A dataset a view draws: the one a {@link Table} belongs to, or one of the view's `sources`. */
 export type Source = Data | Snapshot | Tiles;
 
+/** The bindings source `tiles`' views share, made the first time it is needed. */
+function bound(tiles: Tiles): bindings.Source {
+  const entry = tiled.get(tiles)!;
+  entry.bound ??= wasm().Source.tiles(tiles.name, tiles.url, entry.fetch && bytesFrom(entry.fetch));
+  return entry.bound;
+}
+
 /** @internal Converts `source` to a new bindings `Source` on every call. */
 export function sourceOf(source: Source): bindings.Source {
-  if (!(source instanceof Tiles)) return inner<Reads>(source).source();
-  const entry = tiled.get(source)!;
-  entry.bound ??= wasm().Source.tiles(
-    source.name,
-    source.url,
-    entry.fetch && bytesFrom(entry.fetch),
-  );
-  return entry.bound.copy();
+  return source instanceof Tiles ? bound(source).copy() : inner<Reads>(source).source();
 }
 
 /** `fetch`, resolving to the bytes the bindings take: none for a missing piece. */

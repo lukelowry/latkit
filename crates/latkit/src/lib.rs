@@ -79,12 +79,12 @@ pub use {
     panels::Panels,
     scene::{
         Action, AreaTheme, Areas, Axis, Controls, Direction, Earth, EarthTheme, EdgeTheme, Edges, FlowTheme,
-        FocusTheme, Gestures, Grid, Interpolation, Label, Layered, Layout, Legend, Length, LineTheme, Lines, Mark,
-        Marker, Motion, Place, Plane, Plot, PlotTheme, Projection, Route, Scene, Shade, Shape, Space, Stress,
-        TextTheme, Theme, Title, VertexTheme, Vertices,
+        FocusTheme, Gestures, Grid, GridTheme, Interpolation, Label, Layered, Layout, Legend, Length, LineTheme, Lines,
+        Mark, Marker, Motion, Place, Plane, Plot, PlotTheme, Projection, Reach, Route, Scene, Shade, Shape, Space,
+        Stress, TextTheme, Theme, Title, VertexTheme, Vertices,
     },
     shot::{Capture, Shot},
-    tiles::Tiles,
+    tiles::{LayerDescription, Tiles, TilesDescription},
     video::{Encoding, Mp4, Pixels, Sink, Video},
     view::{
         Arrange, Button, Camera, Cursor, Device, End, Event, Fit, Frame, Hit, Input, Key, Modifiers, Phase, Sample,

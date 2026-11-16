@@ -84,6 +84,18 @@ export type Kind =
   | /** Rows of another table, by id. */ 'reference'
   | /** Numbers sampled over the dataset's axis. */ 'sampled';
 
+/** A summary of one layer of a vector tile source. */
+export interface LayerDescription {
+  /** The layer's name, which names its table. */
+  name: string;
+  /** What the source says the layer holds, if anything. */
+  description?: string;
+  /** The lowest and highest zoom whose tiles have the layer, when the source states them. */
+  zooms?: [number, number];
+  /** The properties of its features, each a field of its table, sorted by name. */
+  fields: FieldDescription[];
+}
+
 /** Modifier keys held during an input. */
 export interface Modifiers {
   /** Shift. */
@@ -155,6 +167,24 @@ export interface TableDescription {
   rows: number;
   /** Its fields, sorted by name. */
   fields: FieldDescription[];
+}
+
+/** What a tile source holds, as its index says. See [`tiles.describe`]. */
+export interface TilesDescription {
+  /**
+   * The credit the source asks to be shown with its tiles, as the source writes it, which may be
+   * HTML. `null` when it asks for none.
+   */
+  attribution: string | null;
+  /** The lowest and highest zoom the source has tiles for. `null` for time tiles. */
+  zooms: [number, number] | null;
+  /** The area its tiles cover: west, south, east, and north, in degrees. `null` for time tiles. */
+  bounds: [number, number, number, number] | null;
+  /**
+   * The layers a vector source lists, each a table that marks can draw. Empty when it lists none, as
+   * a URL template and time tiles do.
+   */
+  layers: LayerDescription[];
 }
 
 /**

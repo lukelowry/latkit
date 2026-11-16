@@ -96,14 +96,18 @@ impl Drew {
     fn sample(&self, i: usize, row: usize, point: u32) -> Option<Sample> {
         let mark = self.marks.get(i)?;
         let (field, plan) = mark.traced.as_ref()?;
-        let (level, index, side) = plan.entry(point)?;
+        let (level, entries, side) = plan.entries(point)?;
         let table = &mark.holding.as_ref()?.table;
         let crate::data::Field::Sampled(samples, _) = table.field_named(field)? else { return None };
-        // A bucket's two points show its middle frame, with its minimum or maximum value.
+        // A point shows the least or the greatest of the entries it reads. A frame stores one
+        // value, which is both.
+        let stored = side.min(crate::data::sides(level) - 1);
+        let held = entries.filter_map(|index| Some((index, samples.entry(row, level, stored, index)?)));
+        let (index, value) =
+            held.reduce(|a, b| if (side == 1 && b.1 > a.1) || (side == 0 && b.1 < a.1) { b } else { a })?;
+        // A bucket shows its middle frame.
         let span = crate::data::bucket_frames(level);
-        let frame = index * span + span / 2;
-        let value = samples.entry(row, level, side, index)?;
-        Some(Sample { frame, at: samples.drawn_at(level, index)?, value })
+        Some(Sample { frame: index * span + span / 2, at: samples.drawn_at(level, index)?, value })
     }
 }
 
@@ -270,8 +274,15 @@ impl View {
         let view = self.projected();
         let p = point.map(f64::from);
         let drawn = answer.and_then(|a| if a.under > 0.0 { Some(a.under) } else { a.hit.as_ref().map(|h| h.depth) });
-        if let Some(depth) = drawn {
-            return view.position(view.unproject(p, f64::from(depth)));
+        // The globe's depth lies behind its ground: it hides by the plane through its visible
+        // edge. So what the frame drew counts there only where it lies nearer than the ground.
+        let ground = if view.globe >= 0.5 { view.ground(p) } else { None };
+        let away = |w: glam::DVec3| (w - view.eye).length_squared();
+        let nearer = drawn
+            .map(|depth| view.unproject(p, f64::from(depth)))
+            .filter(|&w| ground.is_none_or(|ground| away(w) <= away(ground)));
+        if let Some(w) = nearer {
+            return view.position(w);
         }
         let Camera::Map { center, .. } = self.camera else {
             return view.on_plane(p, 0.0).map_or([0.0; 3], |w| view.position(w));

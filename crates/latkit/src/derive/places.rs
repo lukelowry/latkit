@@ -19,7 +19,7 @@ use rustc_hash::FxHashMap;
 
 use super::graph::{EdgeMark, VertexMark, key_of, links, marks, position};
 use super::{Derive, Input, Jobs, Tables, Working, answers, beside, kept, stamp_with};
-use crate::data::{Field, Id, Name, Row, Value, Values, Version};
+use crate::data::{Field, Id, Name, Row, Runs, Value, Values, Version};
 use crate::expr::cpu::Rows;
 use crate::host::{Job, Key, Placement};
 use crate::{Arrange, Layout};
@@ -319,20 +319,20 @@ fn rechecks(was: &Unplaced, vm: &VertexMark<'_>, fields: &[Read]) -> Option<Vec<
         let own = now.at.0 == *vm.data.name() && now.at.1 == *vm.table.name();
         match (&then.field, &now.field, &now.of) {
             (Some(Field::Values(before, _)), Some(Field::Values(after, _)), None) if own => {
-                rows.extend(after.written_since(before).into_iter().filter(|&row| row < len));
+                rows.extend(own_rows(&after.written_since(before), len)?);
             }
             (Some(Field::Values(before, _)), Some(Field::Values(after, _)), Some(of)) => {
                 let Some(Field::Reference(reference)) = vm.table.field_named(of) else { return None };
                 let naming = reference.inverse();
-                for written in after.written_since(before) {
-                    rows.extend(naming.of(written).iter().map(|&row| row as usize));
+                for written in after.written_since(before).iter() {
+                    rows.extend(naming.of(written as usize).iter().map(|&row| row as usize));
                     if rows.len() > len {
                         return None;
                     }
                 }
             }
             (Some(Field::Reference(before)), Some(Field::Reference(after)), None) if own => {
-                rows.extend(after.rows.written_since(&before.rows).into_iter().filter(|&row| row < len));
+                rows.extend(own_rows(&after.rows.written_since(&before.rows), len)?);
             }
             _ => return None,
         }
@@ -340,6 +340,11 @@ fn rechecks(was: &Unplaced, vm: &VertexMark<'_>, fields: &[Read]) -> Option<Vec<
     rows.sort_unstable();
     rows.dedup();
     Some(rows)
+}
+
+/// The rows of `written` below `len`, or `None` when they are every row of a table of `len` rows.
+fn own_rows(written: &Runs, len: usize) -> Option<impl Iterator<Item = usize> + '_> {
+    (written.len() < len).then(|| written.iter().map(|row| row as usize).filter(move |&row| row < len))
 }
 
 #[cfg(test)]

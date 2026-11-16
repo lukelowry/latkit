@@ -196,6 +196,18 @@ impl Source {
             tiles.refresh();
         }
     }
+
+    /// Resolves to what the tiles' source holds, read from its index, as a JSON description. Only
+    /// tiles have a source to describe.
+    pub fn describe(&self) -> Task {
+        let source = self.0.clone();
+        task(async move {
+            let latkit::Source::Tiles(tiles) = &source else {
+                return Err(latkit::Error::invalid("only tiles describe their source"));
+            };
+            Ok(JsValue::from_str(&to_json(&tiles.describe(&latkit::host::Browser).await?)))
+        })
+    }
 }
 
 thread_local! {

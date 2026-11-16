@@ -29,6 +29,7 @@ const OUTPUTS = [
   'Stats',
   'Work',
   'Description',
+  'TilesDescription',
   'Rows',
   'Camera',
   'Budget',

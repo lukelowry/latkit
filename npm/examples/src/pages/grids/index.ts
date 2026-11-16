@@ -155,7 +155,7 @@ export default page({
           ? {
               earth: {
                 projection: s.globe ? 'globe' : 'mercator',
-                graticule: false,
+                grid: 'off',
                 atmosphere: s.globe,
                 ...(s.light === 'even'
                   ? {}

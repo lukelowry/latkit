@@ -121,7 +121,7 @@ export default async function (): Promise<Picture> {
   const named = CITIES.map((c) => c[3]).sort((p, q) => q - p)[13]!;
   return {
     scene: {
-      space: { earth: { projection: 'globe', graticule: false, atmosphere: true } },
+      space: { earth: { projection: 'globe', grid: 'off', atmosphere: true } },
       ease: 0,
       // The dark theme, with a darker background and labels without halos.
       theme: {

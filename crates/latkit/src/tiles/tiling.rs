@@ -1,13 +1,15 @@
 //! Tilings: a source's pieces, fetched by key as the sets drawing the source need them, then
-//! decoded into patches. A tiling keeps pieces within a byte budget and evicts the least recently
-//! drawn first. Every set drawing one source shares its tiling, so a piece one set fetched draws in
-//! another. Each set decodes for a stamp that identifies what its decoding reads. A wanted key
-//! draws once it is decoded for that stamp. Until then its nearest decoded ancestor is drawn as a
-//! placeholder, and missing pieces are fetched, nearest first. A renewed piece is fetched again
-//! and draws what it holds until the new bytes land. Earth tiles and spans of a sampled field's
-//! history both use tilings.
+//! decoded into patches. A piece keeps its fetched bytes together with the patches decoded from
+//! them, until the cache evicts it for its budget, least recently drawn first. Every set drawing
+//! one source shares its tiling, so a piece one set fetched draws in another, and a set that
+//! returns to a source finds what it drew before. Each set decodes for a stamp that identifies
+//! what its decoding reads. A wanted key draws once it is decoded for that stamp. Until then its
+//! nearest decoded ancestor is drawn as a placeholder, and missing pieces are fetched, nearest
+//! first. A renewed piece is fetched again and draws what it holds until the new bytes land. Earth
+//! tiles and spans of a sampled field's history both use tilings.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -19,8 +21,9 @@ use crate::{Error, Pending};
 
 /// The most fetches a tiling runs at once, and separately the most decodes.
 const REQUESTS: usize = 8;
-/// Bytes of fetched pieces a tiling keeps. Past this, the least recently drawn are evicted.
-const KEPT_BYTES: usize = 64 << 20;
+
+/// Counts every tiling's updates, so pieces of different tilings compare by when they last drew.
+static UPDATES: AtomicU64 = AtomicU64::new(0);
 
 /// How a source fetches a piece.
 pub(crate) enum Requested {
@@ -48,6 +51,21 @@ pub(crate) trait Pieces<K: Key> {
     fn decode(&self, key: K, bytes: &Arc<Vec<u8>>, jobs: &Jobs<'_>) -> Decoding;
 }
 
+/// What the cache asks of a tiling, whatever its keys, to keep every source within one budget.
+pub(crate) trait Kept {
+    /// Releases set `set`'s claim, so pieces no other set draws may be evicted.
+    fn release(&mut self, set: u64);
+
+    /// Bytes its pieces take: those fetched, and the patches decoded from them.
+    fn bytes(&self) -> usize;
+
+    /// Adds to `idle` each piece no set claims: when it last drew, and the bytes it takes.
+    fn idle(&self, idle: &mut Vec<(u64, usize)>);
+
+    /// Evicts the pieces no set claims that last drew at `drew` or before.
+    fn evict(&mut self, drew: u64);
+}
+
 /// The result of an update. It lists each wanted key if decoded, else its nearest decoded
 /// ancestor, each once. It also says whether any wanted key shows a placeholder (an ancestor, or
 /// nothing).
@@ -58,23 +76,32 @@ pub(crate) struct Drawn<K> {
     pub(crate) failure: Option<Error>,
 }
 
-/// One set's claim on a tiling: the stamp it decodes for, and the keys whose decodes it keeps.
-/// Those are the keys it draws, the keys it wants, and their ancestors, which are drawn as
-/// placeholders.
+/// One set's claim on a tiling: the stamp it decodes for, and the keys it keeps. Those are the
+/// keys it draws, the keys it wants, and their ancestors, which are drawn as placeholders.
 struct Claim<K> {
     stamp: u64,
     keys: FxHashSet<K>,
 }
 
-/// A fetched piece. Empty bytes mean the source has no such piece, or the fetch failed.
+/// A fetched piece, with the patches decoded from it. Empty bytes mean the source has no such
+/// piece, or the fetch failed.
 struct Held {
     bytes: Arc<Vec<u8>>,
-    /// The tick the piece last drew at.
+    /// Each patch decoded from the bytes: the stamp it was decoded for, and the bytes it takes.
+    decoded: Vec<(u64, Patch, usize)>,
+    /// When the piece last drew, as a count of updates.
     used: u64,
-    /// The tick its bytes landed at, which changes when a renewal brings new bytes.
+    /// When its bytes landed, which changes when a renewal brings new bytes.
     landed: u64,
     /// Whether its last fetch failed, so a renewal fetches it again.
     failed: bool,
+}
+
+impl Held {
+    /// Bytes it takes: those fetched, and its decoded patches.
+    fn size(&self) -> usize {
+        self.bytes.len() + self.decoded.iter().map(|(_, _, bytes)| bytes).sum::<usize>()
+    }
 }
 
 /// A source's pieces: their fetched bytes, and the patches decoded from them for each decoding
@@ -84,14 +111,13 @@ pub(crate) struct Tiling<K: Key> {
     fetching: FxHashMap<K, Pending<Vec<u8>>>,
     /// Held pieces to fetch again once wanted. Each draws what it holds until the new bytes land.
     renewing: FxHashSet<K>,
-    /// Decodes in progress (`decoding`) and finished (`decoded`), by key and stamp.
+    /// Decodes in progress, by key and stamp.
     decoding: FxHashMap<(K, u64), Pending<Vec<u8>>>,
-    decoded: FxHashMap<(K, u64), Patch>,
     /// Each drawing set's claim, by set.
     claims: FxHashMap<u64, Claim<K>>,
     /// The first fetch failure. Every set drawing the tiling reports it once.
     failure: Option<Error>,
-    /// Update counter, recording when each piece last drew.
+    /// The latest update, recording when each piece last drew.
     tick: u64,
 }
 
@@ -102,7 +128,6 @@ impl<K: Key> Default for Tiling<K> {
             fetching: FxHashMap::default(),
             renewing: FxHashSet::default(),
             decoding: FxHashMap::default(),
-            decoded: FxHashMap::default(),
             claims: FxHashMap::default(),
             failure: None,
             tick: 0,
@@ -121,7 +146,7 @@ impl<K: Key> Tiling<K> {
         pieces: &mut impl Pieces<K>,
         jobs: &Jobs<'_>,
     ) -> Drawn<K> {
-        self.tick += 1;
+        self.tick = UPDATES.fetch_add(1, Ordering::Relaxed) + 1;
         self.land();
         // Decode wanted keys once fetched, and the fetched ancestors of keys still loading as
         // placeholders. Fetch the rest. A piece decoded immediately draws immediately.
@@ -164,9 +189,9 @@ impl<K: Key> Tiling<K> {
                 held.used = tick;
             }
         }
-        // The set keeps the decodes of what it draws and wants, plus every ancestor of what it
-        // wants, which is drawn as a placeholder while zooming. Each walk up stops where an earlier
-        // wanted key's walk passed.
+        // The set keeps what it draws and wants, plus every ancestor of what it wants, which is
+        // drawn as a placeholder while zooming. Each walk up stops where an earlier wanted key's
+        // walk passed.
         let mut keys: FxHashSet<K> = drawn.iter().copied().collect();
         let mut walked: FxHashSet<K> = FxHashSet::default();
         for &key in wanted {
@@ -178,16 +203,17 @@ impl<K: Key> Tiling<K> {
             }
         }
         self.claims.insert(set, Claim { stamp, keys });
-        self.evict();
+        self.forget(set);
         Drawn { keys: drawn, standing_in, failure: self.failure.clone() }
     }
 
     /// The patch decoded from `key` for `stamp`, once ready.
     pub(crate) fn decoded(&self, key: &K, stamp: u64) -> Option<&Patch> {
-        self.decoded.get(&(*key, stamp))
+        let held = self.held.get(key)?;
+        held.decoded.iter().find(|(decoded, ..)| *decoded == stamp).map(|(_, patch, _)| patch)
     }
 
-    /// When `key`'s bytes landed, as a tick: a set draws a piece again once this changes.
+    /// When `key`'s bytes landed: a set draws a piece again once this changes.
     pub(crate) fn landed(&self, key: &K) -> u64 {
         self.held.get(key).map_or(0, |held| held.landed)
     }
@@ -212,21 +238,13 @@ impl<K: Key> Tiling<K> {
         self.failure.get_or_insert(error);
     }
 
-    /// Releases set `set`'s claim, so pieces no other set draws may be evicted.
-    pub(crate) fn release(&mut self, set: u64) {
-        if self.claims.remove(&set).is_some() {
-            self.evict();
-        }
-    }
-
     /// Whether `key` is decoded for `stamp`.
     fn ready(&self, key: K, stamp: u64) -> bool {
-        self.decoded.contains_key(&(key, stamp))
+        self.decoded(&key, stamp).is_some()
     }
 
-    /// Collects finished fetches and decodes, keeping the first failure. A renewed piece whose fetch
-    /// failed keeps the bytes it held. A decode is kept only if some set still decodes for its
-    /// stamp.
+    /// Collects finished fetches and decodes, keeping the first failure. A renewed piece whose
+    /// fetch failed keeps the bytes it held. A decode of a piece evicted since is dropped.
     fn land(&mut self) {
         let fetched: Vec<_> = self.fetching.iter().filter_map(|(key, p)| p.take().map(|r| (*key, r))).collect();
         for (key, result) in fetched {
@@ -242,7 +260,6 @@ impl<K: Key> Tiling<K> {
                 }
                 Ok(bytes) => {
                     if renewed {
-                        self.decoded.retain(|(k, _), _| *k != key);
                         self.decoding.retain(|(k, _), _| *k != key);
                     }
                     self.hold(key, bytes, false);
@@ -250,11 +267,12 @@ impl<K: Key> Tiling<K> {
             }
         }
         let decoded: Vec<_> = self.decoding.iter().filter_map(|(at, p)| p.take().map(|r| (*at, r))).collect();
-        for (at, result) in decoded {
-            self.decoding.remove(&at);
-            let patch = result.ok().and_then(|bytes| Patch::from_bytes(&bytes).ok()).unwrap_or_default();
-            if self.claims.values().any(|claim| claim.stamp == at.1) {
-                self.decoded.insert(at, patch);
+        for ((key, stamp), result) in decoded {
+            self.decoding.remove(&(key, stamp));
+            let bytes = result.unwrap_or_default();
+            let patch = Patch::from_bytes(&bytes).unwrap_or_default();
+            if let Some(held) = self.held.get_mut(&key) {
+                held.decoded.push((stamp, patch, bytes.len()));
             }
         }
     }
@@ -276,53 +294,72 @@ impl<K: Key> Tiling<K> {
         }
     }
 
-    /// Keeps `bytes` as `key`'s, landed now.
+    /// Keeps `bytes` as `key`'s, landed now, with nothing decoded from them yet.
     fn hold(&mut self, key: K, bytes: Vec<u8>, failed: bool) {
-        let held = Held { bytes: Arc::new(bytes), used: self.tick, landed: self.tick, failed };
+        let held = Held { bytes: Arc::new(bytes), decoded: Vec::new(), used: self.tick, landed: self.tick, failed };
         self.held.insert(key, held);
     }
 
     /// Starts decoding `key` for `stamp`, unless [`REQUESTS`] decodes are already in progress.
-    /// Empty bytes decode to an empty patch immediately.
+    /// Empty bytes decode to an empty patch immediately. A patch decoded immediately takes about
+    /// the bytes it was read from.
     fn decode(&mut self, key: K, stamp: u64, pieces: &impl Pieces<K>, jobs: &Jobs<'_>) {
         if self.decoding.contains_key(&(key, stamp)) || self.decoding.len() >= REQUESTS {
             return;
         }
-        let Some(held) = self.held.get(&key) else { return };
+        let Some(held) = self.held.get_mut(&key) else { return };
         if held.bytes.is_empty() {
-            self.decoded.insert((key, stamp), Patch::new());
+            held.decoded.push((stamp, Patch::new(), 0));
             return;
         }
         match pieces.decode(key, &held.bytes, jobs) {
-            Decoding::Now(patch) => {
-                self.decoded.insert((key, stamp), patch);
-            }
+            Decoding::Now(patch) => held.decoded.push((stamp, patch, held.bytes.len())),
             Decoding::Job(pending) => {
                 self.decoding.insert((key, stamp), pending);
             }
         }
     }
 
-    /// While over budget, evicts the bytes of the least recently drawn pieces no set claims. Drops
-    /// decodes no set keeps.
-    fn evict(&mut self) {
-        let claims = &self.claims;
-        let claimed = |key: &K| claims.values().any(|claim| claim.keys.contains(key));
-        let mut bytes: usize = self.held.values().map(|held| held.bytes.len()).sum();
-        if bytes > KEPT_BYTES {
-            let mut old: Vec<(u64, K)> =
-                self.held.iter().filter(|(k, _)| !claimed(k)).map(|(k, held)| (held.used, *k)).collect();
-            old.sort_unstable();
-            for (_, key) in old {
-                if bytes <= KEPT_BYTES {
-                    break;
-                }
-                if let Some(held) = self.held.remove(&key) {
-                    bytes -= held.bytes.len();
-                    self.renewing.remove(&key);
-                }
+    /// Drops, from the pieces set `set` claims, the patches decoded for stamps none of their
+    /// claims decodes for any more, as when a scene comes to draw other layers. A piece no set
+    /// claims keeps its patches until it is evicted, so a set that returns finds them.
+    fn forget(&mut self, set: u64) {
+        let Some(claim) = self.claims.get(&set) else { return };
+        for key in &claim.keys {
+            let stamps = || self.claims.values().filter(|claim| claim.keys.contains(key)).map(|claim| claim.stamp);
+            if let Some(held) = self.held.get_mut(key) {
+                held.decoded.retain(|(stamp, ..)| stamps().any(|claimed| claimed == *stamp));
             }
         }
-        self.decoded.retain(|(key, stamp), _| claims.values().any(|c| c.stamp == *stamp && c.keys.contains(key)));
+    }
+
+    /// Whether any set claims `key`.
+    fn claimed(&self, key: &K) -> bool {
+        self.claims.values().any(|claim| claim.keys.contains(key))
+    }
+}
+
+impl<K: Key> Kept for Tiling<K> {
+    fn release(&mut self, set: u64) {
+        self.claims.remove(&set);
+    }
+
+    fn bytes(&self) -> usize {
+        self.held.values().map(Held::size).sum()
+    }
+
+    fn idle(&self, idle: &mut Vec<(u64, usize)>) {
+        idle.extend(self.held.iter().filter(|(key, _)| !self.claimed(key)).map(|(_, held)| (held.used, held.size())));
+    }
+
+    fn evict(&mut self, drew: u64) {
+        let (claims, renewing) = (&self.claims, &mut self.renewing);
+        self.held.retain(|key, held| {
+            let kept = held.used > drew || claims.values().any(|claim| claim.keys.contains(key));
+            if !kept {
+                renewing.remove(key);
+            }
+            kept
+        });
     }
 }

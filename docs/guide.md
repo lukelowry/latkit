@@ -71,8 +71,9 @@ view.at = 1.2;
 ```
 
 Each sampled field keeps levels of detail as it records. Level `k` holds each row's minimum and
-maximum over buckets of `8^k` frames. A line that traces a field on a plot reads the level with one
-or two buckets per pixel column, so a long history draws as fast as a short one.
+maximum over buckets of `8^k` frames. A line that traces a field on a plot reads the level whose
+buckets each fit in a pixel column, and draws each column's least and greatest value. A long
+history so draws as fast as a short one, exact to the pixel.
 
 ### Fetch long histories in spans
 
@@ -181,7 +182,7 @@ The [scene types](reference/types.md#scene) document every option and its defaul
 | `'plot'`  | the axis coordinate across, values up                  |
 
 Write a space as an object to give it options: `{ earth: { projection: 'globe' } }`,
-`{ plane: { grid: { lines: { pitch: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes.
+`{ plane: { grid: { lines: { step: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes.
 
 ### Marks
 
@@ -295,7 +296,9 @@ A view draws each `Data` at its latest version. `view.sources` adds datasets to 
 replaces one with the same name. Use a `Snapshot` to show a past version, or
 [`Tiles`](reference/api.md#tiles) to fetch only the pieces the view needs from time tiles or vector
 tiles. Give `Tiles` a `fetch` to fetch their files your own way, and call `refresh()` when they
-change.
+change. `await tiles.describe()` reads what a source says of itself: the credit it asks for, and
+its layers with their fields. What a view fetched stays while the `Tiles` object lives, so a view
+that stops drawing the tiles and starts again fetches nothing twice.
 
 When the GPU device is lost, latkit requests a new one once the page is in the foreground, and moves
 the views to it as they were. Promises, listeners, and pictures in progress carry over.
@@ -316,7 +319,9 @@ view.orbit = 6; // degrees a second
 Camera moves stay within the camera's zoom and pan limits. A flat map shows one world. Its camera
 zooms out only until the whole world fits, and pans only until the world's edges meet the view's
 edges. A globe zooms out until it spans a third of the view. After a fit of any kind, the camera stays
-near the area the fit framed ([`View.camera`](reference/api.md#view)).
+near the area the fit framed: 3 zoom levels out, and one size of that area away. The scene's
+`controls: { reach }` changes how far, such as `{ reach: { zoomIn: 8 } }` to also stop the zoom 8
+levels in, or `{ reach: 'space' }` for no limit but the space's.
 
 A fit applies once the rows have their places, and until the first one applies the view shows only
 its background. A fit frames the earth at most at street scale, and one with nothing to frame waits
@@ -385,6 +390,9 @@ The budget defaults to half the device's addressable word-texture capacity, at m
 latkit replaces, or that a closed view or a finished picture leaves behind, is freed by the next
 frame rather than whenever the browser collects it. A device without the memory to grow the data
 further is given up, and the views move to a new one with the budget lowered to what it gave.
+
+`budget.tiles` caps the memory for the tiles fetched from every `Tiles` source, 256 MiB unless set.
+Past it, the tiles no view draws are dropped, least recently drawn first.
 
 `view.stats`, `gpu.work`, `gpu.resident`, and `gpu.uploading` report what the views draw and what
 work the GPU did. To drive frames yourself in a test or benchmark, call `gpu.step(now)` and wait on

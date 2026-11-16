@@ -143,7 +143,8 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
         ),
     )
     .expect("valid");
-    let earth = latkit::Earth { graticule: false, ..latkit::Earth::default().projection(latkit::Projection::Globe) };
+    let earth =
+        latkit::Earth { grid: latkit::Grid::Off, ..latkit::Earth::default().projection(latkit::Projection::Globe) };
     let scene = Scene::new(earth)
         .theme(plain_theme())
         .draw(Edges::of("grid", "Line").ends("from", "to"))

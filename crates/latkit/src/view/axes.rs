@@ -255,7 +255,7 @@ impl View {
             for (v, text) in axis_ticks(&plot.x, x, step) {
                 let at = across(v);
                 if plot.x.grid {
-                    grid.push(line([at, top], [at, bottom], 1.0, theme.grid));
+                    grid.push(line([at, top], [at, bottom], theme.grid.width, theme.grid.color));
                 }
                 sprites.push(line([at, bottom], [at, bottom + mark], 1.0, axis));
                 sprites.extend(writer.text(&text, [at, bottom + mark + gap], [0.5, 0.0]));
@@ -271,7 +271,7 @@ impl View {
             for (v, text) in axis_ticks(&plot.y, y, step) {
                 let at = up(v);
                 if plot.y.grid {
-                    grid.push(line([left, at], [right, at], 1.0, theme.grid));
+                    grid.push(line([left, at], [right, at], theme.grid.width, theme.grid.color));
                 }
                 sprites.push(line([left - mark, at], [left, at], 1.0, axis));
                 sprites.extend(writer.text(&text, [left - mark - gap, at], [1.0, 0.5]));

@@ -211,8 +211,8 @@ pub struct View {
     pixel_ratio: f32,
     /// How each table draws within the view's budget share, and the costs the plan used.
     planning: plan::Planning,
-    /// The most pixel columns a trace may span, set by the plan.
-    trace_columns: u32,
+    /// The most entries a trace may hold, set by the plan.
+    trace_entries: u64,
     stats: Stats,
 }
 
@@ -316,7 +316,7 @@ impl View {
             size: [0.0; 2],
             pixel_ratio: 1.0,
             planning: plan::Planning::default(),
-            trace_columns: u32::MAX,
+            trace_entries: u64::MAX,
             stats: Stats::default(),
         };
         view.set_scene(scene);
@@ -838,7 +838,7 @@ impl View {
     fn fly_to(&mut self, camera: Camera, seconds: Option<Duration>) {
         let least = Duration::from_millis(1);
         let seconds = seconds.unwrap_or_else(|| self.ease().max(least) * 2).max(least).as_secs_f64();
-        let to = camera.within(&self.reach());
+        let to = camera.within(&self.limits());
         self.rig.fly(self.camera, to, self.clock.now(), seconds);
         self.placed = true;
         self.wake();

@@ -143,7 +143,7 @@ impl View {
         let query = self.lay_out_lists(answers, self.sorted());
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
-        let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, elapsed, self.at);
+        let mut uniform = uniforms::frame(&self.scene, &projected, srgb, elapsed, self.at);
         uniform.flow_step = travel as f32;
         if self.signal.transparent() {
             uniform.background[3] = 0.0;
@@ -435,7 +435,7 @@ impl View {
         let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, inner.frame.work);
         let budget = inner.budget.bytes;
         self.update_plan(&mut inner.ledger, budget);
-        self.trace_columns = self.planning.trace_columns();
+        self.trace_entries = self.planning.trace_entries();
         let ask = derive::tiled::Ask {
             data: &self.snapshots,
             plans: self.planning.plans(),
@@ -544,22 +544,23 @@ impl View {
         marks
     }
 
-    /// The plot's x range that traces span, and its width in device pixel columns, capped by the
-    /// plan.
-    fn trace_window(&self) -> (Option<[f64; 2]>, u32) {
+    /// What traces show: the plot's x range, its width in device pixel columns, and the most
+    /// entries the plan lets a trace hold. A line sets how its own trace steps.
+    fn trace_window(&self) -> Window {
         let across = match self.camera {
             Camera::Plot { x, .. } => Some(x),
             Camera::Map { .. } => None,
         };
         let area = self.area();
-        (across, (((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32).min(self.trace_columns))
+        let columns = ((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32;
+        Window { across, columns, most: self.trace_entries, steps: 0 }
     }
 
-    /// What marks read of sampled fields, for time tiles to fetch: the plot window and its pixel
-    /// columns, the coordinate shown, and each field a mark's program reads, with whether a line
-    /// traces it.
+    /// What marks read of sampled fields, for time tiles to fetch: the plot window, its pixel
+    /// columns, and the most entries a trace holds, the coordinate shown, and each field a mark's
+    /// program reads, with whether a line traces it.
     fn reading(&self) -> crate::tiles::Reading {
-        let (across, columns) = self.trace_window();
+        let Window { across, columns, most, .. } = self.trace_window();
         let mut fields = Vec::new();
         for shown in &self.marks {
             let Some(compiled) = &shown.compiled else { continue };
@@ -569,7 +570,7 @@ impl View {
                 fields.push((data, table, column.name.clone(), column.trace));
             }
         }
-        crate::tiles::Reading { across, columns, at: self.at, fields }
+        crate::tiles::Reading { across, columns, most, at: self.at, fields }
     }
 
     /// Syncs every mark's columns to its data and, for a paged table, to its latest drawing. Column
@@ -577,8 +578,7 @@ impl View {
     /// reserves every page they read all at once, or waits for space.
     fn sync(&mut self, inner: &mut Inner) {
         let at = self.at;
-        let (across, columns) = self.trace_window();
-        let window = Window { across, columns, steps: 0 };
+        let window = self.trace_window();
         // Each paged table's order, by dataset.
         let mut orders: Keyed<Name, Vec<(Name, Order)>> = Keyed::default();
         for ((data, table), drawn) in &self.drawings {

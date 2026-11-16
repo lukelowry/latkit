@@ -120,7 +120,8 @@ fn a_paged_table_on_the_globe_draws_its_finest_tiles_close_up() {
             .field("lat", (0..n).map(|i| 40.65 + 0.0002 * (i / columns) as f64).collect::<Vec<_>>()),
     )
     .expect("valid");
-    let earth = latkit::Earth { graticule: false, ..latkit::Earth::default() }.projection(latkit::Projection::Globe);
+    let earth =
+        latkit::Earth { grid: latkit::Grid::Off, ..latkit::Earth::default() }.projection(latkit::Projection::Globe);
     let scene = Scene::new(earth)
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
@@ -646,7 +647,7 @@ fn paged_edges_draw_with_their_endpoints() {
 #[test]
 fn a_tiny_budget_never_fails() {
     let Some(gpu) = gpu() else { return };
-    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20, ..gpu.budget() });
     let n = 200_000_u32;
     let data = Data::new("points");
     data.apply(
@@ -677,7 +678,7 @@ fn a_tiny_budget_never_fails() {
 #[test]
 fn a_first_look_stays_within_budget_while_pyramids_are_computed() {
     let Some(gpu) = gpu() else { return };
-    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 4 << 20 });
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 4 << 20, ..gpu.budget() });
     gpu.set_host(Threads);
     let scene = Scene::new(plane())
         .theme(plain_theme())
@@ -737,7 +738,7 @@ fn far_apart(far: impl Fn(u32, u64) -> u64) -> Data {
 #[test]
 fn edges_ending_far_apart_make_their_endpoints_kept_rows() {
     let Some(gpu) = gpu() else { return };
-    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20, ..gpu.budget() });
     // Each edge joins a vertex to a far one. Even the fewest edges drawn end in every vertex page,
     // more pages than the budget allows, so their endpoints become kept rows.
     let data = far_apart(|_, random| random % 250_000);
@@ -769,7 +770,7 @@ fn edges_ending_far_apart_make_their_endpoints_kept_rows() {
 #[test]
 fn edges_ending_far_apart_draw_between_their_ends() {
     let Some(gpu) = gpu() else { return };
-    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20, ..gpu.budget() });
     // Each edge runs along its row to a far vertex in the same row, so every edge is horizontal. An
     // edge whose endpoint resolved to the wrong vertex would slant across the gaps between rows.
     let data = far_apart(|i, random| u64::from(i - i % 500) + random % 500);
@@ -812,7 +813,7 @@ fn edges_ending_far_apart_draw_between_their_ends() {
 #[test]
 fn traces_too_large_for_the_budget_thin_in_time() {
     let Some(gpu) = gpu() else { return };
-    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20, ..gpu.budget() });
     // Every frame of every row would take 12 MB, over the budget, so the traces draw coarser.
     let (rows, frames) = (20_000_usize, 150_u32);
     let mut patch = Patch::new().set(Table::new("Signal", Ids::count(rows as u32)));

@@ -502,7 +502,7 @@ mod tests {
         )
         .unwrap();
         let scene = |shift: f64| {
-            Scene::new(Earth { graticule: false, ..Earth::default() })
+            Scene::new(Earth::default().grid(Grid::Off))
                 .ease(std::time::Duration::ZERO)
                 .draw(Vertices::of("d", "Node").position(field("x") + shift, field("y")).radius(1.0))
                 .draw(Edges::of("d", "Link").ends("from", "to"))

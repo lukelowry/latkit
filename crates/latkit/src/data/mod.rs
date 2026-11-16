@@ -44,7 +44,7 @@ pub(crate) use {geometry::Geometry, table::Field};
 #[cfg(feature = "gpu")]
 pub(crate) use {
     bytes::{read_values, values_bytes},
-    column::{Column, PAGE_ROWS, Page},
+    column::{Column, PAGE_ROWS, Page, Runs},
     frames::{Listed, Manifest},
     geometry::GeometryBuilder,
     ids::RowIds,

@@ -7,9 +7,10 @@
 //! holds the referenced rows' places in that table's order.
 //!
 //! A column a line traces holds only what is in view: runs of entries, as raw frames while there
-//! are at most two per pixel column, otherwise as buckets of the level of detail that fits. Where
-//! the samples lack those, coarser buckets are shown as placeholders, or else the finer ones
-//! available. Each visible point holds its coordinate and a direct value cursor per page of rows.
+//! are at most two per pixel column, otherwise as each pixel column's least and greatest value,
+//! read from entries of the level of detail that fits in a column. Where the samples lack those,
+//! coarser buckets are shown as placeholders, or else the finer ones available. Each visible point
+//! holds its coordinate and a direct value cursor per page of rows.
 //!
 //! Only columns whose inputs changed are rebuilt, once each. Moving the shown coordinate rebuilds
 //! only sampled columns' cursors, and a paged table rebuilds only where its marks' resident pages
@@ -33,7 +34,9 @@ use std::sync::Arc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::drawing::{Drawing, Holds};
-use crate::data::{Column, Field, Page, PageId, Reference, Run, Samples, Values, Version, detail};
+use crate::data::{
+    Column, Field, Page, PageId, Reference, Run, Samples, Values, Version, bucket_frames, detail, sides,
+};
 use crate::derive::order::Order;
 use crate::derive::shapes::PagedShapes;
 use crate::derive::stamp_of;
@@ -61,56 +64,123 @@ enum Stamp {
     Join(Version, Version),
 }
 
-/// What a trace shows: the axis window, the pixel columns it spans, and how a line steps between
-/// frames (`STEP_BEFORE`, `STEP_AFTER`, or 0).
+/// What a trace shows: the axis window, the pixel columns it spans, the most entries it may hold,
+/// and how a line steps between frames (`STEP_BEFORE`, `STEP_AFTER`, or 0).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Window {
     pub(crate) across: Option<[f64; 2]>,
     pub(crate) columns: u32,
+    pub(crate) most: u64,
     pub(crate) steps: u32,
 }
 
-/// What a traced column draws: runs of entries left to right, each with its first point, the level
-/// of detail the window needs, and the total point count.
+/// What a traced column draws: runs of entries left to right, and the total point count.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Plan {
-    pub(crate) level: u32,
-    pub(crate) runs: Vec<(Run, u32)>,
+    runs: Vec<Drawn>,
     pub(crate) points: u32,
     steps: u32,
+}
+
+/// One run of a plan: its entries, its first point, and how the entries become points.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Drawn {
+    run: Run,
+    first: u32,
+    shape: Shape,
+}
+
+/// How a run's entries become points.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Shape {
+    /// A line through each side. Frames have one side, with a corner between frames when the mark
+    /// steps. Buckets draw their least values left to right, a break, then their greatest, so
+    /// buckets wider than a pixel column read as a band and never as steps. A lone bucket joins
+    /// its least to its greatest.
+    Lines,
+    /// Each pixel column's least and greatest, one above the other, for entries narrower than a
+    /// column. Lists each column's first entry in the run, with the bits of the coordinate at the
+    /// column's middle.
+    Columns(Vec<(u32, u64)>),
+}
+
+/// Where a point draws on the axis: at an entry (a frame's coordinate or a bucket's middle), or at
+/// a coordinate, given as its bits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum At {
+    Entry(u64),
+    Coordinate(u64),
+}
+
+/// A point of a plan: its run, where it draws, the entries whose values it reads, and whether it
+/// draws their least (0) or their greatest (1).
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Point {
+    run: usize,
+    at: At,
+    entries: Range<u64>,
+    side: usize,
+}
+
+impl Drawn {
+    /// The number of points it takes when frames step as `steps`.
+    fn points(&self, steps: u32) -> u32 {
+        let n = self.run.len() as u32;
+        match &self.shape {
+            Shape::Columns(columns) => 2 * columns.len() as u32,
+            Shape::Lines if self.run.level > 0 && n > 1 => 2 * n + 1,
+            Shape::Lines if self.run.level > 0 => 2 * n,
+            Shape::Lines if steps == 0 => n,
+            Shape::Lines => (2 * n).saturating_sub(1),
+        }
+    }
 }
 
 impl Plan {
     /// A point's stable identity across overlapping windows. Run indices themselves change
     /// when an earlier run leaves, so identify its level and absolute entries instead.
-    fn key(&self, point: u32) -> Option<(u32, u64, u64, usize)> {
-        let (run, across, entry, side) = self.point(point)?;
-        Some((self.runs[run].0.level, across, entry, side))
+    fn key(&self, point: u32) -> Option<(u32, At, u64, usize)> {
+        let p = self.point(point)?;
+        Some((self.runs[p.run].run.level, p.at, p.entries.start, p.side))
     }
 
-    /// The entry that point `point` draws: its level, its index, and its side, a bucket's minimum
-    /// (0) or maximum (1). `None` for a point that breaks the line.
-    pub(crate) fn entry(&self, point: u32) -> Option<(u32, u64, usize)> {
-        let (i, _, entry, side) = self.point(point)?;
-        Some((self.runs[i].0.level, entry, side))
+    /// What point `point` draws: the level it reads, the entries of that level, and whether it
+    /// draws their least (0) or their greatest (1). `None` for a point that breaks the line.
+    pub(crate) fn entries(&self, point: u32) -> Option<(u32, Range<u64>, usize)> {
+        let p = self.point(point)?;
+        Some((self.runs[p.run].run.level, p.entries, p.side))
     }
 
-    /// Run, axis entry, value entry, and bucket side. Stepped corners use different axis and
-    /// value entries; queries and the GPU address plan share this mapping.
-    fn point(&self, point: u32) -> Option<(usize, u64, u64, usize)> {
-        let i = self.runs.partition_point(|(_, first)| *first <= point).checked_sub(1)?;
-        let (run, first) = &self.runs[i];
+    /// Point `point`, or `None` where it breaks the line. Queries and the GPU address plan share
+    /// this mapping. Stepped corners draw at one frame with another's value.
+    fn point(&self, point: u32) -> Option<Point> {
+        let i = self.runs.partition_point(|drawn| drawn.first <= point).checked_sub(1)?;
+        let Drawn { run, first, shape } = &self.runs[i];
         let (k, n) = (point - first, run.len() as u32);
-        if run.level > 0 {
-            let entry = run.entries.start + u64::from(k / 2);
-            return (k < 2 * n).then_some((i, entry, entry, (k % 2) as usize));
+        if k >= self.runs[i].points(self.steps) {
+            return None;
         }
-        let (across, up, count) = match self.steps {
-            wgsl::STEP_AFTER => (k.div_ceil(2), k / 2, 2 * n - 1),
-            wgsl::STEP_BEFORE => (k / 2, k.div_ceil(2), 2 * n - 1),
-            _ => (k, k, n),
+        let entry = |offset: u32| run.entries.start + u64::from(offset);
+        let one = |at: u32, value: u32, side: usize| (At::Entry(entry(at)), entry(value)..entry(value) + 1, side);
+        let (at, entries, side) = match shape {
+            Shape::Columns(columns) => {
+                let column = (k / 2) as usize;
+                let (start, x) = columns[column];
+                let end = columns.get(column + 1).map_or(n, |&(next, _)| next);
+                (At::Coordinate(x), entry(start)..entry(end), (k % 2) as usize)
+            }
+            Shape::Lines if run.level > 0 && n == 1 => one(0, 0, k as usize),
+            // The least values, a break, then the greatest.
+            Shape::Lines if run.level > 0 && k == n => return None,
+            Shape::Lines if run.level > 0 && k > n => one(k - n - 1, k - n - 1, 1),
+            Shape::Lines if run.level > 0 => one(k, k, 0),
+            Shape::Lines => match self.steps {
+                wgsl::STEP_AFTER => one(k.div_ceil(2), k / 2, 0),
+                wgsl::STEP_BEFORE => one(k / 2, k.div_ceil(2), 0),
+                _ => one(k, k, 0),
+            },
         };
-        (k < count).then(|| (i, run.entries.start + u64::from(across), run.entries.start + u64::from(up), 0))
+        Some(Point { run: i, at, entries, side })
     }
 }
 
@@ -986,26 +1056,78 @@ fn joined<'a>((data, table): &(Name, Name), all: &'a [Snapshot]) -> Option<&'a T
 
 /// What a trace across `window` draws: the runs covering its frames at the level of detail they
 /// need, with one point left out between runs that do not meet, which breaks the line.
-fn plan(samples: &Samples, window: Window) -> Plan {
-    let frames = window.across.map_or(samples.start()..samples.end(), |across| samples.across(across));
-    let level = detail(frames.end - frames.start, window.columns);
+///
+/// Frames draw as they are while that takes no more points than two a pixel column. Past that,
+/// entries narrower than a column draw as columns: two points a column, exact to the pixel. Only
+/// entries wider than a column, which stand in while finer ones load or when the budget allows no
+/// finer, draw as lines through their least and greatest values.
+///
+/// A column's entries stop where a value page of any of `blocks` ends, so every row block reads
+/// them from one page. Without blocks, the plan is the same but for those stops.
+fn plan(axis: &Samples, window: Window, blocks: &[(Samples, usize)]) -> Plan {
+    let frames = window.across.map_or(axis.start()..axis.end(), |across| axis.across(across));
+    let count = frames.end - frames.start;
+    let columns = u64::from(window.columns.max(1));
+    let level = detail(count, window.columns, window.most);
+    // The width of a pixel column on the axis. Columns count from 0 on the axis, so panning keeps
+    // each entry in its column. The width is rounded to an `f32`, so rounding in the window's ends
+    // as it pans leaves the columns where they were.
+    let width =
+        window.across.or_else(|| axis.span()).map_or(0.0, |[a, b]| f64::from(((b - a) / columns as f64) as f32));
     let (mut runs, mut point, mut last) = (Vec::new(), 0, None);
-    for run in samples.cover(frames, level) {
+    for run in axis.cover(frames, level) {
         let spanned = run.frames();
         if last.is_some_and(|end| end != spanned.start) {
             point += 1;
         }
-        let n = run.len() as u32;
-        let points = match (run.level, window.steps) {
-            (0, 0) => n,
-            (0, _) => 2 * n - 1,
-            _ => 2 * n,
+        let lines = match run.level {
+            0 => count <= 2 * columns,
+            level => bucket_frames(level).saturating_mul(columns) > count,
+        };
+        let shape = if lines || !(width > 0.0) {
+            Shape::Lines
+        } else {
+            Shape::Columns(columns_of(axis, &run, width, &page_ends(blocks, &run)))
         };
         last = Some(spanned.end);
-        runs.push((run, point));
-        point += points;
+        let drawn = Drawn { run, first: point, shape };
+        point += drawn.points(window.steps);
+        runs.push(drawn);
     }
-    Plan { level, runs, points: point, steps: window.steps }
+    Plan { runs, points: point, steps: window.steps }
+}
+
+/// Where each pixel column's entries start in `run`, with the bits of the coordinate at the
+/// column's middle. A column `width` wide holds the entries whose middles lie in it. Its entries
+/// stop at `TRACE_MOST`, the most a point reads, and before each of `ends`, and go on in another
+/// column at the same coordinate.
+fn columns_of(axis: &Samples, run: &Run, width: f64, ends: &[u64]) -> Vec<(u32, u64)> {
+    let mut columns: Vec<(u32, u64)> = Vec::new();
+    let (mut column, mut held) = (None, 0);
+    for (i, x) in axis.drawn(run).into_iter().enumerate() {
+        let within = (x / width).floor();
+        let stops = held == wgsl::TRACE_MOST || ends.binary_search(&(run.entries.start + i as u64)).is_ok();
+        if column != Some(within.to_bits()) || stops {
+            columns.push((i as u32, ((within + 0.5) * width).to_bits()));
+            (column, held) = (Some(within.to_bits()), 0);
+        }
+        held += 1;
+    }
+    columns
+}
+
+/// The entries of `run` at which a value page of any of `blocks` ends, ascending.
+fn page_ends(blocks: &[(Samples, usize)], run: &Run) -> Vec<u64> {
+    let mut ends: Vec<u64> = Vec::new();
+    for (samples, block) in blocks {
+        for side in 0..sides(run.level) {
+            let pages = samples.pages(*block, run.level, side, run.entries.clone());
+            ends.extend(pages.into_iter().map(|(_, held)| held.end));
+        }
+    }
+    ends.sort_unstable();
+    ends.dedup();
+    ends
 }
 
 /// Where sampled `column` reads `samples` at axis coordinate `at`: the frame shown there, and how
@@ -1046,7 +1168,9 @@ fn stamp(column: &ColumnUse, source: &Source<'_>, inputs: &Inputs<'_>) -> Stamp 
     let Some((_, table)) = source.table_of(column, inputs.all) else { return Stamp::Missing };
     match table.field_named(&column.name) {
         None => Stamp::Missing,
-        Some(Field::Sampled(samples, version)) if column.trace => Stamp::Trace(*version, plan(samples, inputs.window)),
+        Some(Field::Sampled(samples, version)) if column.trace => {
+            Stamp::Trace(*version, plan(samples, inputs.window, &[]))
+        }
         Some(Field::Sampled(samples, version)) => {
             let (frame, t) = shown_frame(samples, column, inputs.at);
             Stamp::Sampled(*version, frame, t.to_bits())
@@ -1531,22 +1655,26 @@ impl<'g> Builder<'g> {
 
     /// A direct address plan for the visible trace. The aligned header holds point and row-block
     /// counts, ring capacity, and head. Each block holds one texel per slot: coordinate high/low,
-    /// value address, and rows in that value's page. Missing points have no address. Page offsets
-    /// follow the records; packing resolves cursors after the dataset reserves its pages together.
+    /// value address, and a word of the rows in that value's page, how many entries the point
+    /// reads there, and whether it draws their greatest. Missing points have no address. Page
+    /// offsets follow the records; packing resolves cursors after the dataset reserves its pages
+    /// together.
     fn trace(&mut self, d: &mut [u32; WORDS], axis: &Samples, blocks: &[(Samples, usize)], window: Window) {
         self.pages = None;
         d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED;
-        let plan = plan(axis, window);
+        let plan = plan(axis, window, blocks);
         let points = plan.points as usize;
         let capacity = points.max(1).next_power_of_two();
         self.words.extend([plan.points, blocks.len() as u32, capacity as u32, 0]);
         self.words.resize(4 + 4 * capacity * blocks.len(), wgsl::NONE);
         let mapped: Vec<_> = (0..plan.points).map(|p| plan.point(p)).collect();
-        for (i, (run, first)) in plan.runs.iter().enumerate() {
-            let (coordinates, _) = axis.read(run, &[]);
-            let end = plan.runs.get(i + 1).map_or(points, |(_, first)| *first as usize);
+        for (i, drawn) in plan.runs.iter().enumerate() {
+            let run = &drawn.run;
+            let middles = axis.drawn(run);
+            let end = plan.runs.get(i + 1).map_or(points, |next| next.first as usize);
+            let stored = sides(run.level);
             for (b, (samples, block)) in blocks.iter().enumerate() {
-                for side in 0..crate::data::sides(run.level) {
+                for side in 0..stored {
                     let pages = samples.pages(*block, run.level, side, run.entries.clone());
                     let sources: Vec<_> = pages
                         .iter()
@@ -1559,32 +1687,31 @@ impl<'g> Builder<'g> {
                         })
                         .collect();
                     let mut page_index = 0;
-                    for (point, mapped) in mapped.iter().enumerate().take(end).skip(*first as usize) {
-                        let Some((_, across, entry, which)) = *mapped else { continue };
-                        if which != side {
-                            continue;
-                        }
-                        while pages.get(page_index).is_some_and(|(_, held)| held.end <= entry) {
+                    for (point, mapped) in mapped.iter().enumerate().take(end).skip(drawn.first as usize) {
+                        // A frame stores one value, which is both its least and its greatest.
+                        let Some(p) = mapped.as_ref().filter(|p| p.side.min(stored - 1) == side) else { continue };
+                        let first = p.entries.start;
+                        while pages.get(page_index).is_some_and(|(_, held)| held.end <= first) {
                             page_index += 1;
                         }
-                        let Some((page, _)) = pages.get(page_index).filter(|(_, held)| held.contains(&entry)) else {
+                        let Some((page, held)) = pages.get(page_index).filter(|(_, held)| held.contains(&first)) else {
                             continue;
                         };
-                        let coordinate = (across - run.entries.start) as usize;
-                        let x = if run.level == 0 {
-                            coordinates[coordinate]
-                        } else {
-                            f64::midpoint(coordinates[2 * coordinate], coordinates[2 * coordinate + 1])
+                        let x = match p.at {
+                            At::Entry(entry) => middles[(entry - run.entries.start) as usize],
+                            At::Coordinate(bits) => f64::from_bits(bits),
                         };
                         let hi = x as f32;
+                        let count = (p.entries.end.min(held.end) - first) as u32;
+                        let greatest = if p.side == 1 { wgsl::TRACE_GREATEST } else { 0 };
                         let at = 4 + 4 * (b * capacity + point);
                         self.words[at..at + 4].copy_from_slice(&[
                             hi.to_bits(),
                             ((x - f64::from(hi)) as f32).to_bits(),
                             wgsl::NONE,
-                            page.per,
+                            page.per | count << wgsl::TRACE_COUNT | greatest,
                         ]);
-                        let offset = ((entry - page.first) * u64::from(page.per)) as u32;
+                        let offset = ((first - page.first) * u64::from(page.per)) as u32;
                         self.cursors.push((at + 2, sources[page_index], offset));
                     }
                 }
@@ -1651,8 +1778,7 @@ fn slot_page(
         Holds::Free => None,
         Holds::Page(page) => Some(packed.page(packing, &drawing.order, source, page)),
         Holds::Kept(_) => {
-            let holds = |row: u32| drawing.held_row(row).is_some_and(|h| (h / wgsl::PAGE_ROWS) as usize == s);
-            Some(packed.kept(&kept_packing(packing, drawing.kept_places(s)), source, holds))
+            Some(packed.kept(&kept_packing(packing, drawing.kept_places(s)), source, &|| drawing.rows(s)))
         }
     }
 }
@@ -1679,23 +1805,24 @@ mod tests {
             (wgsl::STEP_BEFORE, vec![(0, 0), (0, 1), (1, 1), (1, 2), (2, 2)]),
         ] {
             let n = corners.len() as u32;
-            let plan = Plan {
-                level: 0,
-                runs: vec![
-                    (Run { level: 0, entries: first..first + 3 }, 0),
-                    (Run { level: 1, entries: 100..102 }, n + 1),
-                ],
-                points: n + 5,
-                steps,
-            };
+            let frames = Drawn { run: Run { level: 0, entries: first..first + 3 }, first: 0, shape: Shape::Lines };
+            let buckets = Drawn { run: Run { level: 1, entries: 100..102 }, first: n + 1, shape: Shape::Lines };
+            let plan = Plan { runs: vec![frames, buckets], points: n + 6, steps };
             for (p, (across, value)) in corners.into_iter().enumerate() {
-                assert_eq!(plan.point(p as u32), Some((0, first + across, first + value, 0)));
-                assert_eq!(plan.entry(p as u32), Some((0, first + value, 0)));
+                let point = plan.point(p as u32).expect("a corner");
+                assert_eq!(
+                    (point.at, point.entries, point.side),
+                    (At::Entry(first + across), first + value..first + value + 1, 0)
+                );
             }
             assert_eq!(plan.point(n), None, "the point between runs breaks the line");
-            for k in 0..4 {
-                assert_eq!(plan.entry(n + 1 + k), Some((1, 100 + u64::from(k / 2), (k % 2) as usize)));
-            }
+            // Two buckets draw their least values, a break, then their greatest.
+            let drawn: Vec<_> =
+                (0..5).map(|k| plan.entries(n + 1 + k).map(|(_, entries, side)| (entries, side))).collect();
+            assert_eq!(
+                drawn,
+                [Some((100..101, 0)), Some((101..102, 0)), None, Some((100..101, 1)), Some((101..102, 1))]
+            );
             assert_eq!(plan.point(plan.points), None);
         }
     }
@@ -1730,7 +1857,7 @@ mod tests {
                     &mut d,
                     &samples,
                     &[(samples.clone(), 0), (samples.clone(), 1)],
-                    Window { across: None, columns: 1000, steps },
+                    Window { across: None, columns: 1000, most: u64::MAX, steps },
                 );
                 let mut table = builder.finish(Stamp::Missing, 0, d);
                 let mut values = vec![0; 17];
@@ -1762,17 +1889,17 @@ mod tests {
                             + 4
                             + 4 * ((row / wgsl::PAGE_ROWS as usize) * packed[base + 2] as usize + point as usize);
                         let cursor = &packed[at..at + 4];
-                        let Some((i, across, entry, side)) = plan.point(point) else {
+                        let Some(Point { run, at: At::Entry(across), entries, side }) = plan.point(point) else {
                             assert_eq!(cursor[2], wgsl::NONE);
                             continue;
                         };
-                        let level = plan.runs[i].0.level;
+                        let level = plan.runs[run].run.level;
                         let x = f64::from(f32::from_bits(cursor[0])) + f64::from(f32::from_bits(cursor[1]));
                         assert_eq!(x, samples.drawn_at(level, across).unwrap());
-                        let (_, expected) = samples.read(&Run { level, entries: entry..entry + 1 }, &[row]);
+                        let (_, expected) = samples.read(&Run { level, entries }, &[row]);
                         let value = f32::from_bits(values[cursor[2] as usize + row % wgsl::PAGE_ROWS as usize]);
                         assert!(value == expected[side] || (value.is_nan() && expected[side].is_nan()));
-                        assert!(row % (wgsl::PAGE_ROWS as usize) < cursor[3] as usize);
+                        assert!(row % (wgsl::PAGE_ROWS as usize) < (cursor[3] & wgsl::TRACE_ROWS) as usize);
                     }
                 }
             }
@@ -1802,7 +1929,7 @@ mod tests {
                     &mut descriptor,
                     &samples,
                     &[(samples.clone(), 0), (samples.clone(), 1)],
-                    Window { across: Some(across), columns: 1000, steps },
+                    Window { across: Some(across), columns: 1000, most: u64::MAX, steps },
                 );
                 let mut table = builder.finish(Stamp::Missing, 0, descriptor);
                 if let Some(old) = &before {
@@ -1826,14 +1953,14 @@ mod tests {
                             + 4 * ((row / wgsl::PAGE_ROWS as usize) * capacity as usize
                                 + ((head + point) & (capacity - 1)) as usize);
                         let cursor = &packed[at..at + 4];
-                        let Some((run, across, entry, side)) = plan.point(point) else {
+                        let Some(Point { run, at: At::Entry(across), entries, side }) = plan.point(point) else {
                             assert_eq!(cursor[2], wgsl::NONE);
                             continue;
                         };
-                        let level = plan.runs[run].0.level;
+                        let level = plan.runs[run].run.level;
                         let x = f64::from(f32::from_bits(cursor[0])) + f64::from(f32::from_bits(cursor[1]));
                         assert_eq!(x, samples.drawn_at(level, across).unwrap());
-                        let (_, expected) = samples.read(&Run { level, entries: entry..entry + 1 }, &[row]);
+                        let (_, expected) = samples.read(&Run { level, entries }, &[row]);
                         let value = f32::from_bits(contents[cursor[2] as usize + row % wgsl::PAGE_ROWS as usize]);
                         assert_eq!(value, expected[side]);
                     }

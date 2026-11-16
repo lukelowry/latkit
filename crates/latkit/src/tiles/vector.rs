@@ -107,26 +107,19 @@ pub(crate) struct Fetched {
     /// Leaf directories, and those being fetched.
     leaves: FxHashMap<(u64, u64), Directory>,
     leaf_fetches: FxHashMap<(u64, u64), Pending<Vec<u8>>>,
-    tiling: Tiling<TileKey>,
+    pub(super) tiling: Tiling<TileKey>,
 }
 
 impl Fetched {
-    /// Tiles from URL template `url`, which contains `{z}`, `{x}`, and `{y}`.
-    pub(crate) fn template(url: &Arc<str>) -> Fetched {
-        Fetched::opened(url, Opened::Template(Template::of(url)))
+    /// Tiles from the source at `url`, at URL template `template`.
+    pub(crate) fn template(url: &Arc<str>, template: Template) -> Fetched {
+        Fetched::opened(url, Opened::Template(template))
     }
 
-    /// Opens tiles from a source whose first `bytes` are a PMTiles archive or a TileJSON document.
-    /// An archive's root directory is fetched if it lies past those bytes. Errors if the source
-    /// holds image tiles or is malformed.
-    pub(crate) fn open(url: &Arc<str>, bytes: &[u8], jobs: &Jobs<'_>) -> Result<Fetched, String> {
-        if !pmtiles::is_archive(bytes) {
-            return Template::tilejson(bytes, url).map(|template| Fetched::opened(url, Opened::Template(template)));
-        }
-        let header = pmtiles::header(bytes)?;
-        if !header.vector {
-            return Err(format!("{url} has image tiles; only vector tiles are supported"));
-        }
+    /// Opens tiles from the PMTiles archive at `url` with `header`, whose first `bytes` were read.
+    /// Its root directory is fetched if it lies past those bytes. Errors if the directory is
+    /// corrupt.
+    pub(crate) fn archive(url: &Arc<str>, header: Header, bytes: &[u8], jobs: &Jobs<'_>) -> Result<Fetched, String> {
         let (offset, length) = header.root;
         let opened = match bytes.get(offset as usize..(offset + length) as usize) {
             Some(root) => archive(header, root).ok_or_else(|| corrupt(url))?,
@@ -148,11 +141,6 @@ impl Fetched {
     /// Fetches and decodes in progress.
     pub(crate) fn under_way(&self) -> usize {
         self.tiling.under_way()
-    }
-
-    /// Releases what set `set` drew.
-    pub(crate) fn release(&mut self, set: u64) {
-        self.tiling.release(set);
     }
 
     /// The zooms and bounds of an open source.
@@ -181,7 +169,8 @@ impl Fetched {
             self.leaf_fetches.remove(&at);
             let gzip = matches!(self.opened, Opened::Archive(h, _) if h.gzip_directories);
             let leaf = bytes.and_then(|b| {
-                inflate(&b, gzip).and_then(|b| Directory::decode(&b)).ok_or_else(|| Error::invalid(corrupt(&self.url)))
+                let stored = pmtiles::inflated(&b, gzip);
+                stored.and_then(|b| Directory::decode(&b)).ok_or_else(|| Error::invalid(corrupt(&self.url)))
             });
             match leaf {
                 Ok(leaf) => {
@@ -485,7 +474,7 @@ impl Pieces<TileKey> for Find<'_> {
 
 /// The archive with `header` and root directory `bytes`, or `None` if the directory is corrupt.
 fn archive(header: Header, bytes: &[u8]) -> Option<Opened> {
-    let root = inflate(bytes, header.gzip_directories).and_then(|b| Directory::decode(&b))?;
+    let root = pmtiles::inflated(bytes, header.gzip_directories).and_then(|b| Directory::decode(&b))?;
     Some(Opened::Archive(header, root))
 }
 
@@ -586,12 +575,4 @@ fn number_of(value: &crate::Value) -> Option<f64> {
         crate::Value::Text(t) => t.parse().ok(),
         _ => None,
     }
-}
-
-/// Decompresses `bytes` when `gzip`, else copies them. `None` if decompression fails.
-fn inflate(bytes: &[u8], gzip: bool) -> Option<Vec<u8>> {
-    if !gzip {
-        return Some(bytes.to_vec());
-    }
-    crate::geo::gunzipped(bytes).ok().map(std::borrow::Cow::into_owned)
 }

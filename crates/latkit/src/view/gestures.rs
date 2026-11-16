@@ -400,7 +400,7 @@ impl View {
         }
         if inputs.get(Control::Pinch, modifiers) == Action::Zoom {
             let levels = f64::from(spread(after) / spread(before)).log2();
-            camera = camera.zoomed(&self.projected_with(&camera), anchor, levels, &self.reach());
+            camera = camera.zoomed(&self.projected_with(&camera), anchor, levels, &self.limits());
         }
         self.move_camera(camera);
     }

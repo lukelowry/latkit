@@ -18,8 +18,8 @@ use rustc_hash::FxHashSet;
 
 use super::View;
 use super::kept::KeptTable;
-use crate::data::{Field, Name, Reference, Table, UNWIRED, Version};
-use crate::derive::order::Order;
+use crate::data::{Field, Name, Reference, Runs, Table, UNWIRED, Version};
+use crate::derive::order::{Order, Written};
 use crate::derive::stamp_of;
 use crate::derive::tiled::{Chosen, Draw, Place};
 use crate::gpu::shaders as wgsl;
@@ -143,61 +143,29 @@ pub(crate) struct Lay<'a> {
     pub(crate) written: &'a Written,
 }
 
-/// The pages of an order with rows written between two versions of its table.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Written {
-    #[default]
-    Nothing,
-    /// Whether each page has a written row.
-    Pages(Vec<bool>),
-    Every,
-}
-
-impl Written {
-    /// The pages of `order` with rows written in `now` since `before`. Adding, dropping, renaming,
-    /// or retyping a field, or changing a sampled field, counts as every row written.
-    pub(crate) fn since(before: &Table, now: &Table, order: &Order) -> Written {
-        if before.fields.len() != now.fields.len() {
-            return Written::Every;
-        }
-        let mut rows = Vec::new();
-        for ((name, field), (was_name, was)) in now.fields.iter().zip(&before.fields) {
-            let (column, old) = match (field, was) {
-                _ if name != was_name => return Written::Every,
-                (Field::Values(column, version), Field::Values(old, old_version)) if version != old_version => {
-                    (column, old)
-                }
-                (Field::Reference(reference), Field::Reference(old)) => (&reference.rows, &old.rows),
-                (Field::Values(..), Field::Values(..)) => continue,
-                (Field::Sampled(_, version), Field::Sampled(_, old_version)) if version == old_version => continue,
-                _ => return Written::Every,
-            };
-            if !column.shares(old) {
-                rows.extend(column.written_since(old));
-            }
-        }
-        if rows.is_empty() {
-            return Written::Nothing;
-        }
-        if rows.len() >= order.len() as usize {
-            return Written::Every;
-        }
-        let mut pages = vec![false; order.pages() as usize];
-        for row in rows {
-            if let Some(page) = pages.get_mut((order.rank(row as u32) / PAGE_ROWS) as usize) {
-                *page = true;
-            }
-        }
-        Written::Pages(pages)
+/// The pages of `order` with rows written in `now` since `before`. Adding, dropping, renaming, or
+/// retyping a field, or changing a sampled field, counts as every row written.
+pub(crate) fn written(before: &Table, now: &Table, order: &Order) -> Written {
+    if before.fields.len() != now.fields.len() {
+        return Written::Every;
     }
-
-    fn holds(&self, page: u32) -> bool {
-        match self {
-            Written::Nothing => false,
-            Written::Pages(pages) => pages.get(page as usize).copied().unwrap_or(false),
-            Written::Every => true,
+    let mut rows = Runs::default();
+    for ((name, field), (was_name, was)) in now.fields.iter().zip(&before.fields) {
+        let (column, old) = match (field, was) {
+            _ if name != was_name => return Written::Every,
+            (Field::Values(column, version), Field::Values(old, old_version)) if version != old_version => {
+                (column, old)
+            }
+            (Field::Reference(reference), Field::Reference(old)) => (&reference.rows, &old.rows),
+            (Field::Values(..), Field::Values(..)) => continue,
+            (Field::Sampled(_, version), Field::Sampled(_, old_version)) if version == old_version => continue,
+            _ => return Written::Every,
+        };
+        if !column.shares(old) {
+            rows.extend(&column.written_since(old));
         }
     }
+    order.written(&rows)
 }
 
 impl Lay<'_> {
@@ -868,7 +836,7 @@ impl View {
             let table = self.snapshot(&key.0).and_then(|d| d.table(&key.1)).cloned();
             let drawn = self.drawings.entry(key.clone()).or_default();
             let written = match (&drawn.table, &table) {
-                (Some(before), Some(now)) => Written::since(before, now, &chosen.order),
+                (Some(before), Some(now)) => written(before, now, &chosen.order),
                 _ => Written::Every,
             };
             drawn.table = table;
@@ -1012,11 +980,11 @@ mod tests {
         data.apply(Table::new("T", crate::data::Ids::count(n as u32)).field("v", vec![0.0; n])).expect("valid");
         let table = || data.snapshot().table("T").expect("a table").clone();
         let before = table();
-        assert_eq!(Written::since(&before, &table(), &order), Written::Nothing, "nothing written");
+        assert_eq!(written(&before, &table(), &order), Written::Nothing, "nothing written");
         data.apply(Table::new("T", vec![u64::from(PAGE_ROWS) + 5]).field("v", vec![1.0])).expect("valid");
-        assert_eq!(Written::since(&before, &table(), &order), Written::Pages(vec![false, true, false]));
+        assert_eq!(written(&before, &table(), &order), Written::Pages(vec![false, true, false]));
         data.apply(Table::new("T", vec![0_u64]).field("w", vec![1.0])).expect("valid");
-        assert_eq!(Written::since(&before, &table(), &order), Written::Every, "a new field marks every row written");
+        assert_eq!(written(&before, &table(), &order), Written::Every, "a new field marks every row written");
     }
 
     #[test]

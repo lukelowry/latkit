@@ -119,7 +119,7 @@ fn earth_areas_stay_whole_across_the_antimeridian() {
     let Some(gpu) = gpu() else { return };
     let ring = vec![[170.0, -10.0], [-170.0, -10.0], [-170.0, 10.0], [170.0, 10.0], [170.0, -10.0]];
     let data = polygons(vec![vec![ring]]);
-    let earth = Earth { graticule: false, ..Earth::default() };
+    let earth = Earth { grid: latkit::Grid::Off, ..Earth::default() };
     let scene = Scene::new(earth).draw(Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")));
     let mut view = view(&gpu, scene, &data);
     // A flat map is one world, so the camera looks just short of the antimeridian, whose edge lies

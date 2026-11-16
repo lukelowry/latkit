@@ -19,12 +19,8 @@ use crate::Color;
 pub struct Theme {
     /// The background color.
     pub background: Color,
-    /// The color of a plane's grid, a plot's grid lines, and the earth's graticule.
-    pub grid: Color,
-    /// The least distance between the lines (or dots) of a plane's grid and of the earth's
-    /// graticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten
-    /// (and 30° and 90° on the earth), and the finer step fades out as it nears this distance.
-    pub grid_spacing: f32,
+    /// How a plane's grid, the earth's grid, and a plot's grid lines look.
+    pub grid: GridTheme,
     /// The color a colormap gives a missing value, such as a row with no value in the field.
     pub missing: Color,
     /// The least contrast ratio with the background, as WCAG measures it, that colormap colors
@@ -51,6 +47,21 @@ pub struct Theme {
     pub earth: EarthTheme,
     /// How a plot looks.
     pub plot: PlotTheme,
+}
+
+/// How a plane's grid, the earth's grid, and a plot's grid lines look.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct GridTheme {
+    /// The color of lines and dots.
+    pub color: Color,
+    /// The width of a line, in CSS pixels. A dot is twice as wide.
+    pub width: f32,
+    /// The least distance between the lines (or dots) of a plane's or the earth's grid, in CSS
+    /// pixels. A finer step fades in as zooming in spreads its lines from this distance to twice
+    /// it.
+    pub spacing: f32,
 }
 
 /// How labels, axis ticks, and titles look.
@@ -267,8 +278,7 @@ impl Theme {
         let hex = |hex: &str| Color::hex(hex).expect("hex");
         Theme {
             background: hex("#0f141a"),
-            grid: Color::WHITE.alpha(0.07),
-            grid_spacing: 24.0,
+            grid: GridTheme { color: Color::WHITE.alpha(0.07), width: 1.0, spacing: 24.0 },
             missing: hex("#6b7480"),
             contrast: 1.0,
             dash: 8.0,
@@ -306,7 +316,7 @@ impl Theme {
         let dark = Theme::dark();
         Theme {
             background: hex("#f7f8fa"),
-            grid: Color::BLACK.alpha(0.08),
+            grid: GridTheme { color: Color::BLACK.alpha(0.08), ..dark.grid },
             missing: hex("#9aa3ad"),
             text: TextTheme { color: hex("#4a5361"), ..dark.text },
             vertex: VertexTheme { color: hex("#1f6feb"), ..dark.vertex },

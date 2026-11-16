@@ -17,7 +17,8 @@ pub(crate) struct Header {
     pub(crate) metadata: (u64, u64),
     pub(crate) leaves: u64,
     pub(crate) data: u64,
-    /// Whether directories are gzip-compressed. `gzip_tiles` is the same for tiles.
+    /// Whether directories and the metadata are gzip-compressed. `gzip_tiles` is the same for
+    /// tiles.
     pub(crate) gzip_directories: bool,
     pub(crate) gzip_tiles: bool,
     pub(crate) vector: bool,
@@ -60,6 +61,15 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, String> {
         max_zoom: bytes[101],
         bounds: [degrees(102), degrees(106), degrees(110), degrees(114)],
     })
+}
+
+/// An archive's directory or metadata `bytes` as stored, decompressed when the archive compresses
+/// them (`gzip`). `None` if decompression fails.
+pub(crate) fn inflated(bytes: &[u8], gzip: bool) -> Option<Vec<u8>> {
+    if !gzip {
+        return Some(bytes.to_vec());
+    }
+    super::gunzipped(bytes).ok().map(std::borrow::Cow::into_owned)
 }
 
 /// A directory's entries, sorted by tile id: id, run length (0 for a leaf directory), offset, and

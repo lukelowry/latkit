@@ -31,7 +31,8 @@ pub fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
 /// dataset's document), `Patch`, `Query`, `EnvelopeRequest`, `Camera`, `Fit`, `Arrange`, `Budget`,
 /// and `Shot`.
 /// Outputs, in their serialized form, are under `outputs`: `ViewEvent`, `Stats`, `Work`,
-/// `Description`, `Rows`, `Camera`, `Budget`, `Value`, and `Failure` (an error).
+/// `Description`, `TilesDescription`, `Rows`, `Camera`, `Budget`, `Value`, and `Failure` (an
+/// error).
 ///
 /// ```
 /// let schemas = latkit::schemas();
@@ -58,6 +59,7 @@ pub fn schemas() -> serde_json::Value {
     outputs.subschema_for::<crate::Stats>();
     outputs.subschema_for::<crate::Work>();
     outputs.subschema_for::<crate::Description>();
+    outputs.subschema_for::<crate::TilesDescription>();
     outputs.subschema_for::<crate::Rows>();
     outputs.subschema_for::<crate::Camera>();
     outputs.subschema_for::<crate::Budget>();

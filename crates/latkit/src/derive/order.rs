@@ -15,8 +15,29 @@ use std::sync::Arc;
 
 use super::pyramid::Pyramid;
 use super::stamp_of;
-use crate::data::Version;
+use crate::data::{Runs, Version};
 use crate::gpu::shaders::PAGE_ROWS;
+
+/// The pages of an order holding rows written between two versions of its table.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Written {
+    #[default]
+    Nothing,
+    /// Whether each page holds a written row.
+    Pages(Vec<bool>),
+    Every,
+}
+
+impl Written {
+    /// Whether page `page` holds a written row.
+    pub(crate) fn holds(&self, page: u32) -> bool {
+        match self {
+            Written::Nothing => false,
+            Written::Pages(pages) => pages.get(page as usize).copied().unwrap_or(false),
+            Written::Every => true,
+        }
+    }
+}
 
 /// A paged table's draw order: which row draws at each place.
 #[derive(Clone, Debug)]
@@ -183,6 +204,54 @@ impl Order {
             }
         }
         out
+    }
+
+    /// The pages holding any of `rows`, the rows written. Table order maps each run to its pages.
+    /// Any other order has each page look through its own rows for the first one written, which a
+    /// write of most rows finds at once. That search stops once it has taken as many steps as
+    /// there are rows written, since finding each row's page then costs no more. So a write costs
+    /// at most twice its rows, and a column written whole costs a step per page.
+    pub(crate) fn written(&self, rows: &Runs) -> Written {
+        let count = rows.len();
+        if count == 0 {
+            return Written::Nothing;
+        }
+        if count >= self.len() as usize {
+            return Written::Every;
+        }
+        let mut pages = vec![false; self.pages() as usize];
+        let page_of = |place: u32| (place / PAGE_ROWS) as usize;
+        if let Order::Table { .. } = self {
+            for run in rows.ranges().iter().filter(|run| run.start < self.len()) {
+                pages[page_of(run.start)..=page_of(run.end.min(self.len()) - 1)].fill(true);
+            }
+        } else if !self.find_written(rows, count, &mut pages) {
+            pages.fill(false);
+            for row in rows.iter().filter(|&row| row < self.len()) {
+                pages[page_of(self.rank(row))] = true;
+            }
+        }
+        Written::Pages(pages)
+    }
+
+    /// Marks each of `pages` holding any of `rows`, by looking through the page's rows for the
+    /// first. Returns `false` if that took more than `steps` steps, with `pages` left partly
+    /// marked.
+    fn find_written(&self, rows: &Runs, mut steps: usize, pages: &mut [bool]) -> bool {
+        for (page, held) in pages.iter_mut().enumerate() {
+            let first = page as u32 * PAGE_ROWS;
+            for place in first..(first + PAGE_ROWS).min(self.len()) {
+                if steps == 0 {
+                    return false;
+                }
+                steps -= 1;
+                if rows.contains(self.source(place)) {
+                    *held = true;
+                    break;
+                }
+            }
+        }
+        true
     }
 
     /// The key that identifies pages packed in this order. The ids of a pyramid and of table order

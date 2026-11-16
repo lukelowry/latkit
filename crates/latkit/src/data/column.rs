@@ -44,11 +44,12 @@ impl Page {
         Page { id: PageId::next(), values, written: None, points: OnceLock::new() }
     }
 
-    /// A new page holding `values`, made by writing `rows` (offsets into the page) over `old`.
-    fn over(values: Values, old: &Page, rows: Vec<u32>) -> Page {
+    /// A new page holding `values`, made by writing `rows` over `old`: runs of offsets into the
+    /// page, ascending, that neither overlap nor touch.
+    fn over(values: Values, old: &Page, rows: Vec<Range<u32>>) -> Page {
         let before = old.written.clone().filter(|w| w.depth < REMEMBERED);
         let depth = before.as_ref().map_or(1, |w| w.depth + 1);
-        let written = Written { from: old.id, rows: runs(rows).into(), before, depth };
+        let written = Written { from: old.id, rows: rows.into(), before, depth };
         Page { id: PageId::next(), values, written: Some(Arc::new(written)), points: OnceLock::new() }
     }
 
@@ -104,6 +105,54 @@ fn joined(mut runs: Vec<Range<u32>>) -> Vec<Range<u32>> {
         }
     }
     joined
+}
+
+/// Rows of a column, as ascending runs that neither overlap nor touch. A column written whole is
+/// one run, so reading a write costs its runs unless each row is asked for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Runs(Vec<Range<u32>>);
+
+impl Runs {
+    /// The number of rows.
+    pub(crate) fn len(&self) -> usize {
+        self.0.iter().map(|run| (run.end - run.start) as usize).sum()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether `row` is one of them.
+    pub(crate) fn contains(&self, row: u32) -> bool {
+        let i = self.0.partition_point(|run| run.end <= row);
+        self.0.get(i).is_some_and(|run| run.start <= row)
+    }
+
+    /// The rows, ascending.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.iter().flat_map(Clone::clone)
+    }
+
+    /// The runs, ascending.
+    pub(crate) fn ranges(&self) -> &[Range<u32>] {
+        &self.0
+    }
+
+    /// Adds `run`, which starts at or after the end of every run held.
+    fn push(&mut self, run: Range<u32>) {
+        match self.0.last_mut() {
+            Some(last) if last.end == run.start => last.end = run.end,
+            _ if run.start < run.end => self.0.push(run),
+            _ => {}
+        }
+    }
+
+    /// Adds the rows of `other`.
+    pub(crate) fn extend(&mut self, other: &Runs) {
+        if !other.is_empty() {
+            self.0 = joined(std::mem::take(&mut self.0).into_iter().chain(other.0.iter().cloned()).collect());
+        }
+    }
 }
 
 /// A field's values in pages of [`PAGE_ROWS`] rows. Writes replace only the pages they touch. The
@@ -258,7 +307,7 @@ impl Column {
                         .map(|r| r as u32)
                         .collect();
                     rows.extend(kept as u32..page_len as u32);
-                    if rows.is_empty() { old.clone() } else { Page::over(values, old, rows) }
+                    if rows.is_empty() { old.clone() } else { Page::over(values, old, runs(rows)) }
                 }
                 None => Page::new(values),
             });
@@ -318,21 +367,22 @@ impl Column {
         })
     }
 
-    /// The rows written or added since `before`, in order. For each page that differs from
-    /// `before`'s, these are the rows it remembers writing since, or all its rows if it does not
-    /// remember `before`'s page. A page that `before` lacks counts in full. Rows of `before` past
-    /// this column's end are not included.
-    pub(crate) fn written_since(&self, before: &Column) -> Vec<usize> {
-        let mut rows = Vec::new();
+    /// The rows written or added since `before`. For each page that differs from `before`'s, these
+    /// are the rows it remembers writing since, or all its rows if it does not remember `before`'s
+    /// page. A page that `before` lacks counts in full. Rows of `before` past this column's end are
+    /// not included. Costs the column's pages and the runs written, not the rows.
+    pub(crate) fn written_since(&self, before: &Column) -> Runs {
+        let mut rows = Runs::default();
         for (p, now) in self.pages.iter().enumerate() {
-            let start = p * PAGE_ROWS;
+            let start = (p * PAGE_ROWS) as u32;
+            let whole = start..start + now.values.len() as u32;
             match before.pages.get(p) {
                 Some(then) if then.id == now.id => {}
                 Some(then) => match now.rows_since(then.id) {
-                    Some(written) => rows.extend(written.into_iter().flatten().map(|r| start + r as usize)),
-                    None => rows.extend(start..start + now.values.len()),
+                    Some(written) => written.into_iter().for_each(|run| rows.push(start + run.start..start + run.end)),
+                    None => rows.push(whole),
                 },
-                None => rows.extend(start..start + now.values.len()),
+                None => rows.push(whole),
             }
         }
         rows
@@ -372,6 +422,11 @@ mod tests {
         Values::from((0..n).map(|i| i as f64).collect::<Vec<_>>())
     }
 
+    /// The rows written in `now` since `before`.
+    fn rows_written(now: &Column, before: &Column) -> Vec<usize> {
+        now.written_since(before).iter().map(|row| row as usize).collect()
+    }
+
     #[test]
     fn writes_touch_only_their_pages() {
         let column = Column::new(&numbers(PAGE_ROWS * 2 + 10));
@@ -400,19 +455,19 @@ mod tests {
         let source = Column::new(&Values::from(vec![-1.0_f64, -2.0]));
         let once = column.write(column.len(), &[(3, 0), (PAGE_ROWS + 4, 1)], &source).expect("numbers");
         let twice = once.write(once.len(), &[(5, 0)], &source).expect("numbers");
-        assert_eq!(twice.written_since(&column), vec![3, 5, PAGE_ROWS + 4], "every write since, in order");
-        assert_eq!(twice.written_since(&once), vec![5]);
-        assert_eq!(twice.written_since(&twice), Vec::<usize>::new());
+        assert_eq!(rows_written(&twice, &column), vec![3, 5, PAGE_ROWS + 4], "every write since, in order");
+        assert_eq!(rows_written(&twice, &once), vec![5]);
+        assert!(twice.written_since(&twice).is_empty());
         // A page remembers a few writes back. Beyond that it counts as entirely rewritten.
         let values = Column::new(&Values::from((0..=REMEMBERED).map(|k| -2.0 - f64::from(k)).collect::<Vec<_>>()));
         let mut near = once.clone();
         for k in 1..usize::from(REMEMBERED) {
             near = near.write(near.len(), &[(7, k)], &values).expect("numbers");
         }
-        assert_eq!(near.written_since(&column), vec![3, 7, PAGE_ROWS + 4]);
+        assert_eq!(rows_written(&near, &column), vec![3, 7, PAGE_ROWS + 4]);
         let far = near.write(near.len(), &[(7, 0)], &values).expect("numbers");
-        assert_eq!(far.written_since(&column), (0..PAGE_ROWS).chain([PAGE_ROWS + 4]).collect::<Vec<_>>());
-        assert_eq!(far.written_since(&near), vec![7]);
+        assert_eq!(rows_written(&far, &column), (0..PAGE_ROWS).chain([PAGE_ROWS + 4]).collect::<Vec<_>>());
+        assert_eq!(rows_written(&far, &near), vec![7]);
     }
 
     #[test]
@@ -421,13 +476,14 @@ mod tests {
         let source = Column::new(&Values::from(vec![-1.0_f64]));
         let written = column.write(PAGE_ROWS + 12, &[(3, 0)], &source).expect("numbers");
         assert_eq!(
-            written.written_since(&column),
+            rows_written(&written, &column),
             [3, PAGE_ROWS + 10, PAGE_ROWS + 11],
             "the row written, and the rows added past the end"
         );
         let fresh = Column::new(&numbers(PAGE_ROWS + 10));
-        assert_eq!(fresh.written_since(&column).len(), PAGE_ROWS + 10, "an unrelated page counts every row");
-        assert_eq!(column.written_since(&column), Vec::<usize>::new(), "nothing written since itself");
+        let every = fresh.written_since(&column);
+        assert_eq!(every.ranges(), [0..(PAGE_ROWS + 10) as u32], "an unrelated column is one run of every row");
+        assert!(column.written_since(&column).is_empty(), "nothing written since itself");
     }
 
     #[test]
@@ -448,7 +504,7 @@ mod tests {
         // Row 4 holds 4.
         let source = Column::new(&Values::from(vec![-1.0_f64, 4.0]));
         let written = column.write(column.len(), &[(3, 0), (4, 1), (PAGE_ROWS + 4, 0)], &source).expect("numbers");
-        assert_eq!(written.written_since(&column), vec![3, PAGE_ROWS + 4], "only the rows whose values changed");
+        assert_eq!(rows_written(&written, &column), vec![3, PAGE_ROWS + 4], "only the rows whose values changed");
         let again = written.write(written.len(), &[(3, 0), (4, 1)], &source).expect("numbers");
         assert!(again.shares(&written), "pages rewritten with their own values keep their ids");
     }

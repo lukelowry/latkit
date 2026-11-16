@@ -22,10 +22,6 @@ use crate::derive::Jobs;
 use crate::host::Request;
 use crate::{Error, Pending};
 
-/// Most spans a line fetches at one level, middle first. A plot window that needs more draws from
-/// a coarser level.
-const MAX_SPANS: usize = 64;
-
 /// The spans of one manifest's sampled fields, shared by every set drawing them. Holds the base
 /// dataset without their entries, each field's fetched and decoded spans, and how many times a
 /// base was opened.
@@ -35,7 +31,7 @@ pub(crate) struct Fetched {
     url: String,
     base: Base,
     /// Each listed field's spans.
-    fields: Vec<Tiling<Span>>,
+    pub(super) fields: Vec<Tiling<Span>>,
     opened: u64,
 }
 
@@ -91,13 +87,6 @@ impl Fetched {
     /// Fetches and decodes in progress.
     pub(crate) fn under_way(&self) -> usize {
         usize::from(matches!(self.base, Base::Fetching(_))) + self.fields.iter().map(Tiling::under_way).sum::<usize>()
-    }
-
-    /// Releases what set `set` drew.
-    pub(crate) fn release(&mut self, set: u64) {
-        for tiling in &mut self.fields {
-            tiling.release(set);
-        }
     }
 
     /// Takes the base dataset once it arrives: a patch applied to an empty dataset. Each set draws
@@ -274,10 +263,12 @@ fn sampled<'a>(data: &'a Snapshot, listed: &Listed) -> Option<&'a Samples> {
 }
 
 /// The spans a view needs of a field covering `frames`, nearest first. It always needs the spans
-/// of the field's coarsest level holding any entry. When a mark shows the field (`(_, true)`), it
-/// needs the frames around the shown coordinate. When a line traces it (`(true, _)`), it needs the
-/// spans of the level of detail the plot window draws at, middle first. The window's position
-/// among the frames comes from the samples already held, as precisely as they allow.
+/// of the field's coarsest level holding any entry, as many as a window could draw. When a mark
+/// shows the field (`(_, true)`), it needs the frames around the shown coordinate. When a line
+/// traces it (`(true, _)`), it needs the spans of the level of detail the plot window draws at,
+/// middle first. That is the level the trace draws from, so what is fetched is what is drawn. The
+/// window's position among the frames comes from the samples already held, as precisely as they
+/// allow.
 fn wanted(
     frames: &Range<u64>,
     samples: Option<&Samples>,
@@ -297,7 +288,10 @@ fn wanted(
         (first / chunk..end.div_ceil(chunk)).map(move |index| Span { level: level as u8, index })
     };
     let top = (0..=levels).rev().find(|&level| !entries(level).is_empty()).unwrap_or(0);
-    let mut wanted: Vec<Span> = spans(top, frames).take(MAX_SPANS).collect();
+    // A window draws at most a bucket's eight entries per pixel column, within what a trace holds.
+    let drawable = reading.most.min(bucket_frames(1) * u64::from(reading.columns.max(1)));
+    let placeholders = usize::try_from(drawable.div_ceil(chunk)).unwrap_or(usize::MAX);
+    let mut wanted: Vec<Span> = spans(top, frames).take(placeholders).collect();
     let held = samples.filter(|s| !s.is_empty());
     if shown && let Some(samples) = held {
         let frame = samples.bound(reading.at, true).saturating_sub(1);
@@ -308,25 +302,16 @@ fn wanted(
             (Some(samples), Some(across)) => samples.across(across),
             _ => frames.clone(),
         };
-        // A trace draws from one level. When the window needs more than `MAX_SPANS` spans, a coarser
-        // level covers it, rather than fine spans between coarse placeholders, which break the line
-        // where they overlap.
-        let spans_over = |level: u32| {
-            let span = bucket_frames(level).saturating_mul(chunk);
-            window.end.div_ceil(span).saturating_sub(window.start / span)
-        };
-        let mut level = detail(window.end - window.start, reading.columns).min(top);
-        while level < top && spans_over(level) > MAX_SPANS as u64 {
-            level += 1;
-        }
+        // A trace draws from one level: the one whose entries fit a pixel column, or a coarser one
+        // when the trace may not hold that many. Fine spans between coarse placeholders would
+        // break the line where they overlap.
+        let level = detail(window.end - window.start, reading.columns, reading.most).min(top);
         let (held, span) = (entries(level), bucket_frames(level));
         let first = (window.start / span).max(held.start) / chunk;
         let end = window.end.div_ceil(span).min(held.end).div_ceil(chunk);
-        // Choose the nearest spans before allocating: an absolute-index range may be enormous and
-        // sparse.
         let count = end.saturating_sub(first);
         let middle = first + count.saturating_sub(1) / 2;
-        wanted.extend((0..count.min(MAX_SPANS as u64)).map(|offset| {
+        wanted.extend((0..count).map(|offset| {
             let index = if offset % 2 == 0 { middle - offset / 2 } else { middle + offset.div_ceil(2) };
             Span { level: level as u8, index }
         }));
@@ -357,19 +342,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_trace_fetches_one_level_however_wide_its_window() {
-        let reading = Reading { columns: 1000, ..Reading::default() };
-        let traced = |chunk: u32| {
-            let all = wanted(&(0..100_000), None, (true, false), &reading, chunk, 5);
+    fn a_trace_fetches_the_one_level_it_draws_from() {
+        let traced = |most: u64| {
+            let reading = Reading { columns: 1000, most, ..Reading::default() };
+            let all = wanted(&(0..100_000), None, (true, false), &reading, 64, 5);
             all.into_iter().filter(|span| span.level != 5).collect::<Vec<Span>>()
         };
-        // 100,000 frames over 1,000 columns draw from level 2: 1,563 buckets of 64 frames.
-        let wide = traced(64);
-        assert!(wide.iter().all(|span| span.level == 2) && wide.len() == 25, "{wide:?}");
-        // In spans of 8 buckets that is 196 spans, past the most a line fetches, so level 3 covers
-        // the window rather than a middle of level 2 between coarse placeholders.
-        let narrow = traced(8);
-        assert!(narrow.iter().all(|span| span.level == 3), "{narrow:?}");
-        assert!(narrow.len() <= MAX_SPANS, "{} spans", narrow.len());
+        // 100,000 frames over 1,000 columns draw from level 2, whose buckets of 64 frames each fit
+        // a column: 1,563 buckets, in 25 spans.
+        let exact = traced(u64::MAX);
+        assert!(exact.iter().all(|span| span.level == 2) && exact.len() == 25, "{exact:?}");
+        // A trace that may hold only 512 entries draws from level 3 across the whole window,
+        // rather than a middle of level 2 between coarse placeholders.
+        let capped = traced(512);
+        assert!(capped.iter().all(|span| span.level == 3) && capped.len() == 4, "{capped:?}");
     }
 }
