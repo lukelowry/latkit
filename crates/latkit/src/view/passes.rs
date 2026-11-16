@@ -37,6 +37,13 @@ fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
     [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
 }
 
+/// The rectangle that scissor rectangles `a` and `b` share, empty when they share none.
+fn overlap(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let (x, y) = (a[0].max(b[0]), a[1].max(b[1]));
+    let (right, bottom) = ((a[0] + a[2]).min(b[0] + b[2]), (a[1] + a[3]).min(b[1] + b[3]));
+    [x, y, right.saturating_sub(x), bottom.saturating_sub(y)]
+}
+
 /// Begins the main render pass: cleared to `background`, drawn into `view` and resolved into
 /// `resolve` when multisampling, with depth stored only when `probing` reads it.
 fn main_pass<'e>(
@@ -543,8 +550,10 @@ impl View {
     /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark
     /// in scene order, and the lit rows. Once the text pipelines are ready, it also builds the
     /// distance fields of text set this frame, and draws the labels and the overlay's
-    /// `[under, sprites]` sprites, the first `under` before the marks. Depth is stored when
-    /// `probing` reads it. While the camera is unplaced, it only clears.
+    /// `[under, sprites]` sprites, the first `under` before the marks. `depth` is the area where
+    /// a probe or query of this frame reads depth, if any does: depth is then stored, and where the
+    /// frame multisamples, drawn again over that area at one sample a pixel, which WebGL2 can
+    /// read. While the camera is unplaced, it only clears.
     pub(super) fn draw(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -552,7 +561,7 @@ impl View {
         drawn: &mut Drawn,
         frame: &Frame<'_>,
         [under, sprites]: [u32; 2],
-        probing: bool,
+        depth: Option<super::camera::Area>,
     ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
@@ -564,8 +573,9 @@ impl View {
         let background =
             if self.signal.transparent() { [0.0; 4] } else { self.scene.theme.background.to_array().map(f64::from) };
         let clip = self.drawn_area().map(|area| scissor(area, frame)).filter(|s| s[2] > 0 && s[3] > 0);
-        let samples = gpu.samples_for(frame.pixel_ratio);
+        let samples = self.samples(frame.pixel_ratio);
         let resources = self.resources.as_mut().expect("created before passes");
+        let read = depth.map(|area| scissor(area, frame));
         let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
         let groups = resources.groups(&gpu.0, inner);
         // The pass groups of the shaders this frame draws with, each built once per resource
@@ -582,7 +592,7 @@ impl View {
         }
         let passes: Vec<(Shader, wgpu::BindGroup)> =
             shaders.into_iter().map(|shader| (shader, resources.pass(device, inner, shader))).collect();
-        let pick_targets = (probing && samples > 1).then(|| resources.pick_targets(device));
+        let pick_targets = read.filter(|_| samples > 1).map(|read| (resources.pick_targets(device), read));
         let group = |shader: Shader| &passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         let (view, resolve) = match &color {
             Some(color) => (color, Some(frame.target)),
@@ -597,20 +607,22 @@ impl View {
             passes: &passes,
             count: self.marks.len(),
         };
-        if let Some((pick_color, pick_depth)) = &pick_targets {
+        if let Some(((pick_color, pick_depth), read)) = &pick_targets {
             let mut pass = main_pass(encoder, pick_color, None, pick_depth, [0.0; 4], true);
-            if !self.unplaced() {
-                let marks = Marks { samples: 1, ..marks };
+            let marks = Marks { samples: 1, ..marks };
+            let shows = |[_, _, w, h]: [u32; 4]| w > 0 && h > 0;
+            if !self.unplaced() && shows(*read) {
+                let [x, y, w, h] = *read;
+                pass.set_scissor_rect(x, y, w, h);
                 marks.backdrop(&mut pass, drawn, inner);
-                if let Some([x, y, w, h]) = clip {
+                let [x, y, w, h] = clip.map_or(*read, |clip| overlap(clip, *read));
+                if self.layered() && shows([x, y, w, h]) {
                     pass.set_scissor_rect(x, y, w, h);
-                }
-                if self.layered() {
                     marks.opaque(&mut pass, drawn, inner, &self.marks);
                 }
             }
         }
-        let mut pass = main_pass(encoder, view, resolve, &depth, background, probing);
+        let mut pass = main_pass(encoder, view, resolve, &depth, background, read.is_some());
         // Until a fit places the camera, frames show only the background.
         if self.unplaced() {
             return;

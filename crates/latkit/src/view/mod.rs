@@ -211,8 +211,8 @@ pub struct View {
     pixel_ratio: f32,
     /// How each table draws within the view's budget share, and the costs the plan used.
     planning: plan::Planning,
-    /// The most pixel columns a trace may span, set by the plan.
-    trace_columns: u32,
+    /// The most entries a trace may hold, set by the plan.
+    trace_entries: u64,
     stats: Stats,
 }
 
@@ -316,7 +316,7 @@ impl View {
             size: [0.0; 2],
             pixel_ratio: 1.0,
             planning: plan::Planning::default(),
-            trace_columns: u32::MAX,
+            trace_entries: u64::MAX,
             stats: Stats::default(),
         };
         view.set_scene(scene);
@@ -454,13 +454,11 @@ impl View {
     fn swap_when_ready(&mut self) {
         let Some(incoming) = &self.incoming else { return };
         let gpu = self.gpu.clone();
-        let targets = self.targets();
         // While it waits, the compiles that had landed when it last checked.
-        let waiting = if self.scene_version == 0 || targets.is_empty() {
-            None
-        } else {
+        let waiting = if let Some(most) = gpu.samples().filter(|_| self.scene_version > 0) {
             let mut needs = variants::channels(self.incoming_marks(incoming));
-            for (format, samples) in targets {
+            let samples = variants::samples(&incoming.scene, most);
+            for format in self.formats() {
                 needs.extend(variants::draws(&incoming.scene, format, samples));
             }
             let mut inner = gpu.0.lock();
@@ -468,6 +466,8 @@ impl View {
             inner.pipelines.ask(&gpu.0.device, &needs, urgency, &self.compile_waker);
             let ready = inner.pipelines.ready(&needs) || inner.pipelines.refused(&needs).is_some();
             (!ready).then(|| inner.pipelines.landed())
+        } else {
+            None
         };
         if let Some(landed) = waiting {
             self.compiling = Some(landed);
@@ -559,7 +559,8 @@ impl View {
         self.unready = StageSet::default();
         self.compiling = None;
         // If the GPU's sample count is known, start compiling now. Otherwise the first frame asks.
-        if let Some(samples) = gpu.samples() {
+        if let Some(most) = gpu.samples() {
+            let samples = variants::samples(&self.scene, most);
             self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
         }
         self.focus.dirty = true;
@@ -838,7 +839,7 @@ impl View {
     fn fly_to(&mut self, camera: Camera, seconds: Option<Duration>) {
         let least = Duration::from_millis(1);
         let seconds = seconds.unwrap_or_else(|| self.ease().max(least) * 2).max(least).as_secs_f64();
-        let to = camera.within(&self.reach());
+        let to = camera.within(&self.limits());
         self.rig.fly(self.camera, to, self.clock.now(), seconds);
         self.placed = true;
         self.wake();
@@ -1075,10 +1076,9 @@ impl View {
     /// first, so the pipelines a newly added field needs are requested before a frame reads it.
     pub(crate) fn ready_for(&mut self, format: wgpu::TextureFormat, pixel_ratio: f32, input: bool) -> bool {
         let gpu = self.gpu.clone();
-        let samples = gpu.samples_for(pixel_ratio);
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
-        let at = self.ask(&mut inner, (format, samples), input);
+        let at = self.ask(&mut inner, (format, self.samples(pixel_ratio)), input);
         let (unready, asked) = self.unready(&inner, at);
         let landed = inner.pipelines.landed();
         let refused = if inner.pipelines.refusing() { self.refusal(&inner) } else { None };

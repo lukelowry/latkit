@@ -1,11 +1,16 @@
 import package::lib::project::{geographic, globe_amount};
-// The backdrop under every mark: a plane's grid, or the earth's ground and graticule,
-// lit by daylight, with the atmosphere around the globe. Lines are one pixel wide and antialiased
-// per axis. Each axis spaces its lines by the finest step of 1, 2, and 5 times a power of ten (30°
-// and 90° past 10° on the earth) at least the theme's grid spacing apart. The next coarser step
-// always draws, and the finer one fades out as it nears that spacing, so no seam shows. Lines fade where the view grazes the ground, and on a plane, with
-// distance from where the camera looks. The round globe writes its depth slightly below the ground,
-// so marks behind it are hidden and marks on it still draw.
+// The backdrop under every mark: a plane's grid, or the earth's ground and grid, lit by daylight,
+// with the atmosphere around the globe.
+//
+// A grid's lines lie at multiples of two steps, a finer and a coarser, which the frame picks from
+// the camera's zoom alone. Turning or tilting the view so moves no line and fades none. The coarser
+// step always draws, and the finer one fades in as zooming in spreads its lines apart. Lines have a
+// set width in pixels, antialiased by how much of the coordinate a pixel spans. Where they crowd
+// closer than a pixel or two, toward a horizon or the globe's edge, they draw as the share of a
+// pixel they cover. A grid so settles into an even tint there, and neither flickers nor fades away.
+//
+// The round globe writes the depth of the plane through its visible edge, which hides what lies
+// behind the globe and nothing on it.
 
 import package::lib::types::{SPACE_EARTH, SPACE_PLANE, GRID_OFF, GRID_DOTS};
 import package::lib::bind::{frame, eye};
@@ -18,14 +23,17 @@ struct Varyings {
     @location(0) ndc: vec2f,
 }
 
-// How far below the ground the globe's depth is written, in globe radii. It exceeds the sag of a
-// chord a few degrees long, so paths and areas on the ground draw over the globe.
-const GROUND_BIAS: f32 = 1e-3;
-
 // A backdrop pixel: its color, and the ground's depth there.
 struct Ground {
     color: vec4f,
     depth: f32,
+}
+
+// Where a pixel lies on a grid: each coordinate measured from the camera's center, and how much of
+// each a pixel spans.
+struct Gridded {
+    at: vec2f,
+    per_px: vec2f,
 }
 
 struct Out {
@@ -40,78 +48,65 @@ fn vertex(@builtin(vertex_index) i: u32) -> Varyings {
     return Varyings(vec4f(ndc, 0.0, 1.0), ndc);
 }
 
-// Coverage of grid lines `pitch` apart on each axis at `p`, where `p` changes by `w` per pixel, per
-// axis. Lines are a pixel wide and fade out as their cells shrink to a few pixels.
-fn lines(p: vec2f, w: vec2f, pitch: vec2f) -> vec2f {
-    let cells = max(w / pitch, vec2f(1e-12));
-    let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
-    return saturate(1.0 - px) * (1.0 - smoothstep(vec2f(0.08), vec2f(0.25), cells));
+// The pixels between lines a step apart, where a pixel spans `per_px` steps.
+fn cells(per_px: vec2f) -> vec2f {
+    return 1.0 / clamp(per_px, vec2f(1e-30), vec2f(1e30));
 }
 
-// Coverage of grid dots `pitch` apart at `p`, where `p` changes by `w` per pixel. Dots are a CSS
-// pixel across on any screen and fade out as their cells shrink to a few pixels.
-fn dots(p: vec2f, w: vec2f, pitch: f32) -> f32 {
-    let cells = max(w / pitch, vec2f(1e-12));
-    let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
-    return saturate(eye.pixel_ratio + 0.5 - length(px)) * (1.0 - smoothstep(0.08, 0.25, max(cells.x, cells.y)));
+// How far `u`, a coordinate counted in steps, lies from the nearest line, in pixels.
+fn away(u: vec2f, cell: vec2f) -> vec2f {
+    return abs(fract(u + 0.5) - 0.5) * cell;
 }
 
-// The finest step at least `least`, in multiples of `pitch` from `lowest` to `highest`: 1, 2, or 5
-// times a power of ten, and on the earth (`degrees`) 30 and 90 past 10.
-fn nice(least: f32, pitch: f32, lowest: f32, highest: f32, degrees: bool) -> f32 {
-    let x = clamp(least / pitch, lowest, highest);
-    var decade = exp2(floor(log2(x) * 0.30103) * 3.3219281);
-    // Rounding can leave the decade a step off.
-    decade = select(decade, decade * 10.0, x > decade * 10.0001);
-    decade = select(decade, decade * 0.1, x < decade * 0.9999);
-    let m = x / decade;
-    var step = select(select(select(10.0, 5.0, m <= 5.0001), 2.0, m <= 2.0001), 1.0, m <= 1.0001) * decade;
-    if degrees && step > 10.0001 {
-        step = select(90.0, 30.0, step <= 30.0001);
+// Coverage of lines a step apart on each axis, `width` pixels wide, at `u` steps along each
+// coordinate, where a pixel spans `per_px` steps. Lines under three pixels apart blend toward the
+// share of a pixel they cover.
+fn lines(u: vec2f, per_px: vec2f, width: f32) -> vec2f {
+    let cell = cells(per_px);
+    let drawn = saturate(0.5 * (width + 1.0) - away(u, cell));
+    return mix(saturate(width / cell), drawn, smoothstep(vec2f(1.0), vec2f(3.0), cell));
+}
+
+// Coverage of dots where lines a step apart would cross, each twice `width` pixels across.
+fn dots(u: vec2f, per_px: vec2f, width: f32) -> f32 {
+    let cell = cells(per_px);
+    let drawn = saturate(width + 0.5 - length(away(u, cell)));
+    let share = saturate(PI * width * width / (cell.x * cell.y));
+    return mix(share, drawn, smoothstep(1.0, 3.0, min(cell.x, cell.y)));
+}
+
+// Coverage of the grid at `g`: lines (or dots) at the frame's finer step, faded in as far as the
+// frame says, over those at its coarser step.
+fn grid(g: Gridded) -> f32 {
+    let width = frame.grid_width * eye.pixel_ratio;
+    let fine = g.at / frame.grid_step.x + frame.grid_phase.xy;
+    let coarse = g.at / frame.grid_step.y + frame.grid_phase.zw;
+    let fine_px = g.per_px / frame.grid_step.x;
+    let coarse_px = g.per_px / frame.grid_step.y;
+    if frame.grid_kind == GRID_DOTS {
+        return max(dots(fine, fine_px, width) * frame.grid_fade, dots(coarse, coarse_px, width));
     }
-    return min(step, highest) * pitch;
-}
-
-// Grid lines (or dots) in multiples of `pitch` from `lowest` to `highest`, at least the theme's
-// grid spacing apart on each axis. The next coarser step draws whole, and the finer one fades out
-// as its lines near that spacing.
-fn grid(p: vec2f, w: vec2f, pitch: f32, lowest: f32, highest: f32, degrees: bool, dotted: bool) -> f32 {
-    let least = frame.grid_spacing * eye.pixel_ratio;
-    let fine = vec2f(
-        nice(least * w.x, pitch, lowest, highest, degrees),
-        nice(least * w.y, pitch, lowest, highest, degrees),
-    );
-    let coarse = vec2f(
-        nice(fine.x * 1.5, pitch, lowest, highest, degrees),
-        nice(fine.y * 1.5, pitch, lowest, highest, degrees),
-    );
-    let fade = smoothstep(vec2f(least), vec2f(2.0 * least), fine / max(w, vec2f(1e-30)));
-    if dotted {
-        // Dots sit where lines would cross, so both axes step alike.
-        let finest = max(fine.x, fine.y);
-        return max(dots(p, w, finest) * min(fade.x, fade.y), dots(p, w, max(coarse.x, coarse.y)));
-    }
-    let shown = max(lines(p, w, fine) * fade, lines(p, w, coarse));
+    let shown = max(lines(fine, fine_px, width) * frame.grid_fade, lines(coarse, coarse_px, width));
     return max(shown.x, shown.y);
+}
+
+// How much of `p` a pixel spans, the same whichever way the view is turned.
+fn span(p: f32) -> f32 {
+    return length(vec2f(dpdx(p), dpdy(p)));
 }
 
 fn blend(color: vec4f, over: vec4f, coverage: f32) -> vec4f {
     return vec4f(mix(color.rgb, over.rgb, coverage * over.a), color.a);
 }
 
-// The plane's grid at `g`, where the view ray meets elevation 0, faded where the ray grazes the
-// plane and away from the center.
-fn plane(g: vec3f, d: vec3f, ahead: bool) -> vec4f {
-    let p = g.xy + frame.center_hi + frame.center_lo;
-    let w = fwidth(g.xy);
+// The plane's grid at `g`, where the view ray meets elevation 0.
+fn plane(g: vec3f, ahead: bool) -> vec4f {
     let ground = frame.background;
     if frame.grid_kind == GRID_OFF {
         return ground;
     }
-    let near = 1.0 - smoothstep(0.6, 1.0, length(g.xy) / max(frame.grid_fade, 1e-30));
-    let fade = f32(ahead) * smoothstep(0.02, 0.15, abs(d.z)) * select(1.0, near, frame.grid_fade > 0.0);
-    let c = grid(p, w, frame.grid_pitch, 1.0, 1e30, false, frame.grid_kind == GRID_DOTS) * fade;
-    return blend(ground, frame.grid_color, c);
+    let at = Gridded(g.xy, vec2f(span(g.x), span(g.y)));
+    return blend(ground, frame.grid_color, grid(at) * f32(ahead));
 }
 
 // Longitude and latitude in degrees at world point `w` on the flat map.
@@ -129,8 +124,57 @@ fn globe_degrees(w: vec3f, radius: f32) -> vec2f {
     return vec2f(lon, degrees(asin(clamp(v.y, -1.0, 1.0))));
 }
 
+// Where world point `w` on the flat map lies on the earth's grid, in degrees. The latitude is
+// measured from the center's by how far north `w` lies of it, so it keeps its precision at any
+// zoom, where the latitude itself would round to a few pixels.
+fn map_gridded(w: vec3f) -> Gridded {
+    // exp(y) - 1, summed as a series near 0, where the subtraction would lose it.
+    let grown = select(exp(w.y) - 1.0, w.y * (1.0 + w.y * (0.5 + w.y / 6.0)), abs(w.y) < 0.01);
+    let k = exp(frame.mercator_y);
+    let here = k * (grown + 1.0);
+    let lat = 2.0 * atan(k * grown / (1.0 + k * here));
+    // A step north on the map covers less latitude toward the poles.
+    let narrowing = 2.0 * here / (1.0 + here * here);
+    return Gridded(degrees(vec2f(w.x, lat)), degrees(vec2f(span(w.x), narrowing * span(w.y))));
+}
+
+// Where world point `w` on the globe of `radius` lies on the earth's grid, in degrees. Both are
+// measured from the center's, from how far `w` lies from the point the camera looks at, so they
+// keep their precision at any zoom. What a pixel spans comes from the direction from the globe's
+// center, which changes evenly where longitude wraps and at the poles.
+fn globe_gridded(w: vec3f, radius: f32) -> Gridded {
+    let u = w / radius;
+    let s = frame.latitude_sin;
+    let c = frame.latitude_cos;
+    // The direction from the globe's center in the earth's axes, less the center's own height.
+    let v = vec3f(u.x, u.y * c + u.z * s, (1.0 + u.z) * c - u.y * s);
+    let lon = atan2(v.x, v.z);
+    // The latitude whose sine is the center's plus `v.y`.
+    let lat = 2.0 * atan(v.y / (c + sqrt(max(c * c - v.y * (2.0 * s + v.y), 0.0))));
+    let dx = dpdx(v);
+    let dy = dpdy(v);
+    let level = max(v.x * v.x + v.z * v.z, 1e-12);
+    let lon_px = length(vec2f(v.z * dx.x - v.x * dx.z, v.z * dy.x - v.x * dy.z)) / level;
+    let lat_px = length(vec2f(dx.y, dy.y)) / sqrt(level);
+    return Gridded(degrees(vec2f(lon, lat)), degrees(vec2f(lon_px, lat_px)));
+}
+
+// The depth the globe of `radius` hides by along the view ray `o + d t`: that of the plane through
+// its visible edge. Everything at or above the ground on the side facing the eye lies in front of
+// that plane, and everything on the far side behind it. The test is so exact, and nothing drawn on
+// the ground has to clear a bias: a flat triangle between visible corners never crosses the plane.
+// The globe's center lies `radius` below the origin, so the plane is where
+// dot(x, eye) + radius * (x.z + eye.z) is zero. Written from the origin, its small terms keep
+// their precision at any zoom.
+fn horizon_depth(o: vec3f, d: vec3f, radius: f32) -> f32 {
+    let e = eye.position.xyz;
+    let t = -(dot(o, e) + radius * (o.z + e.z)) / (dot(d, e) + radius * d.z);
+    let at = eye.clip_from_world * vec4f(o + d * t, 1.0);
+    return clamp(at.z / at.w, FAR_Z, NEAR_Z);
+}
+
 // The earth: the flat map's square or the globe's disc, blended as the projection morphs, lit by
-// daylight, with the graticule on it and the atmosphere around the globe.
+// daylight, with the grid on it and the atmosphere around the globe.
 fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     // The flat map is one world. It ends where Web Mercator does, at y = ±π, and at the
     // antimeridian, x = ±π from the prime meridian. The distance to the antimeridian starts from
@@ -160,18 +204,19 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     }
     ground = vec4f(ground.rgb * daylight(p), ground.a);
     var color = blend(frame.background, ground, covered);
-    let facing = dot(normalize(hit - center), -d);
-    if frame.graticule != 0u {
-        // Longitude jumps where it wraps. A second, shifted wrapping keeps the derivative steady
-        // there.
-        let wrapped = fract(p.x / 360.0) * 360.0;
-        let w = vec2f(min(fwidth(p.x), fwidth(wrapped)), fwidth(p.y));
-        let fade = select(smoothstep(0.02, 0.15, abs(d.z)), smoothstep(0.0, 0.3, facing), globe);
-        color = blend(color, frame.grid_color, grid(p, w, 1.0, 0.01, 90.0, true, false) * fade * covered);
+    if frame.grid_kind != GRID_OFF {
+        var at: Gridded;
+        if globe {
+            at = globe_gridded(hit, radius);
+        } else {
+            at = map_gridded(g);
+        }
+        color = blend(color, frame.grid_color, grid(at) * covered);
     }
     if frame.atmosphere.a > 0.0 && globe_amount() > 0.0 {
         // A thin rim of atmosphere over the globe's edge, and a halo out to 1.045 globe radii. It
         // is lit where the sun is up over the ground nearest the view ray.
+        let facing = dot(normalize(hit - center), -d);
         let rim = pow(1.0 - saturate(facing), 6.0) * round;
         let halo = pow(1.0 - smoothstep(radius, radius * 1.045, off), 2.0) * (1.0 - round) * f32(along > 0.0);
         let below = daylight(globe_degrees(o + d * along, radius));
@@ -180,8 +225,7 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     }
     var depth = FAR_Z;
     if globe_amount() >= 1.0 && round > 0.5 {
-        let under = eye.clip_from_world * vec4f(hit - normalize(hit - center) * radius * GROUND_BIAS, 1.0);
-        depth = clamp(under.z / under.w, FAR_Z, NEAR_Z);
+        depth = horizon_depth(o, d, radius);
     }
     return Ground(color, depth);
 }
@@ -198,7 +242,7 @@ fn fragment(v: Varyings) -> Out {
     var color = frame.background;
     var depth = FAR_Z;
     if frame.space == SPACE_PLANE {
-        color = plane(g, d, t > 0.0);
+        color = plane(g, t > 0.0);
     } else if geographic() {
         let ground = earth(o, d, g, t > 0.0);
         color = ground.color;

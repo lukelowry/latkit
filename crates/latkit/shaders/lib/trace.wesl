@@ -1,10 +1,11 @@
 // Visible trace points are planned once on the CPU. Each row block holds a ring of aligned records:
-// coordinate high/low, absolute value address, and rows in that value's page. A missing address
-// breaks the line. Drawing, picking, and bounds all read this same plan.
-import package::lib::types::{NONE, MISSING};
+// coordinate high/low, absolute value address, and a word of the rows in that value's page, how
+// many entries the point reads, and whether it draws their greatest. A missing address breaks the
+// line. Drawing, picking, and bounds all read this same plan.
+import package::lib::types::{NONE, MISSING, TRACE_ROWS, TRACE_COUNT, TRACE_MOST, TRACE_GREATEST};
 import package::lib::bind::{program_words, mark, word};
 import package::lib::words::word_quad;
-import package::lib::read::page_of;
+import package::lib::read::{page_of, missing_bits};
 
 // The row block's records, point count, and row within each value page.
 fn trace_cursor(row: u32) -> vec3u {
@@ -12,14 +13,30 @@ fn trace_cursor(row: u32) -> vec3u {
     return vec3u(mark.trace + 4u * at.x * mark.trace_capacity, select(0u, mark.trace_points, at.x < mark.trace_rows), at.y);
 }
 
-// Coordinate high/low and value bits; a missing value represents a hidden point.
-// Both words are read whatever the point, and a point past the plan or without a value selects
-// missing (see `lib/read.wesl`).
+// Coordinate high/low and value bits; a missing value represents a hidden point. A point standing
+// for a pixel column reads its few entries, a page row apart, and draws the least of them, or the
+// greatest when its record says so. Missing entries are passed over, and a column with none is
+// missing. The record and its entries are read whatever the point, and a point past the plan or
+// without a value selects missing (see `lib/read.wesl`).
 fn trace_read(base: vec3u, point: u32) -> vec3u {
     let slot = (mark.trace_head + point) & (mark.trace_capacity - 1u);
     let cursor = word_quad(program_words, base.x + 4u * slot);
-    let value = word(cursor.z + base.z);
-    let missing = (point >= base.y) | (cursor.z == NONE) | (base.z >= cursor.w);
+    let per = cursor.w & TRACE_ROWS;
+    let count = clamp((cursor.w >> TRACE_COUNT) & 0xFFu, 1u, TRACE_MOST);
+    let greatest = (cursor.w & TRACE_GREATEST) != 0u;
+    var value = MISSING;
+    var best = 0.0;
+    for (var i = 0u; i < count; i++) {
+        let bits = word(cursor.z + i * per + base.z);
+        let v = bitcast<f32>(bits);
+        let below = v < best;
+        let above = v > best;
+        let better = missing_bits(value) | select(below, above, greatest);
+        let takes = !missing_bits(bits) & better;
+        value = select(value, bits, takes);
+        best = select(best, v, takes);
+    }
+    let missing = (point >= base.y) | (cursor.z == NONE) | (base.z >= per);
     return select(vec3u(cursor.xy, value), vec3u(0u, 0u, MISSING), missing);
 }
 

@@ -24,9 +24,9 @@
 //!   CPU and GPU time per frame, and exact work, and judges them against their allowed growth with
 //!   size, the committed work, and this machine's times. A lost device stops the sweep. `--quick`
 //!   visits each scenario once at its smallest size. See `benchmark/run.ts`.
-//! - `wasm [--dev]`: builds `latkit-js`, binds it with the `wasm-bindgen` CLI version in
-//!   `Cargo.lock`, and compiles the npm wrapper. `--dev` builds faster, without link-time
-//!   optimization.
+//! - `wasm [--dev]`: builds `latkit-js` and the modules a page loads on demand (`latkit-jobs`,
+//!   `latkit-wgsl`), binds them with the `wasm-bindgen` CLI version in `Cargo.lock`, and compiles
+//!   the npm wrapper. `--dev` builds faster, without link-time optimization.
 //! - `bindgen-version`: prints the `wasm-bindgen` version in `Cargo.lock`. CI installs that version
 //!   of the CLI.
 //! - `version`: sets the crates' version to the npm package's, as changesets set it.
@@ -136,7 +136,7 @@ fn rust() -> Result {
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"])?;
     // The npm package's browser build, which the native lint does not compile.
-    let browser = ["-p", "latkit-js", "-p", "latkit-wgsl", "--target", "wasm32-unknown-unknown"];
+    let browser = ["-p", "latkit-js", "-p", "latkit-jobs", "-p", "latkit-wgsl", "--target", "wasm32-unknown-unknown"];
     cargo(&[&["clippy", "--locked"][..], &browser, &["--", "-D", "warnings"]].concat())?;
     run_with(env!("CARGO"), &["test", "--locked", "--workspace"], &gpu)?;
     run_with(
@@ -205,9 +205,9 @@ fn wasm(dev: bool) -> Result<String> {
     build_wasm(dev, "npm")
 }
 
-/// Builds the wasm package into `output`: latkit, and the WGSL translator a page loads when it draws
-/// a custom marker. Returns where latkit's build script wrote the linked shaders and
-/// `shaders.json`, which the browser gate reads.
+/// Builds the wasm package into `output`: latkit, the jobs its workers run, and the WGSL translator
+/// a page loads when it draws a custom marker. Returns where latkit's build script wrote the linked
+/// shaders and `shaders.json`, which the browser gate reads.
 fn build_wasm(dev: bool, output: &str) -> Result<String> {
     let profile = if dev { "wasm-dev" } else { "wasm" };
     let args = [
@@ -215,6 +215,8 @@ fn build_wasm(dev: bool, output: &str) -> Result<String> {
         "--locked",
         "-p",
         "latkit-js",
+        "-p",
+        "latkit-jobs",
         "-p",
         "latkit-wgsl",
         "--profile",
@@ -252,7 +254,8 @@ fn build_wasm(dev: bool, output: &str) -> Result<String> {
         ));
     }
     let pkg = format!("{output}/pkg");
-    for (crate_name, name) in [("latkit_js", "latkit"), ("latkit_wgsl", "latkit_wgsl")] {
+    for (crate_name, name) in [("latkit_js", "latkit"), ("latkit_jobs", "latkit_jobs"), ("latkit_wgsl", "latkit_wgsl")]
+    {
         let wasm = format!("target/wasm32-unknown-unknown/{profile}/{crate_name}.wasm");
         run("wasm-bindgen", &[wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", name])?;
     }

@@ -80,11 +80,11 @@ export default page({
     const room = (s: typeof settings): Scene => {
       const paint = PAINTS[s.paint];
       return {
-        space: { plane: { grid: { lines: { pitch: 1 } } } },
+        space: { plane: { grid: { lines: { step: 1 } } } },
         theme: {
           base: 'dark',
           background: '#101214',
-          grid: '#ffffff1c',
+          grid: { color: '#ffffff1c' },
           vertex: { radius: 0 },
         },
         controls: { pickRadius: 14 },

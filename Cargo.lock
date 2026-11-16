@@ -849,6 +849,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "latkit-jobs"
+version = "0.9.0"
+dependencies = [
+ "latkit",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "latkit-js"
 version = "0.9.0"
 dependencies = [

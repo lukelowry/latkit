@@ -14,7 +14,7 @@ export default async function (): Promise<Picture> {
   const level = field('level');
   return {
     scene: {
-      space: { earth: { graticule: false } },
+      space: { earth: { grid: 'off' } },
       ease: 0,
       theme: { background: '#0b0f14', earth: { ground: '#0b0f14' } },
       marks: [

@@ -67,7 +67,8 @@ fn json<T: serde::de::DeserializeOwned>(what: &str, text: &str) -> Result<T, Err
 fn to_json(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value).expect("latkit values serialize to JSON")
 }
-/// Runs views' jobs with `run`, the page's workers: `(bytes: Uint8Array) => Promise<Uint8Array>`.
+/// Runs views' jobs with `run`, the page's workers, which hold the jobs module:
+/// `(bytes: Uint8Array) => Promise<Uint8Array>`.
 #[wasm_bindgen(js_name = setJobs)]
 pub fn set_jobs(run: js_sys::Function) {
     latkit::host::Browser::set_jobs(run);
@@ -78,19 +79,6 @@ pub fn set_jobs(run: js_sys::Function) {
 #[wasm_bindgen(js_name = setTranslator)]
 pub fn set_translator(translate: js_sys::Function) {
     latkit::host::Browser::set_translator(translate);
-}
-
-/// Runs a job a view handed to the page, in a worker, and returns the result's bytes. The job's
-/// bytes come in once, owned, rather than borrowed and copied again.
-#[wasm_bindgen]
-pub fn job(bytes: Vec<u8>) -> Vec<u8> {
-    latkit::host::Job::from_bytes(bytes).run()
-}
-
-/// The compiled module, for workers to instantiate.
-#[wasm_bindgen]
-pub fn module() -> JsValue {
-    wasm_bindgen::module()
 }
 
 /// A CSS `linear-gradient` toward `direction` through `map`, given as JSON (a catalog name or

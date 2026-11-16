@@ -114,9 +114,9 @@
           "$ref": "#/$defs/Projection",
           "description": "A flat web mercator map (`mercator`) or a globe (`globe`). Defaults to `mercator`."
         },
-        "graticule": {
-          "type": "boolean",
-          "description": "Whether lines of longitude and latitude cross the ground, in the theme's `grid` color.\nDefaults to `true`."
+        "grid": {
+          "$ref": "#/$defs/Grid",
+          "description": "The grid of longitude and latitude on the ground. Defaults to lines."
         },
         "daylight": {
           "type": [
@@ -148,74 +148,81 @@
       ],
       "description": "How the earth is projected."
     },
+    "Grid": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "lines",
+            "dots"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "description": "Lines along both axes.",
+              "type": "object",
+              "properties": {
+                "lines": {
+                  "type": "object",
+                  "properties": {
+                    "step": {
+                      "description": "The finest step between lines. Defaults to 10 on a plane and to 0.01° on the earth.",
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "format": "double"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "lines"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "description": "Dots where lines would cross.",
+              "type": "object",
+              "properties": {
+                "dots": {
+                  "type": "object",
+                  "properties": {
+                    "step": {
+                      "description": "The finest step between dots. Defaults to 10 on a plane and to 0.01° on the earth.",
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "format": "double"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "dots"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      ],
+      "description": "The grid on the ground of a plane or the earth, under the marks: `\"off\"`, `\"lines\"`, `\"dots\"`,\nor `{ lines | dots: { step } }`. It draws in the theme's `grid` look.\n\nLines lie at multiples of a step, in position units (degrees of longitude and latitude on the\nearth). The camera's zoom alone picks the step: the finest of `step` times 1, 2, or 5 and a\npower of ten that keeps lines the theme's `grid.spacing` apart on screen. On the earth the\nsteps are those of degrees, with 30° and 90° past 10°. Turning or tilting the view moves no\nline, and lines run on to the horizon."
+    },
     "Plane": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "grid": {
           "$ref": "#/$defs/Grid",
-          "description": "The grid drawn under the marks. Defaults to lines 10 units apart."
+          "description": "The grid on the ground under the marks. Defaults to lines."
         }
       },
       "description": "A plane: positions are in plane units."
-    },
-    "Grid": {
-      "oneOf": [
-        {
-          "type": "string",
-          "const": "off",
-          "description": "No grid."
-        },
-        {
-          "type": "object",
-          "properties": {
-            "lines": {
-              "type": "object",
-              "properties": {
-                "pitch": {
-                  "description": "Units between lines.",
-                  "type": "number",
-                  "format": "double"
-                }
-              },
-              "additionalProperties": false,
-              "required": [
-                "pitch"
-              ]
-            }
-          },
-          "required": [
-            "lines"
-          ],
-          "additionalProperties": false,
-          "description": "Lines `pitch` units apart, thinned by factors of ten as the view zooms out."
-        },
-        {
-          "type": "object",
-          "properties": {
-            "dots": {
-              "type": "object",
-              "properties": {
-                "pitch": {
-                  "description": "Units between dots.",
-                  "type": "number",
-                  "format": "double"
-                }
-              },
-              "additionalProperties": false,
-              "required": [
-                "pitch"
-              ]
-            }
-          },
-          "required": [
-            "dots"
-          ],
-          "additionalProperties": false,
-          "description": "Dots `pitch` units apart."
-        }
-      ],
-      "description": "A plane's grid: `\"off\"`, `{ lines: { pitch } }`, or `{ dots: { pitch } }`."
     },
     "Plot": {
       "type": "object",
@@ -2384,14 +2391,8 @@
               "tsType": "Color"
             },
             "grid": {
-              "description": "The color of a plane's grid, a plot's grid lines, and the earth's graticule.",
-              "type": "string",
-              "tsType": "Color"
-            },
-            "gridSpacing": {
-              "description": "The least distance between the lines (or dots) of a plane's grid and of the earth's\ngraticule, in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten\n(and 30° and 90° on the earth), and the finer step fades out as it nears this distance.",
-              "type": "number",
-              "format": "float"
+              "description": "How a plane's grid, the earth's grid, and a plot's grid lines look.",
+              "$ref": "#/$defs/GridTheme"
             },
             "missing": {
               "description": "The color a colormap gives a missing value, such as a row with no value in the field.",
@@ -2456,6 +2457,28 @@
         }
       ],
       "description": "Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped\nby subject: a base theme's name (`\"dark\"` or `\"light\"`), or options that change a base. `base`\nnames the base and defaults to `dark`. Each option replaces only the base value it sets.\n\nLengths are in CSS pixels, except comet lengths given in position units."
+    },
+    "GridTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "The color of lines and dots.",
+          "tsType": "Color",
+          "type": "string"
+        },
+        "width": {
+          "type": "number",
+          "format": "float",
+          "description": "The width of a line, in CSS pixels. A dot is twice as wide."
+        },
+        "spacing": {
+          "type": "number",
+          "format": "float",
+          "description": "The least distance between the lines (or dots) of a plane's or the earth's grid, in CSS\npixels. A finer step fades in as zooming in spreads its lines from this distance to twice\nit."
+        }
+      },
+      "description": "How a plane's grid, the earth's grid, and a plot's grid lines look."
     },
     "TextTheme": {
       "type": "object",
@@ -2525,7 +2548,7 @@
         "bow": {
           "type": "number",
           "format": "float",
-          "description": "How far edges joining the same two vertices bow apart. Each lane bows out\nby this fraction of the edge's length, measured at its middle. Parallel edges spread at most\neight lanes wide, and more lanes pack closer. Bows scale with the zoom."
+          "description": "How far edges joining the same two vertices bow apart. Each lane bows out\nby this fraction of the edge's length, measured at its middle. Parallel edges spread at most\neight lanes wide, and more lanes pack closer. Bows scale with the zoom. With 0 they run\nstraight, one over another."
         },
         "arrow": {
           "type": "number",
@@ -2724,6 +2747,10 @@
             "motion": {
               "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and\noptions that read `elapsed()`. `system` follows the user's reduced-motion setting, `full`\nanimates everything, and `reduced` animates only motion the user drives. Defaults to\n`system`.",
               "$ref": "#/$defs/Motion"
+            },
+            "reach": {
+              "description": "How far the camera may go from what fits have framed. Defaults to `fit`.",
+              "$ref": "#/$defs/Reach"
             }
           },
           "additionalProperties": false
@@ -2811,6 +2838,48 @@
         }
       ],
       "description": "How much a view animates on its own."
+    },
+    "Reach": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "fit",
+            "space"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "zoomOut": {
+              "description": "How many zoom levels the camera may zoom out past the widest fit. `None` sets no limit.\nDefaults to 3.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "zoomIn": {
+              "description": "How many zoom levels the camera may zoom in past the closest fit. `None` sets no limit.\nDefaults to `None`: how far in a view needs to go depends on how close its rows lie, not\non how far they spread.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "pan": {
+              "description": "How far the center may stray from the box, in sizes of the box, or of half the view at the\nwidest fit's zoom when the box is smaller. `None` sets no limit. Defaults to 1.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "description": "How far a map camera may go from the box fits have framed: a preset (`\"fit\"` or `\"space\"`), or\noptions that change `fit`. `fit` keeps the camera near that box, and `space` sets no limit of\nits own. The space's limits always hold, as [`Earth`](crate::Earth) describes, and a zoom never\npasses level 24.\n\nThe box is what the last fit to everything framed, grown by any rows fitted since."
     },
     "Title": {
       "anyOf": [
@@ -3809,13 +3878,19 @@
           "format": "uint64",
           "minimum": 0,
           "description": "The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to\n32 MiB."
+        },
+        "tiles": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Memory in bytes for the tiles fetched from every [`Tiles`](crate::Tiles) source the views\ndraw, and the rows decoded from them. Tiles a view draws always stay. Past this, the tiles\nno view draws are dropped, least recently drawn first, and fetched again if drawn again.\nDefaults to 256 MiB."
         }
       },
       "required": [
         "bytes",
         "uploadPerFrame"
       ],
-      "description": "How much GPU memory latkit uses."
+      "description": "How much memory latkit keeps for a `Gpu`'s views: on the GPU for the data they draw, and beside\nit for the tiles they fetched."
     },
     "Shot": {
       "type": "object",
@@ -5044,6 +5119,103 @@
       ],
       "description": "The kind of values a field holds."
     },
+    "TilesDescription": {
+      "type": "object",
+      "properties": {
+        "attribution": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The credit the source asks to be shown with its tiles, as the source writes it, which may\nbe HTML. `None` when it asks for none."
+        },
+        "zooms": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The lowest and highest zoom the source has tiles for. `None` for time tiles."
+        },
+        "bounds": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number",
+            "format": "double"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "The area its tiles cover: west, south, east, and north, in degrees. `None` for time tiles."
+        },
+        "layers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/outputs/LayerDescription"
+          },
+          "description": "The layers a vector source lists, each a table that marks can draw. Empty when it lists\nnone, as a URL template and time tiles do."
+        }
+      },
+      "required": [
+        "attribution",
+        "zooms",
+        "bounds",
+        "layers"
+      ],
+      "description": "What a tile source holds, as its index says. See [`Tiles::describe`]."
+    },
+    "LayerDescription": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The layer's name, which names its table."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What the source says the layer holds, if anything."
+        },
+        "zooms": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The lowest and highest zoom whose tiles have the layer, when the source states them."
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/outputs/FieldDescription"
+          },
+          "description": "The properties of its features, each a field of its table, sorted by name."
+        }
+      },
+      "required": [
+        "name",
+        "fields"
+      ],
+      "description": "A summary of one layer of a vector tile source."
+    },
     "Budget": {
       "type": "object",
       "additionalProperties": false,
@@ -5059,13 +5231,20 @@
           "format": "uint64",
           "minimum": 0,
           "description": "The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to\n32 MiB."
+        },
+        "tiles": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Memory in bytes for the tiles fetched from every [`Tiles`](crate::Tiles) source the views\ndraw, and the rows decoded from them. Tiles a view draws always stay. Past this, the tiles\nno view draws are dropped, least recently drawn first, and fetched again if drawn again.\nDefaults to 256 MiB."
         }
       },
       "required": [
         "bytes",
-        "uploadPerFrame"
+        "uploadPerFrame",
+        "tiles"
       ],
-      "description": "How much GPU memory latkit uses."
+      "description": "How much memory latkit keeps for a `Gpu`'s views: on the GPU for the data they draw, and beside\nit for the tiles they fetched."
     },
     "Value": {
       "description": "A value read from a dataset: a number (`null` when not finite), boolean, or text; a geometry as nested `[x, y]` points; a reference as the id of the row it names.",

@@ -35,12 +35,13 @@ pub(crate) fn bucket_frames(level: u32) -> u64 {
     1 << (3 * level)
 }
 
-/// The level of detail for drawing `frames` frames across `columns` pixel columns. Uses frames
-/// (level 0) while there are at most two per column, else the finest level with at most two
-/// buckets per column.
-pub(crate) fn detail(frames: u64, columns: u32) -> u32 {
-    let needed = frames.div_ceil(2 * u64::from(columns.max(1)));
-    if needed <= 1 { 0 } else { (1..=MAX_LEVEL).find(|&k| bucket_frames(k) >= needed).unwrap_or(MAX_LEVEL) }
+/// The level a trace of `frames` frames draws from across `columns` pixel columns: the coarsest
+/// whose entries each span at most one column, so no column draws from an entry wider than itself.
+/// Coarser while the trace would hold more than `most` entries, which is all its budget allows.
+pub(crate) fn detail(frames: u64, columns: u32, most: u64) -> u32 {
+    let per_column = frames / u64::from(columns.max(1));
+    let exact = (1..=MAX_LEVEL).take_while(|&k| bucket_frames(k) <= per_column).last().unwrap_or(0);
+    (exact..MAX_LEVEL).find(|&k| frames.div_ceil(bucket_frames(k)) <= most).unwrap_or(MAX_LEVEL)
 }
 
 /// Coordinates stored per entry of `level`: 1 for a frame, 2 for a bucket (its first and last
@@ -504,6 +505,13 @@ impl Samples {
     /// midpoint.
     pub(crate) fn drawn_at(&self, level: u32, index: u64) -> Option<f64> {
         self.axis_page(level, index)?.drawn(index)
+    }
+
+    /// The coordinate each entry of `run` is drawn at: a frame's own, or a bucket's midpoint. NaN
+    /// for a missing entry.
+    pub(crate) fn drawn(&self, run: &Run) -> Vec<f64> {
+        let (at, _) = self.read(run, &[]);
+        if run.level == 0 { at } else { at.chunks(2).map(|c| f64::midpoint(c[0], c[1])).collect() }
     }
 
     /// The coordinate of `frame`, if present.

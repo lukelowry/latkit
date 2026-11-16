@@ -17,30 +17,13 @@ fn vector(v: DVec3) -> [f32; 4] {
     [v.x as f32, v.y as f32, v.z as f32, 0.0]
 }
 
-/// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, at axis
-/// coordinate `at` and `elapsed` seconds on the view's clock. `linear` says the target is sRGB and
-/// encodes color itself, so shaders write linear color. Pointer, probe, and focus words start
-/// empty. Theme lengths are in CSS pixels.
-pub(crate) fn frame(
-    scene: &Scene,
-    projected: &Projected,
-    size: [f64; 2],
-    linear: bool,
-    elapsed: f64,
-    at: f64,
-) -> wgsl::Frame {
+/// The frame uniform for `scene` seen through `projected`, at axis coordinate `at` and `elapsed`
+/// seconds on the view's clock. `linear` says the target is sRGB and encodes color itself, so
+/// shaders write linear color. Pointer, probe, and focus words start empty. Theme lengths are in
+/// CSS pixels.
+pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed: f64, at: f64) -> wgsl::Frame {
     let theme = &scene.theme;
     let (cx, cy) = (split(projected.center[0]), split(projected.center[1]));
-    let grid = match &scene.space {
-        Space::Plane(plane) => plane.grid,
-        Space::Earth(_) | Space::Plot(_) => Grid::Off,
-    };
-    let (grid_kind, grid_pitch) = match grid {
-        Grid::Off => (wgsl::GRID_OFF, 1.0),
-        Grid::Lines { pitch } => (wgsl::GRID_LINES, pitch),
-        Grid::Dots { pitch } => (wgsl::GRID_DOTS, pitch),
-    };
-    let graticule = matches!(&scene.space, Space::Earth(earth) if earth.graticule);
     // The sun's position at the earth's daylight instant, advanced by the shown axis coordinate.
     let (sun, atmosphere) = match &scene.space {
         Space::Earth(earth) => (
@@ -93,26 +76,67 @@ pub(crate) fn frame(
     frame.flow = theme.flow.color.to_array();
     frame.background = theme.background.to_array();
     frame.ground = theme.earth.ground.to_array();
-    frame.grid_color = theme.grid.to_array();
-    frame.grid_kind = grid_kind;
-    frame.grid_pitch = grid_pitch as f32;
-    frame.grid_spacing = theme.grid_spacing;
-    frame.grid_fade = grid_fade(scene, projected, size) as f32;
-    frame.graticule = u32::from(graticule);
+    frame.grid_color = theme.grid.color.to_array();
+    frame.grid_width = theme.grid.width;
+    grid(&mut frame, scene, projected);
     frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.earth.night.clamp(0.0, 1.0)]);
     frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
     frame.theme = theme_slots(theme);
     frame
 }
 
-/// The world distance from the center at which a plane's grid has faded out: a bit more than the
-/// view shows looking straight down. 0 on a plot or the globe.
-pub(crate) fn grid_fade(scene: &Scene, projected: &Projected, size: [f64; 2]) -> f64 {
-    match &scene.space {
-        Space::Plot(_) => 0.0,
-        Space::Earth(_) if projected.globe >= 0.5 => 0.0,
-        _ => 1.2 * size[0].hypot(size[1]) / projected.px_per_unit[0],
+/// Sets the grid `frame` draws on `scene`'s ground: its kind, the two steps its lines lie at, how
+/// far the finer has faded in, and the camera's center as a fraction of each step.
+///
+/// The camera's zoom alone picks the steps, so turning or tilting the view changes no line. The
+/// finer is the finest step whose lines are the theme's `grid.spacing` apart at the camera's
+/// center, and the coarser is the next. The finer fades in as zooming in spreads its lines from
+/// that spacing to twice it, so a new step never pops in.
+fn grid(frame: &mut wgsl::Frame, scene: &Scene, projected: &Projected) {
+    let (grid, earth) = match &scene.space {
+        Space::Plane(plane) => (plane.grid, false),
+        Space::Earth(earth) => (earth.grid, true),
+        Space::Plot(_) => (Grid::Off, false),
+    };
+    let (kind, step) = match grid {
+        Grid::Off => (wgsl::GRID_OFF, None),
+        Grid::Lines { step } => (wgsl::GRID_LINES, step),
+        Grid::Dots { step } => (wgsl::GRID_DOTS, step),
+    };
+    let finest = step.filter(|step| step.is_finite() && *step > 0.0).unwrap_or(if earth { 0.01 } else { 10.0 });
+    // CSS pixels per position unit at the camera's center: per degree of longitude on the earth.
+    // On the earth `px_per_unit` counts radians.
+    let px = projected.px_per_unit[0] * if earth { std::f64::consts::PI / 180.0 } else { 1.0 };
+    let spacing = f64::from(scene.theme.grid.spacing).max(1.0);
+    let fine = grid_step(spacing / px, finest, earth);
+    let coarse = grid_step(fine * 1.5, finest, earth);
+    let phase = |step: f64| [0, 1].map(|k| (projected.center[k] / step).rem_euclid(1.0) as f32);
+    frame.grid_kind = kind;
+    frame.grid_step = [fine as f32, coarse as f32];
+    frame.grid_fade = ((fine * px / spacing - 1.0).clamp(0.0, 1.0)) as f32;
+    frame.grid_phase = [phase(fine)[0], phase(fine)[1], phase(coarse)[0], phase(coarse)[1]];
+}
+
+/// The least step of a grid at least `least` position units: `finest` times 1, 2, or 5 and a power
+/// of ten. On the earth the steps are those of degrees, with 30° and 90° past 10°, and none finer
+/// than `finest`.
+fn grid_step(least: f64, finest: f64, earth: bool) -> f64 {
+    let round = |x: f64| {
+        let decade = 10_f64.powf(x.log10().floor());
+        let leading = x / decade;
+        decade * [1.0, 2.0, 5.0].into_iter().find(|step| leading <= step * (1.0 + 1e-9)).unwrap_or(10.0)
+    };
+    if !earth {
+        return finest * round((least / finest).max(1.0));
     }
+    let degrees = if least <= 10.0 {
+        round(least.max(1e-9))
+    } else if least <= 30.0 {
+        30.0
+    } else {
+        90.0
+    };
+    degrees.max(finest)
 }
 
 /// The eye uniform: `projected` into a target of `size` CSS pixels at `pixel_ratio`.

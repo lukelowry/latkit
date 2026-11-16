@@ -155,8 +155,9 @@ export class Image extends Handle {
   }
 
   /**
-   * Encodes the image as a file, in a worker. PNG is lossless with alpha. JPEG drops alpha. WebP
-   * is lossless with alpha and smaller than PNG.
+   * Encodes the image as a file. PNG is lossless with alpha. JPEG drops alpha: pixels that are not
+   * opaque blend over black. WebP is lossless with alpha and smaller than PNG. The browser's own
+   * encoder writes JPEG, and PNG of an opaque image. A worker writes the rest.
    */
   encode(
     format: ImageFormat,

@@ -37,6 +37,12 @@ impl Image {
         Ok(Image { size, rgba })
     }
 
+    /// Whether every texel is opaque. The browser host asks before it encodes.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    pub(crate) fn opaque(&self) -> bool {
+        self.rgba.as_chunks::<4>().0.iter().all(|texel| texel[3] == u8::MAX)
+    }
+
     /// Encodes the image as a `format` file.
     pub fn encode(&self, format: ImageFormat) -> Result<Vec<u8>> {
         let mut out = Vec::new();
@@ -46,37 +52,51 @@ impl Image {
 
     /// Writes the image as a `format` file to a file or stream. Write failures return
     /// [`Error::Io`].
-    pub fn write(&self, format: ImageFormat, mut output: impl Write) -> Result<()> {
-        Self::new(self.size, self.rgba.clone())?;
-        let [width, height] = self.size;
-        let failed = |error: &dyn std::fmt::Display| Error::Io(format!("cannot write {format}: {error}").into());
+    pub fn write(&self, format: ImageFormat, output: impl Write) -> Result<()> {
         match format {
-            ImageFormat::Png => {
-                let mut encoder = png::Encoder::new(output, width, height);
-                encoder.set_color(png::ColorType::Rgba);
-                encoder.set_depth(png::BitDepth::Eight);
-                encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-                // Favor speed over size: pictures are written often and rarely stored long.
-                encoder.set_compression(png::Compression::Fast);
-                let mut writer = encoder.write_header().map_err(|e| failed(&e))?;
-                writer.write_image_data(&self.rgba).map_err(|e| failed(&e))?;
-                writer.finish().map_err(|e| failed(&e))
-            }
-            ImageFormat::Jpeg { quality } => {
-                if !(1..=100).contains(&quality) {
-                    return Err(Error::invalid("JPEG quality must be from 1 to 100").at("quality"));
-                }
-                let side = |v: u32| u16::try_from(v).map_err(|_| failed(&"each side must be at most 65535 pixels"));
-                let mut bytes = Vec::new();
-                jpeg_encoder::Encoder::new(&mut bytes, quality)
-                    .encode(&self.rgba, side(width)?, side(height)?, jpeg_encoder::ColorType::Rgba)
-                    .map_err(|e| failed(&e))?;
-                output.write_all(&bytes).map_err(|e| failed(&e))
-            }
-            ImageFormat::WebP => image_webp::WebPEncoder::new(output)
-                .encode(&self.rgba, width, height, image_webp::ColorType::Rgba8)
-                .map_err(|e| failed(&e)),
+            ImageFormat::Png => self.write_png(output),
+            ImageFormat::Jpeg { quality } => self.write_jpeg(quality, output),
+            ImageFormat::WebP => self.write_webp(output),
         }
+    }
+
+    /// Writes the image as a PNG file. Each format has a writer of its own, so a caller that
+    /// writes one links only that format's encoder.
+    pub(crate) fn write_png(&self, output: impl Write) -> Result<()> {
+        Self::new(self.size, self.rgba.clone())?;
+        let failed = |error: png::EncodingError| unwritten(ImageFormat::Png, &error);
+        let mut encoder = png::Encoder::new(output, self.size[0], self.size[1]);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+        // Favor speed over size: pictures are written often and rarely stored long.
+        encoder.set_compression(png::Compression::Fast);
+        let mut writer = encoder.write_header().map_err(failed)?;
+        writer.write_image_data(&self.rgba).map_err(failed)?;
+        writer.finish().map_err(failed)
+    }
+
+    /// Writes the image as a JPEG file at `quality` 1 to 100.
+    fn write_jpeg(&self, quality: u8, mut output: impl Write) -> Result<()> {
+        Self::new(self.size, self.rgba.clone())?;
+        if !(1..=100).contains(&quality) {
+            return Err(Error::invalid("JPEG quality must be from 1 to 100").at("quality"));
+        }
+        let format = ImageFormat::Jpeg { quality };
+        let side = |v: u32| u16::try_from(v).map_err(|_| unwritten(format, &"each side must be at most 65535 pixels"));
+        let mut bytes = Vec::new();
+        jpeg_encoder::Encoder::new(&mut bytes, quality)
+            .encode(&self.rgba, side(self.size[0])?, side(self.size[1])?, jpeg_encoder::ColorType::Rgba)
+            .map_err(|e| unwritten(format, &e))?;
+        output.write_all(&bytes).map_err(|e| unwritten(format, &e))
+    }
+
+    /// Writes the image as a lossless WebP file.
+    pub(crate) fn write_webp(&self, output: impl Write) -> Result<()> {
+        Self::new(self.size, self.rgba.clone())?;
+        image_webp::WebPEncoder::new(output)
+            .encode(&self.rgba, self.size[0], self.size[1], image_webp::ColorType::Rgba8)
+            .map_err(|e| unwritten(ImageFormat::WebP, &e))
     }
 
     /// Decodes a PNG file. Any color type and bit depth converts to 8-bit RGBA.
@@ -101,6 +121,11 @@ impl Image {
         };
         Image::new([info.width, info.height], rgba)
     }
+}
+
+/// The error for a `format` file that could not be written, and why.
+fn unwritten(format: ImageFormat, error: &dyn std::fmt::Display) -> Error {
+    Error::Io(format!("cannot write {format}: {error}").into())
 }
 
 /// An image file format.
@@ -132,6 +157,7 @@ impl ImageFormat {
 
     /// The code an encoding job writes the format as: 0 for PNG, 1 for WebP, and `0x100` plus the
     /// quality for JPEG.
+    #[cfg(any(test, target_arch = "wasm32"))]
     pub(crate) fn code(self) -> u32 {
         match self {
             ImageFormat::Png => 0,

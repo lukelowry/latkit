@@ -100,25 +100,37 @@ impl Data {
     /// # Ok::<(), latkit::Error>(())
     /// ```
     pub async fn read(bytes: &[u8], reading: Reading<'_>) -> Result<Data> {
-        let read = if bytes.starts_with(b"LATK") {
-            Snapshot::from_bytes(bytes)?
-        } else if geojson(bytes) {
-            let name = reading.name.ok_or_else(|| Error::invalid("GeoJSON needs a dataset name").at("name"))?;
-            return crate::geo::geojson(name, bytes).map(Data::from);
-        } else {
-            let form: DataForm =
-                crate::from_json(text(bytes, "a dataset must be latkit's bytes, GeoJSON, or a JSON document")?)?;
-            if form.name.is_empty() {
-                return Err(Error::invalid("a dataset needs a name").at("name"));
-            }
-            let patch = build(form.patch, reading).await.map_err(|e| e.at("patch"))?;
-            Snapshot::new(form.name).applied(patch)?
-        };
-        Ok(Data::from(match reading.name {
-            Some(name) if name != read.name().as_str() => read.renamed(name),
-            _ => read,
-        }))
+        if geojson(bytes) {
+            return crate::geo::geojson(geojson_name(reading.name)?, bytes).map(Data::from);
+        }
+        read_own(bytes, reading).await
     }
+}
+
+/// The name GeoJSON is read as, which the reader must give.
+pub(crate) fn geojson_name(name: Option<&str>) -> Result<&str> {
+    name.ok_or_else(|| Error::invalid("GeoJSON needs a dataset name").at("name"))
+}
+
+/// Reads a dataset from `bytes` in one of latkit's own formats, its binary format or a JSON
+/// document, as [`Data::read`] does. GeoJSON is read apart, so a caller that parses it in a job
+/// links no GeoJSON reader.
+pub(crate) async fn read_own(bytes: &[u8], reading: Reading<'_>) -> Result<Data> {
+    let read = if bytes.starts_with(b"LATK") {
+        Snapshot::from_bytes(bytes)?
+    } else {
+        let form: DataForm =
+            crate::from_json(text(bytes, "a dataset must be latkit's bytes, GeoJSON, or a JSON document")?)?;
+        if form.name.is_empty() {
+            return Err(Error::invalid("a dataset needs a name").at("name"));
+        }
+        let patch = build(form.patch, reading).await.map_err(|e| e.at("patch"))?;
+        Snapshot::new(form.name).applied(patch)?
+    };
+    Ok(Data::from(match reading.name {
+        Some(name) if name != read.name().as_str() => read.renamed(name),
+        _ => read,
+    }))
 }
 
 /// Whether `bytes` look like GeoJSON, not latkit's binary format or a dataset document. That is,

@@ -506,17 +506,14 @@ impl Values {
         }
     }
 
-    /// The rows whose stored values differ from `other`'s, ascending. `other` holds as many values.
-    /// Floats compare by their bits, as in [`same_row`](Values::same_row), and values in another
-    /// storage all differ.
-    pub(crate) fn differing(&self, other: &Values) -> Vec<u32> {
-        let rows = |differs: &dyn Fn(usize) -> bool| -> Vec<u32> {
-            (0..self.len()).filter(|&i| differs(i)).map(|i| i as u32).collect()
-        };
+    /// The rows whose stored values differ from `other`'s, as ascending runs that neither overlap
+    /// nor touch. `other` holds as many values. Floats compare by their bits, as in
+    /// [`same_row`](Values::same_row), and values in another storage all differ.
+    pub(crate) fn differing(&self, other: &Values) -> Vec<Range<u32>> {
         match (&self.array, &other.array, &self.valid, &other.valid) {
-            (Array::F32(a), Array::F32(b), None, None) => rows(&|i| a[i].to_bits() != b[i].to_bits()),
-            (Array::F64(a), Array::F64(b), None, None) => rows(&|i| a[i].to_bits() != b[i].to_bits()),
-            _ => rows(&|i| !self.same_row(i, other, i)),
+            (Array::F32(a), Array::F32(b), None, None) => runs_where(self.len(), |i| a[i].to_bits() != b[i].to_bits()),
+            (Array::F64(a), Array::F64(b), None, None) => runs_where(self.len(), |i| a[i].to_bits() != b[i].to_bits()),
+            _ => runs_where(self.len(), |i| !self.same_row(i, other, i)),
         }
     }
 
@@ -524,6 +521,19 @@ impl Values {
     pub(crate) fn stored_like(&self, other: &Values) -> bool {
         std::mem::discriminant(&self.array) == std::mem::discriminant(&other.array)
     }
+}
+
+/// The rows among the first `len` that `holds` accepts, as ascending runs that neither overlap nor
+/// touch.
+fn runs_where(len: usize, holds: impl Fn(usize) -> bool) -> Vec<Range<u32>> {
+    let mut runs: Vec<Range<u32>> = Vec::new();
+    for row in (0..len).filter(|&row| holds(row)).map(|row| row as u32) {
+        match runs.last_mut() {
+            Some(run) if run.end == row => run.end += 1,
+            _ => runs.push(row..row + 1),
+        }
+    }
+    runs
 }
 
 macro_rules! array_from_buffer {
@@ -765,15 +775,16 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init, reason = "runs are lists of ranges, some of one range")]
     fn differing_rows_compare_as_stored() {
         let a = Values::from(vec![1.0_f32, f32::NAN, 3.0]);
-        assert_eq!(a.differing(&Values::from(vec![1.0_f32, f32::NAN, 4.0])), [2], "a NaN equals itself");
-        assert_eq!(a.differing(&Values::from(vec![Some(1.0_f32), None, Some(3.0)])), [1], "missing differs");
-        assert_eq!(a.differing(&Values::from(vec![1.0_f64, 2.0, 3.0])), [0, 1, 2], "another storage differs");
+        assert_eq!(a.differing(&Values::from(vec![1.0_f32, f32::NAN, 4.0])), [2..3], "a NaN equals itself");
+        assert_eq!(a.differing(&Values::from(vec![Some(1.0_f32), None, Some(3.0)])), [1..2], "missing differs");
+        assert_eq!(a.differing(&Values::from(vec![1.0_f64, 2.0, 3.0])), [0..3], "another storage differs");
         assert!(a.stored_like(&a.slice(0..1)) && !a.stored_like(&Values::from(vec![1.0_f64])));
         let path = |x: f64| Values::from(vec![vec![[0.0, 0.0], [x, 1.0]]]);
-        assert_eq!(path(2.0).differing(&path(2.0)), [0_u32; 0]);
-        assert_eq!(path(2.0).differing(&path(3.0)), [0]);
+        assert!(path(2.0).differing(&path(2.0)).is_empty(), "equal paths differ nowhere");
+        assert_eq!(path(2.0).differing(&path(3.0)), [0..1]);
     }
 
     #[test]

@@ -277,6 +277,33 @@ fn a_fit_on_a_plane_frames_the_places_its_layout_gives() {
 }
 
 #[test]
+fn places_that_land_later_ease_nothing_so_the_fit_frames_them_at_once() {
+    let Some(gpu) = gpu() else { return };
+    // The layout's job lands frames after the view first draws, as in a page's worker, and the
+    // scene eases changes over its default 0.3 seconds: 18 frames.
+    gpu.set_host(Threads);
+    let data = graph(None);
+    let mut view = View::new(&gpu, scene(Stress::default()));
+    view.set_sources([&data]).expect("a source");
+    view.fit(latkit::Fit::All);
+    let started = std::time::Instant::now();
+    common::step(&gpu, &mut view);
+    while view.waiting().derived {
+        assert!(started.elapsed() < common::DEADLINE, "the layout lands within the deadline");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        common::step(&gpu, &mut view);
+    }
+    // No row had a place to ease from, so no transition holds the fit back.
+    let mut frames = 0;
+    while !view.complete() || view.needs_render() {
+        frames += 1;
+        assert!(frames < 12, "framed and still within a few frames, waiting on {}", view.waiting());
+        common::step(&gpu, &mut view);
+    }
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
 fn layouts_place_the_same_graph_the_same_way() {
     for layout in [Layout::from(Stress::default()), Layout::from(Layered::default())] {
         let (a, b) = (placed(layout, None), placed(layout, None));

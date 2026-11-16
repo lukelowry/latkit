@@ -7,9 +7,10 @@
 //! holds the referenced rows' places in that table's order.
 //!
 //! A column a line traces holds only what is in view: runs of entries, as raw frames while there
-//! are at most two per pixel column, otherwise as buckets of the level of detail that fits. Where
-//! the samples lack those, coarser buckets are shown as placeholders, or else the finer ones
-//! available. Each visible point holds its coordinate and a direct value cursor per page of rows.
+//! are at most two per pixel column, otherwise as each pixel column's least and greatest value,
+//! read from entries of the level of detail that fits in a column. Where the samples lack those,
+//! coarser buckets are shown as placeholders, or else the finer ones available. Each visible point
+//! holds its coordinate and a direct value cursor per page of rows.
 //!
 //! Only columns whose inputs changed are rebuilt, once each. Moving the shown coordinate rebuilds
 //! only sampled columns' cursors, and a paged table rebuilds only where its marks' resident pages
@@ -28,12 +29,14 @@
 //! again.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::drawing::{Drawing, Holds};
-use crate::data::{Column, Field, Page, PageId, Reference, Run, Samples, Values, Version, detail};
+use crate::data::{
+    Column, Field, Inverse, Page, PageId, Reference, Run, Runs, Samples, Values, Version, bucket_frames, detail, sides,
+};
 use crate::derive::order::Order;
 use crate::derive::shapes::PagedShapes;
 use crate::derive::stamp_of;
@@ -61,56 +64,123 @@ enum Stamp {
     Join(Version, Version),
 }
 
-/// What a trace shows: the axis window, the pixel columns it spans, and how a line steps between
-/// frames (`STEP_BEFORE`, `STEP_AFTER`, or 0).
+/// What a trace shows: the axis window, the pixel columns it spans, the most entries it may hold,
+/// and how a line steps between frames (`STEP_BEFORE`, `STEP_AFTER`, or 0).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Window {
     pub(crate) across: Option<[f64; 2]>,
     pub(crate) columns: u32,
+    pub(crate) most: u64,
     pub(crate) steps: u32,
 }
 
-/// What a traced column draws: runs of entries left to right, each with its first point, the level
-/// of detail the window needs, and the total point count.
+/// What a traced column draws: runs of entries left to right, and the total point count.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Plan {
-    pub(crate) level: u32,
-    pub(crate) runs: Vec<(Run, u32)>,
+    runs: Vec<Drawn>,
     pub(crate) points: u32,
     steps: u32,
+}
+
+/// One run of a plan: its entries, its first point, and how the entries become points.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Drawn {
+    run: Run,
+    first: u32,
+    shape: Shape,
+}
+
+/// How a run's entries become points.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Shape {
+    /// A line through each side. Frames have one side, with a corner between frames when the mark
+    /// steps. Buckets draw their least values left to right, a break, then their greatest, so
+    /// buckets wider than a pixel column read as a band and never as steps. A lone bucket joins
+    /// its least to its greatest.
+    Lines,
+    /// Each pixel column's least and greatest, one above the other, for entries narrower than a
+    /// column. Lists each column's first entry in the run, with the bits of the coordinate at the
+    /// column's middle.
+    Columns(Vec<(u32, u64)>),
+}
+
+/// Where a point draws on the axis: at an entry (a frame's coordinate or a bucket's middle), or at
+/// a coordinate, given as its bits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum At {
+    Entry(u64),
+    Coordinate(u64),
+}
+
+/// A point of a plan: its run, where it draws, the entries whose values it reads, and whether it
+/// draws their least (0) or their greatest (1).
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Point {
+    run: usize,
+    at: At,
+    entries: Range<u64>,
+    side: usize,
+}
+
+impl Drawn {
+    /// The number of points it takes when frames step as `steps`.
+    fn points(&self, steps: u32) -> u32 {
+        let n = self.run.len() as u32;
+        match &self.shape {
+            Shape::Columns(columns) => 2 * columns.len() as u32,
+            Shape::Lines if self.run.level > 0 && n > 1 => 2 * n + 1,
+            Shape::Lines if self.run.level > 0 => 2 * n,
+            Shape::Lines if steps == 0 => n,
+            Shape::Lines => (2 * n).saturating_sub(1),
+        }
+    }
 }
 
 impl Plan {
     /// A point's stable identity across overlapping windows. Run indices themselves change
     /// when an earlier run leaves, so identify its level and absolute entries instead.
-    fn key(&self, point: u32) -> Option<(u32, u64, u64, usize)> {
-        let (run, across, entry, side) = self.point(point)?;
-        Some((self.runs[run].0.level, across, entry, side))
+    fn key(&self, point: u32) -> Option<(u32, At, u64, usize)> {
+        let p = self.point(point)?;
+        Some((self.runs[p.run].run.level, p.at, p.entries.start, p.side))
     }
 
-    /// The entry that point `point` draws: its level, its index, and its side, a bucket's minimum
-    /// (0) or maximum (1). `None` for a point that breaks the line.
-    pub(crate) fn entry(&self, point: u32) -> Option<(u32, u64, usize)> {
-        let (i, _, entry, side) = self.point(point)?;
-        Some((self.runs[i].0.level, entry, side))
+    /// What point `point` draws: the level it reads, the entries of that level, and whether it
+    /// draws their least (0) or their greatest (1). `None` for a point that breaks the line.
+    pub(crate) fn entries(&self, point: u32) -> Option<(u32, Range<u64>, usize)> {
+        let p = self.point(point)?;
+        Some((self.runs[p.run].run.level, p.entries, p.side))
     }
 
-    /// Run, axis entry, value entry, and bucket side. Stepped corners use different axis and
-    /// value entries; queries and the GPU address plan share this mapping.
-    fn point(&self, point: u32) -> Option<(usize, u64, u64, usize)> {
-        let i = self.runs.partition_point(|(_, first)| *first <= point).checked_sub(1)?;
-        let (run, first) = &self.runs[i];
+    /// Point `point`, or `None` where it breaks the line. Queries and the GPU address plan share
+    /// this mapping. Stepped corners draw at one frame with another's value.
+    fn point(&self, point: u32) -> Option<Point> {
+        let i = self.runs.partition_point(|drawn| drawn.first <= point).checked_sub(1)?;
+        let Drawn { run, first, shape } = &self.runs[i];
         let (k, n) = (point - first, run.len() as u32);
-        if run.level > 0 {
-            let entry = run.entries.start + u64::from(k / 2);
-            return (k < 2 * n).then_some((i, entry, entry, (k % 2) as usize));
+        if k >= self.runs[i].points(self.steps) {
+            return None;
         }
-        let (across, up, count) = match self.steps {
-            wgsl::STEP_AFTER => (k.div_ceil(2), k / 2, 2 * n - 1),
-            wgsl::STEP_BEFORE => (k / 2, k.div_ceil(2), 2 * n - 1),
-            _ => (k, k, n),
+        let entry = |offset: u32| run.entries.start + u64::from(offset);
+        let one = |at: u32, value: u32, side: usize| (At::Entry(entry(at)), entry(value)..entry(value) + 1, side);
+        let (at, entries, side) = match shape {
+            Shape::Columns(columns) => {
+                let column = (k / 2) as usize;
+                let (start, x) = columns[column];
+                let end = columns.get(column + 1).map_or(n, |&(next, _)| next);
+                (At::Coordinate(x), entry(start)..entry(end), (k % 2) as usize)
+            }
+            Shape::Lines if run.level > 0 && n == 1 => one(0, 0, k as usize),
+            // The least values, a break, then the greatest.
+            Shape::Lines if run.level > 0 && k == n => return None,
+            Shape::Lines if run.level > 0 && k > n => one(k - n - 1, k - n - 1, 1),
+            Shape::Lines if run.level > 0 => one(k, k, 0),
+            Shape::Lines => match self.steps {
+                wgsl::STEP_AFTER => one(k.div_ceil(2), k / 2, 0),
+                wgsl::STEP_BEFORE => one(k / 2, k.div_ceil(2), 0),
+                _ => one(k, k, 0),
+            },
         };
-        (k < count).then(|| (i, run.entries.start + u64::from(across), run.entries.start + u64::from(up), 0))
+        Some(Point { run: i, at, entries, side })
     }
 }
 
@@ -128,6 +198,15 @@ impl Rows<'_> {
         match self {
             Rows::Own => 0,
             Rows::Held(drawing) => drawing.layout(),
+        }
+    }
+
+    /// The row block holding table row `row`: its page of the data, or the slot a drawing holds it
+    /// in. `None` for a row the drawing does not hold.
+    fn block(self, row: u32) -> Option<u32> {
+        match self {
+            Rows::Own => Some(row >> wgsl::PAGE_BITS),
+            Rows::Held(drawing) => drawing.held_row(row).map(|held| held >> wgsl::PAGE_BITS),
         }
     }
 }
@@ -175,9 +254,13 @@ struct ColumnTable {
     /// For a column whose rows each read their own page, the page each page of rows reads. `None`
     /// where any change affects every row (cursors, traces, joins).
     pages: Option<Vec<Option<PageId>>>,
-    /// For a column of a reference's rows that fields are read through, the reference, which lists
-    /// the rows naming each row of its table.
-    reference: Option<Reference>,
+    /// For a field of another table, the column it pages, which tells the rows written between
+    /// this table and the one it replaces.
+    read: Option<Column>,
+    /// Whether any row it reads holds a value. False only for a derived field that holds none, such
+    /// as places before a layout lands: its rows draw nothing, so the table that replaces it gives
+    /// them their first values, with nothing to ease from.
+    valued: bool,
 }
 
 impl ColumnTable {
@@ -299,13 +382,21 @@ struct Join {
 }
 
 /// A join whose rows read other rows than their own.
+#[derive(Default)]
 struct JoinRows {
     /// The other table's row for each row, in pages of rows. `NONE` where no row has the id.
     pages: Vec<(PageId, Arc<[u32]>)>,
-    /// The row blocks that read page `p` of the other table: `blocks[starts[p]..starts[p + 1]]`,
-    /// ascending.
-    starts: Vec<u32>,
-    blocks: Vec<u32>,
+    /// The rows reading each row of the other table, listed when a write there first asks.
+    naming: OnceLock<Inverse>,
+}
+
+impl JoinRows {
+    fn naming(&self) -> &Inverse {
+        self.naming.get_or_init(|| {
+            let rows: Vec<u32> = self.pages.iter().flat_map(|(_, rows)| rows.iter().copied()).collect();
+            Inverse::new(&rows)
+        })
+    }
 }
 
 impl Join {
@@ -313,8 +404,8 @@ impl Join {
     /// row reads any.
     fn of(from: &(Name, Name), table: &Table, other: Option<&Table>) -> Join {
         let Some(other) = other else {
-            let rows = JoinRows { pages: Vec::new(), starts: vec![0], blocks: Vec::new() };
-            return Join { from: from.clone(), structure: (table.structure, table.structure), rows: Some(rows) };
+            let structure = (table.structure, table.structure);
+            return Join { from: from.clone(), structure, rows: Some(JoinRows::default()) };
         };
         let structure = (table.structure, other.structure);
         let rows: Vec<u32> = (0..table.len())
@@ -323,40 +414,8 @@ impl Join {
         if other.len() == rows.len() && rows.iter().enumerate().all(|(r, &o)| o == r as u32) {
             return Join { from: from.clone(), structure, rows: None };
         }
-        // Each page of the other table that a block of rows reads, as (page, block), by page.
-        let mut read: Vec<(u32, u32)> = Vec::new();
-        for (block, chunk) in rows.chunks(wgsl::PAGE_ROWS as usize).enumerate() {
-            let mut pages: Vec<u32> =
-                chunk.iter().filter(|&&o| o != wgsl::NONE).map(|o| o >> wgsl::PAGE_BITS).collect();
-            pages.sort_unstable();
-            pages.dedup();
-            read.extend(pages.into_iter().map(|page| (page, block as u32)));
-        }
-        read.sort_unstable();
-        let count = other.len().div_ceil(wgsl::PAGE_ROWS as usize);
-        let mut starts = vec![0_u32; count + 1];
-        for &(page, _) in &read {
-            starts[page as usize + 1] += 1;
-        }
-        for page in 0..count {
-            starts[page + 1] += starts[page];
-        }
         let pages = rows.chunks(wgsl::PAGE_ROWS as usize).map(|chunk| (PageId::next(), Arc::from(chunk))).collect();
-        let blocks = read.into_iter().map(|(_, block)| block).collect();
-        Join { from: from.clone(), structure, rows: Some(JoinRows { pages, starts, blocks }) }
-    }
-
-    /// The row blocks that read any of pages `pages` of the other table, ascending.
-    fn readers(&self, pages: &[u32]) -> Vec<u32> {
-        let Some(rows) = &self.rows else { return pages.to_vec() };
-        let reading = |page: u32| {
-            let at = |p: usize| rows.starts.get(p).map_or(rows.blocks.len(), |&start| start as usize);
-            &rows.blocks[at(page as usize)..at(page as usize + 1)]
-        };
-        let mut blocks: Vec<u32> = pages.iter().flat_map(|&page| reading(page)).copied().collect();
-        blocks.sort_unstable();
-        blocks.dedup();
-        blocks
+        Join { from: from.clone(), structure, rows: Some(JoinRows { pages, naming: OnceLock::new() }) }
     }
 }
 
@@ -555,11 +614,14 @@ pub(crate) struct Tables {
 }
 
 /// What publishing rebuilt tables changed. Bit `i` of `columns` is set for each program column
-/// whose table changed. Bit `i` of `data` is set for each whose data changed, not only its paging.
-/// `blocks` lists the row blocks whose pages changed, or is `None` when every row changed.
+/// whose table changed. Bit `i` of `data` is set for each whose data changed, not only its paging,
+/// and of `valued` for each of those that held a value in some row before: a derived column that
+/// held none, such as places before a layout lands, changes without anything to ease from. `blocks`
+/// lists the row blocks whose pages changed, or is `None` when every row changed.
 pub(crate) struct Published {
     pub(crate) columns: u64,
     pub(crate) data: u64,
+    pub(crate) valued: u64,
     pub(crate) blocks: Option<Vec<u32>>,
 }
 
@@ -733,12 +795,17 @@ impl Tables {
     /// Swaps in the `rebuilt` tables, whose pages are all resident, and releases the replaced ones.
     /// Pages rewritten in place take over their blocks now, written through `queue` before this
     /// frame's passes read them. The replaced table of geometry column `geometry` stays frozen
-    /// instead, for the mark to ease from.
+    /// instead, for the mark to ease from. `source` is the mark's table as the tables read it,
+    /// paged as `rows`, among the datasets `all`.
+    #[allow(clippy::too_many_arguments, reason = "one swap, and what it changed for the mark's rows")]
     pub(crate) fn publish(
         &mut self,
         rebuilt: Rebuilt,
         program: &Program,
         geometry: u32,
+        source: &Source<'_>,
+        rows: Rows<'_>,
+        all: &[Snapshot],
         gpu: &mut Inner,
         queue: &Queue,
     ) -> Published {
@@ -762,12 +829,12 @@ impl Tables {
                 tables[i] = Some(table);
             }
             self.current = tables.into_iter().map(|t| t.expect("every table rebuilt")).collect();
-            Published { columns: u64::MAX, data: u64::MAX, blocks: None }
+            Published { columns: u64::MAX, data: u64::MAX, valued: u64::MAX, blocks: None }
         } else {
-            let mut published = Published { columns: 0, data: 0, blocks: Some(Vec::new()) };
-            let mut changes: Vec<(usize, Option<Vec<u32>>)> = Vec::new();
+            let mut published = Published { columns: 0, data: 0, valued: 0, blocks: Some(Vec::new()) };
+            let mut changes: Vec<(usize, Option<Changed>)> = Vec::new();
             for (i, table) in rebuilt {
-                changes.push((i, changed_blocks(&self.current[i], &table)));
+                changes.push((i, changed(&self.current[i], &table)));
                 let bits = match program.columns.get(i) {
                     Some(_) => Reads::column(i),
                     None => columns_from(program, joins[i - program.columns.len()]),
@@ -775,6 +842,9 @@ impl Tables {
                 published.columns |= bits;
                 if table.stamp != self.current[i].stamp {
                     published.data |= bits;
+                    if self.current[i].valued {
+                        published.valued |= bits;
+                    }
                 }
                 let old = std::mem::replace(&mut self.current[i], table);
                 if i as u32 == geometry {
@@ -784,10 +854,16 @@ impl Tables {
                     old.retire(&self.current[i], gpu);
                 }
             }
-            // A field of another table lists that table's pages. The rows that changed are the rows
-            // reading them, as the tables now swapped in map them.
-            for (i, pages) in changes {
-                match (published.blocks.as_mut(), pages.and_then(|pages| self.readers(program, &joins, i, pages))) {
+            // A field of another table changes the rows reading the rows written there, as the
+            // mark's table now names them.
+            for (i, change) in changes {
+                let more = change.and_then(|change| match change {
+                    Changed::Blocks(blocks) => Some(blocks),
+                    Changed::Rows(written) => self
+                        .via(program.columns.get(i)?, program, source, rows, all)
+                        .and_then(|via| readers(&via, &written, source.table, rows)),
+                });
+                match (published.blocks.as_mut(), more) {
                     (Some(blocks), Some(more)) => blocks.extend(more),
                     _ => published.blocks = None,
                 }
@@ -921,34 +997,114 @@ impl Tables {
         at
     }
 
-    /// The row blocks whose rows read any of pages `pages` of table `i`: the pages themselves for
-    /// a column of the mark's own table, and for a field of another table, the rows whose join or
-    /// reference names a row in them. `None` when a drawing holds the rows in another order than
-    /// the join or reference lists them, so every row counts as reading them.
-    fn readers(&self, program: &Program, joins: &[&(Name, Name)], i: usize, pages: Vec<u32>) -> Option<Vec<u32>> {
-        let Some(column) = program.columns.get(i) else { return Some(pages) };
-        match (&column.from, column.through) {
-            (None, _) => Some(pages),
-            (Some(_), Some(rows)) => {
-                let table = self.current.get(rows as usize)?;
-                let reference = table.reference.as_ref().filter(|_| table.held == 0)?;
-                Some(reference.readers(&pages))
-            }
-            (Some(from), None) => {
-                let k = joins.iter().position(|j| *j == from)?;
-                let table = self.current.get(program.columns.len() + k)?;
-                let join = self.joins.iter().find(|join| &join.from == from)?;
-                (table.held == 0).then(|| join.readers(&pages))
-            }
+    /// How the mark's rows, paged as `rows`, read `column`, a field of another table. `None`
+    /// when its join was built for other rows than the tables hold now.
+    fn via<'a>(
+        &'a self,
+        column: &ColumnUse,
+        program: &Program,
+        source: &Source<'a>,
+        rows: Rows<'_>,
+        all: &'a [Snapshot],
+    ) -> Option<Via<'a>> {
+        let from = column.from.as_ref()?;
+        if let Some(through) = column.through {
+            let field = source.table.field_named(&program.columns.get(through as usize)?.name);
+            let Some(Field::Reference(reference)) = field else { return None };
+            return Some(Via::Naming(reference.inverse()));
         }
+        let other = joined(from, all)?;
+        if let Rows::Held(_) = rows {
+            return Some(Via::Ids(other));
+        }
+        let join = self.joins.iter().find(|join| &join.from == from)?;
+        let current = join.structure == (source.table.structure, other.structure);
+        current.then(|| join.rows.as_ref().map_or(Via::Own, |rows| Via::Naming(rows.naming())))
     }
 }
 
-/// The pages of rows whose page differs between table `before` and table `now`. `None` when either
-/// table has no page list (see `ColumnTable::pages`), so every row changed.
-fn changed_blocks(before: &ColumnTable, now: &ColumnTable) -> Option<Vec<u32>> {
+/// What swapping a table in changed: row blocks of the mark, or rows of the other table whose
+/// field the table pages.
+enum Changed {
+    Blocks(Vec<u32>),
+    Rows(Runs),
+}
+
+/// What differs between table `before` and table `now`, which replaces it. A field of another
+/// table gives the rows written there. Any other table pages the mark's rows, and gives the pages
+/// that differ. `None` when either lists no pages (see `ColumnTable::pages`), so every row changed.
+fn changed(before: &ColumnTable, now: &ColumnTable) -> Option<Changed> {
+    if let (Some(then), Some(read)) = (&before.read, &now.read) {
+        return Some(Changed::Rows(read.written_since(then)));
+    }
     let (Some(old), Some(new)) = (&before.pages, &now.pages) else { return None };
-    Some((0..old.len().max(new.len())).filter(|&p| old.get(p) != new.get(p)).map(|p| p as u32).collect())
+    let pages = (0..old.len().max(new.len())).filter(|&p| old.get(p) != new.get(p));
+    Some(Changed::Blocks(pages.map(|p| p as u32).collect()))
+}
+
+/// How a mark's rows read the rows of another table.
+enum Via<'a> {
+    /// Each reads the row in its own place: a join of tables listing the same ids in the same
+    /// order.
+    Own,
+    /// The rows reading each row are listed: a reference field's, or a join's whose rows the
+    /// data pages.
+    Naming(&'a Inverse),
+    /// Each reads the row that shares its id: a join whose rows a drawing holds.
+    Ids(&'a Table),
+}
+
+/// The row blocks of `table`, paged as `rows`, whose rows read any of rows `written` of another
+/// table `via` a reference or a join. It follows the rows written to the rows reading them and
+/// never visits the table. `None` when every row counts as reading them: every block has such a
+/// row, every row read was written, or a drawing would look up more than a page of rows.
+fn readers(via: &Via<'_>, written: &Runs, table: &Table, rows: Rows<'_>) -> Option<Vec<u32>> {
+    let naming = match via {
+        Via::Own => {
+            let pages = |run: &Range<u32>| run.start >> wgsl::PAGE_BITS..=(run.end - 1) >> wgsl::PAGE_BITS;
+            let mut blocks: Vec<u32> = written.ranges().iter().flat_map(pages).collect();
+            blocks.dedup();
+            return Some(blocks);
+        }
+        Via::Naming(naming) if written.len() >= naming.targets() => return None,
+        Via::Naming(naming) => Some(*naming),
+        Via::Ids(_) => None,
+    };
+    let count = match rows {
+        Rows::Own => table.len().div_ceil(wgsl::PAGE_ROWS as usize),
+        Rows::Held(drawing) => drawing.slot_count(),
+    };
+    // The data's pages place a row with a shift. A drawing looks it up.
+    let mut left = match rows {
+        Rows::Own => table.len(),
+        Rows::Held(_) => wgsl::PAGE_ROWS as usize,
+    };
+    let (mut reads, mut found) = (vec![false; count], 0);
+    // Counts one row followed, which `row` of the table reads if any.
+    let mut follow = |row: Option<u32>| {
+        left = left.checked_sub(1)?;
+        if let Some(block) = row.and_then(|row| rows.block(row))
+            && let Some(read) = reads.get_mut(block as usize)
+            && !*read
+        {
+            *read = true;
+            found += 1;
+        }
+        (found < count).then_some(())
+    };
+    match (naming, via) {
+        (Some(naming), _) => {
+            for run in written.ranges() {
+                naming.over(run.clone()).iter().try_for_each(|&row| follow(Some(row)))?;
+            }
+        }
+        (None, Via::Ids(other)) => {
+            let own = |row: u32| other.ids.key(row as usize).and_then(|key| table.row(key));
+            written.iter().try_for_each(|row| follow(own(row).map(|row| row as u32)))?;
+        }
+        (None, _) => {}
+    }
+    Some((0..count as u32).filter(|&block| reads[block as usize]).collect())
 }
 
 fn unpin(pins: &[PageKey], gpu: &mut Inner) {
@@ -986,26 +1142,78 @@ fn joined<'a>((data, table): &(Name, Name), all: &'a [Snapshot]) -> Option<&'a T
 
 /// What a trace across `window` draws: the runs covering its frames at the level of detail they
 /// need, with one point left out between runs that do not meet, which breaks the line.
-fn plan(samples: &Samples, window: Window) -> Plan {
-    let frames = window.across.map_or(samples.start()..samples.end(), |across| samples.across(across));
-    let level = detail(frames.end - frames.start, window.columns);
+///
+/// Frames draw as they are while that takes no more points than two a pixel column. Past that,
+/// entries narrower than a column draw as columns: two points a column, exact to the pixel. Only
+/// entries wider than a column, which stand in while finer ones load or when the budget allows no
+/// finer, draw as lines through their least and greatest values.
+///
+/// A column's entries stop where a value page of any of `blocks` ends, so every row block reads
+/// them from one page. Without blocks, the plan is the same but for those stops.
+fn plan(axis: &Samples, window: Window, blocks: &[(Samples, usize)]) -> Plan {
+    let frames = window.across.map_or(axis.start()..axis.end(), |across| axis.across(across));
+    let count = frames.end - frames.start;
+    let columns = u64::from(window.columns.max(1));
+    let level = detail(count, window.columns, window.most);
+    // The width of a pixel column on the axis. Columns count from 0 on the axis, so panning keeps
+    // each entry in its column. The width is rounded to an `f32`, so rounding in the window's ends
+    // as it pans leaves the columns where they were.
+    let width =
+        window.across.or_else(|| axis.span()).map_or(0.0, |[a, b]| f64::from(((b - a) / columns as f64) as f32));
     let (mut runs, mut point, mut last) = (Vec::new(), 0, None);
-    for run in samples.cover(frames, level) {
+    for run in axis.cover(frames, level) {
         let spanned = run.frames();
         if last.is_some_and(|end| end != spanned.start) {
             point += 1;
         }
-        let n = run.len() as u32;
-        let points = match (run.level, window.steps) {
-            (0, 0) => n,
-            (0, _) => 2 * n - 1,
-            _ => 2 * n,
+        let lines = match run.level {
+            0 => count <= 2 * columns,
+            level => bucket_frames(level).saturating_mul(columns) > count,
+        };
+        let shape = if lines || width.is_nan() || width <= 0.0 {
+            Shape::Lines
+        } else {
+            Shape::Columns(columns_of(axis, &run, width, &page_ends(blocks, &run)))
         };
         last = Some(spanned.end);
-        runs.push((run, point));
-        point += points;
+        let drawn = Drawn { run, first: point, shape };
+        point += drawn.points(window.steps);
+        runs.push(drawn);
     }
-    Plan { level, runs, points: point, steps: window.steps }
+    Plan { runs, points: point, steps: window.steps }
+}
+
+/// Where each pixel column's entries start in `run`, with the bits of the coordinate at the
+/// column's middle. A column `width` wide holds the entries whose middles lie in it. Its entries
+/// stop at `TRACE_MOST`, the most a point reads, and before each of `ends`, and go on in another
+/// column at the same coordinate.
+fn columns_of(axis: &Samples, run: &Run, width: f64, ends: &[u64]) -> Vec<(u32, u64)> {
+    let mut columns: Vec<(u32, u64)> = Vec::new();
+    let (mut column, mut held) = (None, 0);
+    for (i, x) in axis.drawn(run).into_iter().enumerate() {
+        let within = (x / width).floor();
+        let stops = held == wgsl::TRACE_MOST || ends.binary_search(&(run.entries.start + i as u64)).is_ok();
+        if column != Some(within.to_bits()) || stops {
+            columns.push((i as u32, ((within + 0.5) * width).to_bits()));
+            (column, held) = (Some(within.to_bits()), 0);
+        }
+        held += 1;
+    }
+    columns
+}
+
+/// The entries of `run` at which a value page of any of `blocks` ends, ascending.
+fn page_ends(blocks: &[(Samples, usize)], run: &Run) -> Vec<u64> {
+    let mut ends: Vec<u64> = Vec::new();
+    for (samples, block) in blocks {
+        for side in 0..sides(run.level) {
+            let pages = samples.pages(*block, run.level, side, run.entries.clone());
+            ends.extend(pages.into_iter().map(|(_, held)| held.end));
+        }
+    }
+    ends.sort_unstable();
+    ends.dedup();
+    ends
 }
 
 /// Where sampled `column` reads `samples` at axis coordinate `at`: the frame shown there, and how
@@ -1046,7 +1254,9 @@ fn stamp(column: &ColumnUse, source: &Source<'_>, inputs: &Inputs<'_>) -> Stamp 
     let Some((_, table)) = source.table_of(column, inputs.all) else { return Stamp::Missing };
     match table.field_named(&column.name) {
         None => Stamp::Missing,
-        Some(Field::Sampled(samples, version)) if column.trace => Stamp::Trace(*version, plan(samples, inputs.window)),
+        Some(Field::Sampled(samples, version)) if column.trace => {
+            Stamp::Trace(*version, plan(samples, inputs.window, &[]))
+        }
         Some(Field::Sampled(samples, version)) => {
             let (frame, t) = shown_frame(samples, column, inputs.at);
             Stamp::Sampled(*version, frame, t.to_bits())
@@ -1071,7 +1281,10 @@ struct Builder<'g> {
     /// The page each page of rows reads in the table the GPU draws now, which this one replaces,
     /// when that table pins the pages it lists (see `ColumnTable::rewritable`).
     drawn: Option<&'g [Option<PageId>]>,
-    reference: Option<Reference>,
+    read: Option<Column>,
+    /// Whether any row read holds a value. Assumed unless the table reads a derived field that holds
+    /// none.
+    valued: bool,
     gpu: &'g mut Inner,
 }
 
@@ -1086,13 +1299,14 @@ impl<'g> Builder<'g> {
             points: 0,
             pages: Some(Vec::new()),
             drawn,
-            reference: None,
+            read: None,
+            valued: true,
             gpu,
         }
     }
 
     fn finish(self, stamp: Stamp, held: u64, descriptor: [u32; WORDS]) -> ColumnTable {
-        let Builder { words, cursors, asks, rewrites, plan, points, pages, drawn: _, reference, gpu: _ } = self;
+        let Builder { words, cursors, asks, rewrites, plan, points, pages, drawn: _, read, valued, gpu: _ } = self;
         ColumnTable {
             stamp,
             generation: 0,
@@ -1107,7 +1321,8 @@ impl<'g> Builder<'g> {
             plan,
             points,
             pages,
-            reference,
+            read,
+            valued,
         }
     }
 
@@ -1169,17 +1384,33 @@ impl<'g> Builder<'g> {
         {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
             let packing = packing(drawing, source, &source.table.name, column.name.clone(), Words::Path);
+            let pointed = |shapes: &Values| shapes.geometry().is_some_and(|geometry| !geometry.coords().is_empty());
+            self.valued = shapes.pages.values().any(|page| pointed(&page.shapes)) || shapes.kept.values().any(pointed);
             self.shaped(shapes, drawing, &packing);
             return d;
         }
         let Some((data, table)) = source.table_of(column, inputs.all) else {
             self.pages = None;
+            self.valued = !column.derived;
             return d;
         };
         d[wgsl::COLUMN_ROWS as usize] = table.len() as u32;
         let field = table.field_named(&column.name);
-        if let (Words::Rows, Some(Field::Reference(reference))) = (column.words, field) {
-            self.reference = Some(reference.clone());
+        // A row with no place or shape draws nothing, so a derived field that holds none has
+        // nothing to ease from. A missing value of the data draws with the theme's look, which a
+        // change eases from.
+        self.valued = !column.derived
+            || match field {
+                Some(Field::Values(values, _)) => values.holds_any(),
+                Some(_) => true,
+                None => false,
+            };
+        if column.from.is_some() {
+            self.read = match field {
+                Some(Field::Values(values, _)) => Some(values.clone()),
+                Some(Field::Reference(reference)) => Some(reference.rows.clone()),
+                _ => None,
+            };
         }
         if let Rows::Held(drawing) = rows {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
@@ -1531,22 +1762,26 @@ impl<'g> Builder<'g> {
 
     /// A direct address plan for the visible trace. The aligned header holds point and row-block
     /// counts, ring capacity, and head. Each block holds one texel per slot: coordinate high/low,
-    /// value address, and rows in that value's page. Missing points have no address. Page offsets
-    /// follow the records; packing resolves cursors after the dataset reserves its pages together.
+    /// value address, and a word of the rows in that value's page, how many entries the point
+    /// reads there, and whether it draws their greatest. Missing points have no address. Page
+    /// offsets follow the records; packing resolves cursors after the dataset reserves its pages
+    /// together.
     fn trace(&mut self, d: &mut [u32; WORDS], axis: &Samples, blocks: &[(Samples, usize)], window: Window) {
         self.pages = None;
         d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED;
-        let plan = plan(axis, window);
+        let plan = plan(axis, window, blocks);
         let points = plan.points as usize;
         let capacity = points.max(1).next_power_of_two();
         self.words.extend([plan.points, blocks.len() as u32, capacity as u32, 0]);
         self.words.resize(4 + 4 * capacity * blocks.len(), wgsl::NONE);
         let mapped: Vec<_> = (0..plan.points).map(|p| plan.point(p)).collect();
-        for (i, (run, first)) in plan.runs.iter().enumerate() {
-            let (coordinates, _) = axis.read(run, &[]);
-            let end = plan.runs.get(i + 1).map_or(points, |(_, first)| *first as usize);
+        for (i, drawn) in plan.runs.iter().enumerate() {
+            let run = &drawn.run;
+            let middles = axis.drawn(run);
+            let end = plan.runs.get(i + 1).map_or(points, |next| next.first as usize);
+            let stored = sides(run.level);
             for (b, (samples, block)) in blocks.iter().enumerate() {
-                for side in 0..crate::data::sides(run.level) {
+                for side in 0..stored {
                     let pages = samples.pages(*block, run.level, side, run.entries.clone());
                     let sources: Vec<_> = pages
                         .iter()
@@ -1559,32 +1794,31 @@ impl<'g> Builder<'g> {
                         })
                         .collect();
                     let mut page_index = 0;
-                    for (point, mapped) in mapped.iter().enumerate().take(end).skip(*first as usize) {
-                        let Some((_, across, entry, which)) = *mapped else { continue };
-                        if which != side {
-                            continue;
-                        }
-                        while pages.get(page_index).is_some_and(|(_, held)| held.end <= entry) {
+                    for (point, mapped) in mapped.iter().enumerate().take(end).skip(drawn.first as usize) {
+                        // A frame stores one value, which is both its least and its greatest.
+                        let Some(p) = mapped.as_ref().filter(|p| p.side.min(stored - 1) == side) else { continue };
+                        let first = p.entries.start;
+                        while pages.get(page_index).is_some_and(|(_, held)| held.end <= first) {
                             page_index += 1;
                         }
-                        let Some((page, _)) = pages.get(page_index).filter(|(_, held)| held.contains(&entry)) else {
+                        let Some((page, held)) = pages.get(page_index).filter(|(_, held)| held.contains(&first)) else {
                             continue;
                         };
-                        let coordinate = (across - run.entries.start) as usize;
-                        let x = if run.level == 0 {
-                            coordinates[coordinate]
-                        } else {
-                            f64::midpoint(coordinates[2 * coordinate], coordinates[2 * coordinate + 1])
+                        let x = match p.at {
+                            At::Entry(entry) => middles[(entry - run.entries.start) as usize],
+                            At::Coordinate(bits) => f64::from_bits(bits),
                         };
                         let hi = x as f32;
+                        let count = (p.entries.end.min(held.end) - first) as u32;
+                        let greatest = if p.side == 1 { wgsl::TRACE_GREATEST } else { 0 };
                         let at = 4 + 4 * (b * capacity + point);
                         self.words[at..at + 4].copy_from_slice(&[
                             hi.to_bits(),
                             ((x - f64::from(hi)) as f32).to_bits(),
                             wgsl::NONE,
-                            page.per,
+                            page.per | count << wgsl::TRACE_COUNT | greatest,
                         ]);
-                        let offset = ((entry - page.first) * u64::from(page.per)) as u32;
+                        let offset = ((first - page.first) * u64::from(page.per)) as u32;
                         self.cursors.push((at + 2, sources[page_index], offset));
                     }
                 }
@@ -1651,8 +1885,7 @@ fn slot_page(
         Holds::Free => None,
         Holds::Page(page) => Some(packed.page(packing, &drawing.order, source, page)),
         Holds::Kept(_) => {
-            let holds = |row: u32| drawing.held_row(row).is_some_and(|h| (h / wgsl::PAGE_ROWS) as usize == s);
-            Some(packed.kept(&kept_packing(packing, drawing.kept_places(s)), source, holds))
+            Some(packed.kept(&kept_packing(packing, drawing.kept_places(s)), source, &|| drawing.rows(s)))
         }
     }
 }
@@ -1679,25 +1912,80 @@ mod tests {
             (wgsl::STEP_BEFORE, vec![(0, 0), (0, 1), (1, 1), (1, 2), (2, 2)]),
         ] {
             let n = corners.len() as u32;
-            let plan = Plan {
-                level: 0,
-                runs: vec![
-                    (Run { level: 0, entries: first..first + 3 }, 0),
-                    (Run { level: 1, entries: 100..102 }, n + 1),
-                ],
-                points: n + 5,
-                steps,
-            };
+            let frames = Drawn { run: Run { level: 0, entries: first..first + 3 }, first: 0, shape: Shape::Lines };
+            let buckets = Drawn { run: Run { level: 1, entries: 100..102 }, first: n + 1, shape: Shape::Lines };
+            let plan = Plan { runs: vec![frames, buckets], points: n + 6, steps };
             for (p, (across, value)) in corners.into_iter().enumerate() {
-                assert_eq!(plan.point(p as u32), Some((0, first + across, first + value, 0)));
-                assert_eq!(plan.entry(p as u32), Some((0, first + value, 0)));
+                let point = plan.point(p as u32).expect("a corner");
+                assert_eq!(
+                    (point.at, point.entries, point.side),
+                    (At::Entry(first + across), first + value..first + value + 1, 0)
+                );
             }
             assert_eq!(plan.point(n), None, "the point between runs breaks the line");
-            for k in 0..4 {
-                assert_eq!(plan.entry(n + 1 + k), Some((1, 100 + u64::from(k / 2), (k % 2) as usize)));
-            }
+            // Two buckets draw their least values, a break, then their greatest.
+            let drawn: Vec<_> =
+                (0..5).map(|k| plan.entries(n + 1 + k).map(|(_, entries, side)| (entries, side))).collect();
+            assert_eq!(
+                drawn,
+                [Some((100..101, 0)), Some((101..102, 0)), None, Some((100..101, 1)), Some((101..102, 1))]
+            );
             assert_eq!(plan.point(plan.points), None);
         }
+    }
+
+    #[test]
+    fn a_trace_reads_every_frame_in_view_once_a_side_within_its_budget() {
+        // One row's history of 20,000 frames, one a second.
+        let frames = 20_000_usize;
+        let at: Vec<f64> = (0..frames).map(|f| f as f64).collect();
+        let flow: Vec<f64> = (0..frames).map(|f| ((f * 7919) % 1000) as f64).collect();
+        let data = crate::Data::new("d");
+        let line = Table::new("Line", crate::Ids::count(1));
+        data.apply(crate::Patch::new().axis("time", "s").replace(line).append("Line", at, [("flow", flow)]))
+            .expect("valid");
+        let data = data.snapshot();
+        let Some(Field::Sampled(samples, _)) = data.table("Line").and_then(|t| t.field_named("flow")) else {
+            panic!("a sampled field");
+        };
+        let columns = 256;
+        let (mut lines, mut shared) = (false, false);
+        // A few frames a column, the whole history, and the whole history on a small budget.
+        for (across, most) in
+            [(Some([100.0, 164.0]), u64::MAX), (Some([0.0, 4000.0]), u64::MAX), (None, u64::MAX), (None, 512)]
+        {
+            let plan = plan(samples, Window { across, columns, most, steps: 0 }, &[]);
+            let wanted = across.map_or(samples.start()..samples.end(), |across| samples.across(across));
+            let read: u64 = plan.runs.iter().map(|drawn| drawn.run.len() as u64).sum();
+            assert!(read <= most, "{read} entries of {most}");
+            assert!(plan.points <= 4 * columns + 8, "about two points a column at most: {}", plan.points);
+            // The runs cover the frames in view, left to right.
+            let mut next = wanted.start;
+            for drawn in &plan.runs {
+                let spanned = drawn.run.frames();
+                assert!(spanned.start <= next && next < spanned.end, "frames {next}.. follow, not {spanned:?}");
+                next = spanned.end;
+            }
+            assert!(next >= wanted.end, "the last frame in view is read");
+            // Each side's points read their run's entries in order, each entry once, so a column
+            // shows the least and greatest of exactly the frames in it.
+            for drawn in &plan.runs {
+                lines |= drawn.shape == Shape::Lines;
+                shared |= matches!(drawn.shape, Shape::Columns(_));
+                for side in 0..sides(drawn.run.level) {
+                    let mut entry = drawn.run.entries.start;
+                    for point in (drawn.first..drawn.first + drawn.points(plan.steps)).filter_map(|p| plan.point(p)) {
+                        if point.side == side {
+                            assert_eq!(point.entries.start, entry, "no entry is skipped or read twice");
+                            assert!(point.entries.end - entry <= u64::from(wgsl::TRACE_MOST));
+                            entry = point.entries.end;
+                        }
+                    }
+                    assert_eq!(entry, drawn.run.entries.end, "every entry is read");
+                }
+            }
+        }
+        assert!(lines && shared, "frames a column apart draw as lines, and those sharing columns as columns");
     }
 
     #[test]
@@ -1730,7 +2018,7 @@ mod tests {
                     &mut d,
                     &samples,
                     &[(samples.clone(), 0), (samples.clone(), 1)],
-                    Window { across: None, columns: 1000, steps },
+                    Window { across: None, columns: 1000, most: u64::MAX, steps },
                 );
                 let mut table = builder.finish(Stamp::Missing, 0, d);
                 let mut values = vec![0; 17];
@@ -1762,17 +2050,17 @@ mod tests {
                             + 4
                             + 4 * ((row / wgsl::PAGE_ROWS as usize) * packed[base + 2] as usize + point as usize);
                         let cursor = &packed[at..at + 4];
-                        let Some((i, across, entry, side)) = plan.point(point) else {
+                        let Some(Point { run, at: At::Entry(across), entries, side }) = plan.point(point) else {
                             assert_eq!(cursor[2], wgsl::NONE);
                             continue;
                         };
-                        let level = plan.runs[i].0.level;
+                        let level = plan.runs[run].run.level;
                         let x = f64::from(f32::from_bits(cursor[0])) + f64::from(f32::from_bits(cursor[1]));
                         assert_eq!(x, samples.drawn_at(level, across).unwrap());
-                        let (_, expected) = samples.read(&Run { level, entries: entry..entry + 1 }, &[row]);
+                        let (_, expected) = samples.read(&Run { level, entries }, &[row]);
                         let value = f32::from_bits(values[cursor[2] as usize + row % wgsl::PAGE_ROWS as usize]);
                         assert!(value == expected[side] || (value.is_nan() && expected[side].is_nan()));
-                        assert!(row % (wgsl::PAGE_ROWS as usize) < cursor[3] as usize);
+                        assert!(row % (wgsl::PAGE_ROWS as usize) < (cursor[3] & wgsl::TRACE_ROWS) as usize);
                     }
                 }
             }
@@ -1802,7 +2090,7 @@ mod tests {
                     &mut descriptor,
                     &samples,
                     &[(samples.clone(), 0), (samples.clone(), 1)],
-                    Window { across: Some(across), columns: 1000, steps },
+                    Window { across: Some(across), columns: 1000, most: u64::MAX, steps },
                 );
                 let mut table = builder.finish(Stamp::Missing, 0, descriptor);
                 if let Some(old) = &before {
@@ -1826,14 +2114,14 @@ mod tests {
                             + 4 * ((row / wgsl::PAGE_ROWS as usize) * capacity as usize
                                 + ((head + point) & (capacity - 1)) as usize);
                         let cursor = &packed[at..at + 4];
-                        let Some((run, across, entry, side)) = plan.point(point) else {
+                        let Some(Point { run, at: At::Entry(across), entries, side }) = plan.point(point) else {
                             assert_eq!(cursor[2], wgsl::NONE);
                             continue;
                         };
-                        let level = plan.runs[run].0.level;
+                        let level = plan.runs[run].run.level;
                         let x = f64::from(f32::from_bits(cursor[0])) + f64::from(f32::from_bits(cursor[1]));
                         assert_eq!(x, samples.drawn_at(level, across).unwrap());
-                        let (_, expected) = samples.read(&Run { level, entries: entry..entry + 1 }, &[row]);
+                        let (_, expected) = samples.read(&Run { level, entries }, &[row]);
                         let value = f32::from_bits(contents[cursor[2] as usize + row % wgsl::PAGE_ROWS as usize]);
                         assert_eq!(value, expected[side]);
                     }
@@ -1850,22 +2138,58 @@ mod tests {
     }
 
     #[test]
-    fn a_join_lists_the_blocks_reading_each_page_and_tables_listing_the_same_ids_need_none() {
-        let from: (Name, Name) = ("other".into(), "T".into());
-        let rows = 2 * u64::from(wgsl::PAGE_ROWS) + 10;
-        let listing = |ids: Vec<u64>| {
-            let data = crate::Data::new("d");
-            data.apply(Table::new("T", ids)).expect("valid");
-            data.snapshot()
+    fn rows_written_in_another_table_dirty_the_blocks_of_the_rows_reading_them() {
+        let page = wgsl::PAGE_ROWS;
+        let rows = 2 * page + 10;
+        let zeros = |n: u32| vec![0.0_f32; n as usize];
+        // The first page of rows names cell 0 and the rows after it cell 1. `Same` lists the rows'
+        // ids in their order, and `Reverse` back to front.
+        let cells: Vec<u64> = (0..rows).map(|row| u64::from(row >= page)).collect();
+        let data = crate::Data::new("d");
+        data.apply(
+            crate::Patch::new()
+                .set(Table::new("Cell", crate::Ids::count(3)).field("v", zeros(3)))
+                .set(Table::new("Row", crate::Ids::count(rows)).reference("cell", "Cell", cells))
+                .set(Table::new("Same", crate::Ids::count(rows)).field("v", zeros(rows)))
+                .set(Table::new("Reverse", (0..u64::from(rows)).rev().collect::<Vec<_>>()).field("v", zeros(rows))),
+        )
+        .expect("valid");
+        let table = |data: &Snapshot, name: &str| data.table(name).expect("the table").clone();
+        let values = |table: &Table| match table.field_named("v") {
+            Some(Field::Values(values, _)) => values.clone(),
+            _ => panic!("a field of values"),
         };
-        let table = |data: &Snapshot| data.table("T").expect("the table").clone();
-        let (own, same) = (table(&listing((0..rows).collect())), table(&listing((0..rows).collect())));
-        assert!(Join::of(&from, &own, Some(&same)).rows.is_none(), "every row reads its own");
-        // The other table lists the ids in reverse, so its first page holds the last rows' ids.
-        let join = Join::of(&from, &own, Some(&table(&listing((0..rows).rev().collect()))));
-        assert_eq!(join.readers(&[0]), [1, 2]);
-        assert_eq!(join.readers(&[2]), [0]);
-        assert_eq!(join.readers(&[1, 2]), [0, 1]);
-        assert_eq!(Join::of(&from, &own, None).readers(&[0]), [0_u32; 0], "no table to read");
+        // The rows of `name` that writing a new value to its rows `ids` changes.
+        let wrote = std::cell::Cell::new(0.0_f32);
+        let write = |name: &str, ids: Vec<u64>| {
+            let before = values(&table(&data.snapshot(), name));
+            wrote.set(wrote.get() + 1.0);
+            let new = vec![wrote.get(); ids.len()];
+            data.apply(Table::new(name, ids).field("v", new)).expect("valid");
+            values(&table(&data.snapshot(), name)).written_since(&before)
+        };
+        let own = table(&data.snapshot(), "Row");
+        let reading = |via: &Via<'_>, written: &Runs| readers(via, written, &own, Rows::Own);
+        // Through a reference: the rows naming a written row.
+        let Some(Field::Reference(reference)) = own.field_named("cell") else { panic!("a reference") };
+        let named = Via::Naming(reference.inverse());
+        assert_eq!(reading(&named, &write("Cell", vec![0])), Some(vec![0]));
+        assert_eq!(reading(&named, &write("Cell", vec![1])), Some(vec![1, 2]));
+        assert_eq!(reading(&named, &write("Cell", vec![2])), Some(vec![]), "no row names it");
+        assert_eq!(reading(&named, &write("Cell", vec![0, 1])), None, "every row named was written");
+        // Through a join: the rows sharing an id with a written row.
+        let from: (Name, Name) = ("d".into(), "Same".into());
+        let (same, reverse) = (table(&data.snapshot(), "Same"), table(&data.snapshot(), "Reverse"));
+        let aligned = Join::of(&from, &own, Some(&same));
+        assert!(aligned.rows.is_none(), "tables listing the same ids in the same order need no rows");
+        assert_eq!(reading(&Via::Own, &write("Same", vec![3, u64::from(page) + 5])), Some(vec![0, 1]));
+        // `Reverse` holds the last row's id first, so its first row is read from the last block.
+        let join = Join::of(&from, &own, Some(&reverse));
+        let listed = Via::Naming(join.rows.as_ref().expect("rows that read other rows").naming());
+        let last = write("Reverse", vec![u64::from(rows) - 1]);
+        assert_eq!(reading(&listed, &last), Some(vec![2]));
+        assert_eq!(reading(&Via::Ids(&reverse), &last), Some(vec![2]), "by id, as a drawing's rows are found");
+        let every = write("Reverse", (0..u64::from(rows)).collect());
+        assert_eq!((reading(&listed, &every), reading(&Via::Ids(&reverse), &every)), (None, None));
     }
 }

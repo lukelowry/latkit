@@ -23,17 +23,27 @@ What every part of the package shares.
 ### `load()`
 
 {.signature}
-`function load(options?: { wasm?: string | URL | WebAssembly.Module; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
+`function load(options?: { wasm?: string | URL | WebAssembly.Module; jobs?: string | URL | WebAssembly.Module; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
 
 Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
 load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
 load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
 also creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
 
+The assets come as a set. Without options, latkit finds each beside its own module. A page that
+gives the URL of `wasm` gives `jobs` and `worker` too, or the call rejects with an `invalid`
+error: a job would otherwise fail only when a view first has one.
+
 {#load-wasm .member}
 **`wasm`**`?: string | URL | WebAssembly.Module` [¶](#load-wasm){.headerlink}
 : The URL of this version's `latkit/wasm` asset, or that asset compiled. It carries the
   shaders, translated for WebGL2 when the package was built. Defaults to the bundled asset.
+
+{#load-jobs .member}
+**`jobs`**`?: string | URL | WebAssembly.Module` [¶](#load-jobs){.headerlink}
+: The URL of this version's `latkit/jobs` asset, the WebAssembly that does the work views and
+  datasets hand to workers, or that asset compiled. A page loads it the first time it has
+  such work. Defaults to the bundled asset.
 
 {#load-wgsl .member}
 **`wgsl`**`?: string | URL | WebAssembly.Module` [¶](#load-wgsl){.headerlink}
@@ -43,10 +53,10 @@ also creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
 
 {#load-worker .member}
 **`worker`**`?: string | URL | (() => Worker)` [¶](#load-worker){.headerlink}
-: The URL of this version's standalone `latkit/worker` asset, or a function that creates a
-  worker running it. A browser starts workers only from the page's origin, so the page fetches
-  a worker on another origin, such as a CDN or a webview's resources, and starts it from a
-  blob. Defaults to the bundled worker.
+: The URL of this version's standalone `latkit/worker` asset, which runs the jobs module, or
+  a function that creates a worker running it. A browser starts workers only from the page's
+  origin, so the page fetches a worker on another origin, such as a CDN or a webview's
+  resources, and starts it from a blob. Defaults to the bundled worker.
 
 (latkiterror)=
 
@@ -317,6 +327,11 @@ window need, and views on one GPU share them. The first bytes at `url` decide th
   that kind regardless of the marks. Each tile that arrives appends its rows to the view's
   dataset. Rows of tiles no longer drawn are kept until they outnumber the rows drawn.
 
+A GPU keeps what it fetched and decoded while the `Tiles` object lives, so a view that stops
+drawing the tiles and starts again fetches nothing twice. Every `Tiles` on a GPU shares its
+[`budget.tiles`](#budget-tiles) bytes. Past them, the pieces no view draws are dropped, least recently drawn
+first.
+
 ```{rubric} Constructor
 ```
 
@@ -349,6 +364,17 @@ window need, and views on one GPU share them. The first bytes at `url` decide th
   earlier frames filled. They fetch the last span of each level again, which shows what it held
   until the new one arrives, and every span that failed. A manifest that names another base,
   `chunk`, or `url` starts over, as vector tiles always do.
+
+{#tiles-describe .member}
+**`describe`**`(wait?:` [`Wait`](#wait)`): Promise<`[`TilesDescription`](#tilesdescription)`>` [¶](#tiles-describe){.headerlink}
+: Resolves to what the source holds, read from its index: the credit it asks to be shown, the
+  zooms and area it covers, and its layers with their fields. A PMTiles archive and a TileJSON
+  document say these. A URL template says only the default zooms, and time tiles say none.
+  Rejects when the index can't be fetched or read.
+
+  ```ts
+  const { attribution, layers } = await tiles.describe();
+  ```
 
 (tilesoptions)=
 
@@ -1222,9 +1248,10 @@ const view = await View.create(canvas, {
   space, such as a plot camera on a map, is ignored.
 
   Camera moves stay within the camera's zoom and pan limits. On the earth, the space sets the
-  limits inside the insets, as [`Earth`](#earth) describes. A fit narrows them to 3 zoom levels out and 8
-  in from the box it framed, with the center near that box. When a resize, new insets, or a new
-  space moves the camera back within its limits, a `camera` event reports it.
+  limits inside the insets, as [`Earth`](#earth) describes. A fit narrows them as far as the scene's
+  [`controls.reach`](#controls-reach) says: unless it says otherwise, to 3 zoom levels out from the box the fit
+  framed, with the center near that box. When a resize, new insets, or a new space moves the
+  camera back within its limits, a `camera` event reports it.
 
 {#view-insets .member}
 **`insets`**`:` [`Insets`](#insets) [¶](#view-insets){.headerlink}
@@ -1678,8 +1705,9 @@ A picture's RGBA pixels, with straight alpha, rows top to bottom.
 
 {#image-encode .member}
 **`encode`**`(format:` [`ImageFormat`](#imageformat)`, options?: { quality?: number } &` [`Wait`](#wait)`): Promise<Uint8Array>` [¶](#image-encode){.headerlink}
-: Encodes the image as a file, in a worker. PNG is lossless with alpha. JPEG drops alpha. WebP
-  is lossless with alpha and smaller than PNG.
+: Encodes the image as a file. PNG is lossless with alpha. JPEG drops alpha: pixels that are not
+  opaque blend over black. WebP is lossless with alpha and smaller than PNG. The browser's own
+  encoder writes JPEG, and PNG of an opaque image. A worker writes the rest.
 
   {#image-encode-quality .member}
   **`quality`**`?: number` [¶](#image-encode-quality){.headerlink}

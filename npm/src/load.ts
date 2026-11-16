@@ -3,11 +3,12 @@
 import init, * as bindings from '../pkg/latkit.js';
 import { encoder } from './encoder.js';
 import { loaded, stop, thrown } from './internal.js';
-import { jobs } from './jobs.js';
+import { compiled, jobs } from './jobs.js';
 import { translator } from './wgsl.js';
 
 interface Configured {
   wasm?: string | WebAssembly.Module;
+  jobs?: string | WebAssembly.Module;
   wgsl?: string | WebAssembly.Module;
   worker?: string | (() => Worker);
 }
@@ -23,6 +24,10 @@ let first: Promise<bindings.Gpu> | undefined;
  * load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
  * load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
  * also creates the first WebGL2 device for `Gpu.create()`.
+ *
+ * The assets come as a set. Without options, latkit finds each beside its own module. A page that
+ * gives the URL of `wasm` gives `jobs` and `worker` too, or the call rejects with an `invalid`
+ * error: a job would otherwise fail only when a view first has one.
  */
 export function load(
   options: {
@@ -32,16 +37,22 @@ export function load(
      */
     wasm?: string | URL | WebAssembly.Module;
     /**
+     * The URL of this version's `latkit/jobs` asset, the WebAssembly that does the work views and
+     * datasets hand to workers, or that asset compiled. A page loads it the first time it has
+     * such work. Defaults to the bundled asset.
+     */
+    jobs?: string | URL | WebAssembly.Module;
+    /**
      * The URL of this version's `latkit/wgsl` asset, the WebAssembly that translates custom
      * markers' WGSL, or that asset compiled. A page loads it the first time it draws a custom
      * marker. Defaults to the bundled asset.
      */
     wgsl?: string | URL | WebAssembly.Module;
     /**
-     * The URL of this version's standalone `latkit/worker` asset, or a function that creates a
-     * worker running it. A browser starts workers only from the page's origin, so the page fetches
-     * a worker on another origin, such as a CDN or a webview's resources, and starts it from a
-     * blob. Defaults to the bundled worker.
+     * The URL of this version's standalone `latkit/worker` asset, which runs the jobs module, or
+     * a function that creates a worker running it. A browser starts workers only from the page's
+     * origin, so the page fetches a worker on another origin, such as a CDN or a webview's
+     * resources, and starts it from a blob. Defaults to the bundled worker.
      */
     worker?: string | URL | (() => Worker);
   } = {},
@@ -50,9 +61,23 @@ export function load(
   const text = <T>(value: T | URL) => (value instanceof URL ? value.href : value);
   const asked: Configured = {
     wasm: text(options.wasm),
+    jobs: text(options.jobs),
     wgsl: text(options.wgsl),
     worker: text(options.worker),
   };
+  if (typeof asked.wasm === 'string') {
+    // Where no worker can start, jobs run on this thread and need only their module.
+    const set = typeof Worker === 'function' ? (['jobs', 'worker'] as const) : (['jobs'] as const);
+    const missing = set.find((asset) => asked[asset] === undefined);
+    if (missing)
+      return Promise.reject(
+        thrown({
+          code: 'invalid',
+          path: missing,
+          message: `load() was given the URL of wasm: give it ${missing} from the same version too`,
+        }),
+      );
+  }
   if (loading) {
     const differs = (Object.keys(asked) as (keyof Configured)[]).some(
       (key) => asked[key] !== undefined && asked[key] !== configured?.[key],
@@ -73,9 +98,10 @@ export function load(
 }
 
 /**
- * Instantiates the bindings, installs the job workers, the WGSL translator, and the video encoder
- * where the browser has them. A worker on another origin is fetched meanwhile. Where a browser
- * canvas is available, including workers, the first GPU device is then requested.
+ * Instantiates the bindings, installs the jobs, the WGSL translator, and the video encoder where
+ * the browser has one. The jobs module and its workers load when there is a first job. A worker
+ * on another origin is fetched meanwhile. Where a browser canvas is available, including workers,
+ * the first GPU device is then requested.
  */
 async function initialize(options: Configured) {
   const instantiated = init(
@@ -90,7 +116,10 @@ async function initialize(options: Configured) {
   await instantiated;
   bindings.onStop(stop);
   bindings.setTranslator(translator(options.wgsl));
-  if (worker) bindings.setJobs(jobs(bindings.module() as WebAssembly.Module, await worker));
+  const module = compiled(
+    options.jobs ?? new URL('../pkg/latkit_jobs_bg.wasm', import.meta.url).href,
+  );
+  bindings.setJobs(jobs(module, await worker));
   if (typeof VideoEncoder === 'function') bindings.setEncoder(encoder);
   loaded(bindings);
   if (typeof OffscreenCanvas === 'function' || typeof document !== 'undefined') {

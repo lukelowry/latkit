@@ -147,7 +147,7 @@ A plane: positions are in plane units.
 
 {#plane-grid .member}
 **`grid`**`?:` [`Grid`](#grid) [¶](#plane-grid){.headerlink}
-: The grid drawn under the marks. Defaults to lines 10 units apart.
+: The grid on the ground under the marks. Defaults to lines.
 
 (earth)=
 
@@ -168,10 +168,9 @@ the globe spans a third of the view's shorter side.
 **`projection`**`?:` [`Projection`](#projection) [¶](#earth-projection){.headerlink}
 : A flat web mercator map (`mercator`) or a globe (`globe`). Defaults to `mercator`.
 
-{#earth-graticule .member}
-**`graticule`**`?: boolean` [¶](#earth-graticule){.headerlink}
-: Whether lines of longitude and latitude cross the ground, in the theme's `grid` color. Defaults
-  to `true`.
+{#earth-grid .member}
+**`grid`**`?:` [`Grid`](#grid) [¶](#earth-grid){.headerlink}
+: The grid of longitude and latitude on the ground. Defaults to lines.
 
 {#earth-daylight .member}
 **`daylight`**`?: number | null` [¶](#earth-daylight){.headerlink}
@@ -296,29 +295,32 @@ How an axis writes its tick values, or a label its number.
 ### `Grid`
 
 {.signature}
-`type Grid = 'off' | { lines: { … } } | { dots: { … } }`
+`type Grid = 'off' | 'lines' | 'dots' | { lines: { … } } | { dots: { … } }`
 
-A plane's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch } }`.
+The grid on the ground of a plane or the earth, under the marks: `"off"`, `"lines"`, `"dots"`,
+or `{ lines | dots: { step } }`. It draws in the theme's `grid` look.
 
-{#grid-off .member}
-**`'off'`** [¶](#grid-off){.headerlink}
-: No grid.
+Lines lie at multiples of a step, in position units (degrees of longitude and latitude on the
+earth). The camera's zoom alone picks the step: the finest of `step` times 1, 2, or 5 and a
+power of ten that keeps lines the theme's `grid.spacing` apart on screen. On the earth the steps
+are those of degrees, with 30° and 90° past 10°. Turning or tilting the view moves no line, and
+lines run on to the horizon.
 
 {#grid-lines .member}
-`{` **`lines`**`: { pitch: number } }` [¶](#grid-lines){.headerlink}
-: Lines `pitch` units apart, thinned by factors of ten as the view zooms out.
+`{` **`lines`**`: { step?: number | null } }` [¶](#grid-lines){.headerlink}
+: Lines along both axes.
 
-  {#grid-lines-pitch .member}
-  **`pitch`**`: number` [¶](#grid-lines-pitch){.headerlink}
-  : Units between lines.
+  {#grid-lines-step .member}
+  **`step`**`?: number | null` [¶](#grid-lines-step){.headerlink}
+  : The finest step between lines. Defaults to 10 on a plane and to 0.01° on the earth.
 
 {#grid-dots .member}
-`{` **`dots`**`: { pitch: number } }` [¶](#grid-dots){.headerlink}
-: Dots `pitch` units apart.
+`{` **`dots`**`: { step?: number | null } }` [¶](#grid-dots){.headerlink}
+: Dots where lines would cross.
 
-  {#grid-dots-pitch .member}
-  **`pitch`**`: number` [¶](#grid-dots-pitch){.headerlink}
-  : Units between dots.
+  {#grid-dots-step .member}
+  **`step`**`?: number | null` [¶](#grid-dots-step){.headerlink}
+  : The finest step between dots. Defaults to 10 on a plane and to 0.01° on the earth.
 
 (controls)=
 
@@ -387,6 +389,10 @@ rows pick, select, and drag. These options control the view itself.
 : How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
   options that read `elapsed`. `system` follows the user's reduced-motion setting, `full` animates
   everything, and `reduced` animates only motion the user drives. Defaults to `system`.
+
+{#controls-reach .member}
+**`reach`**`?:` [`Reach`](#reach) [¶](#controls-reach){.headerlink}
+: How far the camera may go from what fits have framed. Defaults to `fit`.
 
 (gestures)=
 
@@ -468,6 +474,35 @@ How much a view animates on its own.
 **`'reduced'`** [¶](#motion-reduced){.headerlink}
 : Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits, and
   comets and options that read `elapsed` stay still.
+
+(reach)=
+
+### `Reach`
+
+{.signature}
+`type Reach = 'fit' | 'space' | { … }`
+
+How far a map camera may go from the box fits have framed: a preset (`"fit"` or `"space"`), or
+options that change `fit`. `fit` keeps the camera near that box, and `space` sets no limit of
+its own. The space's limits always hold, as [`Earth`](#earth) describes, and a zoom never passes level 24.
+
+The box is what the last fit to everything framed, grown by any rows fitted since.
+
+{#reach-zoomout .member}
+**`zoomOut`**`?: number | null` [¶](#reach-zoomout){.headerlink}
+: How many zoom levels the camera may zoom out past the widest fit. `null` sets no limit. Defaults
+  to 3.
+
+{#reach-zoomin .member}
+**`zoomIn`**`?: number | null` [¶](#reach-zoomin){.headerlink}
+: How many zoom levels the camera may zoom in past the closest fit. `null` sets no limit. Defaults
+  to `null`: how far in a view needs to go depends on how close its rows lie, not on how far they
+  spread.
+
+{#reach-pan .member}
+**`pan`**`?: number | null` [¶](#reach-pan){.headerlink}
+: How far the center may stray from the box, in sizes of the box, or of half the view at the
+  widest fit's zoom when the box is smaller. `null` sets no limit. Defaults to 1.
 
 (layout)=
 
@@ -575,7 +610,8 @@ Sort direction. Rows where the key has no value sort last in either direction.
 {.signature}
 `interface Budget`
 
-How much GPU memory latkit uses.
+How much memory latkit keeps for a [`Gpu`](#gpu)'s views: on the GPU for the data they draw, and beside
+it for the tiles they fetched.
 
 {#budget-bytes .member}
 **`bytes`**`: number` [¶](#budget-bytes){.headerlink}
@@ -591,6 +627,12 @@ How much GPU memory latkit uses.
 **`uploadPerFrame`**`: number` [¶](#budget-uploadperframe){.headerlink}
 : The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to 32
   MiB.
+
+{#budget-tiles .member}
+**`tiles`**`?: number` [¶](#budget-tiles){.headerlink}
+: Memory in bytes for the tiles fetched from every [`Tiles`](#tiles) source the views draw, and the rows
+  decoded from them. Tiles a view draws always stay. Past this, the tiles no view draws are
+  dropped, least recently drawn first, and fetched again if drawn again. Defaults to 256 MiB.
 
 ## Themes
 
@@ -614,14 +656,8 @@ Lengths are in CSS pixels, except comet lengths given in position units.
 : The background color.
 
 {#theme-grid .member}
-**`grid`**`?:` [`Color`](#color) [¶](#theme-grid){.headerlink}
-: The color of a plane's grid, a plot's grid lines, and the earth's graticule.
-
-{#theme-gridspacing .member}
-**`gridSpacing`**`?: number` [¶](#theme-gridspacing){.headerlink}
-: The least distance between the lines (or dots) of a plane's grid and of the earth's graticule,
-  in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten (and 30° and 90° on the
-  earth), and the finer step fades out as it nears this distance.
+**`grid`**`?:` [`GridTheme`](#gridtheme) [¶](#theme-grid){.headerlink}
+: How a plane's grid, the earth's grid, and a plot's grid lines look.
 
 {#theme-missing .member}
 **`missing`**`?:` [`Color`](#color) [¶](#theme-missing){.headerlink}
@@ -676,6 +712,28 @@ Lengths are in CSS pixels, except comet lengths given in position units.
 {#theme-base .member}
 **`base`**`?: 'dark' | 'light'` [¶](#theme-base){.headerlink}
 : The theme these options change. Defaults to `dark`.
+
+(gridtheme)=
+
+### `GridTheme`
+
+{.signature}
+`interface GridTheme`
+
+How a plane's grid, the earth's grid, and a plot's grid lines look.
+
+{#gridtheme-color .member}
+**`color`**`?:` [`Color`](#color) [¶](#gridtheme-color){.headerlink}
+: The color of lines and dots.
+
+{#gridtheme-width .member}
+**`width`**`?: number` [¶](#gridtheme-width){.headerlink}
+: The width of a line, in CSS pixels. A dot is twice as wide.
+
+{#gridtheme-spacing .member}
+**`spacing`**`?: number` [¶](#gridtheme-spacing){.headerlink}
+: The least distance between the lines (or dots) of a plane's or the earth's grid, in CSS pixels.
+  A finer step fades in as zooming in spreads its lines from this distance to twice it.
 
 (texttheme)=
 
@@ -745,7 +803,7 @@ Defaults for edges, and how parallel edges and arrowheads look.
 **`bow`**`?: number` [¶](#edgetheme-bow){.headerlink}
 : How far edges joining the same two vertices bow apart. Each lane bows out by this fraction of
   the edge's length, measured at its middle. Parallel edges spread at most eight lanes wide, and
-  more lanes pack closer. Bows scale with the zoom.
+  more lanes pack closer. Bows scale with the zoom. With 0 they run straight, one over another.
 
 {#edgetheme-arrow .member}
 **`arrow`**`?: number` [¶](#edgetheme-arrow){.headerlink}
@@ -2379,6 +2437,58 @@ A summary of one field: its kind, plus its target table or axis span where those
 {#fielddescription-span .member}
 **`span`**`?: [number, number]` [¶](#fielddescription-span){.headerlink}
 : For a sampled field, the first and last axis coordinates it holds.
+
+(tilesdescription)=
+
+### `TilesDescription`
+
+{.signature}
+`interface TilesDescription`
+
+What a tile source holds, as its index says. See [`tiles.describe`].
+
+{#tilesdescription-attribution .member}
+**`attribution`**`: string | null` [¶](#tilesdescription-attribution){.headerlink}
+: The credit the source asks to be shown with its tiles, as the source writes it, which may be
+  HTML. `null` when it asks for none.
+
+{#tilesdescription-zooms .member}
+**`zooms`**`: [number, number] | null` [¶](#tilesdescription-zooms){.headerlink}
+: The lowest and highest zoom the source has tiles for. `null` for time tiles.
+
+{#tilesdescription-bounds .member}
+**`bounds`**`: [number, number, number, number] | null` [¶](#tilesdescription-bounds){.headerlink}
+: The area its tiles cover: west, south, east, and north, in degrees. `null` for time tiles.
+
+{#tilesdescription-layers .member}
+**`layers`**`:` [`LayerDescription`](#layerdescription)`[]` [¶](#tilesdescription-layers){.headerlink}
+: The layers a vector source lists, each a table that marks can draw. Empty when it lists none, as
+  a URL template and time tiles do.
+
+(layerdescription)=
+
+### `LayerDescription`
+
+{.signature}
+`interface LayerDescription`
+
+A summary of one layer of a vector tile source.
+
+{#layerdescription-name .member}
+**`name`**`: string` [¶](#layerdescription-name){.headerlink}
+: The layer's name, which names its table.
+
+{#layerdescription-description .member}
+**`description`**`?: string` [¶](#layerdescription-description){.headerlink}
+: What the source says the layer holds, if anything.
+
+{#layerdescription-zooms .member}
+**`zooms`**`?: [number, number]` [¶](#layerdescription-zooms){.headerlink}
+: The lowest and highest zoom whose tiles have the layer, when the source states them.
+
+{#layerdescription-fields .member}
+**`fields`**`:` [`FieldDescription`](#fielddescription)`[]` [¶](#layerdescription-fields){.headerlink}
+: The properties of its features, each a field of its table, sorted by name.
 
 (kind)=
 

@@ -7,19 +7,21 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, OffscreenCanvas, Offs
 use super::queue::Queue;
 use super::{Encoder, Unit};
 use super::{Host, Job, Raster, Request, TextRun};
-use crate::Encoding;
-use crate::{Error, Pending};
+use crate::{Encoding, Error, Image, ImageFormat, Pending};
 
-/// The browser host. Text is rasterized with a 2D canvas in the page's fonts, and bytes are fetched
-/// with `fetch`. Jobs run on the page's workers once [`set_jobs`](Browser::set_jobs) provides them,
-/// else immediately. Video is encoded with WebCodecs once [`set_encoder`](Browser::set_encoder)
-/// provides an encoder. Custom markers' WGSL translates to GLSL with the translator
-/// [`set_translator`](Browser::set_translator) provides, or in the page with the `wgsl` feature.
+/// The browser host. Text is rasterized with a 2D canvas in the page's fonts, pictures are encoded
+/// by one where it writes them exactly and in a job where it cannot, and bytes are fetched with
+/// `fetch`. Jobs run with the runner
+/// [`set_jobs`](Browser::set_jobs) provides, the page's workers, and fail as unsupported without
+/// one: the code that does a job's work is theirs to load, not the page's. Video is encoded with
+/// WebCodecs once [`set_encoder`](Browser::set_encoder) provides an encoder. Custom markers' WGSL
+/// translates to GLSL with the translator [`set_translator`](Browser::set_translator) provides, or
+/// in the page with the `wgsl` feature.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Browser;
 
 thread_local! {
-    static CANVAS: RefCell<Option<TextCanvas>> = const { RefCell::new(None) };
+    static CANVAS: RefCell<Option<Canvas2d>> = const { RefCell::new(None) };
     static JOBS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
     static QUEUE: RefCell<Queue> = RefCell::new(Queue::default());
     static ENCODERS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
@@ -104,8 +106,9 @@ fn pump(run: &js_sys::Function) {
 
 impl Browser {
     /// Runs views' jobs with `run`, which takes a job's bytes as a `Uint8Array` and returns a
-    /// promise of its result's bytes. `run` should pass jobs to workers that each hold the page's
-    /// compiled module. Jobs queue here, and `run` gets one only when a worker is free.
+    /// promise of its result's bytes: those of [`Job::run`] on the job rebuilt from them. `run`
+    /// should pass jobs to workers that each hold a module built to run them, as the npm package's
+    /// do. Jobs queue here, and `run` gets one only when a worker is free.
     pub fn set_jobs(run: js_sys::Function) {
         JOBS.with(|jobs| *jobs.borrow_mut() = Some(run));
     }
@@ -218,7 +221,7 @@ pub(super) fn fonts() -> u64 {
 
 /// Breaks `text` into lines, each with its width: at each newline, then at spaces so no line is
 /// wider than `max_width`. A word wider than `max_width` gets a line of its own.
-fn lines(context: &TextCanvas, text: &str, max_width: Option<f64>) -> Option<Vec<(String, f64)>> {
+fn lines(context: &Canvas2d, text: &str, max_width: Option<f64>) -> Option<Vec<(String, f64)>> {
     let width = |s: &str| context.measure_text(s).ok().map(|m| m.width());
     let mut lines: Vec<(String, f64)> = Vec::new();
     for paragraph in text.split('\n').map(|p| p.strip_suffix('\r').unwrap_or(p)) {
@@ -245,31 +248,67 @@ fn lines(context: &TextCanvas, text: &str, max_width: Option<f64>) -> Option<Vec
     Some(lines)
 }
 
-/// Both browser canvas surfaces provide the same text operations. Keep layout and coverage
-/// extraction shared, including on browsers with WebGL2 but no `OffscreenCanvas` or offscreen 2D.
-enum TextCanvas {
+/// Both browser canvas surfaces provide the same 2D operations. Keep text layout, coverage
+/// extraction, and picture encoding shared, including on browsers with WebGL2 but no
+/// `OffscreenCanvas` or offscreen 2D.
+enum Canvas2d {
     Offscreen(OffscreenCanvas, OffscreenCanvasRenderingContext2d),
     Element(HtmlCanvasElement, CanvasRenderingContext2d),
 }
 
-impl TextCanvas {
-    fn new() -> Option<Self> {
-        // Each run is read back after drawing, so ask for a canvas suited to readback.
+impl Canvas2d {
+    /// A canvas of `size` pixels whose pixels stay in memory, since they are written or read
+    /// back, never drawn to the screen.
+    fn new(size: [u32; 2]) -> Option<Self> {
         let options = js_sys::Object::new();
         js_sys::Reflect::set(&options, &"willReadFrequently".into(), &true.into()).ok()?;
         let offscreen = || {
-            let canvas = OffscreenCanvas::new(256, 64).ok()?;
+            let canvas = OffscreenCanvas::new(size[0], size[1]).ok()?;
             let context = canvas.get_context_with_context_options("2d", &options).ok()??.dyn_into().ok()?;
             Some(Self::Offscreen(canvas, context))
         };
         offscreen().or_else(|| {
             let canvas: HtmlCanvasElement =
                 web_sys::window()?.document()?.create_element("canvas").ok()?.dyn_into().ok()?;
-            canvas.set_width(256);
-            canvas.set_height(64);
+            canvas.set_width(size[0]);
+            canvas.set_height(size[1]);
             let context = canvas.get_context_with_context_options("2d", &options).ok()??.dyn_into().ok()?;
             Some(Self::Element(canvas, context))
         })
+    }
+
+    /// Sets its pixels to `image`'s, which must be its size.
+    fn put(&self, image: &Image) -> Result<(), JsValue> {
+        let [width, height] = image.size;
+        let pixels =
+            web_sys::ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&image.rgba), width, height)?;
+        match self {
+            Self::Offscreen(_, context) => context.put_image_data(&pixels, 0.0, 0.0),
+            Self::Element(_, context) => context.put_image_data(&pixels, 0.0, 0.0),
+        }
+    }
+
+    /// A promise of its pixels as a `Blob` holding a file of MIME type `kind`, at `quality` from 0
+    /// to 1 where the format has one. A browser that cannot write `kind` writes PNG instead.
+    fn blob(&self, kind: &str, quality: Option<f64>) -> Result<js_sys::Promise, JsValue> {
+        match self {
+            Self::Offscreen(canvas, _) => {
+                let options = web_sys::ImageEncodeOptions::new();
+                options.set_type(kind);
+                if let Some(quality) = quality {
+                    options.set_quality(quality);
+                }
+                canvas.convert_to_blob_with_options(&options)
+            }
+            Self::Element(canvas, _) => {
+                let quality = quality.map_or(JsValue::UNDEFINED, JsValue::from);
+                let mut failed = None;
+                let promise = js_sys::Promise::new(&mut |resolve, _| {
+                    failed = canvas.to_blob_with_type_and_encoder_options(&resolve, kind, &quality).err();
+                });
+                failed.map_or(Ok(promise), Err)
+            }
+        }
     }
 
     fn ensure_size(&self, size: [u32; 2]) {
@@ -340,11 +379,11 @@ impl TextCanvas {
 }
 
 /// Calls `f` with the text canvas, created on first use.
-fn with_context<R>(f: impl FnOnce(&TextCanvas) -> Option<R>) -> Option<R> {
+fn with_context<R>(f: impl FnOnce(&Canvas2d) -> Option<R>) -> Option<R> {
     CANVAS.with(|cell| {
         let mut cell = cell.borrow_mut();
         if cell.is_none() {
-            *cell = TextCanvas::new();
+            *cell = Canvas2d::new([256, 64]);
         }
         f(cell.as_ref()?)
     })
@@ -359,7 +398,7 @@ struct Layout {
 
 impl Layout {
     /// Lays out `run` in `context`, setting the context's font to the run's.
-    fn of(context: &TextCanvas, run: &TextRun) -> Option<Layout> {
+    fn of(context: &Canvas2d, run: &TextRun) -> Option<Layout> {
         context.set_font(&format!("{}px {}", run.size_px, run.font));
         let lines = lines(context, &run.text, run.max_width.map(f64::from))?;
         let metrics = context.measure_text(&run.text).ok()?;
@@ -374,12 +413,55 @@ impl Layout {
     }
 }
 
+/// The bytes of the file that `blob`, a promise of a `Blob`, resolves to. The file must be of MIME
+/// type `kind`: a browser that cannot write a format writes PNG instead, which is refused.
+async fn file(blob: Result<js_sys::Promise, JsValue>, kind: &str, format: ImageFormat) -> crate::Result<Vec<u8>> {
+    let failed = |error: JsValue| failure(&error, &format!("the browser could not encode {format}"));
+    let blob = wasm_bindgen_futures::JsFuture::from(blob.map_err(failed)?).await.map_err(failed)?;
+    let blob: web_sys::Blob = blob.dyn_into().map_err(failed)?;
+    if blob.type_() != kind {
+        return Err(Error::Unsupported(format!("this browser cannot encode {format} pictures").into()));
+    }
+    let bytes = wasm_bindgen_futures::JsFuture::from(blob.array_buffer()).await.map_err(failed)?;
+    Ok(js_sys::Uint8Array::new(&bytes).to_vec())
+}
+
 impl Host for Browser {
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
-        let Some(run) = JOBS.with(|jobs| jobs.borrow().clone()) else { return Pending::ready(Ok(job.run())) };
+        let Some(run) = JOBS.with(|jobs| jobs.borrow().clone()) else {
+            return Pending::ready(Err(Error::Unsupported("the page gave latkit no way to run jobs".into())));
+        };
         let (pending, resolver) = Pending::new();
         QUEUE.with(|queue| queue.borrow_mut().push(job, resolver));
         pump(&run);
+        pending
+    }
+
+    /// A canvas, the browser's own encoder, writes the files it writes exactly: JPEG, which blends
+    /// pixels that are not opaque over black, and PNG of an opaque picture. A canvas keeps its
+    /// colors multiplied by alpha, which rounds those of a picture that is not opaque, and not
+    /// every browser's canvas writes WebP. A job writes those: PNG with alpha, and lossless WebP.
+    fn encode(&self, image: &Image, format: ImageFormat) -> Pending<Vec<u8>> {
+        let canvas = match format {
+            ImageFormat::Jpeg { quality } => Some(("image/jpeg", Some(f64::from(quality) / 100.0))),
+            ImageFormat::Png if image.opaque() => Some(("image/png", None)),
+            ImageFormat::Png | ImageFormat::WebP => None,
+        };
+        let (pending, resolver) = Pending::new();
+        let Some((kind, quality)) = canvas else {
+            let job = self.spawn(Job::encode(image, format));
+            wasm_bindgen_futures::spawn_local(async move {
+                let unwritten = || Error::invalid(format!("the image could not be encoded as {format}"));
+                resolver.resolve(job.await.and_then(|file| if file.is_empty() { Err(unwritten()) } else { Ok(file) }));
+            });
+            return pending;
+        };
+        let blob = Canvas2d::new(image.size)
+            .ok_or_else(|| JsValue::from_str("no 2D canvas"))
+            .and_then(|canvas| canvas.put(image).and_then(|()| canvas.blob(kind, quality)));
+        wasm_bindgen_futures::spawn_local(async move {
+            resolver.resolve(file(blob, kind, format).await);
+        });
         pending
     }
 

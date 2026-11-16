@@ -3,12 +3,12 @@
 //! it with exponential decay, so a fling coasts and a wheel notch glides by the same rule. A flight
 //! eases over a set time, and an orbit turns steadily. All of it runs on the view's clock.
 //!
-//! The camera stays within its zoom and pan limits (`Reach`): what the space allows for the area
+//! The camera stays within its zoom and pan limits (`Limits`): what the space allows for the area
 //! the camera frames, narrowed by fits. Every move is clamped to these limits: gestures, pending
 //! motion, flights, orbits, fits, and the setter. The limits change with the view's size and
 //! insets, its space, and fits, so each frame clamps the camera again before it moves.
 
-use super::camera::{Bounds, Camera, Reach};
+use super::camera::{Bounds, Camera, Limits};
 use super::{Event, View};
 
 /// Time constants, in seconds, for applying pending motion: a fling's pan and turn coast longer
@@ -87,12 +87,12 @@ impl Rig {
 
 impl View {
     /// The camera's zoom and pan limits: the space's limits for the area the camera frames,
-    /// narrowed by the box fits have framed. Until a frame gives the view its size, only fits set
-    /// limits.
-    pub(super) fn reach(&self) -> Reach {
+    /// narrowed by the box fits have framed, as far as the scene's `controls.reach` says. Until a
+    /// frame gives the view its size, only fits set limits.
+    pub(super) fn limits(&self) -> Limits {
         let area = self.area();
         let room = self.sized().then(|| [area[2] - area[0], area[3] - area[1]]);
-        Reach::new(&self.scene.space, room, self.rig.bounds)
+        Limits::new(&self.scene.space, room, self.rig.bounds, self.scene.controls.reach)
     }
 
     /// Clamps the camera to its zoom and pan limits, which may have changed since the last frame.
@@ -122,7 +122,7 @@ impl View {
             let view = self.projected();
             let mut camera = self.camera.panned(&view, anchor, pan);
             camera = camera.turned(&self.projected_with(&camera), anchor, turn);
-            camera = camera.zoomed(&self.projected_with(&camera), anchor, zoom, &self.reach());
+            camera = camera.zoomed(&self.projected_with(&camera), anchor, zoom, &self.limits());
             let settle = |v: f64, least: f64| if v.abs() < least { 0.0 } else { v };
             self.rig.pan = [settle(self.rig.pan[0] - pan[0], 0.05), settle(self.rig.pan[1] - pan[1], 0.05)];
             self.rig.turn = [settle(self.rig.turn[0] - turn[0], 0.01), settle(self.rig.turn[1] - turn[1], 0.01)];
@@ -148,7 +148,7 @@ impl View {
     /// Moves the camera to `camera`, clamped to its zoom and pan limits, and dirties the channels
     /// that read the camera or the pointer. Returns whether it moved.
     pub(super) fn place_camera(&mut self, camera: Camera) -> bool {
-        let camera = camera.within(&self.reach());
+        let camera = camera.within(&self.limits());
         if camera == self.camera {
             return false;
         }

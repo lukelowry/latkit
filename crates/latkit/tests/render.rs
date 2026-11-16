@@ -459,7 +459,7 @@ fn great_circles_longer_than_their_list_coarsen_instead_of_stopping_short() {
     )
     .expect("valid");
     let theme = green_edges();
-    let scene = Scene::new(Earth { graticule: false, ..Earth::default() })
+    let scene = Scene::new(Earth { grid: latkit::Grid::Off, ..Earth::default() })
         .theme(Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..theme.earth }, ..theme })
         .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0))
         .draw(Vertices::of("grid", "Bus").position(field("lon"), field("lat")).radius(1.0));
@@ -1372,7 +1372,7 @@ fn sizes_in_units_are_degrees_on_the_earth() {
     let marker =
         Vertices::of("d", "Node").position(field("lon"), field("lat")).radius(latkit::units(0.25)).color(Color::WHITE);
     let ground = Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..plain_theme().earth }, ..plain_theme() };
-    let scene = Scene::new(Earth { graticule: false, ..Earth::default() }).theme(ground).draw(marker);
+    let scene = Scene::new(Earth { grid: latkit::Grid::Off, ..Earth::default() }).theme(ground).draw(marker);
     let mut view = View::new(&gpu, scene);
     // At zoom 6 the world is 256 · 2⁶ pixels around, so a degree spans 45.5 pixels.
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 6.0, pitch: 0.0, bearing: 0.0 });
@@ -1531,7 +1531,7 @@ fn great_circles_at_different_heights_draw_lowest_first() {
     )
     .expect("valid");
     let ground = Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..plain_theme().earth }, ..plain_theme() };
-    let scene = Scene::new(Earth { graticule: false, ..Earth::default() })
+    let scene = Scene::new(Earth { grid: latkit::Grid::Off, ..Earth::default() })
         .theme(ground)
         .draw(Vertices::of("d", "Bus").position(field("lon"), field("lat")).elevation(field("z")).radius(1.0))
         .draw(thin_lines().ends("from", "to"));

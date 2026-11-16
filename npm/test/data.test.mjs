@@ -11,8 +11,11 @@ const directory = process.env.LATKIT_TEST_PACKAGE ?? path.resolve(import.meta.di
 const { load, Data, Handle, Patch, reference, field } = await import(
   pathToFileURL(path.join(directory, 'dist/index.js')).href
 );
-const wasm = new WebAssembly.Module(fs.readFileSync(path.join(directory, 'pkg/latkit_bg.wasm')));
-await load({ wasm });
+// Node has no workers to start, so the jobs module, which reads GeoJSON, runs on this thread.
+const [wasm, jobs] = ['latkit', 'latkit_jobs'].map(
+  (name) => new WebAssembly.Module(fs.readFileSync(path.join(directory, `pkg/${name}_bg.wasm`))),
+);
+await load({ wasm, jobs });
 
 /** Yields `bytes` in chunks of `size`, as a socket might deliver them. */
 function* pieces(bytes, size) {

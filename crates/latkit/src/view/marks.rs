@@ -164,6 +164,10 @@ pub(crate) struct Shown {
     pub(crate) height_order: super::lists::HeightOrder,
     /// Whether an edge mark follows great circles.
     pub(crate) geodesic: bool,
+    /// What the lanes of an edge mark's table ask of its list, read when the lane column it draws
+    /// was last replaced: `lanes_at` is that column's generation.
+    pub(crate) lanes: crate::derive::Laned,
+    lanes_at: u64,
     /// Incremented whenever the mark's state is written, so anything derived from it updates.
     /// `place_version` is incremented whenever the channels that place its rows and labels are
     /// written: row positions, sizes, visibility, and label texts. A color that changes every frame
@@ -229,6 +233,8 @@ impl Shown {
             drawn_rows: super::lists::DrawnRows::default(),
             height_order: super::lists::HeightOrder::default(),
             geodesic: false,
+            lanes: crate::derive::Laned::default(),
+            lanes_at: 0,
             version: 0,
             place_version: 0,
             shape: super::lists::Shape::default(),
@@ -423,14 +429,28 @@ impl Shown {
         matches!(self.path(), wgsl::PATH_ENDS | wgsl::PATH_BENDS) && (self.geodesic || self.laned())
     }
 
-    /// Whether its edges bow into lanes among the edges joining the same two vertices.
+    /// Reads what its lanes ask of its list again once the lane column it draws is replaced. A
+    /// column swaps in on the frame its derivation's table is the one `derived` holds, so the two
+    /// agree.
+    pub(crate) fn follow_lanes(&mut self, derived: &crate::derive::Derivations) {
+        let Some(compiled) = &self.compiled else { return };
+        let at = self.tables.column_generation(compiled.drawing.lane);
+        if at != self.lanes_at {
+            let style = self.mark.style();
+            (self.lanes, self.lanes_at) = (derived.laned(&style.data, &style.table), at);
+        }
+    }
+
+    /// Whether its edges bow into lanes among the edges joining the same two vertices. A theme that
+    /// bows nothing derives no lanes, so none of its marks are.
     pub(crate) fn laned(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
         compiled.drawing.lane != wgsl::NONE && self.tables.holds(compiled.drawing.lane)
     }
 
-    /// Instances its list needs space for: every path's segments plus each curve's pieces (as last
-    /// counted), or every area's triangles.
+    /// Instances its list needs space for: every path's segments plus each curve's pieces (those
+    /// of the rows its lanes bow, and along great circles, as last counted), or every area's
+    /// triangles.
     pub(crate) fn segment_capacity(&self) -> u32 {
         let rows = (self.rows + self.exits) as usize;
         let Some(compiled) = &self.compiled else { return 1 };
@@ -441,12 +461,13 @@ impl Shown {
         if self.path() == wgsl::PATH_GEOMETRY {
             return points.max(1) as u32;
         }
+        let bowed = self.lanes.bowed as usize * wgsl::BOW_PIECES as usize;
         let pieces = if !self.curved() {
             0
         } else if self.geodesic {
-            (self.segments.found.value as usize).max(rows * 4)
+            (self.segments.found.value as usize).max(rows * 4 + bowed)
         } else {
-            rows * wgsl::BOW_PIECES as usize
+            bowed
         };
         (points + rows + pieces).max(1) as u32
     }

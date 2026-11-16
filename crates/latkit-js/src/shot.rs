@@ -38,8 +38,8 @@ impl Image {
         js_sys::Uint8Array::from(self.0.rgba.as_ref())
     }
 
-    /// Encodes the image in a worker as a `png`, `jpeg` (at `quality` 1 to 100, default 90), or
-    /// `webp` file.
+    /// Encodes the image as a `png`, `jpeg` (at `quality` 1 to 100, default 90), or `webp` file,
+    /// with the browser's encoder where it writes the file exactly and in a worker where not.
     pub fn encode(&self, format: &str, quality: Option<f64>) -> Result<Task, Error> {
         let quality = match quality {
             None => 90,
@@ -52,14 +52,8 @@ impl Image {
             "webp" => latkit::ImageFormat::WebP,
             other => return Err(latkit::Error::invalid(format!("unknown image format {other:?}")).at("format").into()),
         };
-        let job = latkit::host::Job::encode(&self.0, format);
-        Ok(task(async move {
-            let file = latkit::host::Browser.spawn(job).await?;
-            if file.is_empty() {
-                return Err(latkit::Error::invalid(format!("the image could not be encoded as {format}")));
-            }
-            Ok(js_sys::Uint8Array::from(&file[..]))
-        }))
+        let file = latkit::host::Browser.encode(&self.0, format);
+        Ok(task(async move { Ok(js_sys::Uint8Array::from(&file.await?[..])) }))
     }
 }
 

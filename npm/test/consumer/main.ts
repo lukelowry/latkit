@@ -1,6 +1,7 @@
 import { load, field, Data, Gpu, Patch, Shot, Tiles, View, type Scene } from 'latkit';
 import { quickstart } from './quickstart';
 import wasmUrl from 'latkit/wasm?url';
+import jobsUrl from 'latkit/jobs?url';
 import workerUrl from 'latkit/worker?url';
 
 function check(condition: unknown, message: string): asserts condition {
@@ -57,7 +58,9 @@ async function run(custom: boolean, compiled: boolean) {
   };
   const started = performance.now();
   const source = compiled ? await WebAssembly.compileStreaming(fetch(wasmUrl)) : wasmUrl;
-  const loading = load(custom ? { wasm: source, worker } : compiled ? { wasm: source } : undefined);
+  const loading = load(
+    custom ? { wasm: source, jobs: jobsUrl, worker } : compiled ? { wasm: source } : undefined,
+  );
   check(loading === load(), 'concurrent loads must share their promise');
   await loading;
   const initialized = performance.now();

@@ -27,8 +27,9 @@ impl Template {
     }
 
     /// Reads the TileJSON document `bytes` fetched from `base`, resolving its first tile URL
-    /// against `base`. Errors if it is not TileJSON, names no tiles, or names image tiles.
-    pub(crate) fn tilejson(bytes: &[u8], base: &str) -> Result<Template, String> {
+    /// against `base`, with what the document says of its tiles. Errors if it is not TileJSON,
+    /// names no tiles, or names image tiles.
+    pub(crate) fn tilejson(bytes: &[u8], base: &str) -> Result<(Template, Metadata), String> {
         /// The TileJSON members read.
         #[derive(serde::Deserialize)]
         struct TileJson {
@@ -39,6 +40,8 @@ impl Template {
             maxzoom: Option<f64>,
             bounds: Option<Vec<f64>>,
             scheme: Option<String>,
+            #[serde(flatten)]
+            metadata: Metadata,
         }
         let json = crate::json::from_bytes::<TileJson>(bytes).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
         let template = json.tiles.first().ok_or_else(|| format!("the TileJSON at {base} lists no tile URLs"))?;
@@ -47,21 +50,62 @@ impl Template {
         {
             return Err(format!("the TileJSON at {base} has image tiles; only vector tiles are supported"));
         }
-        let zoom = |z: Option<f64>, or: u8| z.filter(|z| *z >= 0.0).map_or(or, |z| z.min(24.0) as u8);
         let bounds = json.bounds.as_deref().and_then(|b| <[f64; 4]>::try_from(b).ok()).unwrap_or(WORLD);
-        Ok(Template {
+        let template = Template {
             url: crate::url::resolve(base, template),
-            min_zoom: zoom(json.minzoom, 0),
-            max_zoom: zoom(json.maxzoom, 14),
+            min_zoom: zoom(json.minzoom).unwrap_or(0),
+            max_zoom: zoom(json.maxzoom).unwrap_or(14),
             bounds,
             tms: json.scheme.as_deref() == Some("tms"),
-        })
+        };
+        Ok((template, json.metadata))
     }
 
     /// The URL of tile `key`.
     pub(crate) fn url_of(&self, key: TileKey) -> String {
         let y = if self.tms { (1_u32 << key.z) - 1 - key.y } else { key.y };
         self.url.replace("{z}", &key.z.to_string()).replace("{x}", &key.x.to_string()).replace("{y}", &y.to_string())
+    }
+}
+
+/// A zoom level a source states, if it is one: not negative, and at most 24.
+fn zoom(level: Option<f64>) -> Option<u8> {
+    level.filter(|z| *z >= 0.0).map(|z| z.min(24.0) as u8)
+}
+
+/// What a vector tile source says of its tiles. A TileJSON document and a PMTiles archive's
+/// metadata name these members alike.
+#[derive(Clone, PartialEq, Debug, Default, serde::Deserialize)]
+pub(crate) struct Metadata {
+    /// The credit the source asks to be shown with its tiles.
+    pub(crate) attribution: Option<String>,
+    #[serde(default)]
+    pub(crate) vector_layers: Vec<LayerMetadata>,
+}
+
+/// One layer a vector tile source lists: its name, what the source says it holds, the zooms that
+/// have it, and each property of its features with the kind of value the source states.
+#[derive(Clone, PartialEq, Debug, serde::Deserialize)]
+pub(crate) struct LayerMetadata {
+    pub(crate) id: String,
+    pub(crate) description: Option<String>,
+    minzoom: Option<f64>,
+    maxzoom: Option<f64>,
+    #[serde(default)]
+    pub(crate) fields: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl Metadata {
+    /// Reads the metadata in the JSON `bytes`. Bytes that are not such JSON say nothing.
+    pub(crate) fn read(bytes: &[u8]) -> Metadata {
+        crate::json::from_bytes(bytes).unwrap_or_default()
+    }
+}
+
+impl LayerMetadata {
+    /// The lowest and highest zoom with the layer, when the source states both.
+    pub(crate) fn zooms(&self) -> Option<[u8; 2]> {
+        Some([zoom(self.minzoom)?, zoom(self.maxzoom)?])
     }
 }
 
@@ -84,7 +128,8 @@ const GEOMETRY: &str = "geometry";
 
 /// Whether `name` is a derived shape field of a tile's table. Properties of that name are skipped.
 pub(crate) fn shapes_field(name: &str) -> bool {
-    [Shaping::Triangles { earth: true }, Shaping::Path].iter().any(|s| *s.field_of(GEOMETRY) == *name)
+    let flat = crate::Projection::Mercator;
+    [Shaping::Triangles(Some(flat)), Shaping::Path(flat)].iter().any(|s| *s.field_of(GEOMETRY) == *name)
 }
 
 /// Decodes tile `key` from `bytes`, optionally gzip-compressed, into a patch setting each table of
@@ -172,7 +217,7 @@ mod tests {
     fn a_tile_decodes_into_its_tables_rows() {
         let key = TileKey { z: 3, x: 2, y: 3 };
         let bytes = tile("water", 3, &square(100, 100, 1000), "bay");
-        let triangles = Shaping::Triangles { earth: true };
+        let triangles = Shaping::Triangles(Some(crate::Projection::Globe));
         let tables =
             [Decoded { layer: "water".into(), kind: Kind::Polygons, table: "water".into(), shapes: vec![triangles] }];
         let patch = decode(&bytes, key, &tables).expect("a tile");
@@ -194,7 +239,7 @@ mod tests {
     #[test]
     fn templates_fill_and_resolve() {
         let json = br#"{"tiles": ["/planet/{z}/{x}/{y}.pbf"], "minzoom": 0, "maxzoom": 14, "scheme": "xyz"}"#;
-        let template = Template::tilejson(json, "https://tiles.example/planet").expect("TileJSON");
+        let (template, _) = Template::tilejson(json, "https://tiles.example/planet").expect("TileJSON");
         assert_eq!(template.url_of(TileKey { z: 2, x: 1, y: 3 }), "https://tiles.example/planet/2/1/3.pbf");
         let tms = Template { tms: true, ..Template::of("{z}/{x}/{y}") };
         assert_eq!(tms.url_of(TileKey { z: 1, x: 0, y: 0 }), "1/0/1");

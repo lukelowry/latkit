@@ -3,9 +3,9 @@
 //! A table with a priority draws its rows in priority order, highest on top. A paged table (too
 //! large to draw whole) draws the rows of the tiles the camera needs. Where nothing places its
 //! rows, it draws the rows that matter most. Each draws in an [`Order`]: its pyramid's order,
-//! computed from where its rows lie and their priority. The pyramid is computed on the frame when
-//! that fits the budget, else in one job per dataset. Until it arrives, the table draws an even
-//! sample of its rows first, enough for a first look, after the endpoint rows of sampled edges.
+//! computed from where its rows lie and their priority. The pyramid is computed in one job per
+//! dataset. Until it arrives, the table draws an even sample of its rows first, enough for a first
+//! look, after the endpoint rows of sampled edges.
 //!
 //! A table and the table its edges end at both draw from their pyramids, or both from their
 //! samples. A pyramid is used while the rows it was made from are unchanged. Rows appended since
@@ -20,7 +20,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::order::{Lifted, Order};
-use super::pyramid::{Leveling, Places, Placing, Pyramid, answer};
+use super::pyramid::{Leveling, Places, Placing, Pyramid};
 use super::sight::{Domain, Sight};
 use super::{Jobs, Working, stamp_of};
 use crate::data::{Column, Field, Keyed, Name, Named, Reference, Snapshot, Table, UNWIRED, Version};
@@ -30,8 +30,6 @@ use crate::gpu::shaders::PAGE_ROWS;
 use crate::host::Job;
 use crate::tiles::TileSets;
 
-/// Estimated microseconds to place one row in a pyramid.
-const PLACE_COST: f64 = 1.0;
 /// The most rows a table samples before its pyramid arrives: enough for a first look at all of it.
 const SAMPLE: u32 = 1 << 16;
 
@@ -369,21 +367,14 @@ impl Set {
         true
     }
 
-    /// Requests the pyramids of `placing`: computed at once when they fit the frame's budget, else
-    /// in one job for the dataset.
+    /// Requests the pyramids of `placing`, in one job for the dataset. A job the host finishes at
+    /// once lands before the frame draws.
     fn level(&mut self, placing: &[(&Table, &Planned)], ask: &Ask<'_>, jobs: &mut Jobs<'_>) {
         // Drop any pending job. Its answer would no longer serve.
         self.working.cancel();
         self.read =
             placing.iter().map(|(table, planned)| (table.name.clone(), Read::new(table, planned, ask.earth))).collect();
         let (leveling, bounds) = leveling(ask, placing);
-        // Placing a row takes about a microsecond. Ordering one by priority alone takes a
-        // twentieth of that.
-        let cost: f64 = leveling
-            .tables
-            .iter()
-            .map(|t| f64::from(t.rows) * if t.leveled { PLACE_COST } else { PLACE_COST / 20.0 })
-            .sum();
         let tables: Vec<(u32, Name, Version, Option<[f64; 4]>)> = placing
             .iter()
             .enumerate()
@@ -391,16 +382,8 @@ impl Set {
             .map(|(i, (table, _))| (i as u32, table.name.clone(), table.order, bounds.get(&table.name).copied()))
             .collect();
         let domain = leveling.domain;
-        if jobs.fits(cost as u64) {
-            for (index, pyramid) in answer(&leveling) {
-                if let Some((_, name, order, bounds)) = tables.iter().find(|t| t.0 == index) {
-                    let placed = Placed { order: *order, domain, pyramid: Arc::new(pyramid), bounds: *bounds };
-                    self.placed.insert(name.clone(), placed);
-                }
-            }
-            return;
-        }
         self.working.start(self.stamp, jobs.spawn(Job::pyramid(&leveling)), Pyramids { tables, domain });
+        self.land();
     }
 }
 

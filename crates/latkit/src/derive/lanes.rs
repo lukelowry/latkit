@@ -6,8 +6,13 @@
 //!
 //! A row's lane and its family size share one 32-bit word: twice the lane plus `HALF` in the high
 //! 16 bits, the family size in the low 16. Lanes are recomputed only when the table's rows or
-//! endpoints change: on the frame when that fits the budget, else in a job. A table whose edges
-//! share no endpoints gets no lane field.
+//! endpoints change: on the frame for a table of up to [`ON_FRAME`] rows, else in a job. A table
+//! whose edges
+//! share no endpoints gets no lane field, and neither does any table while the theme's `bow` is 0:
+//! nothing bows then, so edges joining the same vertices draw straight, one over another.
+//!
+//! A mark sizes and plans the list of its bowed pieces from [`Laned`]: how many rows bow, and
+//! whether any family is packed closer than a lane apart.
 
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 
@@ -17,15 +22,38 @@ use crate::Pending;
 use crate::data::{Field, Keyed, Name, Reference, Table, UNWIRED, Values};
 use crate::host::Job;
 
-/// Estimated microseconds to compute one row's lane.
-const LANE_COST: f64 = 0.06;
+/// The most rows whose lanes are assigned on the frame. That takes under two milliseconds, once,
+/// by code small enough for the module that draws to carry, so a graph of this size opens without
+/// waiting for a worker. A larger table goes to a job.
+const ON_FRAME: usize = 1 << 15;
 /// The offset added to twice the lane, so the high half of a lane word is never negative.
 const HALF: u32 = 1 << 15;
 /// The largest family size a lane word stores. Larger families store this.
 const MOST: u32 = (1 << 16) - 1;
 
-/// The stamp a table's lanes were made from, and any pending job.
-type Made = Derived<(), Pending<Vec<u8>>>;
+/// What a table's lanes ask of the list that draws them.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct Laned {
+    /// The rows that bow: those off the middle of a family of two or more.
+    pub(crate) bowed: u32,
+    /// Whether any family holds more than `FAMILY_LANES` rows, so its lanes lie closer than a lane
+    /// apart and a list keeps only those the screen shows apart.
+    pub(crate) packed: bool,
+}
+
+impl Laned {
+    /// What the lane words of a table's rows ask.
+    fn of(words: &[u32]) -> Laned {
+        let size = |word: u32| word & MOST;
+        Laned {
+            bowed: words.iter().filter(|&&word| size(word) >= 2 && word >> 16 != HALF).count() as u32,
+            packed: words.iter().any(|&word| size(word) as f32 > crate::gpu::shaders::FAMILY_LANES),
+        }
+    }
+}
+
+/// What a table's lanes ask, the stamp they were made from, and any pending job.
+type Made = Derived<Laned, Pending<Vec<u8>>>;
 
 #[derive(Default)]
 pub(crate) struct Lanes {
@@ -34,11 +62,19 @@ pub(crate) struct Lanes {
     made: Keyed<(Name, Name), Made>,
 }
 
+impl Lanes {
+    /// What the lanes of the table `key` names, by dataset and table, ask of the list drawing them.
+    pub(crate) fn laned(&self, key: &(Name, Name)) -> Laned {
+        self.made.get(key).map_or_else(Laned::default, |made| made.value)
+    }
+}
+
 impl Derive for Lanes {
     fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
         let mut changed = false;
         let mut drawn: FxHashSet<(Name, Name)> = FxHashSet::default();
-        for mark in &input.scene.marks {
+        let bows = input.scene.theme.edge.bow != 0.0;
+        for mark in input.scene.marks.iter().filter(|_| bows) {
             let Mark::Edges(edges) = mark else { continue };
             let Some((from, to)) = &edges.ends else { continue };
             let style = &edges.style;
@@ -50,22 +86,22 @@ impl Derive for Lanes {
             }
             let stamp = stamp_of((table.structure, table.order, a.version, b.version));
             let made = self.made.entry(key.clone()).or_default();
+            if made.due(stamp) {
+                if table.len() <= ON_FRAME {
+                    let (laned, kept) = keep(&mut self.tables, key, table, words(&a.targets(), &b.targets()));
+                    made.make(stamp, laned);
+                    changed |= kept;
+                    continue;
+                }
+                made.start(stamp, jobs.spawn(Job::lanes(table.len(), a, b)));
+            }
+            // A job the host finishes at once lands before the frame draws.
             if let Some((landed, bytes)) = made.landed()
                 && landed == stamp
             {
-                made.make(stamp, ());
-                changed |= keep(&mut self.tables, key.clone(), table, answered(&bytes));
-                continue;
-            }
-            if !made.due(stamp) {
-                continue;
-            }
-            let rows = table.len();
-            if jobs.fits((rows as f64 * LANE_COST) as u64) {
-                made.make(stamp, ());
-                changed |= keep(&mut self.tables, key, table, words(&a.targets(), &b.targets()));
-            } else {
-                made.start(stamp, jobs.spawn(Job::lanes(rows, a, b)));
+                let (laned, kept) = keep(&mut self.tables, key, table, answered(&bytes));
+                made.make(stamp, laned);
+                changed |= kept;
             }
         }
         let before = self.tables.len();
@@ -89,17 +125,18 @@ impl Derive for Lanes {
 }
 
 /// Writes `lanes`, one lane word per row, as field `lane` of the table beside `table`. Drops that
-/// table when there are no lanes or their count differs from the rows. Returns whether it wrote or
-/// dropped a table.
-fn keep(tables: &mut Tables, key: (Name, Name), table: &Table, lanes: Option<Vec<u32>>) -> bool {
+/// table when there are no lanes or their count differs from the rows. Returns what the lanes kept
+/// ask of a list, and whether it wrote or dropped a table.
+fn keep(tables: &mut Tables, key: (Name, Name), table: &Table, lanes: Option<Vec<u32>>) -> (Laned, bool) {
     match lanes.filter(|l| l.len() == table.len()) {
         Some(lanes) => {
+            let laned = Laned::of(&lanes);
             let words: Vec<f64> = lanes.into_iter().map(f64::from).collect();
             let lane = kept("lane", &Values::from(words), table, tables.get(&key));
             tables.insert(key, beside(table, [("lane".into(), lane)]));
-            true
+            (laned, true)
         }
-        None => tables.remove(&key).is_some(),
+        None => (Laned::default(), tables.remove(&key).is_some()),
     }
 }
 
@@ -174,7 +211,7 @@ pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Option<Vec<(f32, u32)>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HALF, UNWIRED, lanes, words};
+    use super::{HALF, Laned, UNWIRED, lanes, words};
 
     #[test]
     fn edges_joining_the_same_vertices_bow_apart_in_either_direction() {
@@ -187,6 +224,17 @@ mod tests {
     fn a_lane_word_holds_twice_the_lane_and_the_family_size() {
         let words = words(&[1, 1], &[2, 2]).expect("rows share endpoints");
         assert_eq!(words, vec![(HALF - 1) << 16 | 2, (HALF + 1) << 16 | 2], "lanes -0.5 and 0.5 in a family of two");
+    }
+
+    #[test]
+    fn lanes_ask_a_list_for_the_rows_that_bow_and_say_when_a_family_is_packed() {
+        // Three rows join one pair, two another, and one row is alone. The middle of the three and
+        // the row alone run straight.
+        let few = words(&[1, 1, 1, 3, 3, 5], &[2, 2, 2, 4, 4, 6]).expect("rows share endpoints");
+        assert_eq!(Laned::of(&few), Laned { bowed: 4, packed: false });
+        // Nine rows join one pair: more than a family spreads a lane apart.
+        let many = words(&[1; 9], &[2; 9]).expect("rows share endpoints");
+        assert_eq!(Laned::of(&many), Laned { bowed: 8, packed: true });
     }
 
     #[test]

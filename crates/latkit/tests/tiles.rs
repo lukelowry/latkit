@@ -136,7 +136,7 @@ fn tiles_the_camera_needs_draw_as_a_dataset() {
     let Some(gpu) = gpu() else { return };
     let served = Arc::new(Served::default());
     gpu.set_host(Serving(served.clone()));
-    let earth = Earth { graticule: false, ..Earth::default() };
+    let earth = Earth { grid: latkit::Grid::Off, ..Earth::default() };
     let scene = Scene::new(earth)
         .draw(Areas::of("base", "water").color(Color::hex("#ff0000").expect("hex")))
         .theme(plain_theme());
@@ -187,6 +187,21 @@ fn tiles_the_camera_needs_draw_as_a_dataset() {
     assert!(before.iter().all(|id| held.contains(id)), "the ancestors' rows stay while they are few");
     view.set_sources::<Source>([]).expect("no sources");
     assert!(view.snapshot("base").is_none(), "a dataset no source provides is removed");
+    // The tiles stay fetched while the app keeps their `Tiles`: shown again, they draw at once.
+    let fetches = || served.fetched.lock().expect("unpoisoned").len();
+    let asked = fetches();
+    frame(&gpu, &mut view);
+    view.set_sources([&tiles]).expect("a source");
+    frame(&gpu, &mut view);
+    assert!(view.stats().tiles > 0 && fetches() == asked, "drawn again without a fetch");
+    // Tiles no view draws go once they are over the budget, and are fetched when next shown.
+    view.set_sources::<Source>([]).expect("no sources");
+    gpu.set_budget(latkit::Budget { tiles: 0, ..gpu.budget() });
+    frame(&gpu, &mut view);
+    view.set_sources([&tiles]).expect("a source");
+    frame(&gpu, &mut view);
+    assert!(view.stats().tiles > 0 && fetches() > asked, "fetched again after the budget dropped them");
+    assert_eq!(errors(&mut view), Vec::new());
 }
 
 #[test]
@@ -194,7 +209,7 @@ fn tiles_arrive_shaped_by_the_jobs_that_decode_them() {
     let Some(gpu) = gpu() else { return };
     let served = Arc::new(Served { dense: true, ..Served::default() });
     gpu.set_host(Serving(served.clone()));
-    let earth = Earth { graticule: false, ..Earth::default() };
+    let earth = Earth { grid: latkit::Grid::Off, ..Earth::default() };
     let scene = Scene::new(earth).draw(Areas::of("base", "water")).theme(plain_theme());
     let mut view = View::new(&gpu, scene);
     let camera = |zoom| Camera::Map { center: [10.0, 10.0, 0.0], zoom, pitch: 0.0, bearing: 0.0 };
@@ -386,7 +401,7 @@ fn geojson_draws_as_lines_and_vertices_on_the_globe() {
          "geometry": {"type": "Point", "coordinates": [0, 30]}}]}"#;
     let data =
         pollster::block_on(Data::read(bytes, Reading { name: Some("map"), ..Reading::default() })).expect("GeoJSON");
-    let earth = Earth { graticule: false, ..Earth::default().projection(Projection::Globe) };
+    let earth = Earth { grid: latkit::Grid::Off, ..Earth::default().projection(Projection::Globe) };
     let red = Color::hex("#ff0000").expect("hex");
     let scene = Scene::new(earth)
         .draw(Lines::of("map", "lines").width(3.0).color(red))

@@ -137,15 +137,15 @@ pub(crate) struct Shared {
     pub(crate) lost: Arc<AtomicBool>,
     /// Errors the device raised outside any error scope, for every view to report.
     pub(crate) raised: Arc<Mutex<Raised>>,
-    /// Multisample count of every frame drawn with this GPU. It is set once from the screen's pixel
-    /// ratio, so a later change (browser zoom, a window moved to another screen) never rebuilds a
-    /// scene's pipelines.
+    /// The most samples a pixel takes in frames drawn with this GPU. A scene that draws areas takes
+    /// them, and any other draws one. It is set once from the screen's pixel ratio, so a later
+    /// change (browser zoom, a window moved to another screen) never rebuilds a scene's pipelines.
     samples: std::sync::OnceLock<u32>,
     inner: Mutex<Inner>,
 }
 
-/// Multisample count at `pixel_ratio`: 1 at 1.75 and above, else 4. Shader-drawn marks antialias
-/// themselves and only triangle edges need multisampling, so dense screens skip it.
+/// The most samples a pixel takes at `pixel_ratio`: 1 at 1.75 and above, else 4. Dense screens
+/// skip multisampling even for the triangle edges of areas, the one thing that needs it.
 fn samples_at(pixel_ratio: f32) -> u32 {
     if pixel_ratio >= 1.75 { 1 } else { 4 }
 }
@@ -173,32 +173,32 @@ pub(crate) struct Inner {
     pub(crate) budget: Budget,
     /// Each view's share of the budget, which it plans within.
     pub(crate) ledger: Ledger,
-    /// What the current frame may still upload and compute. Views drawn together share it.
+    /// What the current frame may still upload. Views drawn together share it.
     pub(crate) frame: Allowance,
 }
 
-/// What one frame may still do across a GPU's views: bytes to upload, and microseconds of work done
-/// on the frame rather than in jobs. A frame ends when a view that drew in it draws again. So views
-/// drawn together (a page's canvases, a shot's panels) share one allowance, and a view drawn alone
-/// gets a new one each time, even when it redraws the same instant.
+/// What one frame may still do across a GPU's views: bytes to upload. A frame ends when a view that
+/// drew in it draws again. So views drawn together (a page's canvases, a shot's panels) share one
+/// allowance, and a view drawn alone gets a new one each time, even when it redraws the same
+/// instant.
 #[derive(Default)]
 pub(crate) struct Allowance {
     drawn: Vec<u64>,
     pub(crate) upload: u64,
-    pub(crate) work: u32,
 }
 
 impl Inner {
     /// Begins view `view`'s part of a frame. If no view has drawn yet, or `view` already drew in
     /// the current frame, starts a new one: resets the allowance, frees the blocks the last frame
-    /// released, and grows the pool to cover its shortfall. A budget the device could not give the
-    /// pool is lowered to what it gave. Views drawn into one encoder can start a new frame before
-    /// it is submitted, so retired memory is never destroyed here.
+    /// released, grows the pool to cover its shortfall, and trims the tiles kept to their budget. A
+    /// budget the device could not give the pool is lowered to what it gave. Views drawn into one
+    /// encoder can start a new frame before it is submitted, so retired memory is never destroyed
+    /// here.
     pub(crate) fn begin_frame(&mut self, view: u64, device: &wgpu::Device, queue: &Queue) {
         if self.frame.drawn.is_empty() || self.frame.drawn.contains(&view) {
-            self.frame =
-                Allowance { drawn: Vec::new(), upload: self.budget.upload_per_frame, work: crate::derive::FRAME_WORK };
+            self.frame = Allowance { drawn: Vec::new(), upload: self.budget.upload_per_frame };
             self.arena.begin_frame(device, queue);
+            self.tiles.trim(self.budget.tiles);
             if let Some(granted) = self.arena.refused() {
                 self.budget.bytes = self.budget.bytes.min(granted);
             }
@@ -265,7 +265,8 @@ impl Ledger {
     }
 }
 
-/// How much GPU memory latkit uses.
+/// How much memory latkit keeps for a `Gpu`'s views: on the GPU for the data they draw, and beside
+/// it for the tiles they fetched.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Budget {
@@ -280,6 +281,12 @@ pub struct Budget {
     /// The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to
     /// 32 MiB.
     pub upload_per_frame: u64,
+    /// Memory in bytes for the tiles fetched from every [`Tiles`](crate::Tiles) source the views
+    /// draw, and the rows decoded from them. Tiles a view draws always stay. Past this, the tiles
+    /// no view draws are dropped, least recently drawn first, and fetched again if drawn again.
+    /// Defaults to 256 MiB.
+    #[serde(default = "Budget::default_tiles")]
+    pub tiles: u64,
 }
 
 /// The most bytes the default budget holds. How far a binding can address says nothing about free
@@ -289,11 +296,16 @@ const DEFAULT_BYTES: u64 = 1 << 30;
 
 impl Budget {
     /// The default budget: half the word-texture capacity `device` addresses, at most
-    /// `DEFAULT_BYTES`, and 32 MiB uploaded per frame.
+    /// `DEFAULT_BYTES`, 32 MiB uploaded per frame, and 256 MiB of tiles.
     fn of(device: &wgpu::Device) -> Budget {
         let limits = device.limits();
         let largest = u64::from(words::LAYER_WORDS) * u64::from(limits.max_texture_array_layers) * 4;
-        Budget { bytes: (largest / 2).min(DEFAULT_BYTES), upload_per_frame: 32 << 20 }
+        Budget { bytes: (largest / 2).min(DEFAULT_BYTES), upload_per_frame: 32 << 20, tiles: Budget::default_tiles() }
+    }
+
+    /// The bytes of tiles kept unless a budget says otherwise.
+    fn default_tiles() -> u64 {
+        256 << 20
     }
 }
 
@@ -343,13 +355,13 @@ impl Gpu {
         Ok(gpu)
     }
 
-    /// The multisample count of its frames, once set.
+    /// The most samples a pixel takes in its frames, once set.
     pub(crate) fn samples(&self) -> Option<u32> {
         self.0.samples.get().copied()
     }
 
-    /// The multisample count of its frames. If no screen set it when the GPU was created, the first
-    /// frame's `pixel_ratio` sets it, and it stays fixed from then on.
+    /// The most samples a pixel takes in its frames. If no screen set it when the GPU was created,
+    /// the first frame's `pixel_ratio` sets it, and it stays fixed from then on.
     pub(crate) fn samples_for(&self, pixel_ratio: f32) -> u32 {
         *self.0.samples.get_or_init(|| samples_at(pixel_ratio))
     }

@@ -15,6 +15,7 @@
       "default": "./dist/index.js"
     },
     "./wasm": "./pkg/latkit_bg.wasm",
+    "./jobs": "./pkg/latkit_jobs_bg.wasm",
     "./wgsl": "./pkg/latkit_wgsl_bg.wasm",
     "./worker": "./dist/worker.js"
   },
@@ -24,6 +25,10 @@
     "pkg/latkit.d.ts",
     "pkg/latkit_bg.wasm",
     "pkg/latkit_bg.wasm.d.ts",
+    "pkg/latkit_jobs.js",
+    "pkg/latkit_jobs.d.ts",
+    "pkg/latkit_jobs_bg.wasm",
+    "pkg/latkit_jobs_bg.wasm.d.ts",
     "pkg/latkit_wgsl.js",
     "pkg/latkit_wgsl.d.ts",
     "pkg/latkit_wgsl_bg.wasm",

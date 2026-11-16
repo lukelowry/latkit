@@ -62,6 +62,50 @@ pub struct Controls {
     /// animates everything, and `reduced` animates only motion the user drives. Defaults to
     /// `system`.
     pub motion: Motion,
+    /// How far the camera may go from what fits have framed. Defaults to `fit`.
+    pub reach: Reach,
+}
+
+/// How far a map camera may go from the box fits have framed: a preset (`"fit"` or `"space"`), or
+/// options that change `fit`. `fit` keeps the camera near that box, and `space` sets no limit of
+/// its own. The space's limits always hold, as [`Earth`](crate::Earth) describes, and a zoom never
+/// passes level 24.
+///
+/// The box is what the last fit to everything framed, grown by any rows fitted since.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = preset_schema::<Reach>)]
+pub struct Reach {
+    /// How many zoom levels the camera may zoom out past the widest fit. `None` sets no limit.
+    /// Defaults to 3.
+    pub zoom_out: Option<f64>,
+    /// How many zoom levels the camera may zoom in past the closest fit. `None` sets no limit.
+    /// Defaults to `None`: how far in a view needs to go depends on how close its rows lie, not
+    /// on how far they spread.
+    pub zoom_in: Option<f64>,
+    /// How far the center may stray from the box, in sizes of the box, or of half the view at the
+    /// widest fit's zoom when the box is smaller. `None` sets no limit. Defaults to 1.
+    pub pan: Option<f64>,
+}
+
+presets!(Reach { "fit" => Reach::fit(), "space" => Reach::space() });
+
+impl Default for Reach {
+    fn default() -> Reach {
+        Reach::fit()
+    }
+}
+
+impl Reach {
+    /// The camera stays near what fits framed: 3 zoom levels out, and one box size away.
+    pub fn fit() -> Reach {
+        Reach { zoom_out: Some(3.0), zoom_in: None, pan: Some(1.0) }
+    }
+
+    /// Fits set no limits. Only the space's hold.
+    pub fn space() -> Reach {
+        Reach { zoom_out: None, zoom_in: None, pan: None }
+    }
 }
 
 /// What an input does. See [`Controls::gestures`](crate::Controls).
@@ -317,6 +361,7 @@ impl Default for Controls {
             cycle: false,
             press: Duration::from_millis(500),
             motion: Motion::System,
+            reach: Reach::fit(),
         }
     }
 }

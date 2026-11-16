@@ -94,7 +94,6 @@ export default async function (): Promise<Picture> {
       space: {
         earth: {
           projection: 'globe',
-          graticule: true,
           atmosphere: true,
           // Dusk at the September equinox. The sun is setting over the western grid, and it is
           // night over the Atlantic.
@@ -103,10 +102,10 @@ export default async function (): Promise<Picture> {
       },
       ease: 0,
       // The docs page's background, a muted steel atmosphere rather than the cyan of the flow
-      // changes, a faint graticule, and a night shade light enough to keep the grid readable.
+      // changes, a faint grid, and a night shade light enough to keep the grid readable.
       theme: {
         background: '#0f141a',
-        grid: map('12'),
+        grid: { color: map('12') },
         earth: { ground: '#111a24', atmosphere: '#6a93c052', night: 0.35 },
       },
       marks: [

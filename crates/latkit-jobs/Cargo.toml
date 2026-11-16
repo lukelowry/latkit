@@ -1,0 +1,19 @@
+[package]
+name = "latkit-jobs"
+description = "The latkit npm package's jobs: the work views hand to the page's workers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The bindings' build of latkit, so the two modules compile it once.
+latkit = { workspace = true, features = ["gpu", "web"] }
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true

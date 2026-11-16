@@ -1,10 +1,10 @@
 /**
- * The worker that runs views' jobs. The page's first message is the compiled WebAssembly module,
- * which the worker instantiates and acknowledges with `{ ready: true }`. Each later message is a
- * job's bytes, answered with `{ bytes }` holding the result. Failures post `{ error }`.
+ * The worker that runs views' jobs. The page's first message is the compiled jobs module, which
+ * the worker instantiates and acknowledges with `{ ready: true }`. Each later message is a job's
+ * bytes, answered with `{ bytes }` holding the result. Failures post `{ error }`.
  */
 
-import { initSync, job } from '../pkg/latkit.js';
+import { initSync, job } from '../pkg/latkit_jobs.js';
 
 const scope = globalThis as unknown as {
   onmessage: ((event: MessageEvent<WebAssembly.Module | Uint8Array>) => void) | null;

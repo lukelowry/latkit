@@ -71,8 +71,9 @@ view.at = 1.2;
 ```
 
 Each sampled field keeps levels of detail as it records. Level `k` holds each row's minimum and
-maximum over buckets of `8^k` frames. A line that traces a field on a plot reads the level with one
-or two buckets per pixel column, so a long history draws as fast as a short one.
+maximum over buckets of `8^k` frames. A line that traces a field on a plot reads the level whose
+buckets each fit in a pixel column, and draws each column's least and greatest value. A long
+history so draws as fast as a short one, exact to the pixel.
 
 ### Fetch long histories in spans
 
@@ -181,7 +182,7 @@ The [scene types](reference/types.md#scene) document every option and its defaul
 | `'plot'`  | the axis coordinate across, values up                  |
 
 Write a space as an object to give it options: `{ earth: { projection: 'globe' } }`,
-`{ plane: { grid: { lines: { pitch: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes.
+`{ plane: { grid: { lines: { step: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes.
 
 ### Marks
 
@@ -295,7 +296,9 @@ A view draws each `Data` at its latest version. `view.sources` adds datasets to 
 replaces one with the same name. Use a `Snapshot` to show a past version, or
 [`Tiles`](reference/api.md#tiles) to fetch only the pieces the view needs from time tiles or vector
 tiles. Give `Tiles` a `fetch` to fetch their files your own way, and call `refresh()` when they
-change.
+change. `await tiles.describe()` reads what a source says of itself: the credit it asks for, and
+its layers with their fields. What a view fetched stays while the `Tiles` object lives, so a view
+that stops drawing the tiles and starts again fetches nothing twice.
 
 When the GPU device is lost, latkit requests a new one once the page is in the foreground, and moves
 the views to it as they were. Promises, listeners, and pictures in progress carry over.
@@ -316,7 +319,9 @@ view.orbit = 6; // degrees a second
 Camera moves stay within the camera's zoom and pan limits. A flat map shows one world. Its camera
 zooms out only until the whole world fits, and pans only until the world's edges meet the view's
 edges. A globe zooms out until it spans a third of the view. After a fit of any kind, the camera stays
-near the area the fit framed ([`View.camera`](reference/api.md#view)).
+near the area the fit framed: 3 zoom levels out, and one size of that area away. The scene's
+`controls: { reach }` changes how far, such as `{ reach: { zoomIn: 8 } }` to also stop the zoom 8
+levels in, or `{ reach: 'space' }` for no limit but the space's.
 
 A fit applies once the rows have their places, and until the first one applies the view shows only
 its background. A fit frames the earth at most at street scale, and one with nothing to frame waits
@@ -385,6 +390,9 @@ The budget defaults to half the device's addressable word-texture capacity, at m
 latkit replaces, or that a closed view or a finished picture leaves behind, is freed by the next
 frame rather than whenever the browser collects it. A device without the memory to grow the data
 further is given up, and the views move to a new one with the budget lowered to what it gave.
+
+`budget.tiles` caps the memory for the tiles fetched from every `Tiles` source, 256 MiB unless set.
+Past it, the tiles no view draws are dropped, least recently drawn first.
 
 `view.stats`, `gpu.work`, `gpu.resident`, and `gpu.uploading` report what the views draw and what
 work the GPU did. To drive frames yourself in a test or benchmark, call `gpu.step(now)` and wait on
@@ -536,13 +544,16 @@ HTTPS or localhost.
 
 ### Assets and workers
 
-The package has three assets besides its modules:
+The package has four assets besides its modules:
 
-- `latkit/wasm`: the WebAssembly, with the shaders translated for WebGL2 when the package was
-  built.
+- `latkit/wasm`: the WebAssembly that draws, with the shaders translated for WebGL2 when the
+  package was built.
+- `latkit/jobs`: the WebAssembly that does the work that scales with the data: layouts, lanes,
+  triangles, tile pyramids, and decoding vector tiles and GeoJSON. A page loads it the first time
+  it has such a job.
 - `latkit/wgsl`: the WebAssembly that translates [custom shaders](#custom-shaders). A page loads
   it the first time it draws one.
-- `latkit/worker`: a standalone classic worker that runs jobs.
+- `latkit/worker`: a standalone classic worker that runs the jobs.
 
 By default, `load()` finds each next to the installed modules. With Vite or another bundler that
 supports URL imports, pass their URLs. This also works when the app is deployed under a nested
@@ -551,15 +562,20 @@ path:
 ```ts
 import { load } from 'latkit';
 import wasmUrl from 'latkit/wasm?url';
+import jobsUrl from 'latkit/jobs?url';
 import wgslUrl from 'latkit/wgsl?url';
 import workerUrl from 'latkit/worker?url';
 
-await load({ wasm: wasmUrl, wgsl: wgslUrl, worker: workerUrl });
+await load({ wasm: wasmUrl, jobs: jobsUrl, wgsl: wgslUrl, worker: workerUrl });
 ```
+
+The assets come as a set: a page that gives the URL of `wasm` gives `jobs` and `worker` too, or
+`load` rejects with an `invalid` error.
 
 A browser starts workers only from the page's origin, so the page fetches a worker on another
 origin, such as a CDN or a webview's resources, and starts it from a Blob URL. Workers start when
-needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on the calling
+needed and stop after 30 idle seconds. Each job runs in a worker, so a view draws what a job
+makes a frame or more after it asks. Where workers are unavailable, jobs run on the calling
 thread. Your Content Security Policy must allow the WASM, worker, and data origins in
 `connect-src`, WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), the
 package's modules in `script-src` (the WGSL translator is imported when first used), and the
@@ -579,7 +595,8 @@ const expression = field('value').gt(0).toJSON();
 ```
 
 Patches and expressions need no WebAssembly. To use datasets and queries in Node, compile the
-package's WASM bytes into a `WebAssembly.Module` and pass it to `load({ wasm })`. To render in a
+package's WASM bytes into a `WebAssembly.Module` and pass it to `load({ wasm })`. To read GeoJSON
+there, pass the jobs module the same way, as `jobs`. To render in a
 worker, pass an `OffscreenCanvas` to `View.create`.
 
 ## In Rust

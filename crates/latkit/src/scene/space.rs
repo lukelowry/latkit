@@ -59,9 +59,8 @@ impl From<Plot> for Space {
 pub struct Earth {
     /// A flat web mercator map (`mercator`) or a globe (`globe`). Defaults to `mercator`.
     pub projection: Projection,
-    /// Whether lines of longitude and latitude cross the ground, in the theme's `grid` color.
-    /// Defaults to `true`.
-    pub graticule: bool,
+    /// The grid of longitude and latitude on the ground. Defaults to lines.
+    pub grid: Grid,
     /// Lights the earth by the sun's position this many seconds after the Unix epoch, plus the
     /// view's axis coordinate when it has one. The night side darkens the ground and everything on
     /// it, down to the theme's `earth.night` brightness. When unset, the earth is lit evenly.
@@ -72,7 +71,7 @@ pub struct Earth {
 }
 
 /// How the earth is projected.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Projection {
     /// Web mercator.
@@ -104,6 +103,13 @@ impl Earth {
         self.atmosphere = on;
         self
     }
+
+    /// Sets the grid of longitude and latitude on the ground.
+    #[must_use]
+    pub fn grid(mut self, grid: Grid) -> Earth {
+        self.grid = grid;
+        self
+    }
 }
 
 /// The unit direction toward the sun `seconds` after the Unix epoch, in earth-fixed coordinates: x
@@ -124,9 +130,9 @@ pub(crate) fn sun(seconds: f64) -> [f64; 3] {
 }
 
 impl Default for Earth {
-    /// A web mercator map with a graticule, lit evenly, without atmosphere.
+    /// A web mercator map with a grid of lines, lit evenly, without atmosphere.
     fn default() -> Earth {
-        Earth { projection: Projection::Mercator, graticule: true, daylight: None, atmosphere: false }
+        Earth { projection: Projection::Mercator, grid: Grid::lines(), daylight: None, atmosphere: false }
     }
 }
 
@@ -134,32 +140,64 @@ impl Default for Earth {
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Plane {
-    /// The grid drawn under the marks. Defaults to lines 10 units apart.
+    /// The grid on the ground under the marks. Defaults to lines.
     pub grid: Grid,
 }
 
 impl Default for Plane {
     fn default() -> Plane {
-        Plane { grid: Grid::Lines { pitch: 10.0 } }
+        Plane { grid: Grid::lines() }
     }
 }
 
-/// A plane's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch } }`.
+/// The grid on the ground of a plane or the earth, under the marks: `"off"`, `"lines"`, `"dots"`,
+/// or `{ lines | dots: { step } }`. It draws in the theme's `grid` look.
+///
+/// Lines lie at multiples of a step, in position units (degrees of longitude and latitude on the
+/// earth). The camera's zoom alone picks the step: the finest of `step` times 1, 2, or 5 and a
+/// power of ten that keeps lines the theme's `grid.spacing` apart on screen. On the earth the
+/// steps are those of degrees, with 30° and 90° past 10°. Turning or tilting the view moves no
+/// line, and lines run on to the horizon.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = preset_schema::<Grid>)]
 pub enum Grid {
     /// No grid.
     Off,
-    /// Lines `pitch` units apart, thinned by factors of ten as the view zooms out.
+    /// Lines along both axes.
     Lines {
-        /// Units between lines.
-        pitch: f64,
+        /// The finest step between lines. Defaults to 10 on a plane and to 0.01° on the earth.
+        step: Option<f64>,
     },
-    /// Dots `pitch` units apart.
+    /// Dots where lines would cross.
     Dots {
-        /// Units between dots.
-        pitch: f64,
+        /// The finest step between dots. Defaults to 10 on a plane and to 0.01° on the earth.
+        step: Option<f64>,
     },
+}
+
+presets!(Grid { "off" => Grid::Off, "lines" => Grid::lines(), "dots" => Grid::dots() });
+
+impl Grid {
+    /// Lines at the space's own finest step.
+    pub fn lines() -> Grid {
+        Grid::Lines { step: None }
+    }
+
+    /// Dots at the space's own finest step.
+    pub fn dots() -> Grid {
+        Grid::Dots { step: None }
+    }
+
+    /// This grid with `step` as its finest step, in position units.
+    #[must_use]
+    pub fn step(self, step: f64) -> Grid {
+        match self {
+            Grid::Off => Grid::Off,
+            Grid::Lines { .. } => Grid::Lines { step: Some(step) },
+            Grid::Dots { .. } => Grid::Dots { step: Some(step) },
+        }
+    }
 }
 
 /// A plot: x is the data's axis, y the values.

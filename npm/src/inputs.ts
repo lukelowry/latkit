@@ -86,7 +86,10 @@ export interface Bitmap {
   rgba: number[];
 }
 
-/** How much GPU memory latkit uses. */
+/**
+ * How much memory latkit keeps for a `Gpu`'s views: on the GPU for the data they draw, and beside
+ * it for the tiles they fetched.
+ */
 export interface Budget {
   /**
    * GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's per-row
@@ -103,6 +106,12 @@ export interface Budget {
    * MiB.
    */
   uploadPerFrame: number;
+  /**
+   * Memory in bytes for the tiles fetched from every `Tiles` source the views draw, and the rows
+   * decoded from them. Tiles a view draws always stay. Past this, the tiles no view draws are
+   * dropped, least recently drawn first, and fetched again if drawn again. Defaults to 256 MiB.
+   */
+  tiles?: number;
 }
 
 /**
@@ -399,6 +408,8 @@ export type Controls =
        * everything, and `reduced` animates only motion the user drives. Defaults to `system`.
        */
       motion?: Motion;
+      /** How far the camera may go from what fits have framed. Defaults to `fit`. */
+      reach?: Reach;
     };
 
 /** A custom colormap: its kind, its colors, and for a categorical map, its category names. */
@@ -439,11 +450,8 @@ export type Direction =
 export interface Earth {
   /** A flat web mercator map (`mercator`) or a globe (`globe`). Defaults to `mercator`. */
   projection?: Projection;
-  /**
-   * Whether lines of longitude and latitude cross the ground, in the theme's `grid` color. Defaults
-   * to `true`.
-   */
-  graticule?: boolean;
+  /** The grid of longitude and latitude on the ground. Defaults to lines. */
+  grid?: Grid;
   /**
    * Lights the earth by the sun's position this many seconds after the Unix epoch, plus the view's
    * axis coordinate when it has one. The night side darkens the ground and everything on it, down to
@@ -479,7 +487,7 @@ export interface EdgeTheme {
   /**
    * How far edges joining the same two vertices bow apart. Each lane bows out by this fraction of
    * the edge's length, measured at its middle. Parallel edges spread at most eight lanes wide, and
-   * more lanes pack closer. Bows scale with the zoom.
+   * more lanes pack closer. Bows scale with the zoom. With 0 they run straight, one over another.
    */
   bow?: number;
   /** How far an arrowhead extends beyond the edge's width. A head's length is this plus the width. */
@@ -653,23 +661,47 @@ export type Gestures = {
   [name: string]: Action;
 };
 
-/** A plane's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch } }`. */
+/**
+ * The grid on the ground of a plane or the earth, under the marks: `"off"`, `"lines"`, `"dots"`,
+ * or `{ lines | dots: { step } }`. It draws in the theme's `grid` look.
+ *
+ * Lines lie at multiples of a step, in position units (degrees of longitude and latitude on the
+ * earth). The camera's zoom alone picks the step: the finest of `step` times 1, 2, or 5 and a
+ * power of ten that keeps lines the theme's `grid.spacing` apart on screen. On the earth the steps
+ * are those of degrees, with 30° and 90° past 10°. Turning or tilting the view moves no line, and
+ * lines run on to the horizon.
+ */
 export type Grid =
-  | /** No grid. */ 'off'
+  | 'off'
+  | 'lines'
+  | 'dots'
   | {
-      /** Lines `pitch` units apart, thinned by factors of ten as the view zooms out. */
+      /** Lines along both axes. */
       lines: {
-        /** Units between lines. */
-        pitch: number;
+        /** The finest step between lines. Defaults to 10 on a plane and to 0.01° on the earth. */
+        step?: number | null;
       };
     }
   | {
-      /** Dots `pitch` units apart. */
+      /** Dots where lines would cross. */
       dots: {
-        /** Units between dots. */
-        pitch: number;
+        /** The finest step between dots. Defaults to 10 on a plane and to 0.01° on the earth. */
+        step?: number | null;
       };
     };
+
+/** How a plane's grid, the earth's grid, and a plot's grid lines look. */
+export interface GridTheme {
+  /** The color of lines and dots. */
+  color?: Color;
+  /** The width of a line, in CSS pixels. A dot is twice as wide. */
+  width?: number;
+  /**
+   * The least distance between the lines (or dots) of a plane's or the earth's grid, in CSS pixels.
+   * A finer step fades in as zooming in spreads its lines from this distance to twice it.
+   */
+  spacing?: number;
+}
 
 /**
  * A row's id: a whole number from 0, or a text. A number above 2^53 - 1 is written as its decimal
@@ -970,7 +1002,7 @@ export type Place =
 
 /** A plane: positions are in plane units. */
 export interface Plane {
-  /** The grid drawn under the marks. Defaults to lines 10 units apart. */
+  /** The grid on the ground under the marks. Defaults to lines. */
   grid?: Grid;
 }
 
@@ -1022,6 +1054,35 @@ export interface Query {
   /** The axis coordinate at which sampled fields are read. Defaults to their last frame. */
   at?: number | null;
 }
+
+/**
+ * How far a map camera may go from the box fits have framed: a preset (`"fit"` or `"space"`), or
+ * options that change `fit`. `fit` keeps the camera near that box, and `space` sets no limit of
+ * its own. The space's limits always hold, as `Earth` describes, and a zoom never passes level 24.
+ *
+ * The box is what the last fit to everything framed, grown by any rows fitted since.
+ */
+export type Reach =
+  | 'fit'
+  | 'space'
+  | {
+      /**
+       * How many zoom levels the camera may zoom out past the widest fit. `null` sets no limit. Defaults
+       * to 3.
+       */
+      zoomOut?: number | null;
+      /**
+       * How many zoom levels the camera may zoom in past the closest fit. `null` sets no limit. Defaults
+       * to `null`: how far in a view needs to go depends on how close its rows lie, not on how far they
+       * spread.
+       */
+      zoomIn?: number | null;
+      /**
+       * How far the center may stray from the box, in sizes of the box, or of half the view at the
+       * widest fit's zoom when the box is smaller. `null` sets no limit. Defaults to 1.
+       */
+      pan?: number | null;
+    };
 
 /** How an edge runs between its ends. */
 export type Route =
@@ -1205,14 +1266,8 @@ export type Theme =
   | {
       /** The background color. */
       background?: Color;
-      /** The color of a plane's grid, a plot's grid lines, and the earth's graticule. */
-      grid?: Color;
-      /**
-       * The least distance between the lines (or dots) of a plane's grid and of the earth's graticule,
-       * in CSS pixels. Their spacing steps by 1, 2, and 5 times a power of ten (and 30° and 90° on the
-       * earth), and the finer step fades out as it nears this distance.
-       */
-      gridSpacing?: number;
+      /** How a plane's grid, the earth's grid, and a plot's grid lines look. */
+      grid?: GridTheme;
       /** The color a colormap gives a missing value, such as a row with no value in the field. */
       missing?: Color;
       /**

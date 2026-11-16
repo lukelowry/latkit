@@ -23,7 +23,7 @@ use std::time::Duration;
 
 pub use areas::Areas;
 pub(crate) use controls::Control;
-pub use controls::{Action, Controls, Gestures, Motion};
+pub use controls::{Action, Controls, Gestures, Motion, Reach};
 pub use edges::Edges;
 pub(crate) use form::seconds;
 pub use guide::{Legend, Place, Title};
@@ -36,7 +36,7 @@ pub use shade::Shade;
 pub(crate) use space::sun;
 pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space};
 pub use theme::{
-    AreaTheme, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, Length, LineTheme, PlotTheme, TextTheme, Theme,
+    AreaTheme, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, GridTheme, Length, LineTheme, PlotTheme, TextTheme, Theme,
     VertexTheme,
 };
 pub use vertices::Vertices;

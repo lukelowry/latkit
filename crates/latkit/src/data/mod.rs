@@ -44,15 +44,15 @@ pub(crate) use {geometry::Geometry, table::Field};
 #[cfg(feature = "gpu")]
 pub(crate) use {
     bytes::{read_values, values_bytes},
-    column::{Column, PAGE_ROWS, Page},
+    column::{Column, PAGE_ROWS, Page, Runs},
     frames::{Listed, Manifest},
     geometry::GeometryBuilder,
     ids::RowIds,
-    json::geojson,
+    json::{geojson, geojson_name, read_own},
     name::{PageId, Version},
     patch::Op,
     samples::{FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, Run, Samples, bucket_frames, detail, sides},
-    table::{Reference, UNWIRED},
+    table::{Inverse, Reference, UNWIRED},
 };
 
 #[cfg(test)]

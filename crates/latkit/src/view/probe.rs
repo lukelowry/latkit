@@ -96,14 +96,18 @@ impl Drew {
     fn sample(&self, i: usize, row: usize, point: u32) -> Option<Sample> {
         let mark = self.marks.get(i)?;
         let (field, plan) = mark.traced.as_ref()?;
-        let (level, index, side) = plan.entry(point)?;
+        let (level, entries, side) = plan.entries(point)?;
         let table = &mark.holding.as_ref()?.table;
         let crate::data::Field::Sampled(samples, _) = table.field_named(field)? else { return None };
-        // A bucket's two points show its middle frame, with its minimum or maximum value.
+        // A point shows the least or the greatest of the entries it reads. A frame stores one
+        // value, which is both.
+        let stored = side.min(crate::data::sides(level) - 1);
+        let held = entries.filter_map(|index| Some((index, samples.entry(row, level, stored, index)?)));
+        let (index, value) =
+            held.reduce(|a, b| if (side == 1 && b.1 > a.1) || (side == 0 && b.1 < a.1) { b } else { a })?;
+        // A bucket shows its middle frame.
         let span = crate::data::bucket_frames(level);
-        let frame = index * span + span / 2;
-        let value = samples.entry(row, level, side, index)?;
-        Some(Sample { frame, at: samples.drawn_at(level, index)?, value })
+        Some(Sample { frame: index * span + span / 2, at: samples.drawn_at(level, index)?, value })
     }
 }
 
@@ -214,6 +218,24 @@ impl View {
         }
     }
 
+    /// The area where a hover at `point` reads depth: its radius around the point, and two target
+    /// pixels more for the pixels read around each place.
+    pub(super) fn hover_area(&self, point: [f32; 2]) -> super::camera::Area {
+        let reach = f64::from(self.probe_radius()) + 2.0 / f64::from(self.pixel_ratio);
+        let [x, y] = point.map(f64::from);
+        [x - reach, y - reach, x + reach, y + reach]
+    }
+
+    /// Where a frame's `probe` and its query, if it reads depth (`query`), read depth: around a
+    /// hover's point, and anywhere for a keys' step or a query. `None` if neither reads any.
+    pub(super) fn depth_area(&self, probe: Option<&Probe>, query: bool) -> Option<super::camera::Area> {
+        match (probe, query) {
+            (None, false) => None,
+            (Some(Probe::Hover(point)), false) => Some(self.hover_area(*point)),
+            _ => Some([0.0, 0.0, self.size[0], self.size[1]]),
+        }
+    }
+
     /// The probe radius in CSS pixels: the scene's pick radius, plus 8 for touch.
     pub(super) fn probe_radius(&self) -> f32 {
         let touch = self.pointer.is_some_and(|pointer| pointer.device == Device::Touch);
@@ -270,8 +292,15 @@ impl View {
         let view = self.projected();
         let p = point.map(f64::from);
         let drawn = answer.and_then(|a| if a.under > 0.0 { Some(a.under) } else { a.hit.as_ref().map(|h| h.depth) });
-        if let Some(depth) = drawn {
-            return view.position(view.unproject(p, f64::from(depth)));
+        // The globe's depth lies behind its ground: it hides by the plane through its visible
+        // edge. So what the frame drew counts there only where it lies nearer than the ground.
+        let ground = if view.globe >= 0.5 { view.ground(p) } else { None };
+        let away = |w: glam::DVec3| (w - view.eye).length_squared();
+        let nearer = drawn
+            .map(|depth| view.unproject(p, f64::from(depth)))
+            .filter(|&w| ground.is_none_or(|ground| away(w) <= away(ground)));
+        if let Some(w) = nearer {
+            return view.position(w);
         }
         let Camera::Map { center, .. } = self.camera else {
             return view.on_plane(p, 0.0).map_or([0.0; 3], |w| view.position(w));

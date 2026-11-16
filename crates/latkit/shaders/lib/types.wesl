@@ -322,6 +322,14 @@ const LABELED: u32 = 32u;
 const STEP_BEFORE: u32 = 64u;
 const STEP_AFTER: u32 = 128u;
 
+// The last word of a trace point's record. Its low bits are the rows in the value page it reads.
+// TRACE_COUNT: where the number of entries it reads starts, at most TRACE_MOST, one after the
+// other in that page. TRACE_GREATEST: set when it draws the greatest of them, else the least.
+const TRACE_ROWS: u32 = 0xFFFFu;
+const TRACE_COUNT: u32 = 16u;
+const TRACE_MOST: u32 = 8u;
+const TRACE_GREATEST: u32 = 0x80000000u;
+
 // Focus bits per row. SELECTED and HOVERED mark the selected and hovered rows, and RELATED_SELECTED
 // and RELATED_HOVERED the rows one reference from them. Any of these makes a row lit, and the focus
 // draw redraws lit rows over everything. FIT marks the rows a fit measures.
@@ -464,14 +472,15 @@ struct Frame {
     // A flat plane plans lanes at the upper zoom of an octave, then draws their exact density.
     // Zero means the projection needs an exact camera plan.
     lane_scale: f32,
-    // A plane's grid: kind, pitch in position units, and the world distance from the center at
-    // which it has faded out (0 for no fade). `graticule` is 1 if the earth draws a graticule.
-    // `grid_spacing` is the least distance between lines in CSS pixels.
+    // The grid on a plane or the earth: its kind, how far its finer step has faded in (0 to 1),
+    // and the width of a line in CSS pixels. `grid_step` holds the two steps its lines lie at, the
+    // finer then the coarser, in position units. `grid_phase` holds the camera's center as a
+    // fraction of each step: x and y for the finer, then for the coarser.
     grid_kind: u32,
-    grid_pitch: f32,
     grid_fade: f32,
-    graticule: u32,
-    grid_spacing: f32,
+    grid_width: f32,
+    grid_step: vec2f,
+    grid_phase: vec4f,
     hover: vec4f,
     selected: vec4f,
     flow: vec4f,

@@ -8,6 +8,7 @@
 
 mod cache;
 mod frames;
+mod index;
 mod sets;
 mod tiling;
 mod vector;
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) use cache::Cache;
+pub use index::{LayerDescription, TilesDescription};
 pub(crate) use sets::{Asked, Reading, TileSets};
 
 use crate::Pending;
@@ -29,6 +31,11 @@ use crate::pending::Watchers;
 /// [`Source`](crate::Source) as a dataset of its own, holding the pieces its camera needs. Views on
 /// one GPU that draw tiles from the same URL share what is fetched. The source's first bytes
 /// determine the kind of tiles.
+///
+/// A GPU keeps what it fetched and decoded for as long as the `Tiles`, or any clone of it, lives:
+/// a view that stops drawing the tiles and starts again fetches nothing twice. Every tile source
+/// of the GPU shares its [`Budget::tiles`](crate::Budget) bytes. Past them, the pieces no view
+/// draws are dropped, least recently drawn first.
 ///
 /// **Time tiles**: a `frames.json` manifest, as
 /// [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes it. The history of each sampled field
@@ -67,7 +74,8 @@ pub(crate) type Fetch = Arc<dyn Fn(&Request) -> Pending<Vec<u8>> + Send + Sync>;
 /// A tile source's URL and the address of its fetch (0 for the host's): what a GPU's views share.
 pub(crate) type Shared = (Arc<str>, usize);
 
-/// How many times a tile source was refreshed, and the views drawing it, which each refresh wakes.
+/// What a `Tiles` and its clones share: how many times they were refreshed, and the views drawing
+/// them, which each refresh wakes. A GPU's cache keeps their source while this lives.
 #[derive(Default)]
 pub(crate) struct Refreshes {
     count: AtomicU64,

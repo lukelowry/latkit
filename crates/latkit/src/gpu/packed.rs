@@ -10,7 +10,7 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 use crate::data::{Column, Name, PageId, Reference, Samples, Table, UNWIRED, Version};
-use crate::derive::order::Order;
+use crate::derive::order::{Order, Written};
 use crate::expr::compile::Words;
 use crate::gpu::arena::page_words;
 use crate::gpu::shaders::PAGE_ROWS;
@@ -34,6 +34,15 @@ pub(crate) struct Packing {
     pub(crate) words: Words,
     pub(crate) low: bool,
     pub(crate) reads: u64,
+}
+
+/// How a packed column's pages hold its table's rows.
+#[derive(Clone, Copy)]
+pub(crate) enum Laid<'a> {
+    /// A page per page of this order.
+    Order(&'a Order),
+    /// One page of these rows, listed when a write asks which it holds.
+    Rows(&'a dyn Fn() -> Vec<u32>),
 }
 
 /// A column's packed pages: their source column, each page's id once packed, the samples gathered
@@ -70,15 +79,10 @@ impl Packed {
         self.counters.clone()
     }
 
-    /// The pages of `packing`, packed from the current `source`. A page is kept while none of its
-    /// rows was written since. `page_of` maps a row to its page. Without a source, pages are kept
-    /// as long as `packing` matches.
-    fn pages(
-        &mut self,
-        packing: &Packing,
-        source: Option<&Column>,
-        page_of: impl Fn(u32) -> Option<usize>,
-    ) -> &mut Pages {
+    /// The pages of `packing`, packed from the current `source` and `laid` as given. A page is kept
+    /// while none of its rows was written since. Without a source, pages are kept as long as
+    /// `packing` matches.
+    fn pages(&mut self, packing: &Packing, source: Option<&Column>, laid: Laid<'_>) -> &mut Pages {
         self.uses += 1;
         if !self.columns.contains_key(packing) && self.columns.len() >= KEPT {
             forget(&mut self.columns, |p| p.used);
@@ -94,10 +98,14 @@ impl Packed {
             && !pages.source.as_ref().is_some_and(|s| s.shares(source))
         {
             if let Some(before) = &pages.source {
-                for page in source.written_since(before).into_iter().filter_map(|row| page_of(row as u32)) {
-                    if let Some(id) = pages.ids.get_mut(page) {
-                        *id = None;
-                    }
+                let rows = source.written_since(before);
+                let written = match laid {
+                    Laid::Order(order) => order.written(&rows),
+                    Laid::Rows(held) if held().iter().any(|&row| rows.contains(row)) => Written::Every,
+                    Laid::Rows(_) => Written::Nothing,
+                };
+                for (page, id) in pages.ids.iter_mut().enumerate().filter(|(page, _)| written.holds(*page as u32)) {
+                    *id = None;
                     if let Some(samples) = pages.samples.get_mut(page) {
                         *samples = None;
                     }
@@ -125,7 +133,7 @@ impl Packed {
         source: Option<&Column>,
         wanted: &[u32],
     ) -> Vec<PageId> {
-        let pages = self.pages(packing, source, |row| Some((order.rank(row) / PAGE_ROWS) as usize));
+        let pages = self.pages(packing, source, Laid::Order(order));
         wanted
             .iter()
             .map(|&k| {
@@ -139,9 +147,9 @@ impl Packed {
     }
 
     /// The id of `packing`'s page of kept rows, packed from `source`. The page is kept while none
-    /// of its rows (those `holds` accepts) was written since.
-    pub(crate) fn kept(&mut self, packing: &Packing, source: Option<&Column>, holds: impl Fn(u32) -> bool) -> PageId {
-        let pages = self.pages(packing, source, |row| holds(row).then_some(0));
+    /// of its rows, which `rows` lists, was written since.
+    pub(crate) fn kept(&mut self, packing: &Packing, source: Option<&Column>, rows: &dyn Fn() -> Vec<u32>) -> PageId {
+        let pages = self.pages(packing, source, Laid::Rows(rows));
         if pages.ids.is_empty() {
             pages.ids.push(None);
         }
@@ -151,7 +159,7 @@ impl Packed {
     /// The samples of `samples`' rows `rows`, for page `page` of `packing`, gathered once.
     pub(crate) fn samples(&mut self, packing: &Packing, page: u32, rows: &[u32], samples: &Samples) -> Samples {
         let counters = self.counters.clone();
-        let pages = self.pages(packing, None, |_| None);
+        let pages = self.pages(packing, None, Laid::Rows(&Vec::new));
         let k = page as usize;
         if pages.samples.len() <= k {
             pages.samples.resize(k + 1, None);

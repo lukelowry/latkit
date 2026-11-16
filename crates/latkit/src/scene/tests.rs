@@ -242,9 +242,9 @@ fn presets_equal_their_values() {
     assert_eq!(serde_json::from_str::<Label>(r#""$name""#).expect("a label"), Label::new(field("name")));
     let label = serde_json::from_str::<Label>(r#"{ "text": "$name", "size": 10 }"#).expect("a label");
     assert_eq!(label, Label::new(field("name")).size(10.0));
-    let grid = r#"{ "plane": { "grid": { "dots": { "pitch": 10 } } } }"#;
+    let grid = r#"{ "plane": { "grid": { "dots": { "step": 10 } } } }"#;
     let space = serde_json::from_str::<Space>(grid).expect("a space");
-    assert_eq!(space, Space::Plane(Plane { grid: Grid::Dots { pitch: 10.0 } }));
+    assert_eq!(space, Space::Plane(Plane { grid: Grid::dots().step(10.0) }));
     assert_eq!(serde_json::from_str::<Space>(r#""earth""#).expect("a space"), Space::Earth(Earth::default()));
 }
 

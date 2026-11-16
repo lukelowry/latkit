@@ -7,8 +7,8 @@
 //! never are. A paged table draws the rows of the tiles the camera needs, as many as its share
 //! holds. Edges ending at it are paged too, so they show with their endpoints. If the unpaged
 //! tables still do not fit, a table a line traces still draws all its rows, with its traces
-//! spanning only as many pixel columns as fit. Any other table draws the rows that matter most, as
-//! many as fit. What a view draws always fits.
+//! holding only as many entries as fit. Any other table draws the rows that matter most, as many
+//! as fit. What a view draws always fits.
 //!
 //! A table costs what the arena allocates for it: its columns' pages, the arena blocks of its
 //! marks' per-row words, and its geometry. The GPU's ledger grants each view a share based on its
@@ -38,17 +38,18 @@ use crate::{Expr, Kind, Mark, Space};
 
 /// Rows past which a table a mark places is paged: more than a screen shows at one row per cell.
 pub(crate) const DENSE: usize = 1 << 18;
-/// Pixel columns a view requests trace space for: a wide screen's width.
-const ASKED_COLUMNS: f64 = 4096.0;
+/// Entries a view requests trace space for: a wide screen's pixel columns, at the eight entries a
+/// column holds at most.
+const ASKED_ENTRIES: f64 = 8.0 * 4096.0;
 /// The fewest rows a paged table draws: one tile's worth.
 const LEAST: u32 = 1 << 14;
-/// Bytes a row's trace takes per pixel column: the minimum and maximum values of two buckets.
-const TRACE_COLUMN_BYTES: f64 = 16.0;
-/// The fewest pixel columns a trace spans, however little budget is left.
-const TRACE_COLUMNS: u32 = 32;
+/// Bytes a row's trace takes per entry: a bucket's least and greatest values.
+const TRACE_ENTRY_BYTES: f64 = 8.0;
+/// The fewest entries a trace holds, however little budget is left.
+const TRACE_ENTRIES: u64 = 64;
 
 /// A table's cost as the arena allocates it: its row count, bytes per page of rows, bytes of
-/// geometry, and bytes its traces take per pixel column.
+/// geometry, and bytes its traces take per entry.
 struct Cost {
     rows: usize,
     per_page: f64,
@@ -80,8 +81,8 @@ struct Costs {
 /// The plan and the costs it uses, each recomputed only when its inputs change.
 pub(crate) struct Planning {
     costs: Derived<Costs>,
-    /// How each table draws, and the most pixel columns a trace spans.
-    plan: Derived<(Plans, u32)>,
+    /// How each table draws, and the most entries a trace holds.
+    plan: Derived<(Plans, u64)>,
     /// The fraction of the remaining budget the plan gives paged tables. Lowered each time their
     /// pages do not fit in a full arena or exceed the share. Reset when the share changes.
     fit: f64,
@@ -105,8 +106,8 @@ impl Planning {
         self.costs.value.tables.get(key).map_or(0.0, |cost| f64::from(pages) * cost.per_page)
     }
 
-    /// The most pixel columns a trace spans.
-    pub(crate) fn trace_columns(&self) -> u32 {
+    /// The most entries a trace holds.
+    pub(crate) fn trace_entries(&self) -> u64 {
         self.plan.value.1
     }
 
@@ -148,7 +149,7 @@ impl View {
         }
         let costs = &self.planning.costs.value;
         let traced: f64 = costs.tables.values().map(|c| c.traced).sum();
-        let whole = costs.tables.values().map(Cost::bytes).sum::<f64>() + traced * ASKED_COLUMNS;
+        let whole = costs.tables.values().map(Cost::bytes).sum::<f64>() + traced * ASKED_ENTRIES;
         let counted: f64 = costs.shared.values().map(|(counted, _)| counted).sum();
         let ask = Ask {
             own: (whole - counted).max(0.0),
@@ -183,8 +184,8 @@ impl View {
     }
 
     /// Plans how each table the scene draws fits in `share` bytes given `costs`, giving paged
-    /// tables `fit` of the remaining budget. Also returns the most pixel columns a trace spans.
-    fn plan(&self, costs: &Costs, share: f64, fit: f64) -> (Plans, u32) {
+    /// tables `fit` of the remaining budget. Also returns the most entries a trace holds.
+    fn plan(&self, costs: &Costs, share: f64, fit: f64) -> (Plans, u64) {
         let (mut plans, costs) = (costs.whole.clone(), &costs.tables);
         let vector = |key: &(Name, Name)| self.derived.tiles.vector(&key.0);
         let tileable =
@@ -221,7 +222,7 @@ impl View {
             }
         }
         // If the unpaged tables still do not fit, each draws the rows that matter most, as many as
-        // fit. A table a line traces still draws all its rows, and its traces get coarser in time
+        // fit. A table a line traces still draws all its rows, and its traces hold fewer entries
         // instead.
         if whole > share {
             let kept: f64 = keys
@@ -249,8 +250,8 @@ impl View {
             let rows = (each / per_row).min(f64::from(u32::MAX)) as u32;
             plans.get_mut(key).expect("listed").draw = Draw::Tiles { rows: rows.max(LEAST) };
         }
-        let columns = if traced > 0.0 { ((each / traced) as u32).max(TRACE_COLUMNS) } else { u32::MAX };
-        (plans, columns)
+        let entries = if traced > 0.0 { ((each / traced) as u64).max(TRACE_ENTRIES) } else { u64::MAX };
+        (plans, entries)
     }
 
     /// Plans each table the scene draws as drawn in full, with the place and priority of the first
@@ -380,14 +381,14 @@ fn page_bytes(shown: &Shown, easing: bool) -> f64 {
     columns + kept + eased
 }
 
-/// Bytes the traces `shown` draws of `table` take per pixel column: `TRACE_COLUMN_BYTES` for each
-/// row of each traced field.
+/// Bytes the traces `shown` draws of `table` take per entry: `TRACE_ENTRY_BYTES` for each row of
+/// each traced field.
 fn traced_bytes(shown: &Shown, table: &Table) -> f64 {
     let Some(compiled) = &shown.compiled else { return 0.0 };
     let traced = compiled.program.columns.iter().filter(|c| {
         c.trace && c.from.is_none() && !c.derived && matches!(table.field_named(&c.name), Some(Field::Sampled(..)))
     });
-    traced.count() as f64 * table.len() as f64 * TRACE_COLUMN_BYTES
+    traced.count() as f64 * table.len() as f64 * TRACE_ENTRY_BYTES
 }
 
 /// Bytes the geometry `shown` draws of `table` takes, as the arena allocates it: per page of rows,

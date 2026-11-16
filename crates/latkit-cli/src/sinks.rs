@@ -8,7 +8,7 @@ use std::future::{Future, ready};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use latkit::host::{Host, Job, Native};
+use latkit::host::{Host, Native};
 use latkit::{Encoding, Error, Image, ImageFormat, Mp4, Pending, Pixels, Sink};
 
 use crate::args::{is_stdio, pattern};
@@ -191,7 +191,7 @@ impl Sink for Images {
             return Err(Error::invalid("an image file holds one frame; use a %d pattern to write one per frame"));
         }
         let file = match pixels {
-            Some(rgba) => Some(self.host.spawn(Job::encode(&Image::new(self.size, rgba)?, self.format))),
+            Some(rgba) => Some(self.host.encode(&Image::new(self.size, rgba)?, self.format)),
             None => None,
         };
         self.writing.push_back((index, file));

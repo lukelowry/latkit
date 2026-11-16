@@ -143,7 +143,7 @@ impl View {
         let query = self.lay_out_lists(answers, self.sorted());
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
-        let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, elapsed, self.at);
+        let mut uniform = uniforms::frame(&self.scene, &projected, srgb, elapsed, self.at);
         uniform.flow_step = travel as f32;
         if self.signal.transparent() {
             uniform.background[3] = 0.0;
@@ -167,7 +167,7 @@ impl View {
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
         self.place_labels(encoder, &mut inner, &eye, &uniform);
-        let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
+        let depth = self.depth_area(probe.as_ref(), query.is_some_and(|(_, depth)| depth));
         self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
@@ -419,8 +419,8 @@ impl View {
         }
     }
 
-    /// Derives tables from the data and scene alone, handing the host any work the frame cannot
-    /// afford. First come the orders of paged tables and the ranges of them the camera needs. These
+    /// Derives tables from the data and scene alone, handing the host the work that scales with
+    /// the data. First come the orders of paged tables and the ranges of them the camera needs. These
     /// come from the tables' pyramids or, for tables of vector tiles, from the vector tiles drawn.
     /// Every other derivation follows.
     fn derive(&mut self, inner: &mut Inner) {
@@ -429,13 +429,12 @@ impl View {
         let earth = matches!(self.scene.space, crate::Space::Earth(_));
         let placing = earth || matches!(self.scene.space, crate::Space::Plane(_));
         let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
-        // One work budget for the frame, spent on paged tables first, then on other derivations.
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.job_errors.clone();
-        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, inner.frame.work);
+        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
         let budget = inner.budget.bytes;
         self.update_plan(&mut inner.ledger, budget);
-        self.trace_columns = self.planning.trace_columns();
+        self.trace_entries = self.planning.trace_entries();
         let ask = derive::tiled::Ask {
             data: &self.snapshots,
             plans: self.planning.plans(),
@@ -454,12 +453,10 @@ impl View {
             self.changed = true;
         }
         self.derived = derived;
-        inner.frame.work = jobs.left() as u32;
     }
 
     /// Updates every tile set to what the camera and plot window need, from the GPU's tile cache
-    /// and the pieces that arrived since. Tiles fetch and decode as they arrive, so this spends
-    /// none of the frame's work budget.
+    /// and the pieces that arrived since. Tiles fetch and decode as they arrive.
     pub(super) fn update_tiles(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
@@ -469,7 +466,7 @@ impl View {
         let asked = crate::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.job_errors.clone();
-        let jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, 0);
+        let jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
         tiles.update(&self.derive_input(), &asked, &mut inner.tiles, &jobs);
         self.derived.tiles = tiles;
@@ -544,22 +541,23 @@ impl View {
         marks
     }
 
-    /// The plot's x range that traces span, and its width in device pixel columns, capped by the
-    /// plan.
-    fn trace_window(&self) -> (Option<[f64; 2]>, u32) {
+    /// What traces show: the plot's x range, its width in device pixel columns, and the most
+    /// entries the plan lets a trace hold. A line sets how its own trace steps.
+    fn trace_window(&self) -> Window {
         let across = match self.camera {
             Camera::Plot { x, .. } => Some(x),
             Camera::Map { .. } => None,
         };
         let area = self.area();
-        (across, (((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32).min(self.trace_columns))
+        let columns = ((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32;
+        Window { across, columns, most: self.trace_entries, steps: 0 }
     }
 
-    /// What marks read of sampled fields, for time tiles to fetch: the plot window and its pixel
-    /// columns, the coordinate shown, and each field a mark's program reads, with whether a line
-    /// traces it.
+    /// What marks read of sampled fields, for time tiles to fetch: the plot window, its pixel
+    /// columns, and the most entries a trace holds, the coordinate shown, and each field a mark's
+    /// program reads, with whether a line traces it.
     fn reading(&self) -> crate::tiles::Reading {
-        let (across, columns) = self.trace_window();
+        let Window { across, columns, most, .. } = self.trace_window();
         let mut fields = Vec::new();
         for shown in &self.marks {
             let Some(compiled) = &shown.compiled else { continue };
@@ -569,7 +567,7 @@ impl View {
                 fields.push((data, table, column.name.clone(), column.trace));
             }
         }
-        crate::tiles::Reading { across, columns, at: self.at, fields }
+        crate::tiles::Reading { across, columns, most, at: self.at, fields }
     }
 
     /// Syncs every mark's columns to its data and, for a paged table, to its latest drawing. Column
@@ -577,8 +575,7 @@ impl View {
     /// reserves every page they read all at once, or waits for space.
     fn sync(&mut self, inner: &mut Inner) {
         let at = self.at;
-        let (across, columns) = self.trace_window();
-        let window = Window { across, columns, steps: 0 };
+        let window = self.trace_window();
         // Each paged table's order, by dataset.
         let mut orders: Keyed<Name, Vec<(Name, Order)>> = Keyed::default();
         for ((data, table), drawn) in &self.drawings {
@@ -702,11 +699,14 @@ impl View {
         let Some(compiled) = &shown.compiled else { return };
         let (program, geometry) = (compiled.program.clone(), compiled.drawing.geometry);
         let key = (shown.mark.style().data.clone(), shown.mark.style().table.clone());
-        let Some(data) = self.snapshots.iter().find(|d| *d.name() == key.0) else { return };
-        let Some(table) = data.table(&key.1) else { return };
+        let Some(source) = Source::of(shown.mark.style(), &self.snapshots, &self.derived) else { return };
+        let (data, table) = (source.data, source.table);
         let drawing = self.drawings.get(&key).and_then(|d| d.current.clone());
+        let rows = drawing.as_deref().map_or(Rows::Own, Rows::Held);
         let queue = &self.gpu.0.queue;
-        let published = rebuilt.map(|rebuilt| shown.tables.publish(rebuilt, &program, geometry, inner, queue));
+        let published = rebuilt.map(|rebuilt| {
+            shown.tables.publish(rebuilt, &program, geometry, &source, rows, &self.snapshots, inner, queue)
+        });
         let holding = Holding { origin: data.origin(), table: table.clone(), drawing: drawing.clone() };
         if published.is_none() && shown.holding.as_ref().is_some_and(|h| holds_alike(h, &holding)) {
             return;
@@ -742,7 +742,9 @@ impl View {
         // Without an ease, a flowing mark whose rows moved still begins a zero-length transition,
         // so its comets follow the rows.
         let carries = shown.mark.flows() && moved.is_some();
-        let eased = published.as_ref().is_some_and(|p| shown.static_columns(p.data));
+        // A derived column that held no value gives rows their first: places as a layout lands,
+        // triangles as a job shapes them. Those rows drew nothing, so nothing eases.
+        let eased = published.as_ref().is_some_and(|p| shown.static_columns(p.data & p.valued));
         if (easing || carries) && shown.before > 0 && (moved.is_some() || eased) {
             shown.begin(moved, published.as_ref().and_then(|p| p.blocks.as_deref()));
         } else if moved.is_some() {
@@ -764,20 +766,16 @@ impl View {
         shown.packed = false;
         if let Some(published) = &published {
             shown.columns_changed(published.data, published.blocks.as_deref());
-            let source = Source::of(shown.mark.style(), &self.snapshots, &self.derived);
             for text in &program.texts {
                 let column = &program.columns[text.column as usize];
-                let code =
-                    source.as_ref().and_then(|s| s.table_of(column, &self.snapshots)).map_or(wgsl::NONE, |(d, t)| {
-                        inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
-                    });
+                let code = source.table_of(column, &self.snapshots).map_or(wgsl::NONE, |(d, t)| {
+                    inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
+                });
                 shown.constants[text.constant as usize] = code;
             }
             for &(constant, column) in &program.histories {
                 let column = &program.columns[column as usize];
-                let Some((_, table)) = source.as_ref().and_then(|s| s.table_of(column, &self.snapshots)) else {
-                    continue;
-                };
+                let Some((_, table)) = source.table_of(column, &self.snapshots) else { continue };
                 if let Some([least, most]) = history(table, &column.name, constant, &mut shown.histories) {
                     shown.constants[constant as usize + 1] = least.to_bits();
                     shown.constants[constant as usize + 2] = most.to_bits();
