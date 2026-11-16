@@ -1,11 +1,12 @@
-//! Jobs: work too large for a frame, handed to the host to run in the background. Jobs lay out
-//! graphs (layered or stress), triangulate areas, assign edge lanes, group a large table's rows
-//! into tiles, decode vector tiles and GeoJSON, and encode images.
+//! Jobs: work that scales with the data, handed to the host to run in the background. Jobs lay
+//! out graphs (layered or stress), triangulate areas, assign edge lanes, group a large table's rows
+//! into tiles, and decode vector tiles and GeoJSON.
 //!
-//! A job is bytes in and bytes out, so a thread, or a worker with its own copy of latkit, can run
-//! it with nothing shared. Layout, tile, and GeoJSON jobs return a [`Patch`] of rows by id.
-//! Other jobs return their own format: lane words, shape columns, each table's pyramid (order and
-//! tiles), or an encoded image file.
+//! A job is bytes in and bytes out, so a thread, or a worker with a module of its own, can run it
+//! with nothing shared. Only [`Job::run`] reaches the code that does a job's work, so a module
+//! that never calls it, as the browser's drawing module does not, carries none of that code.
+//! Layout, tile, and GeoJSON jobs return a [`Patch`] of rows by id. Other jobs return their own
+//! format: lane words, shape columns, or each table's pyramid (order and tiles).
 
 use std::sync::Arc;
 
@@ -15,12 +16,12 @@ use crate::data::{
 use crate::derive::pyramid::{Leveling, Places, Placing};
 use crate::derive::sight::Domain;
 use crate::geo::mvt::Kind as Geometry;
-use crate::geo::shapes::{earth_parts, triangles};
+use crate::geo::shapes::{earth_path, triangles};
 use crate::geo::tiles::{Decoded, decode};
 use crate::layout::{graph::Graph, layered::layered, stress::stress};
 use crate::tiles::TileKey;
 use crate::wire::{In, Out, codes};
-use crate::{Direction, Layered, Layout};
+use crate::{Direction, Layered, Layout, Projection};
 
 /// Work latkit hands its [`Host`](super::Host) to run in the background: bytes in, bytes out.
 ///
@@ -39,36 +40,41 @@ enum Kind {
     GeoJson,
     Lanes,
     Pyramid,
-    Image,
 }
 
-codes!(Kind { Layered = 1, Stress = 2, Shapes = 3, Tile = 4, GeoJson = 5, Lanes = 6, Pyramid = 7, Image = 8 });
+codes!(Kind { Layered = 1, Stress = 2, Shapes = 3, Tile = 4, GeoJson = 5, Lanes = 6, Pyramid = 7 });
 
-/// The shapes computed from each row's geometry.
+/// The shapes computed from each row's geometry, for the space they draw in. On the earth they
+/// follow its projection, so a scene that changes projection shapes its rows again.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Shaping {
-    /// An area's triangles, after its label anchor. With `earth`, rings are unwrapped and
-    /// triangles split along the earth grid.
-    Triangles { earth: bool },
-    /// An earth line's path, unwrapped and given extra points to follow the globe. Cheap enough
-    /// to compute on the frame, so it never needs a shapes job.
-    Path,
+    /// An area's triangles, after its label anchor. On the earth, rings are unwrapped across the
+    /// antimeridian, and on the globe triangles are split along the earth grid.
+    Triangles(Option<Projection>),
+    /// An earth line's path, unwrapped across the antimeridian, and on the globe given extra
+    /// points to follow its curve. Cheap enough to compute on the frame with
+    /// [`earth_path`], so it never needs a shapes job.
+    Path(Projection),
 }
 
 impl Shaping {
     fn code(self) -> u32 {
         match self {
-            Shaping::Triangles { earth: false } => 0,
-            Shaping::Triangles { earth: true } => 1,
-            Shaping::Path => 2,
+            Shaping::Triangles(None) => 0,
+            Shaping::Triangles(Some(Projection::Mercator)) => 1,
+            Shaping::Triangles(Some(Projection::Globe)) => 2,
+            Shaping::Path(Projection::Mercator) => 3,
+            Shaping::Path(Projection::Globe) => 4,
         }
     }
 
     fn from_code(code: u32) -> Option<Shaping> {
         match code {
-            0 => Some(Shaping::Triangles { earth: false }),
-            1 => Some(Shaping::Triangles { earth: true }),
-            2 => Some(Shaping::Path),
+            0 => Some(Shaping::Triangles(None)),
+            1 => Some(Shaping::Triangles(Some(Projection::Mercator))),
+            2 => Some(Shaping::Triangles(Some(Projection::Globe))),
+            3 => Some(Shaping::Path(Projection::Mercator)),
+            4 => Some(Shaping::Path(Projection::Globe)),
             _ => None,
         }
     }
@@ -76,8 +82,8 @@ impl Shaping {
     /// The geometry depth of shapes made from geometry of `depth`.
     pub(crate) fn depth(self, depth: u8) -> u8 {
         match self {
-            Shaping::Triangles { .. } => 1,
-            Shaping::Path => depth,
+            Shaping::Triangles(_) => 1,
+            Shaping::Path(_) => depth,
         }
     }
 
@@ -85,16 +91,16 @@ impl Shaping {
     /// paths to anything but points.
     pub(crate) fn takes(self, depth: u8) -> bool {
         match self {
-            Shaping::Triangles { .. } => matches!(depth, 2 | 3),
-            Shaping::Path => depth >= 1,
+            Shaping::Triangles(_) => matches!(depth, 2 | 3),
+            Shaping::Path(_) => depth >= 1,
         }
     }
 
     /// Name of the derived field holding the shapes of geometry field `field`.
     pub(crate) fn field_of(self, field: &str) -> Name {
         match self {
-            Shaping::Triangles { .. } => crate::scene::areas::triangles_of(field),
-            Shaping::Path => crate::scene::lines::path_of(field),
+            Shaping::Triangles(_) => crate::scene::areas::triangles_of(field),
+            Shaping::Path(_) => crate::scene::lines::path_of(field),
         }
     }
 
@@ -118,28 +124,12 @@ impl Shaping {
     /// The shape of `value`, or `None` if it is unchanged (a path that needs no extra points).
     pub(crate) fn shape(self, value: &Value) -> Option<Value> {
         match (self, value) {
-            (Shaping::Triangles { earth }, Value::Polygons(polygons)) => Some(Value::Path(triangles(polygons, earth))),
-            (Shaping::Triangles { earth }, Value::Parts(rings)) => {
+            (Shaping::Triangles(earth), Value::Polygons(polygons)) => Some(Value::Path(triangles(polygons, earth))),
+            (Shaping::Triangles(earth), Value::Parts(rings)) => {
                 Some(Value::Path(triangles(std::slice::from_ref(rings), earth)))
             }
-            (Shaping::Triangles { .. }, _) => Some(Value::Path(Vec::new())),
-            (Shaping::Path, Value::Path(path)) => {
-                earth_parts(std::slice::from_ref(path)).and_then(|mut parts| parts.pop()).map(Value::Path)
-            }
-            (Shaping::Path, Value::Parts(parts)) => earth_parts(parts).map(Value::Parts),
-            (Shaping::Path, Value::Polygons(polygons)) => {
-                let shaped: Vec<Option<Vec<Vec<[f64; 2]>>>> = polygons.iter().map(|rings| earth_parts(rings)).collect();
-                shaped.iter().any(Option::is_some).then(|| {
-                    Value::Polygons(
-                        shaped
-                            .into_iter()
-                            .zip(polygons)
-                            .map(|(shaped, rings)| shaped.unwrap_or_else(|| rings.clone()))
-                            .collect(),
-                    )
-                })
-            }
-            (Shaping::Path, _) => None,
+            (Shaping::Triangles(_), _) => Some(Value::Path(Vec::new())),
+            (Shaping::Path(projection), value) => earth_path(value, projection),
         }
     }
 }
@@ -167,14 +157,12 @@ impl Job {
         self.0
     }
 
-    /// Runs the job and returns its result: a patch of rows by id, lane words, shape columns, a
-    /// pyramid's order and tiles, or an encoded image file. Returns no bytes if the job is
-    /// malformed or fails.
+    /// Runs the job and returns its result: a patch of rows by id, lane words, shape columns, or a
+    /// pyramid's order and tiles. Returns no bytes if the job is malformed or fails.
     pub fn run(self) -> Vec<u8> {
         let mut input = In::new(&self.0);
         let Some(kind) = input.u32().and_then(Kind::from_code) else { return Vec::new() };
         let answer = match kind {
-            Kind::Image => return run_image(&mut input).unwrap_or_default(),
             Kind::Lanes => return run_lanes(&mut input).unwrap_or_default(),
             Kind::Pyramid => return run_pyramid(&mut input).unwrap_or_default(),
             Kind::Shapes => return run_shapes(&mut input).unwrap_or_default(),
@@ -220,15 +208,6 @@ impl Job {
         Job(out.0)
     }
 
-    /// Estimated microseconds `layout` takes to place `count` vertices with `links` links.
-    pub(crate) fn layout_cost(layout: &Layout, count: usize, links: usize) -> u64 {
-        match layout {
-            Layout::Stress(_) => crate::layout::stress::cost(count, links),
-            Layout::Layered(_) => crate::layout::layered::cost(count, links),
-            Layout::None => 0,
-        }
-    }
-
     /// A job computing `shaping` for every row of each geometry column in `parts`. Its result holds
     /// each part's shapes, read by [`shapes_answer`].
     pub(crate) fn shapes(shaping: Shaping, parts: &[Values]) -> Job {
@@ -259,29 +238,12 @@ impl Job {
         Job(out.0)
     }
 
-    /// A job encoding `image` as a file of `format`. Its result is the file's bytes, or no bytes if
-    /// the image cannot be encoded.
-    pub fn encode(image: &crate::Image, format: crate::ImageFormat) -> Job {
-        let mut out = job(Kind::Image, 12 + image.rgba.len());
-        out.u32(format.code());
-        out.u32(image.size[0]);
-        out.u32(image.size[1]);
-        out.bytes(&image.rgba);
-        Job(out.0)
-    }
-
-    /// A job that reads GeoJSON `bytes` as dataset `name` in the background, like
-    /// [`Data::read`](crate::Data::read), since GeoJSON can be large. `None` if `bytes` are
-    /// latkit's own bytes or a dataset document, which are read on the calling thread. Its result
-    /// is the patch that builds the dataset, or no bytes if the GeoJSON is invalid.
-    pub fn geojson(name: &str, bytes: &[u8]) -> Option<Job> {
-        if !crate::data::geojson(bytes) {
-            return None;
-        }
-        let mut out = job(Kind::GeoJson, 4 + name.len() + bytes.len());
-        out.str(name);
+    /// A job that reads GeoJSON `bytes`, since GeoJSON can be large. Its result is the patch that
+    /// builds the dataset's tables, or no bytes if the GeoJSON is invalid.
+    pub(crate) fn geojson(bytes: &[u8]) -> Job {
+        let mut out = job(Kind::GeoJson, bytes.len());
         out.bytes(bytes);
-        Some(Job(out.0))
+        Job(out.0)
     }
 
     /// A job assigning each edge row a lane among the rows joining the same two vertices, from the
@@ -444,15 +406,8 @@ fn run_tile(input: &mut In<'_>) -> Option<Patch> {
     decode(input.rest(), key, &tables)
 }
 
-fn run_image(input: &mut In<'_>) -> Option<Vec<u8>> {
-    let format = crate::ImageFormat::from_code(input.u32()?)?;
-    let size = [input.u32()?, input.u32()?];
-    crate::Image::new(size, input.rest()).ok()?.encode(format).ok()
-}
-
 fn run_geojson(input: &mut In<'_>) -> Option<Patch> {
-    let name = input.str()?;
-    crate::geo::geojson(name, input.rest()).ok().map(|data| data.to_patch())
+    crate::geo::geojson_patch(input.rest()).ok()
 }
 
 fn run_pyramid(input: &mut In<'_>) -> Option<Vec<u8>> {

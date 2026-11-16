@@ -775,6 +775,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init, reason = "runs are lists of ranges, some of one range")]
     fn differing_rows_compare_as_stored() {
         let a = Values::from(vec![1.0_f32, f32::NAN, 3.0]);
         assert_eq!(a.differing(&Values::from(vec![1.0_f32, f32::NAN, 4.0])), [2..3], "a NaN equals itself");
@@ -782,7 +783,7 @@ mod tests {
         assert_eq!(a.differing(&Values::from(vec![1.0_f64, 2.0, 3.0])), [0..3], "another storage differs");
         assert!(a.stored_like(&a.slice(0..1)) && !a.stored_like(&Values::from(vec![1.0_f64])));
         let path = |x: f64| Values::from(vec![vec![[0.0, 0.0], [x, 1.0]]]);
-        assert!(path(2.0).differing(&path(2.0)).is_empty());
+        assert!(path(2.0).differing(&path(2.0)).is_empty(), "equal paths differ nowhere");
         assert_eq!(path(2.0).differing(&path(3.0)), [0..1]);
     }
 

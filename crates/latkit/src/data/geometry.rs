@@ -54,16 +54,6 @@ impl Geometry {
         &self.coords
     }
 
-    /// The number of coordinates its rows cover. For a slice, only its own rows count.
-    pub(crate) fn points(&self) -> usize {
-        let Some(rows) = self.levels.first() else { return self.coords.len() };
-        let mut span = rows[0] as usize..rows[rows.len() - 1] as usize;
-        for offsets in &self.levels[1..] {
-            span = offsets[span.start] as usize..offsets[span.end] as usize;
-        }
-        span.len()
-    }
-
     /// Whether row `row` equals `other`'s row `other_row`: the same part structure and
     /// bit-identical coordinates.
     pub(crate) fn same_row(&self, row: usize, other: &Geometry, other_row: usize) -> bool {

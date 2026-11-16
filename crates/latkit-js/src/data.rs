@@ -8,7 +8,6 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use latkit::host::Host as _;
 use wasm_bindgen::prelude::*;
 
 use crate::pending::{Task, task};
@@ -29,20 +28,7 @@ impl Data {
     /// (parsed in a worker, and only with a `name`), or a JSON document whose file slices are
     /// fetched relative to `base`.
     pub fn read(bytes: Vec<u8>, name: Option<String>, base: String) -> Task {
-        task(async move {
-            if let Some(name) = &name
-                && let Some(job) = latkit::host::Job::geojson(name, &bytes)
-            {
-                let read = latkit::host::Browser.spawn(job).await?;
-                if read.is_empty() {
-                    return Err(latkit::Error::invalid(format!("{name}: the GeoJSON could not be read")));
-                }
-                let reading = latkit::Reading { name: Some(name), ..latkit::Reading::default() };
-                return Ok(Data(latkit::Data::read(&read, reading).await?));
-            }
-            let reading = latkit::Reading { name: name.as_deref(), base: &base, host: Some(&latkit::host::Browser) };
-            Ok(Data(latkit::Data::read(&bytes, reading).await?))
-        })
+        task(async move { Ok(Data(latkit::host::read(&latkit::host::Browser, &bytes, name.as_deref(), &base).await?)) })
     }
 
     #[wasm_bindgen(getter)]

@@ -67,6 +67,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
     "AddEventListenerOptions",
+    "Blob",
     "CssStyleDeclaration",
     "CanvasRenderingContext2d",
     "Document",
@@ -79,6 +80,7 @@ web-sys = { workspace = true, optional = true, features = [
     "Headers",
     "HtmlElement",
     "ImageData",
+    "ImageEncodeOptions",
     "KeyboardEvent",
     "MediaQueryList",
     "MessageChannel",

@@ -280,6 +280,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init, reason = "runs are lists of ranges, some of one range")]
     fn written_lists_exactly_the_pages_holding_a_written_row() {
         let rows = 3 * PAGE_ROWS + 100;
         let lifted = Order::Sampled { rows, step: 5, lifted: Lifted::new(vec![7, PAGE_ROWS + 1], rows, 5) };

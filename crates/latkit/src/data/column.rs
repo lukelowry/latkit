@@ -479,6 +479,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init, reason = "runs are lists of ranges, some of one range")]
     fn rows_written_or_added_since_are_found_page_by_page() {
         let column = Column::new(&numbers(PAGE_ROWS + 10));
         let source = Column::new(&Values::from(vec![-1.0_f64]));

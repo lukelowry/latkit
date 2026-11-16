@@ -226,6 +226,16 @@ impl View {
         [x - reach, y - reach, x + reach, y + reach]
     }
 
+    /// Where a frame's `probe` and its query, if it reads depth (`query`), read depth: around a
+    /// hover's point, and anywhere for a keys' step or a query. `None` if neither reads any.
+    pub(super) fn depth_area(&self, probe: Option<&Probe>, query: bool) -> Option<super::camera::Area> {
+        match (probe, query) {
+            (None, false) => None,
+            (Some(Probe::Hover(point)), false) => Some(self.hover_area(*point)),
+            _ => Some([0.0, 0.0, self.size[0], self.size[1]]),
+        }
+    }
+
     /// The probe radius in CSS pixels: the scene's pick radius, plus 8 for touch.
     pub(super) fn probe_radius(&self) -> f32 {
         let touch = self.pointer.is_some_and(|pointer| pointer.device == Device::Touch);

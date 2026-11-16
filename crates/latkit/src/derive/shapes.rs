@@ -9,9 +9,9 @@
 //! order at a time, the first time each page draws. A row whose geometry did not change keeps its
 //! shape as its pages come and go.
 //!
-//! Triangulation that does not fit the frame's budget runs in a job. A page where every row needs
-//! shaping goes to the job whole. Rows waiting on a job draw nothing until it finishes. Bending a
-//! path is cheap and done at once. Vector tiles bring their own shapes, made in the job that
+//! Triangulation runs in a job. A page where every row needs shaping goes to the job whole. Rows
+//! waiting on a job draw nothing until it finishes. Bending a path is cheap and done at once.
+//! Vector tiles bring their own shapes, made in the job that
 //! decodes them, as a field beside their rows. Their tables are paged and read that field one page
 //! of their order at a time, like any other, so nothing shapes those rows again.
 
@@ -25,10 +25,7 @@ use crate::data::{
 use crate::gpu::shaders::PAGE_ROWS;
 use crate::host::{Job, Shaping, shapes_answer};
 use crate::tiles::TileSets;
-use crate::{Mark, Scene, Space};
-
-/// Estimated microseconds to triangulate one point.
-const TRIANGULATE: f64 = 0.5;
+use crate::{Mark, Projection, Scene, Space};
 
 /// Rows to shape individually: each row index, its id, and its geometry digest.
 type Rows = Vec<(usize, Id, u64)>;
@@ -44,12 +41,6 @@ struct Missing {
 impl Missing {
     fn is_empty(&self) -> bool {
         self.pages.is_empty() && self.rows.is_empty()
-    }
-
-    /// The number of points to shape.
-    fn points(&self, column: &Column) -> usize {
-        let pages: usize = self.pages.iter().map(|(_, values)| values.geometry().map_or(0, Geometry::points)).sum();
-        pages + self.rows.iter().map(|&(row, ..)| points_of(column, row)).sum::<usize>()
     }
 
     /// Splits the work into a job's parts, each a geometry column: each whole page, then one part
@@ -226,7 +217,7 @@ pub(crate) struct Shapes {
 
 impl Shapes {
     /// Updates the shapes to `input`, using as is any shapes the vector tiles in `tiles` bring, and
-    /// sending work the frame cannot afford to `jobs`. Returns whether its tables changed.
+    /// triangulating in `jobs`. Returns whether its tables changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, tiles: &TileSets, jobs: &mut Jobs<'_>) -> bool {
         let wants = wants(input);
         self.shaped.retain(|want, _| wants.contains(want));
@@ -289,18 +280,27 @@ impl Shapes {
     }
 }
 
-/// The field mark `mark` shapes, and how: an area's polygons, or on the earth a line's paths.
-fn shaping_of(mark: &Mark, earth: bool) -> Option<(Name, Shaping)> {
-    match mark {
-        Mark::Areas(areas) => Some((areas.field(), Shaping::Triangles { earth })),
-        Mark::Lines(lines) if earth => Some((lines.traced(), Shaping::Path)),
+/// The field mark `mark` shapes, and how: an area's polygons, or on the `earth` a line's paths,
+/// each for the earth's projection.
+fn shaping_of(mark: &Mark, earth: Option<Projection>) -> Option<(Name, Shaping)> {
+    match (mark, earth) {
+        (Mark::Areas(areas), _) => Some((areas.field(), Shaping::Triangles(earth))),
+        (Mark::Lines(lines), Some(projection)) => Some((lines.traced(), Shaping::Path(projection))),
+        _ => None,
+    }
+}
+
+/// The projection of `space`, if it is the earth.
+fn earth_of(space: &Space) -> Option<Projection> {
+    match space {
+        Space::Earth(earth) => Some(earth.projection),
         _ => None,
     }
 }
 
 /// The fields of table `table` of dataset `data` that the scene's marks shape, and how, each once.
 pub(crate) fn shapings(scene: &Scene, data: &Name, table: &Name) -> Vec<(Name, Shaping)> {
-    let earth = matches!(scene.space, Space::Earth(_));
+    let earth = earth_of(&scene.space);
     let mut shapings = Vec::new();
     for mark in scene.marks.iter().filter(|m| m.style().data == *data && m.style().table == *table) {
         if let Some(shaping) = shaping_of(mark, earth).filter(|s| !shapings.contains(s)) {
@@ -312,7 +312,7 @@ pub(crate) fn shapings(scene: &Scene, data: &Name, table: &Name) -> Vec<(Name, S
 
 /// The fields the scene's marks shape: every area's polygons, and on the earth every line's paths.
 fn wants(input: &Input<'_>) -> Vec<Want> {
-    let earth = matches!(input.scene.space, Space::Earth(_));
+    let earth = earth_of(&input.scene.space);
     let mut wants: Vec<Want> = Vec::new();
     for mark in &input.scene.marks {
         let Some((field, shaping)) = shaping_of(mark, earth) else { continue };
@@ -348,15 +348,16 @@ impl Shaped {
         self.update_whole(want, source, column, *version, depth, jobs) || had
     }
 
-    /// Takes a finished job's shapes, of depth `depth`. A job that failed, or that answered other
-    /// parts than it was asked, gives its rows empty shapes: they draw nothing until their geometry
-    /// changes.
-    fn settle(&mut self, depth: u8) {
-        let Some((_, asked, answer)) = self.working.landed() else { return };
+    /// Takes a finished job's shapes, of depth `depth`, and returns whether one had finished. A
+    /// job that failed, or that answered other parts than it was asked, gives its rows empty
+    /// shapes: they draw nothing until their geometry changes.
+    fn settle(&mut self, depth: u8) -> bool {
+        let Some((_, asked, answer)) = self.working.landed() else { return false };
         let shapes = answer.ok().and_then(|bytes| shapes_answer(&bytes)).filter(|shapes| shapes.len() == asked.len());
         let shapes = shapes.unwrap_or_else(|| asked.iter().map(|part| part.empty(depth)).collect());
         self.landed.land(asked, shapes);
         self.landings += 1;
+        true
     }
 
     /// Uses `field`, made elsewhere (by vector tiles), as its shapes. Returns whether they changed.
@@ -385,27 +386,27 @@ impl Shaped {
         depth: u8,
         jobs: &mut Jobs<'_>,
     ) -> bool {
-        let stamp = stamp_of((source.structure, version, self.landings, want.shaping));
-        if stamp == self.stamp {
+        let stamp = |landings: u64| stamp_of((source.structure, version, landings, want.shaping));
+        if stamp(self.landings) == self.stamp {
             return false;
         }
-        self.stamp = stamp;
-        let (mut derived, mut missing) = self.build(want, source, column, depth);
-        // Shapes made on the frame apply at once. Rebuild the column with them.
-        if !missing.is_empty() {
-            match self.shape_now(want, column, missing, jobs) {
-                Ok(()) => (derived, missing) = self.build(want, source, column, depth),
-                Err(left) => missing = left,
-            }
+        self.stamp = stamp(self.landings);
+        let (mut derived, missing) = self.build(want, source, column, depth);
+        let mut whole = missing.is_empty();
+        // A job the host finishes at once applies at once. Rebuild the column with its shapes.
+        if !whole && self.ask(want, column, missing, depth, jobs) {
+            let (rebuilt, left) = self.build(want, source, column, depth);
+            (derived, whole) = (rebuilt, left.is_empty());
         }
-        if missing.is_empty() {
+        if whole {
+            // Made from every shape that landed so far.
+            self.stamp = stamp(self.landings);
             self.field = Some(Field::Values(derived.clone(), Version::next()));
             self.made = Some((source.clone(), column.clone(), derived));
             self.landed = Landed::default();
             self.before = None;
             return true;
         }
-        self.ask(want, column, missing, jobs);
         // Until the job finishes, its rows draw nothing and the rest draw unchanged.
         self.field = Some(Field::Values(derived, Version::next()));
         true
@@ -462,16 +463,11 @@ impl Shaped {
         if make.is_empty() && keep.is_empty() {
             return false;
         }
-        let (mut made, mut kept, mut missing) = self.make_paged(want, order, &make, &keep, source, column, depth);
-        // Shapes made on the frame apply at once. Remake the pages with them.
-        if !missing.rows.is_empty() {
-            match self.shape_now(want, column, missing, jobs) {
-                Ok(()) => (made, kept, missing) = self.make_paged(want, order, &make, &keep, source, column, depth),
-                Err(left) => missing = left,
-            }
-        }
-        if !missing.is_empty() {
-            self.ask(want, column, missing, jobs);
+        let (mut made, mut kept, missing) = self.make_paged(want, order, &make, &keep, source, column, depth);
+        // A job the host finishes at once applies at once. Remake the pages with its shapes. Rows
+        // still left then are asked for when their pages are next made.
+        if !missing.is_empty() && self.ask(want, column, missing, depth, jobs) {
+            (made, kept, _) = self.make_paged(want, order, &make, &keep, source, column, depth);
         }
         let paging = self.paging.as_mut().expect("paged");
         for (page, shapes, whole) in made {
@@ -519,34 +515,20 @@ impl Shaped {
         (made, kept, missing)
     }
 
-    /// Shapes `missing` on the frame if it fits the rest of the budget. Otherwise returns it.
-    fn shape_now(
-        &mut self,
-        want: &Want,
-        column: &Column,
-        missing: Missing,
-        jobs: &mut Jobs<'_>,
-    ) -> Result<(), Missing> {
-        if !jobs.fits((missing.points(column) as f64 * TRIANGULATE).ceil() as u64) {
-            return Err(missing);
-        }
-        let (parts, asked) = missing.parts(column);
-        let shapes = parts.iter().map(|part| want.shaping.shapes_of(part)).collect();
-        self.landed.land(asked, shapes);
-        Ok(())
-    }
-
-    /// Starts a job to shape `missing`, unless the same job already ran. While a job is pending it
-    /// does nothing, and a later update asks again.
-    fn ask(&mut self, want: &Want, column: &Column, missing: Missing, jobs: &mut Jobs<'_>) {
+    /// Starts a job to shape `missing`, geometry of depth `depth`, unless the same job already
+    /// ran. While a job is pending it does nothing, and a later update asks again. Returns whether
+    /// the job finished at once, so its shapes are ready to use.
+    fn ask(&mut self, want: &Want, column: &Column, missing: Missing, depth: u8, jobs: &mut Jobs<'_>) -> bool {
         if self.working.busy() {
-            return;
+            return false;
         }
         let (parts, asked) = missing.parts(column);
         let stamp = stamp_of(&asked);
-        if self.working.may_start(stamp) {
-            self.working.start(stamp, jobs.spawn(Job::shapes(want.shaping, &parts)), asked);
+        if !self.working.may_start(stamp) {
+            return false;
         }
+        self.working.start(stamp, jobs.spawn(Job::shapes(want.shaping, &parts)), asked);
+        self.settle(want.shaping.depth(depth))
     }
 
     /// Builds the derived column for `column` of `source`, page by page, and returns what is left
@@ -568,7 +550,11 @@ impl Shaped {
         // Whether row `row` may find a shape made before: it is aligned, or rows moved since the
         // last complete set (`aligned` is 0), so a lookup by id may find one.
         let found = |row: usize| row < aligned || self.made.is_some() && aligned == 0;
-        let fresh = self.before.is_none() && self.landed.rows.is_empty() && want.shaping != Shaping::Path;
+        let path = match want.shaping {
+            Shaping::Path(projection) => Some(projection),
+            Shaping::Triangles(_) => None,
+        };
+        let fresh = self.before.is_none() && self.landed.rows.is_empty() && path.is_none();
         let mut pages: Vec<Page> = Vec::with_capacity(column.pages().len());
         let mut missing = Missing::default();
         for (p, page) in column.pages().iter().enumerate() {
@@ -585,7 +571,7 @@ impl Shaped {
                 continue;
             };
             // A path page needing no bending is its own shape. Sharing it means no new upload.
-            if want.shaping == Shaping::Path && !bends(geometry) {
+            if path.is_some_and(|projection| !bends(geometry, projection)) {
                 pages.push(page.clone());
                 continue;
             }
@@ -680,9 +666,9 @@ impl Shaped {
         let digest = geometry.row_hash(i);
         if let Some((landed, at)) = self.landed.row(&id, digest).or_else(|| self.kept(&id, digest)) {
             shapes.push_from(landed, at);
-        } else if want.shaping == Shaping::Path {
+        } else if let Shaping::Path(projection) = want.shaping {
             // Bending is cheap, so it runs here. Rows needing none keep their geometry.
-            match values.get(i).and_then(|v| want.shaping.shape(&v)) {
+            match values.get(i).and_then(|v| crate::geo::shapes::earth_path(&v, projection)) {
                 Some(shape) => {
                     shapes.push_value(&shape);
                 }
@@ -727,17 +713,10 @@ fn aligned(now: &Table, then: &Table) -> usize {
     }
 }
 
-/// Whether any two consecutive coordinates of `geometry` lie farther apart than an earth path's
-/// step. A page with none needs no bending.
-fn bends(geometry: &Geometry) -> bool {
-    let step = crate::geo::shapes::EARTH_STEP;
-    let coords = geometry.coords();
-    coords.windows(2).any(|w| (w[1][0] - w[0][0]).abs() > step || (w[1][1] - w[0][1]).abs() > step)
-}
-
-/// How many points row `row` of geometry column `column` holds.
-fn points_of(column: &Column, row: usize) -> usize {
-    column.at(row).and_then(|(values, i)| values.geometry().map(|g| g.row_coords(i).len())).unwrap_or(0)
+/// Whether any two consecutive coordinates of `geometry` are shaped as an earth path under
+/// `projection`. A page with none is its own shape.
+fn bends(geometry: &Geometry, projection: Projection) -> bool {
+    geometry.coords().windows(2).any(|w| crate::geo::shapes::bends(w[0], w[1], projection))
 }
 
 /// The geometry of rows `rows` of geometry column `column`, in that order.
@@ -759,7 +738,7 @@ mod tests {
 
     use super::*;
     use crate::derive::pyramid::Pyramid;
-    use crate::derive::testing::Failing;
+    use crate::derive::testing::{Failing, Later};
     use crate::gpu::work::Counters;
     use crate::{Areas, Data, Ids, Plane, Scene, Snapshot};
 
@@ -803,7 +782,7 @@ mod tests {
             paged.insert(("map".into(), "Zone".into()), Paged { order: order.clone(), pages, kept: Vec::new() });
             let input =
                 Input { scene: &scene, scene_version: 1, data: std::slice::from_ref(data), paged: Some(&paged) };
-            let mut jobs = Jobs::new(None, Waker::noop(), &counters, &errors, u32::MAX);
+            let mut jobs = Jobs::new(None, Waker::noop(), &counters, &errors);
             shapes.update(&input, &TileSets::default(), &mut jobs);
         };
         update(&mut shapes, &data.snapshot(), vec![1]);
@@ -828,20 +807,22 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_table_shapes_in_a_job_and_reshapes_only_written_rows() {
+    fn a_whole_table_draws_its_shapes_once_their_job_finishes_and_reshapes_only_written_rows() {
         let n = 2 * PAGE_ROWS as usize + 10;
         let data = Data::new("map");
         let squares: Vec<Vec<Ring>> = (0..n).map(|i| square(i as f64)).collect();
         data.apply(Table::new("Zone", Ids::count(n as u32)).field("geometry", squares)).expect("valid");
         let scene = Scene::new(Plane::default()).draw(Areas::of("map", "Zone"));
-        let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
+        let (host, counters, errors) = (Later::default(), Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let mut shapes = Shapes::default();
-        // No frame budget: every shape is made in a job, which finishes by the next update.
+        // The host finishes the job each update asks for after that update.
         let update = |shapes: &mut Shapes, data: &Data| {
             let data = data.snapshot();
             let input = Input { scene: &scene, scene_version: 1, data: std::slice::from_ref(&data), paged: None };
-            let mut jobs = Jobs::new(None, Waker::noop(), &counters, &errors, 0);
-            shapes.update(&input, &TileSets::default(), &mut jobs)
+            let mut jobs = Jobs::new(Some(&host), Waker::noop(), &counters, &errors);
+            let changed = shapes.update(&input, &TileSets::default(), &mut jobs);
+            host.finish();
+            changed
         };
         let points = |column: &Column, row: usize| {
             column.at(row).map_or(0, |(values, i)| values.geometry().expect("triangles").row_coords(i).len())
@@ -879,12 +860,7 @@ mod tests {
         let mut shapes = Shapes::default();
         for _ in 0..5 {
             let input = Input { scene: &scene, scene_version: 1, data: std::slice::from_ref(&data), paged: None };
-            // No frame budget: the rows are shaped in a job.
-            shapes.update(
-                &input,
-                &TileSets::default(),
-                &mut Jobs::new(Some(&host), Waker::noop(), &counters, &errors, 0),
-            );
+            shapes.update(&input, &TileSets::default(), &mut Jobs::new(Some(&host), Waker::noop(), &counters, &errors));
         }
         assert_eq!(host.jobs(), 1, "one job, not one per frame");
         assert!(!shapes.busy(), "the failure finished the work");

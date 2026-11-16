@@ -128,7 +128,8 @@ const GEOMETRY: &str = "geometry";
 
 /// Whether `name` is a derived shape field of a tile's table. Properties of that name are skipped.
 pub(crate) fn shapes_field(name: &str) -> bool {
-    [Shaping::Triangles { earth: true }, Shaping::Path].iter().any(|s| *s.field_of(GEOMETRY) == *name)
+    let flat = crate::Projection::Mercator;
+    [Shaping::Triangles(Some(flat)), Shaping::Path(flat)].iter().any(|s| *s.field_of(GEOMETRY) == *name)
 }
 
 /// Decodes tile `key` from `bytes`, optionally gzip-compressed, into a patch setting each table of
@@ -216,7 +217,7 @@ mod tests {
     fn a_tile_decodes_into_its_tables_rows() {
         let key = TileKey { z: 3, x: 2, y: 3 };
         let bytes = tile("water", 3, &square(100, 100, 1000), "bay");
-        let triangles = Shaping::Triangles { earth: true };
+        let triangles = Shaping::Triangles(Some(crate::Projection::Globe));
         let tables =
             [Decoded { layer: "water".into(), kind: Kind::Polygons, table: "water".into(), shapes: vec![triangles] }];
         let patch = decode(&bytes, key, &tables).expect("a tile");

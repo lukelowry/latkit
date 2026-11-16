@@ -5,8 +5,7 @@
 //! without one ends up among its neighbors. Gaps are in position units. Places persist by row:
 //! adding a row moves nothing else, and a row that loses its position takes the place the layout
 //! last gave it, or gets one. The layout places only rows without a place, until `arrange` lays
-//! out rows again. It runs on the frame when it fits the frame's budget, and as a host job
-//! otherwise.
+//! out rows again. It runs as a host job.
 //!
 //! The result is a table beside each vertex table holding the place the layout gave each row, or
 //! nothing. A vertex mark draws a row at its data's position, and at this place only where the
@@ -102,8 +101,7 @@ impl Derive for Places {
         if inputs != self.considered && !self.placing.busy() {
             self.considered = inputs;
             self.place(input, &vertex_marks, &edge_marks, inputs, jobs);
-            // A layout run on the frame, or a job the host finishes at once, lands before the
-            // frame draws.
+            // A job the host finishes at once lands before the frame draws.
             self.settle();
         }
         let stamp = stamp_with(|hasher| {
@@ -217,8 +215,7 @@ impl Places {
 
     /// Starts a layout of the rows to place, if any: each row whose data gives no position and the
     /// layout has not placed (while arranging, each row without a position, or every row when
-    /// arranging all). Other rows are pinned at their positions or places. It runs on the frame
-    /// when it fits the frame's budget.
+    /// arranging all). Other rows are pinned at their positions or places.
     fn place(
         &mut self,
         input: &Input<'_>,
@@ -275,8 +272,7 @@ impl Places {
         let links = links(vertex_marks, edge_marks);
         let layout = &input.scene.layout;
         let job = Job::layout(layout, &Placement { pinned: &pinned, links: &links, keys: &keys });
-        let pending = jobs.run(job, Job::layout_cost(layout, count, links.len()));
-        self.placing.start(inputs, pending, Placing { generation: self.generation, rows });
+        self.placing.start(inputs, jobs.spawn(job), Placing { generation: self.generation, rows });
     }
 
     /// Writes each vertex table's places: the place the layout gave each row, or nothing.
@@ -357,12 +353,13 @@ mod tests {
     use crate::gpu::work::Counters;
     use crate::{Data, Ids, Patch, Plane, Scene, Stress, Table, Vertices, field};
 
-    /// One frame of `places` for `scene` over `data`, with `budget` microseconds of frame work.
-    fn frame(places: &mut Places, scene: &Scene, data: &Data, host: &Failing, budget: u32) -> bool {
+    /// One frame of `places` for `scene` over `data`, its jobs run by `host`, or at once without one.
+    fn frame(places: &mut Places, scene: &Scene, data: &Data, host: Option<&Failing>) -> bool {
         let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let data = data.snapshot();
         let input = Input { scene, scene_version: 1, data: std::slice::from_ref(&data), paged: None };
-        places.update(&input, &mut Jobs::new(Some(host), Waker::noop(), &counters, &errors, budget))
+        let host = host.map(|host| host as &dyn crate::host::Host);
+        places.update(&input, &mut Jobs::new(host, Waker::noop(), &counters, &errors))
     }
 
     #[test]
@@ -371,36 +368,34 @@ mod tests {
         data.apply(Table::new("V", Ids::count(3))).expect("valid");
         let scene = Scene::new(Plane::default()).layout(Stress::default()).draw(Vertices::of("g", "V"));
         let (host, mut places) = (Failing::default(), Places::default());
-        // No frame budget, so the layout goes to the host as a job.
         for _ in 0..5 {
-            frame(&mut places, &scene, &data, &host, 0);
+            frame(&mut places, &scene, &data, Some(&host));
         }
         assert_eq!(host.jobs(), 1, "one job for these inputs, not one per frame");
         places.arrange(Arrange::Unplaced);
-        frame(&mut places, &scene, &data, &host, 0);
+        frame(&mut places, &scene, &data, Some(&host));
         assert_eq!(host.jobs(), 2, "laying out again asks again");
     }
 
     #[test]
-    fn a_small_layout_runs_on_the_frame_and_edits_of_positions_place_nothing() {
+    fn a_layout_finished_at_once_lands_on_its_frame_and_edits_of_positions_place_nothing() {
         let data = Data::new("g");
         let x = vec![Some(0.0), None, None];
         data.apply(Table::new("V", Ids::count(3)).field("x", x).field("y", vec![0.0; 3])).expect("valid");
         let scene = Scene::new(Plane::default())
             .layout(Stress::default())
             .draw(Vertices::of("g", "V").position(field("x"), field("y")));
-        let (host, mut places) = (Failing::default(), Places::default());
-        assert!(frame(&mut places, &scene, &data, &host, u32::MAX), "the places land on the first frame");
-        assert_eq!(host.jobs(), 0, "a layout that fits the frame needs no job");
+        let mut places = Places::default();
+        assert!(frame(&mut places, &scene, &data, None), "the places land on the first frame");
         let laid = |places: &Places, id: u64| places.tables.get(&("g".into(), "V".into()))?.get(id, "x");
         assert_eq!(laid(&places, 0), None, "a row its data positions has no place");
         assert!(matches!(laid(&places, 1), Some(Value::Number(_))), "a row without a position has one");
         // Moving the positioned row changes no place.
         data.apply(Table::new("V", vec![0_u64]).field("x", vec![50.0])).expect("valid");
-        assert!(!frame(&mut places, &scene, &data, &host, u32::MAX), "nothing to place again");
+        assert!(!frame(&mut places, &scene, &data, None), "nothing to place again");
         // A row that loses its position keeps nothing until the layout places it.
         data.apply(Table::new("V", vec![0_u64]).field("x", vec![None::<f64>])).expect("valid");
-        assert!(frame(&mut places, &scene, &data, &host, u32::MAX));
+        assert!(frame(&mut places, &scene, &data, None));
         assert!(matches!(laid(&places, 0), Some(Value::Number(_))), "the row that lost its position is placed");
     }
 
@@ -417,17 +412,17 @@ mod tests {
         let scene = Scene::new(Plane::default())
             .layout(Stress::default())
             .draw(Vertices::of("g", "V").position(field("x") + field("dx").of("cell"), field("y")));
-        let (host, mut places) = (Failing::default(), Places::default());
+        let mut places = Places::default();
         let unplaced = |places: &Places| places.unplaced[&("g".into(), "V".into())].rows.clone();
-        frame(&mut places, &scene, &data, &host, u32::MAX);
+        frame(&mut places, &scene, &data, None);
         assert_eq!(unplaced(&places), [false; 3], "every row's data gives a position");
         // A cell that loses its value leaves the rows naming it without a position.
         data.apply(Table::new("Cell", vec![1_u64]).field("dx", vec![None::<f64>])).expect("valid");
-        frame(&mut places, &scene, &data, &host, u32::MAX);
+        frame(&mut places, &scene, &data, None);
         assert_eq!(unplaced(&places), [false, true, true]);
         // A row wired to another cell reads that one.
         data.apply(Table::new("V", vec![2_u64]).reference("cell", "Cell", vec![0_u64])).expect("valid");
-        frame(&mut places, &scene, &data, &host, u32::MAX);
+        frame(&mut places, &scene, &data, None);
         assert_eq!(unplaced(&places), [false, true, false]);
     }
 }

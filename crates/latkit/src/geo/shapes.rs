@@ -1,30 +1,58 @@
-//! Converts geometry into drawable shapes: polygon triangles with a label anchor, and earth paths
-//! that follow the globe.
+//! Converts geometry into drawable shapes: polygon triangles with a label anchor, and earth paths.
 //!
 //! On the earth, longitudes are unwrapped across the antimeridian so no shape streaks across the
-//! map. No piece spans more than [`EARTH_STEP`] degrees: triangles are split along a grid of that
-//! pitch, and paths gain points.
+//! map. On the globe, no piece spans more than [`EARTH_STEP`] degrees either, so shapes follow
+//! its curve: triangles are split along a grid of that pitch, and paths gain points. A flat map
+//! draws straight between a shape's own points, so its shapes keep them as they are.
 
 use std::collections::BinaryHeap;
 
 use super::earcut::earcut;
+use crate::Projection;
+use crate::data::Value;
 
 type Point = [f64; 2];
 
-/// Largest span in degrees, in longitude or latitude, of an earth triangle or path segment. A chord
-/// this long sags less than 1/2000 of the globe's radius.
+/// Largest span in degrees, in longitude or latitude, of a triangle or path segment on the globe.
+/// A chord this long sags less than 1/2000 of the globe's radius.
 pub(crate) const EARTH_STEP: f64 = 2.0;
+
+/// The shape of a line's geometry `value` on the earth under `projection`, as [`earth_parts`]
+/// shapes each of its parts. `None` if the value is its own shape.
+pub(crate) fn earth_path(value: &Value, projection: Projection) -> Option<Value> {
+    match value {
+        Value::Path(path) => {
+            earth_parts(std::slice::from_ref(path), projection).and_then(|mut parts| parts.pop()).map(Value::Path)
+        }
+        Value::Parts(parts) => earth_parts(parts, projection).map(Value::Parts),
+        Value::Polygons(polygons) => {
+            let shaped: Vec<Option<Vec<Vec<Point>>>> =
+                polygons.iter().map(|rings| earth_parts(rings, projection)).collect();
+            shaped.iter().any(Option::is_some).then(|| {
+                Value::Polygons(
+                    shaped
+                        .into_iter()
+                        .zip(polygons)
+                        .map(|(shaped, rings)| shaped.unwrap_or_else(|| rings.clone()))
+                        .collect(),
+                )
+            })
+        }
+        _ => None,
+    }
+}
 
 /// Triangulates `polygons`, each an outer ring followed by holes, into a point list: the label
 /// anchor first, then three points per triangle. The anchor lies in the polygon with the largest
-/// outer ring. Returns an empty list when there are no triangles. With `earth`, rings are unwrapped
-/// and triangles split along the [`EARTH_STEP`] grid. Every triangle coordinate is finite when
-/// stored as `f32`, so GPU draws need only fetch their own corner except at the globe's horizon.
-pub(crate) fn triangles(polygons: &[Vec<Vec<Point>>], earth: bool) -> Vec<Point> {
+/// outer ring. Returns an empty list when there are no triangles. On the `earth`, rings are
+/// unwrapped, and on the globe triangles are split along the [`EARTH_STEP`] grid. Every triangle
+/// coordinate is finite when stored as `f32`, so GPU draws need only fetch their own corner except
+/// at the globe's horizon.
+pub(crate) fn triangles(polygons: &[Vec<Vec<Point>>], earth: Option<Projection>) -> Vec<Point> {
     let mut out = vec![[f64::NAN; 2]];
     let mut largest: Option<(f64, Vec<Vec<Point>>)> = None;
     for polygon in polygons {
-        let rings: Vec<Vec<Point>> = if earth { unwrapped(polygon) } else { polygon.clone() };
+        let rings: Vec<Vec<Point>> = if earth.is_some() { unwrapped(polygon) } else { polygon.clone() };
         let Some(outer) = rings.first().filter(|r| r.len() >= 3) else { continue };
         let area = ring_area(outer).abs();
         let mut points: Vec<Point> = Vec::with_capacity(rings.iter().map(Vec::len).sum());
@@ -44,7 +72,7 @@ pub(crate) fn triangles(polygons: &[Vec<Vec<Point>>], earth: bool) -> Vec<Point>
             if !corners.iter().flatten().all(|&v| (v as f32).is_finite()) {
                 continue;
             }
-            if earth { split(corners, &mut out) } else { out.extend(corners) }
+            if earth == Some(Projection::Globe) { split(corners, &mut out) } else { out.extend(corners) }
         }
         if out.len() > start && largest.as_ref().is_none_or(|(a, _)| area > *a) {
             largest = Some((area, rings));
@@ -59,13 +87,26 @@ pub(crate) fn triangles(polygons: &[Vec<Vec<Point>>], earth: bool) -> Vec<Point>
     out
 }
 
-/// Prepares `parts` for an earth path: longitudes unwrapped across the antimeridian, and points
-/// added every [`EARTH_STEP`] degrees along longer segments. `None` if no segment needs either.
-pub(crate) fn earth_parts(parts: &[Vec<Point>]) -> Option<Vec<Vec<Point>>> {
-    let changes = parts.iter().any(|part| {
-        part.windows(2).any(|w| (w[1][0] - w[0][0]).abs() > EARTH_STEP || (w[1][1] - w[0][1]).abs() > EARTH_STEP)
-    });
-    changes.then(|| parts.iter().map(|part| densified(&unwrap(part))).collect())
+/// Whether the segment from `a` to `b` of an earth path is shaped under `projection`: it crosses
+/// the antimeridian, or on the globe spans more than [`EARTH_STEP`] degrees.
+pub(crate) fn bends(a: Point, b: Point, projection: Projection) -> bool {
+    let [lon, lat] = [(b[0] - a[0]).abs(), (b[1] - a[1]).abs()];
+    match projection {
+        Projection::Mercator => lon > 180.0,
+        Projection::Globe => lon > EARTH_STEP || lat > EARTH_STEP,
+    }
+}
+
+/// Prepares `parts` for an earth path under `projection`: longitudes unwrapped across the
+/// antimeridian, and on the globe points added every [`EARTH_STEP`] degrees along longer segments.
+/// `None` if no segment needs either (see [`bends`]).
+pub(crate) fn earth_parts(parts: &[Vec<Point>], projection: Projection) -> Option<Vec<Vec<Point>>> {
+    let changes = parts.iter().any(|part| part.windows(2).any(|w| bends(w[0], w[1], projection)));
+    let shaped = |part: &Vec<Point>| match projection {
+        Projection::Mercator => unwrap(part),
+        Projection::Globe => densified(&unwrap(part)),
+    };
+    changes.then(|| parts.iter().map(shaped).collect())
 }
 
 /// Unwraps each ring of `polygon` so its longitudes are continuous, then shifts it by whole turns
@@ -361,9 +402,9 @@ mod tests {
     #[test]
     fn triangles_never_publish_coordinates_that_overflow_the_gpu_representation() {
         let too_large = vec![vec![vec![[0.0, 0.0], [1e40, 0.0], [0.0, 1e40]]]];
-        assert_eq!(triangles(&too_large, false), Vec::<Point>::new());
+        assert_eq!(triangles(&too_large, None), Vec::<Point>::new());
         let mixed = vec![too_large[0].clone(), vec![square(0.0, 0.0, 10.0)]];
-        let points = triangles(&mixed, false);
+        let points = triangles(&mixed, None);
         assert_eq!(points.len(), 7);
         assert!(points.iter().flatten().all(|&v| (v as f32).is_finite()));
         assert!((covered(&points) - 100.0).abs() < 1e-9);
@@ -371,7 +412,7 @@ mod tests {
 
     #[test]
     fn a_square_triangulates_with_its_label_in_the_middle() {
-        let points = triangles(&[vec![square(0.0, 0.0, 10.0)]], false);
+        let points = triangles(&[vec![square(0.0, 0.0, 10.0)]], None);
         assert_eq!(points.len(), 1 + 6);
         assert!((covered(&points) - 100.0).abs() < 1e-9);
         let [x, y] = points[0];
@@ -385,7 +426,7 @@ mod tests {
         for start in 0..4 {
             let mut ring: Vec<Point> = (0..4).map(|k| corners[(start + k) % 4]).collect();
             ring.push(ring[0]);
-            let points = triangles(&[vec![ring]], true);
+            let points = triangles(&[vec![ring]], Some(Projection::Globe));
             assert!((covered(&points) - 180.0 * 80.0).abs() < 1e-6, "from corner {start}");
             assert!(points[1..].iter().all(|p| (0.0..=180.0).contains(&p[0])), "from corner {start}");
         }
@@ -394,15 +435,17 @@ mod tests {
     #[test]
     fn a_hole_moves_the_label_off_it() {
         let polygon = vec![square(0.0, 0.0, 10.0), square(3.0, 3.0, 4.0)];
-        let points = triangles(&[polygon], false);
+        let points = triangles(&[polygon], None);
         assert!((covered(&points) - 84.0).abs() < 1e-9);
         let [x, y] = points[0];
         assert!(!(3.0..=7.0).contains(&x) || !(3.0..=7.0).contains(&y), "{:?}", points[0]);
     }
 
     #[test]
-    fn earth_triangles_split_along_the_grid_without_losing_area() {
-        let points = triangles(&[vec![square(0.5, 0.5, 9.0)]], true);
+    fn globe_triangles_split_along_the_grid_without_losing_area_and_a_flat_map_keeps_them_whole() {
+        let flat = triangles(&[vec![square(0.5, 0.5, 9.0)]], Some(Projection::Mercator));
+        assert_eq!(flat.len(), 1 + 6, "a flat map draws the square's two triangles as they are");
+        let points = triangles(&[vec![square(0.5, 0.5, 9.0)]], Some(Projection::Globe));
         assert!((covered(&points) - 81.0).abs() < 1e-6, "{}", covered(&points));
         for t in points[1..].chunks(3) {
             for k in 0..2 {
@@ -418,17 +461,25 @@ mod tests {
     #[test]
     fn rings_across_the_antimeridian_stay_whole() {
         let ring = vec![[179.0, 0.0], [-179.0, 0.0], [-179.0, 1.0], [179.0, 1.0], [179.0, 0.0]];
-        let points = triangles(&[vec![ring]], true);
-        assert!((covered(&points) - 2.0).abs() < 1e-9, "{}", covered(&points));
-        assert!(points[1..].iter().all(|p| p[0] >= 179.0 && p[0] <= 181.0), "unwrapped east: {points:?}");
+        for projection in [Projection::Mercator, Projection::Globe] {
+            let points = triangles(&[vec![ring.clone()]], Some(projection));
+            assert!((covered(&points) - 2.0).abs() < 1e-9, "{}", covered(&points));
+            assert!(points[1..].iter().all(|p| p[0] >= 179.0 && p[0] <= 181.0), "unwrapped east: {points:?}");
+        }
     }
 
     #[test]
-    fn earth_parts_bend_and_unwrap() {
-        assert!(earth_parts(&[vec![[0.0, 0.0], [1.0, 1.0]]]).is_none(), "short segments need no bending");
-        let parts = earth_parts(&[vec![[170.0, 10.0], [-170.0, 10.0]]]).expect("a long segment bends");
+    fn earth_parts_unwrap_and_on_the_globe_bend() {
+        let globe = Projection::Globe;
+        assert!(earth_parts(&[vec![[0.0, 0.0], [1.0, 1.0]]], globe).is_none(), "short segments need no bending");
+        let across = [vec![[170.0, 10.0], [-170.0, 10.0]]];
+        let parts = earth_parts(&across, globe).expect("a long segment bends");
         assert_eq!(parts[0].first(), Some(&[170.0, 10.0]));
         assert_eq!(parts[0].last(), Some(&[190.0, 10.0]));
         assert!(parts[0].windows(2).all(|w| (w[1][0] - w[0][0]).abs() <= EARTH_STEP + 1e-9));
+        // A flat map only unwraps: a long segment that stays on one side keeps its two points.
+        let flat = Projection::Mercator;
+        assert_eq!(earth_parts(&across, flat), Some(vec![vec![[170.0, 10.0], [190.0, 10.0]]]));
+        assert!(earth_parts(&[vec![[0.0, 0.0], [90.0, 40.0]]], flat).is_none(), "straight on a flat map");
     }
 }

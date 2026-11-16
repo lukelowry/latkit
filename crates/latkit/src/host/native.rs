@@ -13,8 +13,7 @@ use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Sw
 
 use super::Encoder;
 use super::{Host, Job, Raster, Request, TextRun};
-use crate::Encoding;
-use crate::{Error, Pending, Resolver, Result};
+use crate::{Encoding, Error, Image, ImageFormat, Pending, Resolver, Result};
 
 /// Native platform services: shaped text, background jobs, local files, and video.
 ///
@@ -110,6 +109,11 @@ impl Host for Native {
 
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         self.work(move || Ok(job.run()))
+    }
+
+    fn encode(&self, image: &Image, format: ImageFormat) -> Pending<Vec<u8>> {
+        let image = image.clone();
+        self.work(move || image.encode(format))
     }
 
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
@@ -377,11 +381,16 @@ mod tests {
     #[test]
     fn background_jobs_complete_without_a_runtime_or_font_discovery() {
         let host = Native::new();
-        let image = crate::Image::new([1, 1], vec![255, 0, 0, 128]).unwrap();
-        let jobs: Vec<_> = (0..12).map(|_| host.spawn(Job::encode(&image, crate::ImageFormat::Png))).collect();
+        let image = Image::new([1, 1], vec![255, 0, 0, 128]).unwrap();
+        let jobs: Vec<_> = (0..12).map(|_| host.encode(&image, ImageFormat::Png)).collect();
         for job in jobs {
-            assert_eq!(crate::Image::from_png(&pollster::block_on(job).unwrap()).unwrap(), image);
+            assert_eq!(Image::from_png(&pollster::block_on(job).unwrap()).unwrap(), image);
         }
+        // GeoJSON is read in a job, and needs the name the dataset takes.
+        let city = br#"{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}"#;
+        let read = pollster::block_on(crate::host::read(&host, city, Some("city"), "")).unwrap();
+        assert_eq!(read.snapshot().get("points", 0_u64, "geometry", None), Some(crate::Value::Point([1.0, 2.0])));
+        assert!(pollster::block_on(crate::host::read(&host, city, None, "")).is_err());
         assert!(host.0.text.lock().unwrap().is_none());
         let clone = host.clone();
         assert!(Arc::ptr_eq(&clone.0, &host.0), "clones share the workers and fonts");

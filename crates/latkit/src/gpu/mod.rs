@@ -173,19 +173,18 @@ pub(crate) struct Inner {
     pub(crate) budget: Budget,
     /// Each view's share of the budget, which it plans within.
     pub(crate) ledger: Ledger,
-    /// What the current frame may still upload and compute. Views drawn together share it.
+    /// What the current frame may still upload. Views drawn together share it.
     pub(crate) frame: Allowance,
 }
 
-/// What one frame may still do across a GPU's views: bytes to upload, and microseconds of work done
-/// on the frame rather than in jobs. A frame ends when a view that drew in it draws again. So views
-/// drawn together (a page's canvases, a shot's panels) share one allowance, and a view drawn alone
-/// gets a new one each time, even when it redraws the same instant.
+/// What one frame may still do across a GPU's views: bytes to upload. A frame ends when a view that
+/// drew in it draws again. So views drawn together (a page's canvases, a shot's panels) share one
+/// allowance, and a view drawn alone gets a new one each time, even when it redraws the same
+/// instant.
 #[derive(Default)]
 pub(crate) struct Allowance {
     drawn: Vec<u64>,
     pub(crate) upload: u64,
-    pub(crate) work: u32,
 }
 
 impl Inner {
@@ -197,8 +196,7 @@ impl Inner {
     /// here.
     pub(crate) fn begin_frame(&mut self, view: u64, device: &wgpu::Device, queue: &Queue) {
         if self.frame.drawn.is_empty() || self.frame.drawn.contains(&view) {
-            self.frame =
-                Allowance { drawn: Vec::new(), upload: self.budget.upload_per_frame, work: crate::derive::FRAME_WORK };
+            self.frame = Allowance { drawn: Vec::new(), upload: self.budget.upload_per_frame };
             self.arena.begin_frame(device, queue);
             self.tiles.trim(self.budget.tiles);
             if let Some(granted) = self.arena.refused() {

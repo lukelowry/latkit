@@ -138,7 +138,9 @@ impl Cache {
             return;
         }
         let mut idle: Vec<(u64, usize)> = Vec::new();
-        tilings.iter().for_each(|tiling| tiling.idle(&mut idle));
+        for tiling in &tilings {
+            tiling.idle(&mut idle);
+        }
         idle.sort_unstable();
         // Evict every idle piece up to the one whose bytes bring the cache within its budget.
         let (mut over, mut drew) = (held - budget, None);
@@ -149,7 +151,9 @@ impl Cache {
             (over, drew) = (over.saturating_sub(bytes as u64), Some(used));
         }
         if let Some(drew) = drew {
-            tilings.iter_mut().for_each(|tiling| tiling.evict(drew));
+            for tiling in &mut tilings {
+                tiling.evict(drew);
+            }
         }
     }
 }

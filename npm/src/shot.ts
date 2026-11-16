@@ -155,8 +155,11 @@ export class Image extends Handle {
   }
 
   /**
-   * Encodes the image as a file, in a worker. PNG is lossless with alpha. JPEG drops alpha. WebP
-   * is lossless with alpha and smaller than PNG.
+   * Encodes the image as a file with the browser's own encoder. PNG keeps alpha. JPEG drops it.
+   * WebP keeps alpha and is smaller than PNG, written at full quality, which is lossless in
+   * Chrome. A browser that cannot write a format, as Safari cannot write WebP, rejects with an
+   * `unsupported` error. Where a pixel is not opaque, its color may differ from the image's by a
+   * step.
    */
   encode(
     format: ImageFormat,

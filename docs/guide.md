@@ -544,13 +544,16 @@ HTTPS or localhost.
 
 ### Assets and workers
 
-The package has three assets besides its modules:
+The package has four assets besides its modules:
 
-- `latkit/wasm`: the WebAssembly, with the shaders translated for WebGL2 when the package was
-  built.
+- `latkit/wasm`: the WebAssembly that draws, with the shaders translated for WebGL2 when the
+  package was built.
+- `latkit/jobs`: the WebAssembly that does the work that scales with the data: layouts, lanes,
+  triangles, tile pyramids, and decoding vector tiles and GeoJSON. A page loads it the first time
+  it has such a job.
 - `latkit/wgsl`: the WebAssembly that translates [custom shaders](#custom-shaders). A page loads
   it the first time it draws one.
-- `latkit/worker`: a standalone classic worker that runs jobs.
+- `latkit/worker`: a standalone classic worker that runs the jobs.
 
 By default, `load()` finds each next to the installed modules. With Vite or another bundler that
 supports URL imports, pass their URLs. This also works when the app is deployed under a nested
@@ -559,15 +562,17 @@ path:
 ```ts
 import { load } from 'latkit';
 import wasmUrl from 'latkit/wasm?url';
+import jobsUrl from 'latkit/jobs?url';
 import wgslUrl from 'latkit/wgsl?url';
 import workerUrl from 'latkit/worker?url';
 
-await load({ wasm: wasmUrl, wgsl: wgslUrl, worker: workerUrl });
+await load({ wasm: wasmUrl, jobs: jobsUrl, wgsl: wgslUrl, worker: workerUrl });
 ```
 
 A browser starts workers only from the page's origin, so the page fetches a worker on another
 origin, such as a CDN or a webview's resources, and starts it from a Blob URL. Workers start when
-needed and stop after 30 idle seconds. Where workers are unavailable, jobs run on the calling
+needed and stop after 30 idle seconds. Each job runs in a worker, so a view draws what a job
+makes a frame or more after it asks. Where workers are unavailable, jobs run on the calling
 thread. Your Content Security Policy must allow the WASM, worker, and data origins in
 `connect-src`, WebAssembly compilation (typically `'wasm-unsafe-eval'` in `script-src`), the
 package's modules in `script-src` (the WGSL translator is imported when first used), and the
@@ -587,7 +592,8 @@ const expression = field('value').gt(0).toJSON();
 ```
 
 Patches and expressions need no WebAssembly. To use datasets and queries in Node, compile the
-package's WASM bytes into a `WebAssembly.Module` and pass it to `load({ wasm })`. To render in a
+package's WASM bytes into a `WebAssembly.Module` and pass it to `load({ wasm })`. To read GeoJSON
+there, pass the jobs module the same way, as `jobs`. To render in a
 worker, pass an `OffscreenCanvas` to `View.create`.
 
 ## In Rust

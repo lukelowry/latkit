@@ -1,12 +1,14 @@
 //! The host: platform services latkit uses. A host rasterizes and measures text in the platform's
 //! fonts, runs jobs in the background, fetches bytes (tiles, and files that JSON documents name),
-//! and encodes video with an [`Encoder`].
+//! encodes pictures as image files, and encodes video with an [`Encoder`].
 //!
 //! A [`Gpu`](crate::Gpu) gets its host from [`Gpu::set_host`](crate::Gpu::set_host). Without one,
 //! views draw no text, run jobs immediately, fetch nothing, and encode no video. In a browser the
-//! host is `Browser` (the `web` feature on `wasm32`). Natively, the `native` feature supplies
-//! `Native`. It loads fonts on first use, runs jobs and reads files on a worker pool, and encodes
-//! H.264 with Media Foundation on Windows. It needs no window or network client.
+//! host is `Browser` (the `web` feature on `wasm32`). It runs jobs in the page's workers, which
+//! load a module of their own, and encodes pictures with a canvas, so the module that draws carries
+//! neither the jobs' code nor an image encoder. Natively, the `native` feature supplies `Native`.
+//! It loads fonts on first use, runs jobs, reads files, and encodes pictures on a worker pool, and
+//! encodes H.264 with Media Foundation on Windows. It needs no window or network client.
 
 #[cfg(target_arch = "wasm32")]
 mod browser;
@@ -28,9 +30,8 @@ pub(crate) use job::{Key, Shaping, shapes_answer};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use native::Native;
 
-use crate::Encoding;
 pub use crate::resource::Request;
-use crate::{Error, Pending, Result};
+use crate::{Data, Encoding, Error, Image, ImageFormat, Patch, Pending, Reading, Result, Snapshot};
 
 /// Ticks per second of encoder times.
 pub const TIMESCALE: u32 = 90_000;
@@ -58,7 +59,22 @@ pub struct Unit {
     pub annex_b: Vec<u8>,
 }
 
-/// Platform services for text, background jobs, fetching, and video encoding.
+/// Reads a dataset from `bytes` as [`Data::read`] does, named `name` if given, with `host`
+/// fetching the file slices a JSON document at `base` names. GeoJSON can be large, so `host` reads
+/// it in a job.
+pub async fn read(host: &impl Host, bytes: &[u8], name: Option<&str>, base: &str) -> Result<Data> {
+    if !crate::data::geojson(bytes) {
+        return crate::data::read_own(bytes, Reading { name, base, host: Some(host) }).await;
+    }
+    let name = crate::data::geojson_name(name)?;
+    let patch = host.spawn(Job::geojson(bytes)).await?;
+    if patch.is_empty() {
+        return Err(Error::invalid(format!("{name}: the GeoJSON could not be read")));
+    }
+    Ok(Data::from(Snapshot::new(name).applied(Patch::from_bytes(&patch)?)?))
+}
+
+/// Platform services for text, background jobs, fetching, and picture and video encoding.
 pub trait Host: Send + Sync + 'static {
     /// Rasterizes `run` to a coverage mask. Errors if its font is unavailable or rasterization
     /// fails.
@@ -75,6 +91,12 @@ pub trait Host: Send + Sync + 'static {
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
         let _ = request;
         Pending::ready(Err(Error::Unsupported("this host cannot fetch".into())))
+    }
+
+    /// Encodes `image` as a file of `format`, resolving to the file's bytes. The default
+    /// implementation encodes with [`Image::encode`] on the calling thread.
+    fn encode(&self, image: &Image, format: ImageFormat) -> Pending<Vec<u8>> {
+        Pending::ready(image.encode(format))
     }
 
     /// An H.264 encoder for `encoding`, in hardware where the platform has one. [`Mp4`](crate::Mp4)

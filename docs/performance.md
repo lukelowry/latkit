@@ -58,6 +58,9 @@ timings need a GPU.
 - Data derived for drawing, such as edge lanes, triangles, and fitted domains, is recomputed when
   the data changes, never when the camera moves. A page's triangles are built the first time it
   draws.
+- Lanes, layouts, triangles, and the tiles of a large table are computed in workers, never on a
+  frame. The workers run a module of their own, which a page loads with its first such job, so the
+  module that draws is smaller to fetch and compile.
 - Map tiles are decoded and shaped in workers. An arriving tile appends its rows to its tables,
   which are paged like any large table, so only the pages those rows fill upload and evaluate.
   Tiles split by the area they cover on screen, so the globe's edge and a tilted horizon stay

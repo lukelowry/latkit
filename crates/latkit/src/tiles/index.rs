@@ -141,12 +141,11 @@ impl Tiles {
             Some(fetch) => fetch(request),
             None => host.fetch(request),
         };
-        let (index, first) = match Index::given(&self.url) {
-            Some(index) => (index, Vec::new()),
-            None => {
-                let first = fetch(&Index::request(&self.url)).await?;
-                (Index::read(&self.url, &first)?, first)
-            }
+        let (index, first) = if let Some(index) = Index::given(&self.url) {
+            (index, Vec::new())
+        } else {
+            let first = fetch(&Index::request(&self.url)).await?;
+            (Index::read(&self.url, &first)?, first)
         };
         match index {
             Index::Frames(_) => Ok(TilesDescription::default()),

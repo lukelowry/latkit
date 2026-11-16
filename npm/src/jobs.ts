@@ -1,6 +1,8 @@
 /**
- * The pool of workers that run latkit's jobs, started on demand. Each worker receives the compiled
- * module once and has its own WebAssembly memory.
+ * latkit's jobs: the work that scales with the data, such as layouts, triangles, and decoding. A
+ * WebAssembly module of its own does it, loaded the first time there is a job, so the module that
+ * draws carries none of that code. A pool of workers runs it, started on demand. Each worker
+ * receives the compiled module once and has its own WebAssembly memory.
  */
 
 import { thrown, type LatkitError } from './internal.js';
@@ -33,17 +35,65 @@ function failure(cause: unknown): LatkitError {
 }
 
 /**
- * Returns the function latkit hands its jobs to. It runs each job on a pooled worker that `worker`
- * creates, one job per worker at a time. latkit queues jobs itself and hands one over only when it
- * can run, so the pool grows only to the number of jobs running at once and nothing queues here.
- * Idle workers are terminated after 30 seconds. A job times out after one minute, counting a new
- * worker's startup. A failure rejects that job and terminates its worker. Later jobs start a new
- * one.
+ * Returns the jobs module compiled, from `source`: the module itself, or its URL. It is fetched
+ * and compiled on the first call, and again on a call after one that failed with an `io` error.
+ */
+export function compiled(source: string | WebAssembly.Module): () => Promise<WebAssembly.Module> {
+  let loading: Promise<WebAssembly.Module> | undefined;
+  const compile = async (url: string) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url} answered HTTP ${response.status}`);
+    // A server that names another content type gets the bytes compiled once they are all here.
+    const streams = response.headers.get('Content-Type')?.startsWith('application/wasm');
+    return streams && typeof WebAssembly.compileStreaming === 'function'
+      ? WebAssembly.compileStreaming(response)
+      : WebAssembly.compile(await response.arrayBuffer());
+  };
+  return () =>
+    (loading ??=
+      typeof source === 'string'
+        ? compile(source).catch((cause: unknown) => {
+            loading = undefined;
+            throw thrown({
+              code: 'io',
+              message: `could not load latkit's jobs from ${source}`,
+              cause,
+            });
+          })
+        : Promise.resolve(source));
+}
+
+/**
+ * Returns the function latkit hands its jobs to, given `module`, which resolves to the compiled
+ * jobs module. It runs each job on a pooled worker that `worker` creates, one job per worker at a
+ * time. latkit queues jobs itself and hands one over only when it can run, so the pool grows only
+ * to the number of jobs running at once and nothing queues here. Idle workers are terminated after
+ * 30 seconds. A job times out after one minute, counting the module's load and a new worker's
+ * startup. A failure rejects that job and terminates its worker. Later jobs start a new one.
+ * Without `worker`, where a browser has no workers to start, each job runs on the calling thread.
  */
 export function jobs(
-  module: WebAssembly.Module,
-  worker: () => Worker,
+  module: () => Promise<WebAssembly.Module>,
+  worker?: () => Worker,
 ): (bytes: Uint8Array) => Promise<Uint8Array> {
+  if (!worker) {
+    let run: Promise<(bytes: Uint8Array) => Uint8Array> | undefined;
+    return (bytes) => {
+      run ??= Promise.all([import('../pkg/latkit_jobs.js'), module()]).then(
+        ([bindings, loaded]) => {
+          bindings.initSync({ module: loaded });
+          return bindings.job;
+        },
+      );
+      return run.then(
+        (job) => job(bytes),
+        (cause: unknown) => {
+          run = undefined;
+          throw failure(cause);
+        },
+      );
+    };
+  }
   const idle = new Set<Slot>();
 
   const retire = (slot: Slot): void => {
@@ -104,8 +154,18 @@ export function jobs(
       try {
         if (slot) idle.delete(slot);
         else {
-          slot = start();
-          slot.worker.postMessage(module);
+          // The worker starts while the module loads, and gets it as its first message.
+          const started = (slot = start());
+          module().then(
+            (module) => {
+              try {
+                started.worker.postMessage(module);
+              } catch (error) {
+                fail(started, error);
+              }
+            },
+            (cause: unknown) => fail(started, cause),
+          );
         }
         clearTimeout(slot.timer);
         slot.job = job;

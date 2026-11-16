@@ -12,7 +12,6 @@ use web_time::Instant;
 
 use super::drawing::Drawn;
 use super::marks::Holding;
-use super::probe::Probe;
 use super::resources::{MARK_STRIDE, Resources};
 use super::sync::{Inputs, Rebuilt, Rows, Source, Window};
 use super::transition::{bound, holds_alike, in_place, moved};
@@ -168,13 +167,7 @@ impl View {
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
         self.place_labels(encoder, &mut inner, &eye, &uniform);
-        // Where the frame's probe and query read depth: around a hover's point, and anywhere for a
-        // keys' step or a query.
-        let depth = match (&probe, query.is_some_and(|(_, depth)| depth)) {
-            (None, false) => None,
-            (Some(Probe::Hover(point)), false) => Some(self.hover_area(*point)),
-            _ => Some([0.0, 0.0, self.size[0], self.size[1]]),
-        };
+        let depth = self.depth_area(probe.as_ref(), query.is_some_and(|(_, depth)| depth));
         self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
@@ -426,8 +419,8 @@ impl View {
         }
     }
 
-    /// Derives tables from the data and scene alone, handing the host any work the frame cannot
-    /// afford. First come the orders of paged tables and the ranges of them the camera needs. These
+    /// Derives tables from the data and scene alone, handing the host the work that scales with
+    /// the data. First come the orders of paged tables and the ranges of them the camera needs. These
     /// come from the tables' pyramids or, for tables of vector tiles, from the vector tiles drawn.
     /// Every other derivation follows.
     fn derive(&mut self, inner: &mut Inner) {
@@ -436,10 +429,9 @@ impl View {
         let earth = matches!(self.scene.space, crate::Space::Earth(_));
         let placing = earth || matches!(self.scene.space, crate::Space::Plane(_));
         let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
-        // One work budget for the frame, spent on paged tables first, then on other derivations.
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.job_errors.clone();
-        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, inner.frame.work);
+        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
         let budget = inner.budget.bytes;
         self.update_plan(&mut inner.ledger, budget);
         self.trace_entries = self.planning.trace_entries();
@@ -461,12 +453,10 @@ impl View {
             self.changed = true;
         }
         self.derived = derived;
-        inner.frame.work = jobs.left() as u32;
     }
 
     /// Updates every tile set to what the camera and plot window need, from the GPU's tile cache
-    /// and the pieces that arrived since. Tiles fetch and decode as they arrive, so this spends
-    /// none of the frame's work budget.
+    /// and the pieces that arrived since. Tiles fetch and decode as they arrive.
     pub(super) fn update_tiles(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
@@ -476,7 +466,7 @@ impl View {
         let asked = crate::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.job_errors.clone();
-        let jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, 0);
+        let jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
         tiles.update(&self.derive_input(), &asked, &mut inner.tiles, &jobs);
         self.derived.tiles = tiles;

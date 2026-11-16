@@ -71,7 +71,7 @@ pub struct Earth {
 }
 
 /// How the earth is projected.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Projection {
     /// Web mercator.

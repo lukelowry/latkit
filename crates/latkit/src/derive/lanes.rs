@@ -6,7 +6,7 @@
 //!
 //! A row's lane and its family size share one 32-bit word: twice the lane plus `HALF` in the high
 //! 16 bits, the family size in the low 16. Lanes are recomputed only when the table's rows or
-//! endpoints change: on the frame when that fits the budget, else in a job. A table whose edges
+//! endpoints change, in a job. A table whose edges
 //! share no endpoints gets no lane field, and neither does any table while the theme's `bow` is 0:
 //! nothing bows then, so edges joining the same vertices draw straight, one over another.
 //!
@@ -21,8 +21,6 @@ use crate::Pending;
 use crate::data::{Field, Keyed, Name, Reference, Table, UNWIRED, Values};
 use crate::host::Job;
 
-/// Estimated microseconds to compute one row's lane.
-const LANE_COST: f64 = 0.06;
 /// The offset added to twice the lane, so the high half of a lane word is never negative.
 const HALF: u32 = 1 << 15;
 /// The largest family size a lane word stores. Larger families store this.
@@ -83,24 +81,16 @@ impl Derive for Lanes {
             }
             let stamp = stamp_of((table.structure, table.order, a.version, b.version));
             let made = self.made.entry(key.clone()).or_default();
+            if made.due(stamp) {
+                made.start(stamp, jobs.spawn(Job::lanes(table.len(), a, b)));
+            }
+            // A job the host finishes at once lands before the frame draws.
             if let Some((landed, bytes)) = made.landed()
                 && landed == stamp
             {
-                let (laned, kept) = keep(&mut self.tables, key.clone(), table, answered(&bytes));
+                let (laned, kept) = keep(&mut self.tables, key, table, answered(&bytes));
                 made.make(stamp, laned);
                 changed |= kept;
-                continue;
-            }
-            if !made.due(stamp) {
-                continue;
-            }
-            let rows = table.len();
-            if jobs.fits((rows as f64 * LANE_COST) as u64) {
-                let (laned, kept) = keep(&mut self.tables, key, table, words(&a.targets(), &b.targets()));
-                made.make(stamp, laned);
-                changed |= kept;
-            } else {
-                made.start(stamp, jobs.spawn(Job::lanes(rows, a, b)));
             }
         }
         let before = self.tables.len();

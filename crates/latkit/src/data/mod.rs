@@ -48,7 +48,7 @@ pub(crate) use {
     frames::{Listed, Manifest},
     geometry::GeometryBuilder,
     ids::RowIds,
-    json::geojson,
+    json::{geojson, geojson_name, read_own},
     name::{PageId, Version},
     patch::Op,
     samples::{FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, Run, Samples, bucket_frames, detail, sides},

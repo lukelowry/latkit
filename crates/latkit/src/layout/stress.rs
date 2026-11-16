@@ -15,8 +15,6 @@ use super::pack::pack;
 const ROUNDS: usize = 240;
 /// The fraction of the gap below which no vertex moving in a round counts as settled.
 const SETTLED: f64 = 1e-4;
-/// Estimated microseconds a round takes per term.
-const TERM: f64 = 0.004;
 /// The most pivots stress measures graph distances from.
 const PIVOTS: usize = 32;
 /// The most graph distances it stores in all (pivots × vertices).
@@ -74,13 +72,6 @@ pub(crate) fn stress(graph: &Graph<'_>, gap: f64) -> Vec<[f64; 2]> {
     }
     let pinned: Vec<bool> = pins.iter().map(Option::is_some).collect();
     separate(&position, &pinned, gap * CLEARANCE)
-}
-
-/// Estimated microseconds a stress layout of `count` vertices and `links` links takes at most: each
-/// of `ROUNDS` rounds visits every vertex's neighbors and pivots.
-pub(crate) fn cost(count: usize, links: usize) -> u64 {
-    let terms = 2 * links + count * PIVOTS.min(count);
-    (terms as f64 * ROUNDS as f64 * TERM).ceil() as u64
 }
 
 /// Each vertex's terms as (other vertex, target distance, weight). Its neighbors are one `gap`

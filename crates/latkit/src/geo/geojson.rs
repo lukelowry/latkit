@@ -12,8 +12,13 @@ use crate::{Error, Result};
 
 type Point = [f64; 2];
 
-/// Reads GeoJSON `bytes`, optionally gzip-compressed, as dataset `name`. The document may be a
-/// feature collection, a single feature, or a bare geometry.
+/// Reads GeoJSON `bytes` as dataset `name`, from the patch [`geojson_patch`] reads.
+pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Snapshot> {
+    Snapshot::new(name).applied(geojson_patch(bytes)?)
+}
+
+/// Reads GeoJSON `bytes`, optionally gzip-compressed, as the patch that builds its tables. The
+/// document may be a feature collection, a single feature, or a bare geometry.
 ///
 /// Points become rows of table `points` with a point field `geometry`. Line strings become rows of
 /// `lines` (a parts field), and polygons rows of `polygons` (a polygons field). A multi-point adds
@@ -23,7 +28,7 @@ type Point = [f64; 2];
 /// A table keeps its features' ids when every row has one, all are non-negative integers or all are
 /// strings, and none repeat. Otherwise its rows are numbered in order. Errors if `bytes` are not
 /// GeoJSON.
-pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Snapshot> {
+pub(crate) fn geojson_patch(bytes: &[u8]) -> Result<Patch> {
     let bytes = super::gunzipped(bytes)?;
     let top: Top = crate::json::from_bytes(&bytes).map_err(|e| Error::invalid(format!("not GeoJSON: {e}")))?;
     let mut tables = [Rows::default(), Rows::default(), Rows::default()];
@@ -48,7 +53,7 @@ pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Snapshot> {
             patch = patch.replace(table);
         }
     }
-    Snapshot::new(name).applied(patch)
+    Ok(patch)
 }
 
 /// A document's top-level object, with the members of a feature collection, a feature, and a

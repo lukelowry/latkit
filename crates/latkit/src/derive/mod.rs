@@ -1,11 +1,11 @@
 //! Derived data: tables the view computes from the scene and data.
 //!
 //! Every derivation works the same way. It stamps its inputs and recomputes only when the stamp
-//! changes. Small work runs on the frame, within one budget ([`FRAME_WORK`]) that all derivations
-//! share. Larger work runs as a host job, and its result is kept only while its inputs are
-//! unchanged. Results are tables that stand beside the drawn tables, row for row, and marks read
-//! them like data. GPU preparations use the same stamps; only results needed by the host, such as requested
-//! label texts, are read back.
+//! changes. Work that scales with the data (lanes, layouts, triangles, pyramids, decoding) runs as
+//! a host [`Job`], off the frame, and its result is kept only while its inputs are unchanged. A
+//! job the host finishes at once lands in the frame that asked for it. Results are tables that
+//! stand beside the drawn tables, row for row, and marks read them like data. GPU preparations use
+//! the same stamps; only results needed by the host, such as requested label texts, are read back.
 //!
 //! The derivations are lanes of edges that share both endpoints, stars of nets, and, when the scene
 //! has a layout, places of vertex rows without positions. They also derive shapes of geometry
@@ -188,12 +188,8 @@ impl<T, A: Answer> Derived<T, A> {
     }
 }
 
-/// Estimated microseconds of derivation work all of a GPU's views may do on one frame together.
-/// Work that does not fit goes to the host as jobs.
-pub(crate) const FRAME_WORK: u32 = 4000;
-
-/// The frame's inline work budget and the host's job pool, shared by every derivation. Each job and
-/// fetch wakes the view when it finishes.
+/// The host's jobs and fetches, shared by every derivation. Each job and fetch wakes the view when
+/// it finishes.
 pub(crate) struct Jobs<'a> {
     errors: &'a Arc<Mutex<Vec<crate::Error>>>,
     host: Option<&'a dyn Host>,
@@ -202,34 +198,18 @@ pub(crate) struct Jobs<'a> {
     waker: &'a Waker,
     /// Counts the jobs spawned.
     counters: &'a Counters,
-    /// Estimated microseconds of inline work left this frame.
-    left: u32,
 }
 
 impl<'a> Jobs<'a> {
-    /// A frame's jobs, with `left` microseconds of inline work still to spend.
+    /// A frame's jobs: run and fetched by `host`, waking `waker`, counted in `counters`, with
+    /// failures reported to `errors`.
     pub(crate) fn new(
         host: Option<&'a dyn Host>,
         waker: &'a Waker,
         counters: &'a Counters,
         errors: &'a Arc<Mutex<Vec<crate::Error>>>,
-        left: u32,
     ) -> Jobs<'a> {
-        Jobs { errors, host, fetch: None, waker, counters, left }
-    }
-
-    /// Whether `cost` microseconds fit the rest of the frame's budget. Spends them if so.
-    pub(crate) fn fits(&mut self, cost: u64) -> bool {
-        let fits = cost <= u64::from(self.left);
-        if fits {
-            self.left -= cost as u32;
-        }
-        fits
-    }
-
-    /// Estimated microseconds of inline work left this frame.
-    pub(crate) fn left(&self) -> u64 {
-        u64::from(self.left)
+        Jobs { errors, host, fetch: None, waker, counters }
     }
 
     /// The waker its jobs and fetches wake when they finish.
@@ -237,10 +217,10 @@ impl<'a> Jobs<'a> {
         self.waker
     }
 
-    /// The same host's jobs and fetches, but waking `waker` instead of this frame's view, and with
-    /// no inline budget. Used for work shared by every view that draws its result.
+    /// The same host's jobs and fetches, but waking `waker` instead of this frame's view. Used for
+    /// work shared by every view that draws its result.
     pub(crate) fn waking<'b>(&'b self, waker: &'b Waker) -> Jobs<'b> {
-        Jobs { errors: self.errors, host: self.host, fetch: self.fetch, waker, counters: self.counters, left: 0 }
+        Jobs { errors: self.errors, host: self.host, fetch: self.fetch, waker, counters: self.counters }
     }
 
     /// The same jobs, with fetches made by `fetch` when given.
@@ -248,18 +228,17 @@ impl<'a> Jobs<'a> {
         Jobs { fetch: fetch.or(self.fetch), ..self }
     }
 
-    /// Runs `job` on the frame when its estimated `cost` in microseconds fits the rest of the
-    /// frame's budget, spending it, and on the host otherwise.
-    pub(crate) fn run(&mut self, job: Job, cost: u64) -> Pending<Vec<u8>> {
-        if self.fits(cost) { Pending::ready(Ok(job.run())) } else { self.spawn(job) }
-    }
-
-    /// Runs `job` on the host, off the frame. Without a host, runs it immediately.
+    /// Runs `job` on the host, off the frame. Without a host, runs it immediately. A browser's
+    /// view always has its host, whose workers run jobs with their own module, so the module that
+    /// draws carries no job's code: there, a job without a host fails as unsupported.
     pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         self.counters.add(Count::Jobs, 1);
         let pending = match self.host {
             Some(host) => host.spawn(job),
+            #[cfg(not(target_arch = "wasm32"))]
             None => Pending::ready(Ok(job.run())),
+            #[cfg(target_arch = "wasm32")]
+            None => Pending::ready(Err(crate::Error::Unsupported("jobs need a host".into()))),
         };
         pending.report_errors(self.errors);
         pending.notify(self.waker);
@@ -376,10 +355,10 @@ impl Read<'_> {
 /// Derived tables, by the dataset and table each stands beside.
 pub(crate) type Tables = Keyed<(Name, Name), Table>;
 
-/// One derivation: it stamps its inputs, computes on the frame or in jobs, and writes tables.
+/// One derivation: it stamps its inputs, computes in jobs, and writes tables.
 pub(crate) trait Derive {
-    /// Updates the derivation to `input`, sending work the frame cannot afford to `jobs`. Returns
-    /// whether its tables changed.
+    /// Updates the derivation to `input`, sending its work to `jobs`. Returns whether its tables
+    /// changed.
     fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool;
 
     /// Whether work it started is pending.
@@ -567,10 +546,11 @@ pub(crate) fn answers(bytes: &[u8], fields: &[&str]) -> Vec<(Key, Vec<Option<Val
 /// Hosts for derivations' tests.
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::Pending;
     use crate::host::{Host, Job, Raster, TextRun};
+    use crate::{Pending, Resolver};
 
     /// A host whose every job fails, counting the jobs it is given.
     #[derive(Default)]
@@ -591,6 +571,32 @@ pub(crate) mod testing {
         fn spawn(&self, _: Job) -> Pending<Vec<u8>> {
             self.0.fetch_add(1, Ordering::Relaxed);
             Pending::ready(Err(crate::Error::Io("the worker stopped".into())))
+        }
+    }
+
+    /// A host that holds each job until [`finish`](Later::finish), as workers finish jobs after
+    /// the frame that asked for them.
+    #[derive(Default)]
+    pub(crate) struct Later(Mutex<Vec<(Job, Resolver<Vec<u8>>)>>);
+
+    impl Later {
+        /// Runs the jobs it holds.
+        pub(crate) fn finish(&self) {
+            for (job, resolver) in self.0.lock().expect("jobs").drain(..) {
+                resolver.resolve(Ok(job.run()));
+            }
+        }
+    }
+
+    impl Host for Later {
+        fn rasterize(&self, _: &TextRun) -> crate::Result<Raster> {
+            Err(crate::Error::Unsupported("this host has no text".into()))
+        }
+
+        fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
+            let (pending, resolver) = Pending::new();
+            self.0.lock().expect("jobs").push((job, resolver));
+            pending
         }
     }
 }

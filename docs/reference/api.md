@@ -23,7 +23,7 @@ What every part of the package shares.
 ### `load()`
 
 {.signature}
-`function load(options?: { wasm?: string | URL | WebAssembly.Module; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
+`function load(options?: { wasm?: string | URL | WebAssembly.Module; jobs?: string | URL | WebAssembly.Module; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
 
 Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
 load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
@@ -35,6 +35,12 @@ also creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
 : The URL of this version's `latkit/wasm` asset, or that asset compiled. It carries the
   shaders, translated for WebGL2 when the package was built. Defaults to the bundled asset.
 
+{#load-jobs .member}
+**`jobs`**`?: string | URL | WebAssembly.Module` [¶](#load-jobs){.headerlink}
+: The URL of this version's `latkit/jobs` asset, the WebAssembly that does the work views and
+  datasets hand to workers, or that asset compiled. A page loads it the first time it has
+  such work. Defaults to the bundled asset.
+
 {#load-wgsl .member}
 **`wgsl`**`?: string | URL | WebAssembly.Module` [¶](#load-wgsl){.headerlink}
 : The URL of this version's `latkit/wgsl` asset, the WebAssembly that translates custom
@@ -43,10 +49,10 @@ also creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
 
 {#load-worker .member}
 **`worker`**`?: string | URL | (() => Worker)` [¶](#load-worker){.headerlink}
-: The URL of this version's standalone `latkit/worker` asset, or a function that creates a
-  worker running it. A browser starts workers only from the page's origin, so the page fetches
-  a worker on another origin, such as a CDN or a webview's resources, and starts it from a
-  blob. Defaults to the bundled worker.
+: The URL of this version's standalone `latkit/worker` asset, which runs the jobs module, or
+  a function that creates a worker running it. A browser starts workers only from the page's
+  origin, so the page fetches a worker on another origin, such as a CDN or a webview's
+  resources, and starts it from a blob. Defaults to the bundled worker.
 
 (latkiterror)=
 
@@ -205,7 +211,7 @@ grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
 : Reads a dataset from `source`. Its first bytes decide the format:
 
   - latkit's bytes, as `toBytes()` writes them.
-  - GeoJSON, plain or gzip-compressed, read in a worker. Points, line strings, and polygons
+  - GeoJSON, plain or gzip-compressed, read as a job in a worker. Points, line strings, and polygons
     become rows of tables `points`, `lines`, and `polygons`, with the geometry in field
     `geometry` and each property as a field.
   - A dataset document, `{"name": ..., "patch": [...]}`. Its patch is read like
@@ -1695,8 +1701,11 @@ A picture's RGBA pixels, with straight alpha, rows top to bottom.
 
 {#image-encode .member}
 **`encode`**`(format:` [`ImageFormat`](#imageformat)`, options?: { quality?: number } &` [`Wait`](#wait)`): Promise<Uint8Array>` [¶](#image-encode){.headerlink}
-: Encodes the image as a file, in a worker. PNG is lossless with alpha. JPEG drops alpha. WebP
-  is lossless with alpha and smaller than PNG.
+: Encodes the image as a file with the browser's own encoder. PNG keeps alpha. JPEG drops it.
+  WebP keeps alpha and is smaller than PNG, written at full quality, which is lossless in
+  Chrome. A browser that cannot write a format, as Safari cannot write WebP, rejects with an
+  `unsupported` error. Where a pixel is not opaque, its color may differ from the image's by a
+  step.
 
   {#image-encode-quality .member}
   **`quality`**`?: number` [¶](#image-encode-quality){.headerlink}

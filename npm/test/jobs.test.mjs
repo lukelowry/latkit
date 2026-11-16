@@ -7,6 +7,10 @@ const directory = process.env.LATKIT_TEST_PACKAGE ?? path.resolve(import.meta.di
 const { jobs } = await import(pathToFileURL(path.join(directory, 'dist/jobs.js')).href);
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+/** The jobs module, as the page loads it. */
+const loaded = () => Promise.resolve(module);
+/** Resolves once pending promises have settled. */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
 
 class Worker {
   onmessage = null;
@@ -28,7 +32,7 @@ class Worker {
 test('workers start on demand, handshake, retire when idle, and restart', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const workers = [];
-  const run = jobs(module, () => {
+  const run = jobs(loaded, () => {
     const worker = new Worker();
     workers.push(worker);
     return worker;
@@ -36,7 +40,8 @@ test('workers start on demand, handshake, retire when idle, and restart', async 
   assert.equal(workers.length, 0);
   const result = run(new Uint8Array([1]));
   const worker = workers[0];
-  assert.deepEqual(worker.sent, [module]);
+  await settled();
+  assert.deepEqual(worker.sent, [module], 'a worker gets the module once it has loaded');
   worker.answer({ ready: true });
   assert.deepEqual(worker.sent[1], new Uint8Array([1]));
   worker.answer({ bytes: new Uint8Array([2]) });
@@ -54,7 +59,7 @@ test('workers start on demand, handshake, retire when idle, and restart', async 
 test('failed startup, malformed messages, and timeouts reject instead of hanging', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const workers = [];
-  const run = jobs(module, () => {
+  const run = jobs(loaded, () => {
     const worker = new Worker();
     workers.push(worker);
     return worker;
@@ -69,6 +74,11 @@ test('failed startup, malformed messages, and timeouts reject instead of hanging
   const timeout = assert.rejects(run(new Uint8Array()), { code: 'timeout' });
   t.mock.timers.tick(60_000);
   await timeout;
+  const unloaded = jobs(
+    () => Promise.reject(new Error('no module')),
+    () => workers[workers.push(new Worker()) - 1],
+  );
+  await assert.rejects(unloaded(new Uint8Array()), /no module/);
   assert(workers.every((worker) => worker.terminated));
 });
 
@@ -76,7 +86,7 @@ test('worker construction failure rejects, and later calls can recover', async (
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const worker = new Worker();
   let failed = false;
-  const run = jobs(module, () => {
+  const run = jobs(loaded, () => {
     if (!failed) {
       failed = true;
       throw new Error('blocked by CSP');
@@ -94,7 +104,7 @@ test('worker construction failure rejects, and later calls can recover', async (
 test('concurrent jobs run on separate workers, fail alone, and reuse idle ones', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const workers = [];
-  const run = jobs(module, () => {
+  const run = jobs(loaded, () => {
     const worker = new Worker();
     workers.push(worker);
     return worker;

@@ -1160,7 +1160,7 @@ fn plan(axis: &Samples, window: Window, blocks: &[(Samples, usize)]) -> Plan {
             0 => count <= 2 * columns,
             level => bucket_frames(level).saturating_mul(columns) > count,
         };
-        let shape = if lines || !(width > 0.0) {
+        let shape = if lines || width.is_nan() || width <= 0.0 {
             Shape::Lines
         } else {
             Shape::Columns(columns_of(axis, &run, width, &page_ends(blocks, &run)))
