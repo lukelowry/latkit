@@ -27,6 +27,7 @@
 //! does not change. A page the swap replaces otherwise is freed, since no table reads that version
 //! again.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -141,8 +142,8 @@ struct Rewrite {
     at: usize,
     /// The page written over.
     from: PageKey,
-    /// The rows written since `from`, as ascending offsets into the page.
-    rows: Vec<u32>,
+    /// The rows written since `from`, as ascending runs of offsets into the page.
+    rows: Vec<Range<u32>>,
     /// The page, with its whole content.
     ask: Ask,
 }
@@ -191,10 +192,9 @@ impl ColumnTable {
     /// Moves each page it rewrites into the block of the page that page was written over, as the
     /// table swaps in. The block's pin passes to this table.
     fn rewrite(&mut self, gpu: &mut Inner, queue: &Queue) {
-        for rewrite in std::mem::take(&mut self.rewrites) {
-            gpu.arena.rewrite(queue, rewrite.from, &rewrite.rows, &rewrite.ask);
-            self.pins.push(rewrite.ask.key);
-        }
+        let rewrites = std::mem::take(&mut self.rewrites);
+        gpu.arena.rewrite(queue, rewrites.iter().map(|rewrite| (rewrite.from, &rewrite.rows[..], &rewrite.ask)));
+        self.pins.extend(rewrites.iter().map(|rewrite| rewrite.ask.key));
     }
 
     /// Releases the pins of this table, which `next` replaced. A page of rows that `next` reads
@@ -1129,7 +1129,7 @@ impl<'g> Builder<'g> {
     /// take over its block: its key, where its block lies, and the rows written since. `None` when
     /// the page is new to the column or already resident, when it no longer remembers the page it
     /// was written over, or when that page's block is uploading or too small.
-    fn written_over(&self, p: usize, page: &Page, key: PageKey, need: u32) -> Option<(PageKey, u32, Vec<u32>)> {
+    fn written_over(&self, p: usize, page: &Page, key: PageKey, need: u32) -> Option<(PageKey, u32, Vec<Range<u32>>)> {
         let drawn = (*self.drawn?.get(p)?)?;
         if drawn == page.id || self.gpu.arena.holds(key, 0) {
             return None;

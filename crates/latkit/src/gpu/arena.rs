@@ -492,30 +492,71 @@ impl Arena {
         (!self.contents.contains_key(&key)).then_some((block.offset, block.pins))
     }
 
-    /// Gives the block of page `from` to the page `ask` names, which was written over it, and
-    /// uploads the `rows` written since, as ascending offsets into the page. The block keeps its
-    /// offset and its pins, which pass to the tables that list the new page. So nothing is
-    /// allocated, and no page table changes.
+    /// For each of `pages`: gives the block of page `from` to the page `ask` names, which was
+    /// written over it, and uploads the `rows` written since, as ascending runs of offsets into
+    /// the page.
+    /// The block keeps its offset and its pins, which pass to the tables that list the new page.
+    /// So nothing is allocated, and no page table changes. Pages written whole that lie side by
+    /// side, such as a column's, upload in one write.
     ///
     /// Only tables replaced along with this call may pin `from` (see [`block_of`](Arena::block_of)),
-    /// and the new page must not be resident. When several of those tables rewrite the page, the
-    /// first call moves the block and the others do nothing.
-    pub(crate) fn rewrite(&mut self, queue: &Queue, from: PageKey, rows: &[u32], ask: &Ask) {
-        let Some(content) = &ask.content else { return };
-        let Some(mut block) = self.blocks.remove(&from) else { return };
-        debug_assert!(block.pins > 0 && class_words(block.class) >= ask.need, "a block its tables pin, with room");
-        debug_assert!(!self.blocks.contains_key(&ask.key), "the new page is not resident");
-        let len = content.len();
-        let mut words = Vec::new();
-        // Each run of rows in the same or neighboring texels is one write of whole texels.
-        for (i, run) in rows.chunk_by(|a, b| b / 4 <= a / 4 + 1).enumerate() {
-            let (start, end) = (run[0] / 4 * 4, ((run[run.len() - 1] / 4 + 1) * 4).min(len));
-            words.clear();
-            content.append(start as usize..end as usize, &mut words);
-            self.words.upload(queue, block.offset + start, &words, u64::from(i == 0));
+    /// and the new page must not be resident. When several of those tables rewrite a page, the
+    /// first to name it moves the block and the others do nothing.
+    pub(crate) fn rewrite<'a>(
+        &mut self,
+        queue: &Queue,
+        pages: impl IntoIterator<Item = (PageKey, &'a [Range<u32>], &'a Ask)>,
+    ) {
+        let mut tails = Vec::new();
+        for (from, rows, ask) in pages {
+            let Some(content) = &ask.content else { continue };
+            let Some(mut block) = self.blocks.remove(&from) else { continue };
+            debug_assert!(block.pins > 0 && class_words(block.class) >= ask.need, "a block its tables pin, with room");
+            debug_assert!(!self.blocks.contains_key(&ask.key), "the new page is not resident");
+            let len = content.len();
+            // Whole texels cover each run, and runs whose texels meet upload as one piece.
+            let mut pieces: Vec<Range<u32>> = Vec::with_capacity(rows.len());
+            for run in rows {
+                let texels = run.start / 4 * 4..(run.end.div_ceil(4) * 4).min(len);
+                match pieces.last_mut() {
+                    Some(last) if texels.start <= last.end => last.end = last.end.max(texels.end),
+                    _ => pieces.push(texels),
+                }
+            }
+            for (i, piece) in pieces.into_iter().enumerate() {
+                let words = piece.start as usize..piece.end as usize;
+                tails.push((block.offset + piece.start, content, words, u64::from(i == 0)));
+            }
+            block.written = block.written.max(ask.need);
+            self.blocks.insert(ask.key, block);
         }
-        block.written = block.written.max(ask.need);
-        self.blocks.insert(ask.key, block);
+        self.upload(queue, tails);
+    }
+
+    /// Uploads `tails`: for each, words `range` of a page's content, to word `at` of the pool,
+    /// counted as `pages` pages. Tails that lie side by side, such as the pages of a column, upload
+    /// in one write, and each page's words are converted straight into it.
+    fn upload(&self, queue: &Queue, mut tails: Vec<(u32, &Content, Range<usize>, u64)>) {
+        tails.sort_unstable_by_key(|&(at, ..)| at);
+        let mut run: Option<(u32, Vec<u32>, u64)> = None;
+        for (at, content, words, count) in tails {
+            match &mut run {
+                Some((start, joined, pages)) if *start + joined.len() as u32 == at => {
+                    content.append(words, joined);
+                    *pages += count;
+                }
+                _ => {
+                    let mut joined = Vec::with_capacity(words.len());
+                    content.append(words, &mut joined);
+                    if let Some((start, joined, pages)) = run.replace((at, joined, count)) {
+                        self.words.upload(queue, start, &joined, pages);
+                    }
+                }
+            }
+        }
+        if let Some((start, joined, pages)) = run {
+            self.words.upload(queue, start, &joined, pages);
+        }
     }
 
     /// Allocates a separate block of `words` for a per-row word page. With `cleared`, the next
@@ -709,28 +750,7 @@ impl Arena {
                 tails.push((block.offset + from, content, from as usize..len as usize));
             }
         }
-        // Adjacent pages, such as a column's, upload in one write. Each page's words are converted
-        // straight into that write.
-        tails.sort_unstable_by_key(|&(at, ..)| at);
-        let mut run: Option<(u32, Vec<u32>, u64)> = None;
-        for (at, content, words) in tails {
-            match &mut run {
-                Some((start, joined, pages)) if *start + joined.len() as u32 == at => {
-                    content.append(words, joined);
-                    *pages += 1;
-                }
-                _ => {
-                    let mut joined = Vec::with_capacity(words.len());
-                    content.append(words, &mut joined);
-                    if let Some((start, joined, pages)) = run.replace((at, joined, 1)) {
-                        self.words.upload(queue, start, &joined, pages);
-                    }
-                }
-            }
-        }
-        if let Some((start, joined, pages)) = run {
-            self.words.upload(queue, start, &joined, pages);
-        }
+        self.upload(queue, tails.iter().map(|(at, content, words)| (*at, content, words.clone(), 1)).collect());
         bytes
     }
 
@@ -976,7 +996,7 @@ mod tests {
         }
         let new = page(values);
         let before = gpu.work();
-        arena.rewrite(queue, old, &[5, 6, 700], &new);
+        arena.rewrite(queue, [(old, &[5..7, 700..701][..], &new)]);
         let work = gpu.work() - before;
         assert_eq!((work.uploaded, work.uploads), (2 * 16, 1), "two texels, counted as one page");
         let blocks = (arena.offset(new.key, rows), arena.offset(old, rows));
@@ -1007,15 +1027,37 @@ mod tests {
         let mut values = vec![1.0; 120];
         values[100..].fill(2.0);
         let new = page(values);
-        let appended: Vec<u32> = (100..120).collect();
-        arena.rewrite(queue, old, &appended, &new);
+        let appended = [100..120];
+        arena.rewrite(queue, [(old, &appended[..], &new)]);
         assert_eq!(arena.offset(new.key, 120), Some(offset), "the page grew where it was");
         assert_eq!(read(&gpu, &arena, offset + 96, 8), [1.0_f32, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0].map(f32::to_bits));
         // Another table replaced in the same swap rewrites the same page: the block already moved.
         let before = gpu.work();
-        arena.rewrite(queue, old, &appended, &new);
+        arena.rewrite(queue, [(old, &appended[..], &new)]);
         assert_eq!((gpu.work() - before).uploaded, 0);
         assert_eq!(arena.block_of(new.key, 120), Some((offset, 1)), "and its pins are unchanged");
+    }
+
+    #[test]
+    fn pages_side_by_side_rewrite_in_one_write() {
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        let mut arena = pool(&gpu);
+        // Two pages that fill their blocks, as a column's pages do.
+        let mut asks = [page(vec![1.0; 64]), page(vec![2.0; 64])];
+        let olds = [asks[0].key, asks[1].key];
+        assert!(arena.reserve(device, queue, &mut asks));
+        arena.pump(queue, u64::MAX);
+        let offsets = olds.map(|key| arena.offset(key, 64).expect("uploaded"));
+        assert_eq!(offsets[1], offsets[0] + 64, "the pages lie side by side");
+        let news = [page(vec![3.0; 64]), page(vec![4.0; 64])];
+        let every = [0..64];
+        let before = gpu.work();
+        arena.rewrite(queue, [(olds[1], &every[..], &news[1]), (olds[0], &every[..], &news[0])]);
+        let work = gpu.work() - before;
+        assert_eq!((work.uploaded, work.uploads), (2 * 64 * 4, 2), "both pages, in whatever order they came");
+        let across = [3.0_f32, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0, 4.0].map(f32::to_bits);
+        assert_eq!(read(&gpu, &arena, offsets[0] + 60, 8), across);
     }
 
     #[test]

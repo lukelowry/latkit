@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use super::name::PageId;
@@ -27,12 +28,13 @@ pub(crate) struct Page {
 }
 
 /// How a page was written. It records the page it copied (`from`), the rows written or added as
-/// offsets into the page, and how `from` was written in turn (`before`), up to [`REMEMBERED`]
-/// writes back.
+/// runs of offsets into the page, and how `from` was written in turn (`before`), up to
+/// [`REMEMBERED`] writes back. The runs ascend and neither overlap nor touch, so a page written
+/// whole records one.
 #[derive(Debug)]
 pub(crate) struct Written {
     pub(crate) from: PageId,
-    pub(crate) rows: Box<[u32]>,
+    pub(crate) rows: Box<[Range<u32>]>,
     pub(crate) before: Option<Arc<Written>>,
     depth: u8,
 }
@@ -46,7 +48,7 @@ impl Page {
     fn over(values: Values, old: &Page, rows: Vec<u32>) -> Page {
         let before = old.written.clone().filter(|w| w.depth < REMEMBERED);
         let depth = before.as_ref().map_or(1, |w| w.depth + 1);
-        let written = Written { from: old.id, rows: rows.into(), before, depth };
+        let written = Written { from: old.id, rows: runs(rows).into(), before, depth };
         Page { id: PageId::next(), values, written: Some(Arc::new(written)), points: OnceLock::new() }
     }
 
@@ -55,10 +57,10 @@ impl Page {
         *self.points.get_or_init(|| self.values.points())
     }
 
-    /// The rows written since page `before`, as sorted offsets into the page. Empty if this page is
-    /// `before`. `None` unless this page was written from `before` and still remembers it (see
-    /// [`REMEMBERED`]).
-    pub(crate) fn rows_since(&self, before: PageId) -> Option<Vec<u32>> {
+    /// The rows written since page `before`, as ascending runs of offsets into the page that
+    /// neither overlap nor touch. Empty if this page is `before`. `None` unless this page was
+    /// written from `before` and still remembers it (see [`REMEMBERED`]).
+    pub(crate) fn rows_since(&self, before: PageId) -> Option<Vec<Range<u32>>> {
         if self.id == before {
             return Some(Vec::new());
         }
@@ -67,14 +69,41 @@ impl Page {
         while let Some(written) = at {
             rows.extend_from_slice(&written.rows);
             if written.from == before {
-                rows.sort_unstable();
-                rows.dedup();
-                return Some(rows);
+                // One write's runs are joined already. Several writes' runs may meet.
+                return Some(if std::ptr::eq(written, self.written.as_deref()?) { rows } else { joined(rows) });
             }
             at = written.before.as_deref();
         }
         None
     }
+}
+
+/// `rows` as ascending runs that neither overlap nor touch.
+fn runs(mut rows: Vec<u32>) -> Vec<Range<u32>> {
+    if !rows.is_sorted() {
+        rows.sort_unstable();
+    }
+    let mut runs: Vec<Range<u32>> = Vec::new();
+    for row in rows {
+        match runs.last_mut() {
+            Some(run) if row <= run.end => run.end = run.end.max(row + 1),
+            _ => runs.push(row..row + 1),
+        }
+    }
+    runs
+}
+
+/// `runs` in ascending order, with those that overlap or touch made one.
+fn joined(mut runs: Vec<Range<u32>>) -> Vec<Range<u32>> {
+    runs.sort_unstable_by_key(|run| run.start);
+    let mut joined: Vec<Range<u32>> = Vec::with_capacity(runs.len());
+    for run in runs {
+        match joined.last_mut() {
+            Some(last) if run.start <= last.end => last.end = last.end.max(run.end),
+            _ => joined.push(run),
+        }
+    }
+    joined
 }
 
 /// A field's values in pages of [`PAGE_ROWS`] rows. Writes replace only the pages they touch. The
@@ -283,7 +312,9 @@ impl Column {
             let (Some(now), Some(then)) = (self.pages.get(p), before.pages.get(p)) else { return false };
             let start = p * PAGE_ROWS;
             now.id == then.id
-                || now.rows_since(then.id).is_some_and(|written| written.iter().all(|&r| start + r as usize >= rows))
+                || now
+                    .rows_since(then.id)
+                    .is_some_and(|written| written.iter().all(|r| start + r.start as usize >= rows))
         })
     }
 
@@ -298,7 +329,7 @@ impl Column {
             match before.pages.get(p) {
                 Some(then) if then.id == now.id => {}
                 Some(then) => match now.rows_since(then.id) {
-                    Some(written) => rows.extend(written.into_iter().map(|r| start + r as usize)),
+                    Some(written) => rows.extend(written.into_iter().flatten().map(|r| start + r as usize)),
                     None => rows.extend(start..start + now.values.len()),
                 },
                 None => rows.extend(start..start + now.values.len()),

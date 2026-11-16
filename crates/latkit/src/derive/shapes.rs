@@ -630,15 +630,16 @@ impl Shaped {
     /// The shapes of the page that `page` was written over, searching back through its recorded
     /// writes (a few at most), with whether each row keeps its shape (rows not written since do).
     fn over<'a>(&'a self, page: &Page, made: &FxHashMap<PageId, &'a Page>) -> Option<(&'a Values, Vec<bool>)> {
-        let mut written: Vec<u32> = Vec::new();
+        let mut written: Vec<std::ops::Range<u32>> = Vec::new();
         let mut at = page.written.as_deref();
         while let Some(w) = at {
             written.extend_from_slice(&w.rows);
             if let Some(shapes) = made.get(&w.from).copied().or_else(|| self.landed.pages.get(&w.from)) {
                 let mut keep = vec![true; page.values.len()];
-                for &row in &written {
-                    if let Some(k) = keep.get_mut(row as usize) {
-                        *k = false;
+                for run in &written {
+                    let end = (run.end as usize).min(keep.len());
+                    if let Some(rows) = keep.get_mut(run.start as usize..end) {
+                        rows.fill(false);
                     }
                 }
                 keep.truncate(shapes.values.len());
