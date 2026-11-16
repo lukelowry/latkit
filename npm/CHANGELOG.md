@@ -1,5 +1,56 @@
 # latkit
 
+## 0.10.0
+
+### Minor Changes
+
+- dd92235: Traces draw exact to the pixel, grids hold still, the camera's limits are an option, and tiles stay fetched.
+
+  - Added: `controls.reach`, how far the camera may go from what fits framed: `"fit"`, `"space"`, or `{ zoomOut, zoomIn, pan }`. `Reach` in Rust.
+  - Added: `tiles.describe()` resolves to what a tile source says of itself: its `attribution`, `zooms`, `bounds`, and `layers` with their fields. `Tiles::describe` in Rust.
+  - Added: `budget.tiles`, the memory for the tiles fetched from every `Tiles` source. Defaults to 256 MiB.
+  - Added: `theme.grid.width`, the width of a grid line.
+  - Changed: a trace with more than two frames per pixel column draws each column's least and greatest value, two points a column, read from entries no wider than a column. Before, it drew buckets up to four pixels wide, which showed as steps.
+  - Changed: buckets wider than a pixel column, which stand in while finer ones load or when the budget allows no finer, draw as a line through their least values and one through their greatest. Before, they drew as bars.
+  - Changed: a trace's budget counts the entries it holds, and the same number bounds what time tiles fetch, so a trace fetches the level it draws. The 64-span limit is gone.
+  - Changed: hovering a trace reports the least or greatest sample of the column under the pointer.
+  - Changed: a grid's lines lie at steps the camera's zoom alone picks. Turning or tilting the view moves and fades none, and lines run on to the horizon.
+  - Changed: a fit no longer stops the zoom 8 levels in from what it framed. Set `controls: { reach: { zoomIn: 8 } }` to keep that.
+  - Changed: a GPU keeps what it fetched and decoded of a tile source while its `Tiles` lives. Before, it dropped a source when the last view stopped drawing it.
+  - Changed: a column written whole costs its pages, not its rows, in a table drawn in pages. At a million rows, a frame that wrote one took 9 ms on the CPU for points and 30 ms for a grid's buses. It now takes 1 and 4.
+  - Changed: `earth.graticule` is now `earth.grid`, and takes what a plane's `grid` takes: `"off"`, `"lines"`, `"dots"`, or `{ lines | dots: { step } }`.
+  - Changed: a grid's `pitch` is now `step`, the finest distance between its lines.
+  - Changed: `theme.grid` is now `{ color, width, spacing }`. `theme.gridSpacing` is now `theme.grid.spacing`.
+  - Fixed: areas on the globe showed the ground through them toward its edge.
+
+- dd92235: The module that draws is a tenth smaller: jobs run in a module of their own, the browser encodes the pictures it writes exactly, and flat maps keep areas as they are.
+
+  - Added: `latkit/jobs`, the WebAssembly that does the work views and datasets hand to workers: layouts, lanes, triangles, tile pyramids, decoding vector tiles and GeoJSON, and encoding pictures. A page loads it with its first job. `load({ jobs })` takes its URL or the compiled module.
+  - Added: in Rust, `Host::encode` encodes a picture as a file, and `host::read` reads a dataset with GeoJSON parsed in a job.
+  - Changed: `latkit/wasm` is 3.50 MB, 1.12 MB with brotli. It was 3.89 MB and 1.23 MB. Workers load the jobs module in place of a second copy of it.
+  - Changed: the assets come as a set. A page that gives `load` the URL of `wasm` gives it `jobs` and `worker` too, or `load` rejects with an `invalid` error. Before, a missing asset failed only when a view first needed it.
+  - Changed: every job runs in a worker. Before, a small one ran on the frame that asked for it, so a small scene now draws its triangles or layout a frame or two after its first frame. The lanes of up to 32,768 edges are still assigned on the frame.
+  - Changed: in Node, `Data.read` reads GeoJSON only after `load({ wasm, jobs })` with the jobs module compiled like the first.
+  - Changed: `image.encode` writes JPEG, and PNG of an opaque image, with the browser's own encoder. A worker writes PNG with alpha and WebP, lossless as before. JPEG blends pixels that are not opaque over black.
+  - Changed: on a flat map, an area keeps the triangles of its own points. Before, the earth split every triangle along a 2° grid in either projection: the US states took 30,102 triangles on the Mercator map and now take 10,684. The globe still splits them, and changing a scene's projection shapes its areas and lines again.
+  - Removed: in Rust, `Job::encode` and `Job::geojson`. `Browser` no longer runs a job on the page without `set_jobs`.
+  - Fixed: places and shapes that arrive for rows that had none begin no transition, since those rows drew nothing to ease from. Before, a view with no camera framed a layout that ran in a job only once the scene's ease had passed, 0.3 s by default, and a view kept drawing that long after its areas appeared.
+
+### Patch Changes
+
+- dd92235: Edges joining the same two vertices no longer rebuild their list on every frame their vertices or the camera move.
+
+  - Changed: a mark whose edges bow into lanes lists their pieces again only when its rows or their lanes change. Before, one pair of parallel edges made the whole mark rebuild its list on every frame a vertex moved, and on every frame the camera moved over a tilted plane or the globe. Each such frame also drew the list's whole reserve: 1.8 million instances instead of 200,000 for a graph of 83,000 edges.
+  - Changed: a family of more than eight parallel edges still follows its ends and the camera, since its list keeps only the lanes the screen shows apart.
+  - Changed: the list holds room for the rows that bow. Before, it held sixteen pieces for every row of the mark.
+  - Changed: with `theme.edge.bow` 0, no lanes are derived. Edges joining the same two vertices draw straight, one over another, one instance each, and each is picked as its own row.
+
+- dd92235: A write read through a join or a reference evaluates only the rows reading it in tables of any size, and only scenes with areas multisample.
+
+  - Changed: a write to a table that a mark reads through `from` or `of` evaluates the pages of rows reading the rows written, also when the mark's table is drawn in pages. Before, a paged table evaluated every row it drew, and a table drawn whole evaluated the readers of every row in the written row's page of 4,096.
+  - Changed: frames take four samples a pixel only when the scene draws areas, and only on screens below a pixel ratio of 1.75. Vertices, edges, lines, text, and the backdrop antialias in their shaders, so any other scene draws one sample a pixel, keeps no multisampled targets, and reads the depth under the pointer without drawing it again.
+  - Changed: a scene with areas draws depth a second time only around the pointer on frames that answer a hover. Before, it drew the whole frame's depth again.
+
 ## 0.9.0
 
 ### Minor Changes
