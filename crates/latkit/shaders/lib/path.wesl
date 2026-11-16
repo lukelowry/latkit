@@ -187,12 +187,13 @@ fn geometry_count(row: u32) -> u32 {
     return select(points_of(mark.geometry, row).count, 0u, row >= mark.held - mark.exits);
 }
 
-// Whether a segment list keeps lane `l` of the edge from vertex `a` to vertex `b`. A family keeps
-// only the lanes the screen can show apart, so a family of thousands of lanes costs only as many lanes
-// as the screen resolves, in draws and probes alike. A lane whose curve lies off screen is not kept,
-// except on a plane, where a list keeps a band of zooms. Where neighboring lanes lie less than a pixel
-// apart, only every `step`-th lane is kept (see `lane_thinned`). A lane with an end behind the eye is
-// kept, cut at the near plane. The caller has read the ends.
+// Whether a segment list keeps lane `l`, of a packed family (see `lane_packed`), of the edge from
+// vertex `a` to vertex `b`. Such a family keeps only the lanes the screen can show apart, so a family
+// of thousands of lanes costs only as many lanes as the screen resolves, in draws and probes alike. A
+// lane whose curve lies off screen is not kept, except on a plane, where a list keeps a band of zooms.
+// Where neighboring lanes lie less than a pixel apart, only every `step`-th lane is kept (see
+// `lane_thinned`). A lane with an end behind the eye is kept, cut at the near plane. The caller has
+// read the ends.
 fn lane_drawn(a: Vertex, b: Vertex, l: Lane, planning: bool) -> bool {
     let ca = clip_of(world(a.hi, a.lo, a.elevation));
     let cb = clip_of(world(b.hi, b.lo, b.elevation));
@@ -228,7 +229,7 @@ fn lane_thinned(ca: vec4f, cb: vec4f, l: Lane, scale: f32) -> bool {
 
 // The segment count of held row `row`'s path, or an area's triangle count, as a segment list counts
 // them. A path between two ends without bends takes one segment, or `BOW_PIECES` when bowed into a
-// lane, and none when its lane is not drawn (`lane_drawn`). On a great circle it takes one segment
+// lane, and none when its lane, of a packed family, is not drawn (`lane_drawn`). On a great circle it takes one segment
 // per `GEODESIC_STEP` degrees of arc instead, when that is more (up to `MAX_PIECES`).
 fn row_segments(row: u32) -> u32 {
     switch PATH {
@@ -255,7 +256,10 @@ fn end_segments(row: u32) -> u32 {
         let middle = geometry_count(row);
         if middle > 0u { return middle + 1u; }
     }
-    if l.offset != 0.0 {
+    // Only a packed family is thinned here, where the count depends on where its ends are drawn
+    // and on the camera. Any other lane keeps its pieces wherever its ends lie, so a list of them
+    // changes only with the rows and their lanes.
+    if (l.offset != 0.0) & lane_packed(l) {
         if !lane_drawn(a, b, l, true) { return 0u; }
     }
     let pieces = select(1u, BOW_PIECES, l.offset != 0.0);
@@ -480,15 +484,18 @@ fn segment_ends(s: Segment) -> PathEnds {
         let l = lane_of(s.row);
         let last = select(bends.count + 1u, count, bends.count == 0u);
         var drawn = (e.a != NONE) & (e.b != NONE) & !same_vertex(e.a, e.b);
-        // On a plane a list keeps the lanes a band of zooms draws, so at the current zoom some lie
-        // less than a pixel apart. Geographic lists keep exactly the lanes they draw. A kept lane off
-        // screen needs no test: its quads lie off screen.
+        // A list keeps every lane of a family that is not packed, and on a plane the lanes of a
+        // packed one that a band of zooms draws, so some kept lanes lie less than a pixel apart
+        // now and are left out here. A geographic list of a packed family keeps exactly the lanes
+        // it draws. A kept lane off screen needs no test: its quads lie off screen.
+        var thins = !lane_packed(l);
         if !geographic() {
-            if (bends.count == 0u) & (frame.lane_scale > 0.0) & (l.offset != 0.0) {
-                let ca = clip_of(world(a.hi, a.lo, a.elevation));
-                let cb = clip_of(world(b.hi, b.lo, b.elevation));
-                drawn = drawn & !lane_thinned(ca, cb, l, 1.0);
-            }
+            thins = thins | (frame.lane_scale > 0.0);
+        }
+        if thins & (bends.count == 0u) & (l.offset != 0.0) {
+            let ca = clip_of(world(a.hi, a.lo, a.elevation));
+            let cb = clip_of(world(b.hi, b.lo, b.elevation));
+            drawn = drawn & !lane_thinned(ca, cb, l, 1.0);
         }
         let bow = l.offset * frame.bow;
         var ends = PathEnds(edge_point(a, b, bends, last, bow, s.index), edge_point(a, b, bends, last, bow, s.index + 1u));
@@ -538,6 +545,12 @@ fn lane_of(row: u32) -> Lane {
 
 fn lane(row: u32) -> f32 {
     return lane_of(row).offset;
+}
+
+// Whether `l`'s family is packed: wider than `FAMILY_LANES`, so its lanes lie closer than a lane
+// apart. Only such a family is thinned when a list counts its pieces (see `lane_drawn`).
+fn lane_packed(l: Lane) -> bool {
+    return l.step < 1.0;
 }
 
 // The part of the segment from clip position `ca` to `cb` in front of the near plane, as fractions

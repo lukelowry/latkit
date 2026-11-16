@@ -269,6 +269,7 @@ impl View {
                 let found = crate::wire::In::new(&bytes).u32().unwrap_or(0);
                 shown.segments.found.make(stamp, found);
             }
+            shown.follow_lanes(&self.derived);
             if !shown.listed() {
                 shown.segments.list = None;
                 continue;
@@ -390,8 +391,12 @@ impl View {
     }
 
     /// The marks whose segment lists rebuild this frame: those whose list, lists buffer, paths, or
-    /// drawing changed, or, along great circles or lanes, where the vertices their rows join are
-    /// drawn. A color changing every frame rebuilds none.
+    /// drawing changed. A list also follows where the vertices its rows join are drawn, but only
+    /// where its pieces depend on that: along great circles, where a path's length is measured,
+    /// and in a family of lanes packed closer than a lane apart, which it thins to the lanes the
+    /// screen shows apart, so that one follows the camera too. Every other lane keeps all its
+    /// pieces and thins as it draws. So a color changing every frame rebuilds none, and neither
+    /// does a moving vertex or camera where no family is packed.
     pub(super) fn segments_due(&mut self) -> Vec<usize> {
         let vertices: Vec<Option<Version>> =
             self.marks.iter_mut().map(|m| (m.kind() == MarkKind::Vertices).then(|| m.shape_version())).collect();
@@ -414,11 +419,11 @@ impl View {
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
-            let laned = shown.laned().then_some(sight);
+            let thinned = (shown.laned() && shown.lanes.packed).then_some(sight);
             let measured = shown.measures_paths();
-            let arcs = (shown.geodesic || laned.is_some() || measured).then(|| {
+            let arcs = (shown.geodesic || thinned.is_some() || measured).then(|| {
                 let ends: Vec<_> = shown.ends.iter().map(|end| end.mark.map(|m| (m, vertices[m]))).collect();
-                (ends, shown.places_drawn(), laned)
+                (ends, shown.places_drawn(), thinned)
             });
             let tables = shown.compiled.as_ref().map(|c| {
                 let generation = |column| (column, shown.tables.column_generation(column));
@@ -486,6 +491,94 @@ mod tests {
     use super::*;
     use crate::{Camera, Color, Data, Frame, Grid, Ids, Lines, Plane, Scene, Table, field};
 
+    /// Renders `view` into a small target, a frame every sixtieth of a second from `time`, until
+    /// it settles with no work late.
+    fn settle(gpu: &crate::Gpu, view: &mut View, time: &mut f64) {
+        let device = gpu.device();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("list test"),
+            size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::gpu::FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        for _ in 0..20 {
+            *time += 1.0 / 60.0;
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            let frame =
+                Frame { target: &target, format: crate::gpu::FORMAT, size: [64, 64], pixel_ratio: 1.0, time: *time };
+            view.render(&mut encoder, &frame);
+            gpu.queue().submit([encoder.finish()]);
+            let wait =
+                wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(10)) };
+            device.poll(wait).unwrap();
+            if !view.needs_render() {
+                assert_eq!(gpu.work().late, 0);
+                return;
+            }
+        }
+        panic!("the view settles");
+    }
+
+    #[test]
+    fn lane_lists_follow_vertices_and_the_camera_only_where_a_family_is_packed() {
+        use crate::{EdgeTheme, Edges, Patch, Theme, Vertices};
+        let Some(gpu) = crate::gpu::testing::gpu() else { return };
+        // Ten nodes in a row. `links` edges join the first two, and one edge joins each next pair.
+        let graph = |links: u64| {
+            let from = (0..links).map(|_| 0).chain(1..9).collect::<Vec<u64>>();
+            let to = (0..links).map(|_| 1).chain(2..10).collect::<Vec<u64>>();
+            let x: Vec<f64> = (0..10).map(|i| f64::from(i) * 4.0 - 18.0).collect();
+            let nodes = Table::new("Node", (0..10).collect::<Vec<u64>>()).field("x", x).field("y", vec![0.0; 10]);
+            let links = Table::new("Link", Ids::count(from.len() as u32)).reference("from", "Node", from);
+            let data = Data::new("d");
+            data.apply(Patch::new().set(nodes).set(links.reference("to", "Node", to))).unwrap();
+            data
+        };
+        let shown = |bow: f32, data: &Data| {
+            let theme = Theme { edge: EdgeTheme { bow, ..Theme::dark().edge }, ..Theme::dark() };
+            let scene = Scene::new(Plane { grid: Grid::Off })
+                .theme(theme)
+                .ease(std::time::Duration::ZERO)
+                .draw(Vertices::of("d", "Node").position(field("x"), field("y")).radius(1.0))
+                .draw(Edges::of("d", "Link").ends("from", "to"));
+            let mut view = View::new(&gpu, scene);
+            view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+            view.set_sources([data]).unwrap();
+            view
+        };
+        let mut time = 0.0;
+        for (links, packed) in [(2, false), (9, true)] {
+            let data = graph(links);
+            let mut view = shown(0.12, &data);
+            let mut built = |view: &mut View| {
+                settle(&gpu, view, &mut time);
+                view.marks[1].segments.built
+            };
+            let first = built(&mut view);
+            let list = view.marks[1].segments.list.expect("lanes draw through a list");
+            assert!(list.kept < list.items * wgsl::BOW_PIECES, "room for the rows that bow, not for every row to");
+            data.apply(Table::new("Node", [1_u64]).field("y", vec![3.0])).unwrap();
+            let moved = built(&mut view);
+            view.set_camera(Camera::Map { center: [1.0, 0.0, 0.0], zoom: 0.0, pitch: 40.0, bearing: 0.0 });
+            let turned = built(&mut view);
+            if packed {
+                assert!(moved != first && turned != moved, "a packed family is thinned to what the screen shows");
+            } else {
+                assert_eq!([moved, turned], [first; 2], "lanes a lane apart keep their list wherever they lie");
+            }
+        }
+        // A theme that bows nothing has no lanes to list.
+        let data = graph(2);
+        let mut view = shown(0.0, &data);
+        settle(&gpu, &mut view, &mut time);
+        assert!(view.marks[1].segments.list.is_none() && !view.marks[1].laned());
+    }
+
     #[test]
     fn curved_lists_keep_counts_for_unreferenced_appends_but_follow_changed_endpoints() {
         use crate::{Earth, Edges, Patch, Vertices};
@@ -510,40 +603,10 @@ mod tests {
         let mut view = View::new(&gpu, scene(0.0));
         view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
         view.set_sources([&data]).unwrap();
-        let device = gpu.device();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("endpoint dependency test"),
-            size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: crate::gpu::FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut time = 0.0;
         let mut render = |view: &mut View| {
-            for _ in 0..20 {
-                time += 1.0 / 60.0;
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-                view.render(
-                    &mut encoder,
-                    &Frame { target: &target, format: crate::gpu::FORMAT, size: [64, 64], pixel_ratio: 1.0, time },
-                );
-                gpu.queue().submit([encoder.finish()]);
-                device
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: None,
-                        timeout: Some(std::time::Duration::from_secs(10)),
-                    })
-                    .unwrap();
-                if !view.needs_render() {
-                    assert_eq!(gpu.work().late, 0);
-                    return view.marks[1].segments.built;
-                }
-            }
-            panic!("the view settles");
+            settle(&gpu, view, &mut time);
+            view.marks[1].segments.built
         };
         let first = render(&mut view);
         assert_ne!(first, 0);

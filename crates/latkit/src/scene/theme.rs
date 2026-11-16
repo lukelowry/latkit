@@ -104,7 +104,8 @@ pub struct EdgeTheme {
     pub width: f32,
     /// How far edges joining the same two vertices bow apart. Each lane bows out
     /// by this fraction of the edge's length, measured at its middle. Parallel edges spread at most
-    /// eight lanes wide, and more lanes pack closer. Bows scale with the zoom.
+    /// eight lanes wide, and more lanes pack closer. Bows scale with the zoom. With 0 they run
+    /// straight, one over another.
     pub bow: f32,
     /// How far an arrowhead extends beyond the edge's width. A head's length is this plus the
     /// width.

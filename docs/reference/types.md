@@ -803,7 +803,7 @@ Defaults for edges, and how parallel edges and arrowheads look.
 **`bow`**`?: number` [¶](#edgetheme-bow){.headerlink}
 : How far edges joining the same two vertices bow apart. Each lane bows out by this fraction of
   the edge's length, measured at its middle. Parallel edges spread at most eight lanes wide, and
-  more lanes pack closer. Bows scale with the zoom.
+  more lanes pack closer. Bows scale with the zoom. With 0 they run straight, one over another.
 
 {#edgetheme-arrow .member}
 **`arrow`**`?: number` [¶](#edgetheme-arrow){.headerlink}

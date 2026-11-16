@@ -2548,7 +2548,7 @@
         "bow": {
           "type": "number",
           "format": "float",
-          "description": "How far edges joining the same two vertices bow apart. Each lane bows out\nby this fraction of the edge's length, measured at its middle. Parallel edges spread at most\neight lanes wide, and more lanes pack closer. Bows scale with the zoom."
+          "description": "How far edges joining the same two vertices bow apart. Each lane bows out\nby this fraction of the edge's length, measured at its middle. Parallel edges spread at most\neight lanes wide, and more lanes pack closer. Bows scale with the zoom. With 0 they run\nstraight, one over another."
         },
         "arrow": {
           "type": "number",

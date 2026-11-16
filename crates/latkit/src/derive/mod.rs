@@ -23,7 +23,7 @@ pub(crate) mod sight;
 mod stars;
 pub(crate) mod tiled;
 
-pub(crate) use lanes::words as lane_words;
+pub(crate) use lanes::{Laned, words as lane_words};
 
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -486,6 +486,11 @@ impl Derivations {
         let mut errors = self.places.take_errors();
         errors.extend(self.tiles.take_errors());
         errors
+    }
+
+    /// What the lanes of table `table` of dataset `data` ask of the list drawing them.
+    pub(crate) fn laned(&self, data: &Name, table: &Name) -> Laned {
+        self.lanes.laned(&(data.clone(), table.clone()))
     }
 
     /// The derived tables beside table `table` of dataset `data`.

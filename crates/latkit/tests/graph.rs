@@ -51,6 +51,42 @@ fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
         assert!(lit(at(&pixels, C, C - off)) && lit(at(&pixels, C, C + off)), "two lanes at zoom {zoom}");
         assert!(!lit(at(&pixels, C, C)), "apart at zoom {zoom}: {:?}", at(&pixels, C, C));
     }
+    // A vertex that moves takes its lanes along without their pieces being listed again: each
+    // frame draws the instances it drew before and reads no count back.
+    let (drawn, before) = (view.stats().instances, gpu.work());
+    for y in [2.0, 4.0, 6.0] {
+        data.apply(Table::new("Node", vec![1_u64]).field("y", vec![y])).expect("valid");
+        step(&gpu, &mut view);
+        assert_eq!(view.stats().instances, drawn, "as many instances with the vertex at {y}");
+    }
+    assert_eq!((gpu.work() - before).readbacks, 0, "no piece is counted again");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_theme_that_bows_nothing_draws_edges_joining_the_same_vertices_straight() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("graph");
+    data.apply(Patch::new().set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0])).set(
+        Table::new("Link", Ids::count(2)).reference("from", "Node", vec![1_u64, 2]).reference(
+            "to",
+            "Node",
+            vec![2_u64, 1],
+        ),
+    ))
+    .expect("valid");
+    let straight = latkit::EdgeTheme { bow: 0.0, ..plain_theme().edge };
+    let scene = Scene::new(plane())
+        .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(2.0));
+    let mut view = View::new(&gpu, scene.theme(latkit::Theme { edge: straight, ..plain_theme() }));
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    assert!(lit(at(&pixels, C, C)), "both run through the middle: {:?}", at(&pixels, C, C));
+    assert!(!lit(at(&pixels, C, C - 5)) && !lit(at(&pixels, C, C + 5)), "and neither bows");
+    // The backdrop, and one instance an edge and a vertex: no lane is derived or listed.
+    assert_eq!(view.stats().instances, 5);
     assert_eq!(errors(&mut view), Vec::new());
 }
 
