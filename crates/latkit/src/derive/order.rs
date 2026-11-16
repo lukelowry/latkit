@@ -280,6 +280,26 @@ mod tests {
     }
 
     #[test]
+    fn written_lists_exactly_the_pages_holding_a_written_row() {
+        let rows = 3 * PAGE_ROWS + 100;
+        let lifted = Order::Sampled { rows, step: 5, lifted: Lifted::new(vec![7, PAGE_ROWS + 1], rows, 5) };
+        for order in [Order::Table { rows, order: Version::next() }, sample(rows, 7), lifted] {
+            // One row, rows far apart, most of the table, and all of it.
+            for runs in
+                [vec![5..6], vec![0..3, 2 * PAGE_ROWS..2 * PAGE_ROWS + 1], vec![100..3 * PAGE_ROWS], vec![0..rows]]
+            {
+                let written = Runs::of(&runs);
+                let found = order.written(&written);
+                for page in 0..order.pages() {
+                    let places = page * PAGE_ROWS..((page + 1) * PAGE_ROWS).min(order.len());
+                    let holds = places.clone().any(|place| written.contains(order.source(place)));
+                    assert_eq!(found.holds(page), holds, "page {page} of {order:?} after writing {runs:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn samples_draw_every_step_first_then_the_rest() {
         let order = sample(10, 3);
         let drawn: Vec<u32> = (0..10).map(|d| order.source(d)).collect();

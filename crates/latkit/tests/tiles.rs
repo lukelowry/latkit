@@ -187,6 +187,21 @@ fn tiles_the_camera_needs_draw_as_a_dataset() {
     assert!(before.iter().all(|id| held.contains(id)), "the ancestors' rows stay while they are few");
     view.set_sources::<Source>([]).expect("no sources");
     assert!(view.snapshot("base").is_none(), "a dataset no source provides is removed");
+    // The tiles stay fetched while the app keeps their `Tiles`: shown again, they draw at once.
+    let fetches = || served.fetched.lock().expect("unpoisoned").len();
+    let asked = fetches();
+    frame(&gpu, &mut view);
+    view.set_sources([&tiles]).expect("a source");
+    frame(&gpu, &mut view);
+    assert!(view.stats().tiles > 0 && fetches() == asked, "drawn again without a fetch");
+    // Tiles no view draws go once they are over the budget, and are fetched when next shown.
+    view.set_sources::<Source>([]).expect("no sources");
+    gpu.set_budget(latkit::Budget { tiles: 0, ..gpu.budget() });
+    frame(&gpu, &mut view);
+    view.set_sources([&tiles]).expect("a source");
+    frame(&gpu, &mut view);
+    assert!(view.stats().tiles > 0 && fetches() > asked, "fetched again after the budget dropped them");
+    assert_eq!(errors(&mut view), Vec::new());
 }
 
 #[test]

@@ -52,7 +52,7 @@ pub(crate) use {
     name::{PageId, Version},
     patch::Op,
     samples::{FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, Run, Samples, bucket_frames, detail, sides},
-    table::{Reference, UNWIRED},
+    table::{Inverse, Reference, UNWIRED},
 };
 
 #[cfg(test)]

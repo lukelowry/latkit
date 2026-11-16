@@ -425,6 +425,12 @@ impl Resources {
             if let Some(old) = self.targets.replace(Targets { color, depth, size, format, samples }) {
                 old.retire(&self.retired);
             }
+            // Depth drawn at one sample is read where it was drawn, so the replayed copy goes.
+            if samples == 1
+                && let Some(replayed) = self.pick_targets.take()
+            {
+                replayed.retire(&self.retired);
+            }
             self.generation += 1;
         }
         let targets = self.targets.as_ref().expect("created");

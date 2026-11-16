@@ -29,13 +29,13 @@
 //! again.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::drawing::{Drawing, Holds};
 use crate::data::{
-    Column, Field, Page, PageId, Reference, Run, Samples, Values, Version, bucket_frames, detail, sides,
+    Column, Field, Inverse, Page, PageId, Reference, Run, Runs, Samples, Values, Version, bucket_frames, detail, sides,
 };
 use crate::derive::order::Order;
 use crate::derive::shapes::PagedShapes;
@@ -200,6 +200,15 @@ impl Rows<'_> {
             Rows::Held(drawing) => drawing.layout(),
         }
     }
+
+    /// The row block holding table row `row`: its page of the data, or the slot a drawing holds it
+    /// in. `None` for a row the drawing does not hold.
+    fn block(self, row: u32) -> Option<u32> {
+        match self {
+            Rows::Own => Some(row >> wgsl::PAGE_BITS),
+            Rows::Held(drawing) => drawing.held_row(row).map(|held| held >> wgsl::PAGE_BITS),
+        }
+    }
 }
 
 /// A page written over the page a column reads now, which the GPU holds. When the column's dataset
@@ -245,9 +254,9 @@ struct ColumnTable {
     /// For a column whose rows each read their own page, the page each page of rows reads. `None`
     /// where any change affects every row (cursors, traces, joins).
     pages: Option<Vec<Option<PageId>>>,
-    /// For a column of a reference's rows that fields are read through, the reference, which lists
-    /// the rows naming each row of its table.
-    reference: Option<Reference>,
+    /// For a field of another table, the column it pages, which tells the rows written between
+    /// this table and the one it replaces.
+    read: Option<Column>,
 }
 
 impl ColumnTable {
@@ -369,13 +378,21 @@ struct Join {
 }
 
 /// A join whose rows read other rows than their own.
+#[derive(Default)]
 struct JoinRows {
     /// The other table's row for each row, in pages of rows. `NONE` where no row has the id.
     pages: Vec<(PageId, Arc<[u32]>)>,
-    /// The row blocks that read page `p` of the other table: `blocks[starts[p]..starts[p + 1]]`,
-    /// ascending.
-    starts: Vec<u32>,
-    blocks: Vec<u32>,
+    /// The rows reading each row of the other table, listed when a write there first asks.
+    naming: OnceLock<Inverse>,
+}
+
+impl JoinRows {
+    fn naming(&self) -> &Inverse {
+        self.naming.get_or_init(|| {
+            let rows: Vec<u32> = self.pages.iter().flat_map(|(_, rows)| rows.iter().copied()).collect();
+            Inverse::new(&rows)
+        })
+    }
 }
 
 impl Join {
@@ -383,8 +400,8 @@ impl Join {
     /// row reads any.
     fn of(from: &(Name, Name), table: &Table, other: Option<&Table>) -> Join {
         let Some(other) = other else {
-            let rows = JoinRows { pages: Vec::new(), starts: vec![0], blocks: Vec::new() };
-            return Join { from: from.clone(), structure: (table.structure, table.structure), rows: Some(rows) };
+            let structure = (table.structure, table.structure);
+            return Join { from: from.clone(), structure, rows: Some(JoinRows::default()) };
         };
         let structure = (table.structure, other.structure);
         let rows: Vec<u32> = (0..table.len())
@@ -393,40 +410,8 @@ impl Join {
         if other.len() == rows.len() && rows.iter().enumerate().all(|(r, &o)| o == r as u32) {
             return Join { from: from.clone(), structure, rows: None };
         }
-        // Each page of the other table that a block of rows reads, as (page, block), by page.
-        let mut read: Vec<(u32, u32)> = Vec::new();
-        for (block, chunk) in rows.chunks(wgsl::PAGE_ROWS as usize).enumerate() {
-            let mut pages: Vec<u32> =
-                chunk.iter().filter(|&&o| o != wgsl::NONE).map(|o| o >> wgsl::PAGE_BITS).collect();
-            pages.sort_unstable();
-            pages.dedup();
-            read.extend(pages.into_iter().map(|page| (page, block as u32)));
-        }
-        read.sort_unstable();
-        let count = other.len().div_ceil(wgsl::PAGE_ROWS as usize);
-        let mut starts = vec![0_u32; count + 1];
-        for &(page, _) in &read {
-            starts[page as usize + 1] += 1;
-        }
-        for page in 0..count {
-            starts[page + 1] += starts[page];
-        }
         let pages = rows.chunks(wgsl::PAGE_ROWS as usize).map(|chunk| (PageId::next(), Arc::from(chunk))).collect();
-        let blocks = read.into_iter().map(|(_, block)| block).collect();
-        Join { from: from.clone(), structure, rows: Some(JoinRows { pages, starts, blocks }) }
-    }
-
-    /// The row blocks that read any of pages `pages` of the other table, ascending.
-    fn readers(&self, pages: &[u32]) -> Vec<u32> {
-        let Some(rows) = &self.rows else { return pages.to_vec() };
-        let reading = |page: u32| {
-            let at = |p: usize| rows.starts.get(p).map_or(rows.blocks.len(), |&start| start as usize);
-            &rows.blocks[at(page as usize)..at(page as usize + 1)]
-        };
-        let mut blocks: Vec<u32> = pages.iter().flat_map(|&page| reading(page)).copied().collect();
-        blocks.sort_unstable();
-        blocks.dedup();
-        blocks
+        Join { from: from.clone(), structure, rows: Some(JoinRows { pages, naming: OnceLock::new() }) }
     }
 }
 
@@ -803,12 +788,17 @@ impl Tables {
     /// Swaps in the `rebuilt` tables, whose pages are all resident, and releases the replaced ones.
     /// Pages rewritten in place take over their blocks now, written through `queue` before this
     /// frame's passes read them. The replaced table of geometry column `geometry` stays frozen
-    /// instead, for the mark to ease from.
+    /// instead, for the mark to ease from. `source` is the mark's table as the tables read it,
+    /// paged as `rows`, among the datasets `all`.
+    #[allow(clippy::too_many_arguments, reason = "one swap, and what it changed for the mark's rows")]
     pub(crate) fn publish(
         &mut self,
         rebuilt: Rebuilt,
         program: &Program,
         geometry: u32,
+        source: &Source<'_>,
+        rows: Rows<'_>,
+        all: &[Snapshot],
         gpu: &mut Inner,
         queue: &Queue,
     ) -> Published {
@@ -835,9 +825,9 @@ impl Tables {
             Published { columns: u64::MAX, data: u64::MAX, blocks: None }
         } else {
             let mut published = Published { columns: 0, data: 0, blocks: Some(Vec::new()) };
-            let mut changes: Vec<(usize, Option<Vec<u32>>)> = Vec::new();
+            let mut changes: Vec<(usize, Option<Changed>)> = Vec::new();
             for (i, table) in rebuilt {
-                changes.push((i, changed_blocks(&self.current[i], &table)));
+                changes.push((i, changed(&self.current[i], &table)));
                 let bits = match program.columns.get(i) {
                     Some(_) => Reads::column(i),
                     None => columns_from(program, joins[i - program.columns.len()]),
@@ -854,10 +844,16 @@ impl Tables {
                     old.retire(&self.current[i], gpu);
                 }
             }
-            // A field of another table lists that table's pages. The rows that changed are the rows
-            // reading them, as the tables now swapped in map them.
-            for (i, pages) in changes {
-                match (published.blocks.as_mut(), pages.and_then(|pages| self.readers(program, &joins, i, pages))) {
+            // A field of another table changes the rows reading the rows written there, as the
+            // mark's table now names them.
+            for (i, change) in changes {
+                let more = change.and_then(|change| match change {
+                    Changed::Blocks(blocks) => Some(blocks),
+                    Changed::Rows(written) => self
+                        .via(program.columns.get(i)?, program, source, rows, all)
+                        .and_then(|via| readers(&via, &written, source.table, rows)),
+                });
+                match (published.blocks.as_mut(), more) {
                     (Some(blocks), Some(more)) => blocks.extend(more),
                     _ => published.blocks = None,
                 }
@@ -991,34 +987,114 @@ impl Tables {
         at
     }
 
-    /// The row blocks whose rows read any of pages `pages` of table `i`: the pages themselves for
-    /// a column of the mark's own table, and for a field of another table, the rows whose join or
-    /// reference names a row in them. `None` when a drawing holds the rows in another order than
-    /// the join or reference lists them, so every row counts as reading them.
-    fn readers(&self, program: &Program, joins: &[&(Name, Name)], i: usize, pages: Vec<u32>) -> Option<Vec<u32>> {
-        let Some(column) = program.columns.get(i) else { return Some(pages) };
-        match (&column.from, column.through) {
-            (None, _) => Some(pages),
-            (Some(_), Some(rows)) => {
-                let table = self.current.get(rows as usize)?;
-                let reference = table.reference.as_ref().filter(|_| table.held == 0)?;
-                Some(reference.readers(&pages))
-            }
-            (Some(from), None) => {
-                let k = joins.iter().position(|j| *j == from)?;
-                let table = self.current.get(program.columns.len() + k)?;
-                let join = self.joins.iter().find(|join| &join.from == from)?;
-                (table.held == 0).then(|| join.readers(&pages))
-            }
+    /// How the mark's rows, paged as `rows`, read `column`, a field of another table. `None`
+    /// when its join was built for other rows than the tables hold now.
+    fn via<'a>(
+        &'a self,
+        column: &ColumnUse,
+        program: &Program,
+        source: &Source<'a>,
+        rows: Rows<'_>,
+        all: &'a [Snapshot],
+    ) -> Option<Via<'a>> {
+        let from = column.from.as_ref()?;
+        if let Some(through) = column.through {
+            let field = source.table.field_named(&program.columns.get(through as usize)?.name);
+            let Some(Field::Reference(reference)) = field else { return None };
+            return Some(Via::Naming(reference.inverse()));
         }
+        let other = joined(from, all)?;
+        if let Rows::Held(_) = rows {
+            return Some(Via::Ids(other));
+        }
+        let join = self.joins.iter().find(|join| &join.from == from)?;
+        let current = join.structure == (source.table.structure, other.structure);
+        current.then(|| join.rows.as_ref().map_or(Via::Own, |rows| Via::Naming(rows.naming())))
     }
 }
 
-/// The pages of rows whose page differs between table `before` and table `now`. `None` when either
-/// table has no page list (see `ColumnTable::pages`), so every row changed.
-fn changed_blocks(before: &ColumnTable, now: &ColumnTable) -> Option<Vec<u32>> {
+/// What swapping a table in changed: row blocks of the mark, or rows of the other table whose
+/// field the table pages.
+enum Changed {
+    Blocks(Vec<u32>),
+    Rows(Runs),
+}
+
+/// What differs between table `before` and table `now`, which replaces it. A field of another
+/// table gives the rows written there. Any other table pages the mark's rows, and gives the pages
+/// that differ. `None` when either lists no pages (see `ColumnTable::pages`), so every row changed.
+fn changed(before: &ColumnTable, now: &ColumnTable) -> Option<Changed> {
+    if let (Some(then), Some(read)) = (&before.read, &now.read) {
+        return Some(Changed::Rows(read.written_since(then)));
+    }
     let (Some(old), Some(new)) = (&before.pages, &now.pages) else { return None };
-    Some((0..old.len().max(new.len())).filter(|&p| old.get(p) != new.get(p)).map(|p| p as u32).collect())
+    let pages = (0..old.len().max(new.len())).filter(|&p| old.get(p) != new.get(p));
+    Some(Changed::Blocks(pages.map(|p| p as u32).collect()))
+}
+
+/// How a mark's rows read the rows of another table.
+enum Via<'a> {
+    /// Each reads the row in its own place: a join of tables listing the same ids in the same
+    /// order.
+    Own,
+    /// The rows reading each row are listed: a reference field's, or a join's whose rows the
+    /// data pages.
+    Naming(&'a Inverse),
+    /// Each reads the row that shares its id: a join whose rows a drawing holds.
+    Ids(&'a Table),
+}
+
+/// The row blocks of `table`, paged as `rows`, whose rows read any of rows `written` of another
+/// table `via` a reference or a join. It follows the rows written to the rows reading them and
+/// never visits the table. `None` when every row counts as reading them: every block has such a
+/// row, every row read was written, or a drawing would look up more than a page of rows.
+fn readers(via: &Via<'_>, written: &Runs, table: &Table, rows: Rows<'_>) -> Option<Vec<u32>> {
+    let naming = match via {
+        Via::Own => {
+            let pages = |run: &Range<u32>| run.start >> wgsl::PAGE_BITS..=(run.end - 1) >> wgsl::PAGE_BITS;
+            let mut blocks: Vec<u32> = written.ranges().iter().flat_map(pages).collect();
+            blocks.dedup();
+            return Some(blocks);
+        }
+        Via::Naming(naming) if written.len() >= naming.targets() => return None,
+        Via::Naming(naming) => Some(*naming),
+        Via::Ids(_) => None,
+    };
+    let count = match rows {
+        Rows::Own => table.len().div_ceil(wgsl::PAGE_ROWS as usize),
+        Rows::Held(drawing) => drawing.slot_count(),
+    };
+    // The data's pages place a row with a shift. A drawing looks it up.
+    let mut left = match rows {
+        Rows::Own => table.len(),
+        Rows::Held(_) => wgsl::PAGE_ROWS as usize,
+    };
+    let (mut reads, mut found) = (vec![false; count], 0);
+    // Counts one row followed, which `row` of the table reads if any.
+    let mut follow = |row: Option<u32>| {
+        left = left.checked_sub(1)?;
+        if let Some(block) = row.and_then(|row| rows.block(row))
+            && let Some(read) = reads.get_mut(block as usize)
+            && !*read
+        {
+            *read = true;
+            found += 1;
+        }
+        (found < count).then_some(())
+    };
+    match (naming, via) {
+        (Some(naming), _) => {
+            for run in written.ranges() {
+                naming.over(run.clone()).iter().try_for_each(|&row| follow(Some(row)))?;
+            }
+        }
+        (None, Via::Ids(other)) => {
+            let own = |row: u32| other.ids.key(row as usize).and_then(|key| table.row(key));
+            written.iter().try_for_each(|row| follow(own(row).map(|row| row as u32)))?;
+        }
+        (None, _) => {}
+    }
+    Some((0..count as u32).filter(|&block| reads[block as usize]).collect())
 }
 
 fn unpin(pins: &[PageKey], gpu: &mut Inner) {
@@ -1195,7 +1271,7 @@ struct Builder<'g> {
     /// The page each page of rows reads in the table the GPU draws now, which this one replaces,
     /// when that table pins the pages it lists (see `ColumnTable::rewritable`).
     drawn: Option<&'g [Option<PageId>]>,
-    reference: Option<Reference>,
+    read: Option<Column>,
     gpu: &'g mut Inner,
 }
 
@@ -1210,13 +1286,13 @@ impl<'g> Builder<'g> {
             points: 0,
             pages: Some(Vec::new()),
             drawn,
-            reference: None,
+            read: None,
             gpu,
         }
     }
 
     fn finish(self, stamp: Stamp, held: u64, descriptor: [u32; WORDS]) -> ColumnTable {
-        let Builder { words, cursors, asks, rewrites, plan, points, pages, drawn: _, reference, gpu: _ } = self;
+        let Builder { words, cursors, asks, rewrites, plan, points, pages, drawn: _, read, gpu: _ } = self;
         ColumnTable {
             stamp,
             generation: 0,
@@ -1231,7 +1307,7 @@ impl<'g> Builder<'g> {
             plan,
             points,
             pages,
-            reference,
+            read,
         }
     }
 
@@ -1302,8 +1378,12 @@ impl<'g> Builder<'g> {
         };
         d[wgsl::COLUMN_ROWS as usize] = table.len() as u32;
         let field = table.field_named(&column.name);
-        if let (Words::Rows, Some(Field::Reference(reference))) = (column.words, field) {
-            self.reference = Some(reference.clone());
+        if column.from.is_some() {
+            self.read = match field {
+                Some(Field::Values(values, _)) => Some(values.clone()),
+                Some(Field::Reference(reference)) => Some(reference.rows.clone()),
+                _ => None,
+            };
         }
         if let Rows::Held(drawing) = rows {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
@@ -1828,6 +1908,60 @@ mod tests {
     }
 
     #[test]
+    fn a_trace_reads_every_frame_in_view_once_a_side_within_its_budget() {
+        // One row's history of 20,000 frames, one a second.
+        let frames = 20_000_usize;
+        let at: Vec<f64> = (0..frames).map(|f| f as f64).collect();
+        let flow: Vec<f64> = (0..frames).map(|f| ((f * 7919) % 1000) as f64).collect();
+        let data = crate::Data::new("d");
+        let line = Table::new("Line", crate::Ids::count(1));
+        data.apply(crate::Patch::new().axis("time", "s").replace(line).append("Line", at, [("flow", flow)]))
+            .expect("valid");
+        let data = data.snapshot();
+        let Some(Field::Sampled(samples, _)) = data.table("Line").and_then(|t| t.field_named("flow")) else {
+            panic!("a sampled field");
+        };
+        let columns = 256;
+        let (mut lines, mut shared) = (false, false);
+        // A few frames a column, the whole history, and the whole history on a small budget.
+        for (across, most) in
+            [(Some([100.0, 164.0]), u64::MAX), (Some([0.0, 4000.0]), u64::MAX), (None, u64::MAX), (None, 512)]
+        {
+            let plan = plan(samples, Window { across, columns, most, steps: 0 }, &[]);
+            let wanted = across.map_or(samples.start()..samples.end(), |across| samples.across(across));
+            let read: u64 = plan.runs.iter().map(|drawn| drawn.run.len() as u64).sum();
+            assert!(read <= most, "{read} entries of {most}");
+            assert!(plan.points <= 4 * columns + 8, "about two points a column at most: {}", plan.points);
+            // The runs cover the frames in view, left to right.
+            let mut next = wanted.start;
+            for drawn in &plan.runs {
+                let spanned = drawn.run.frames();
+                assert!(spanned.start <= next && next < spanned.end, "frames {next}.. follow, not {spanned:?}");
+                next = spanned.end;
+            }
+            assert!(next >= wanted.end, "the last frame in view is read");
+            // Each side's points read their run's entries in order, each entry once, so a column
+            // shows the least and greatest of exactly the frames in it.
+            for drawn in &plan.runs {
+                lines |= drawn.shape == Shape::Lines;
+                shared |= matches!(drawn.shape, Shape::Columns(_));
+                for side in 0..sides(drawn.run.level) {
+                    let mut entry = drawn.run.entries.start;
+                    for point in (drawn.first..drawn.first + drawn.points(plan.steps)).filter_map(|p| plan.point(p)) {
+                        if point.side == side {
+                            assert_eq!(point.entries.start, entry, "no entry is skipped or read twice");
+                            assert!(point.entries.end - entry <= u64::from(wgsl::TRACE_MOST));
+                            entry = point.entries.end;
+                        }
+                    }
+                    assert_eq!(entry, drawn.run.entries.end, "every entry is read");
+                }
+            }
+        }
+        assert!(lines && shared, "frames a column apart draw as lines, and those sharing columns as columns");
+    }
+
+    #[test]
     fn direct_trace_cursors_pack_aligned_across_row_pages_steps_and_buckets() {
         let Some(gpu) = crate::gpu::testing::gpu() else { return };
         let mut inner = gpu.0.lock();
@@ -1977,22 +2111,58 @@ mod tests {
     }
 
     #[test]
-    fn a_join_lists_the_blocks_reading_each_page_and_tables_listing_the_same_ids_need_none() {
-        let from: (Name, Name) = ("other".into(), "T".into());
-        let rows = 2 * u64::from(wgsl::PAGE_ROWS) + 10;
-        let listing = |ids: Vec<u64>| {
-            let data = crate::Data::new("d");
-            data.apply(Table::new("T", ids)).expect("valid");
-            data.snapshot()
+    fn rows_written_in_another_table_dirty_the_blocks_of_the_rows_reading_them() {
+        let page = wgsl::PAGE_ROWS;
+        let rows = 2 * page + 10;
+        let zeros = |n: u32| vec![0.0_f32; n as usize];
+        // The first page of rows names cell 0 and the rows after it cell 1. `Same` lists the rows'
+        // ids in their order, and `Reverse` back to front.
+        let cells: Vec<u64> = (0..rows).map(|row| u64::from(row >= page)).collect();
+        let data = crate::Data::new("d");
+        data.apply(
+            crate::Patch::new()
+                .set(Table::new("Cell", crate::Ids::count(3)).field("v", zeros(3)))
+                .set(Table::new("Row", crate::Ids::count(rows)).reference("cell", "Cell", cells))
+                .set(Table::new("Same", crate::Ids::count(rows)).field("v", zeros(rows)))
+                .set(Table::new("Reverse", (0..u64::from(rows)).rev().collect::<Vec<_>>()).field("v", zeros(rows))),
+        )
+        .expect("valid");
+        let table = |data: &Snapshot, name: &str| data.table(name).expect("the table").clone();
+        let values = |table: &Table| match table.field_named("v") {
+            Some(Field::Values(values, _)) => values.clone(),
+            _ => panic!("a field of values"),
         };
-        let table = |data: &Snapshot| data.table("T").expect("the table").clone();
-        let (own, same) = (table(&listing((0..rows).collect())), table(&listing((0..rows).collect())));
-        assert!(Join::of(&from, &own, Some(&same)).rows.is_none(), "every row reads its own");
-        // The other table lists the ids in reverse, so its first page holds the last rows' ids.
-        let join = Join::of(&from, &own, Some(&table(&listing((0..rows).rev().collect()))));
-        assert_eq!(join.readers(&[0]), [1, 2]);
-        assert_eq!(join.readers(&[2]), [0]);
-        assert_eq!(join.readers(&[1, 2]), [0, 1]);
-        assert_eq!(Join::of(&from, &own, None).readers(&[0]), [0_u32; 0], "no table to read");
+        // The rows of `name` that writing a new value to its rows `ids` changes.
+        let wrote = std::cell::Cell::new(0.0_f32);
+        let write = |name: &str, ids: Vec<u64>| {
+            let before = values(&table(&data.snapshot(), name));
+            wrote.set(wrote.get() + 1.0);
+            let new = vec![wrote.get(); ids.len()];
+            data.apply(Table::new(name, ids).field("v", new)).expect("valid");
+            values(&table(&data.snapshot(), name)).written_since(&before)
+        };
+        let own = table(&data.snapshot(), "Row");
+        let reading = |via: &Via<'_>, written: &Runs| readers(via, written, &own, Rows::Own);
+        // Through a reference: the rows naming a written row.
+        let Some(Field::Reference(reference)) = own.field_named("cell") else { panic!("a reference") };
+        let named = Via::Naming(reference.inverse());
+        assert_eq!(reading(&named, &write("Cell", vec![0])), Some(vec![0]));
+        assert_eq!(reading(&named, &write("Cell", vec![1])), Some(vec![1, 2]));
+        assert_eq!(reading(&named, &write("Cell", vec![2])), Some(vec![]), "no row names it");
+        assert_eq!(reading(&named, &write("Cell", vec![0, 1])), None, "every row named was written");
+        // Through a join: the rows sharing an id with a written row.
+        let from: (Name, Name) = ("d".into(), "Same".into());
+        let (same, reverse) = (table(&data.snapshot(), "Same"), table(&data.snapshot(), "Reverse"));
+        let aligned = Join::of(&from, &own, Some(&same));
+        assert!(aligned.rows.is_none(), "tables listing the same ids in the same order need no rows");
+        assert_eq!(reading(&Via::Own, &write("Same", vec![3, u64::from(page) + 5])), Some(vec![0, 1]));
+        // `Reverse` holds the last row's id first, so its first row is read from the last block.
+        let join = Join::of(&from, &own, Some(&reverse));
+        let listed = Via::Naming(join.rows.as_ref().expect("rows that read other rows").naming());
+        let last = write("Reverse", vec![u64::from(rows) - 1]);
+        assert_eq!(reading(&listed, &last), Some(vec![2]));
+        assert_eq!(reading(&Via::Ids(&reverse), &last), Some(vec![2]), "by id, as a drawing's rows are found");
+        let every = write("Reverse", (0..u64::from(rows)).collect());
+        assert_eq!((reading(&listed, &every), reading(&Via::Ids(&reverse), &every)), (None, None));
     }
 }

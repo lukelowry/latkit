@@ -137,15 +137,15 @@ pub(crate) struct Shared {
     pub(crate) lost: Arc<AtomicBool>,
     /// Errors the device raised outside any error scope, for every view to report.
     pub(crate) raised: Arc<Mutex<Raised>>,
-    /// Multisample count of every frame drawn with this GPU. It is set once from the screen's pixel
-    /// ratio, so a later change (browser zoom, a window moved to another screen) never rebuilds a
-    /// scene's pipelines.
+    /// The most samples a pixel takes in frames drawn with this GPU. A scene that draws areas takes
+    /// them, and any other draws one. It is set once from the screen's pixel ratio, so a later
+    /// change (browser zoom, a window moved to another screen) never rebuilds a scene's pipelines.
     samples: std::sync::OnceLock<u32>,
     inner: Mutex<Inner>,
 }
 
-/// Multisample count at `pixel_ratio`: 1 at 1.75 and above, else 4. Shader-drawn marks antialias
-/// themselves and only triangle edges need multisampling, so dense screens skip it.
+/// The most samples a pixel takes at `pixel_ratio`: 1 at 1.75 and above, else 4. Dense screens
+/// skip multisampling even for the triangle edges of areas, the one thing that needs it.
 fn samples_at(pixel_ratio: f32) -> u32 {
     if pixel_ratio >= 1.75 { 1 } else { 4 }
 }
@@ -357,13 +357,13 @@ impl Gpu {
         Ok(gpu)
     }
 
-    /// The multisample count of its frames, once set.
+    /// The most samples a pixel takes in its frames, once set.
     pub(crate) fn samples(&self) -> Option<u32> {
         self.0.samples.get().copied()
     }
 
-    /// The multisample count of its frames. If no screen set it when the GPU was created, the first
-    /// frame's `pixel_ratio` sets it, and it stays fixed from then on.
+    /// The most samples a pixel takes in its frames. If no screen set it when the GPU was created,
+    /// the first frame's `pixel_ratio` sets it, and it stays fixed from then on.
     pub(crate) fn samples_for(&self, pixel_ratio: f32) -> u32 {
         *self.0.samples.get_or_init(|| samples_at(pixel_ratio))
     }

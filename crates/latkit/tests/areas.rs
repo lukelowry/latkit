@@ -133,6 +133,29 @@ fn earth_areas_stay_whole_across_the_antimeridian() {
 }
 
 #[test]
+fn an_area_on_the_globe_fills_to_the_globe_s_edge() {
+    let Some(gpu) = gpu() else { return };
+    // A band along the equator, wider than the half of the globe in view.
+    let south = (-12..=12).map(|k| [f64::from(k) * 10.0, -30.0]);
+    let north = (-12..=12).rev().map(|k| [f64::from(k) * 10.0, 30.0]);
+    let ring: Ring = south.chain(north).chain([[-120.0, -30.0]]).collect();
+    let data = polygons(vec![vec![ring]]);
+    let earth = Earth { grid: latkit::Grid::Off, ..Earth::default().projection(latkit::Projection::Globe) };
+    let scene = Scene::new(earth).draw(Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")));
+    let mut view = view(&gpu, scene, &data);
+    view.set_camera(Camera::Map { center: [0.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    let pixels = frame(&gpu, &mut view);
+    // Places on the equator from the middle of the globe out to 10° short of its edge. The globe
+    // shades its fill toward the edge, so the fill shows as red over the other channels.
+    for longitude in [0.0, 60.0, -75.0, 80.0] {
+        let [x, y] = view.screen([longitude, 0.0, 0.0]).expect("on the near side");
+        let pixel = at(&pixels, x as u32, y as u32);
+        assert!(pixel[0] > 24 && pixel[0] > 4 * pixel[1].max(pixel[2]), "filled at {longitude}°: {pixel:?}");
+    }
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
 fn large_areas_triangulate_in_a_job_and_then_draw() {
     let Some(gpu) = gpu() else { return };
     // A ring of 40,000 points, more than one frame triangulates.

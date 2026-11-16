@@ -393,6 +393,40 @@ fn a_join_into_a_paged_table_reads_every_row() {
 }
 
 #[test]
+fn a_row_written_in_another_table_evaluates_the_slots_of_a_paged_table_reading_it() {
+    let Some(gpu) = gpu() else { return };
+    let (columns, rows) = (600, 500);
+    let n = columns * rows;
+    // Each bus reads the meter with its id, and names that meter too. The bus in the middle of the
+    // view reads meter `middle`.
+    let middle = (250 * columns + 300) as u64;
+    for load in [field("load").from_table("grid", "Meter"), field("load").of("meter")] {
+        let data = lattice(columns, rows);
+        data.apply(Table::new("Meter", Ids::count(n as u32)).field("load", vec![0.0_f32; n])).expect("valid");
+        let named: Vec<u64> = (0..n as u64).collect();
+        data.apply(Table::new("Bus", Ids::count(n as u32)).reference("meter", "Meter", named)).expect("valid");
+        let color = load.colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0);
+        let buses = Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(1.5).color(color);
+        let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(buses));
+        view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 2.0, pitch: 0.0, bearing: 0.0 });
+        view.set_sources([&data]).expect("a source");
+        common::settle(&gpu, &mut view);
+        assert!(view.stats().drawn < view.stats().rows / 4, "the buses are paged");
+        let before = gpu.work();
+        data.apply(Table::new("Meter", vec![middle]).field("load", vec![1.0_f32])).expect("valid");
+        let pixels = frame(&gpu, &mut view);
+        let work = gpu.work() - before;
+        let pixel = at(&pixels, SIZE / 2, SIZE / 2);
+        assert!(close(pixel, [255, 255, 255, 255]), "the bus reads the written meter: {pixel:?}");
+        // Of the pages of rows the view holds, only the one with that bus evaluates: once as its
+        // ease begins and once as it ends.
+        assert_eq!(work.uploaded, 16, "one texel of the meter's page");
+        assert!(work.evaluated <= 2 * 4096, "one page of rows, not every page held: {}", work.evaluated);
+        assert_eq!(errors(&mut view), []);
+    }
+}
+
+#[test]
 fn pages_made_resident_mid_ease_enter_as_the_rest_keep_easing() {
     let Some(gpu) = gpu() else { return };
     let camera = |zoom: f64| Camera::Map { center: [300.0, 250.0, 0.0], zoom, pitch: 0.0, bearing: 0.0 };

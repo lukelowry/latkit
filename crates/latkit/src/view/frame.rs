@@ -12,6 +12,7 @@ use web_time::Instant;
 
 use super::drawing::Drawn;
 use super::marks::Holding;
+use super::probe::Probe;
 use super::resources::{MARK_STRIDE, Resources};
 use super::sync::{Inputs, Rebuilt, Rows, Source, Window};
 use super::transition::{bound, holds_alike, in_place, moved};
@@ -167,7 +168,13 @@ impl View {
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
         self.place_labels(encoder, &mut inner, &eye, &uniform);
-        let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
+        // Where the frame's probe and query read depth: around a hover's point, and anywhere for a
+        // keys' step or a query.
+        let depth = match (&probe, query.is_some_and(|(_, depth)| depth)) {
+            (None, false) => None,
+            (Some(Probe::Hover(point)), false) => Some(self.hover_area(*point)),
+            _ => Some([0.0, 0.0, self.size[0], self.size[1]]),
+        };
         self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
@@ -702,11 +709,14 @@ impl View {
         let Some(compiled) = &shown.compiled else { return };
         let (program, geometry) = (compiled.program.clone(), compiled.drawing.geometry);
         let key = (shown.mark.style().data.clone(), shown.mark.style().table.clone());
-        let Some(data) = self.snapshots.iter().find(|d| *d.name() == key.0) else { return };
-        let Some(table) = data.table(&key.1) else { return };
+        let Some(source) = Source::of(shown.mark.style(), &self.snapshots, &self.derived) else { return };
+        let (data, table) = (source.data, source.table);
         let drawing = self.drawings.get(&key).and_then(|d| d.current.clone());
+        let rows = drawing.as_deref().map_or(Rows::Own, Rows::Held);
         let queue = &self.gpu.0.queue;
-        let published = rebuilt.map(|rebuilt| shown.tables.publish(rebuilt, &program, geometry, inner, queue));
+        let published = rebuilt.map(|rebuilt| {
+            shown.tables.publish(rebuilt, &program, geometry, &source, rows, &self.snapshots, inner, queue)
+        });
         let holding = Holding { origin: data.origin(), table: table.clone(), drawing: drawing.clone() };
         if published.is_none() && shown.holding.as_ref().is_some_and(|h| holds_alike(h, &holding)) {
             return;
@@ -764,20 +774,16 @@ impl View {
         shown.packed = false;
         if let Some(published) = &published {
             shown.columns_changed(published.data, published.blocks.as_deref());
-            let source = Source::of(shown.mark.style(), &self.snapshots, &self.derived);
             for text in &program.texts {
                 let column = &program.columns[text.column as usize];
-                let code =
-                    source.as_ref().and_then(|s| s.table_of(column, &self.snapshots)).map_or(wgsl::NONE, |(d, t)| {
-                        inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
-                    });
+                let code = source.table_of(column, &self.snapshots).map_or(wgsl::NONE, |(d, t)| {
+                    inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
+                });
                 shown.constants[text.constant as usize] = code;
             }
             for &(constant, column) in &program.histories {
                 let column = &program.columns[column as usize];
-                let Some((_, table)) = source.as_ref().and_then(|s| s.table_of(column, &self.snapshots)) else {
-                    continue;
-                };
+                let Some((_, table)) = source.table_of(column, &self.snapshots) else { continue };
                 if let Some([least, most]) = history(table, &column.name, constant, &mut shown.histories) {
                     shown.constants[constant as usize + 1] = least.to_bits();
                     shown.constants[constant as usize + 2] = most.to_bits();

@@ -218,6 +218,14 @@ impl View {
         }
     }
 
+    /// The area where a hover at `point` reads depth: its radius around the point, and two target
+    /// pixels more for the pixels read around each place.
+    pub(super) fn hover_area(&self, point: [f32; 2]) -> super::camera::Area {
+        let reach = f64::from(self.probe_radius()) + 2.0 / f64::from(self.pixel_ratio);
+        let [x, y] = point.map(f64::from);
+        [x - reach, y - reach, x + reach, y + reach]
+    }
+
     /// The probe radius in CSS pixels: the scene's pick radius, plus 8 for touch.
     pub(super) fn probe_radius(&self) -> f32 {
         let touch = self.pointer.is_some_and(|pointer| pointer.device == Device::Touch);

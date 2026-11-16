@@ -367,28 +367,6 @@ fn inverses_follow_every_change_and_snapshots_keep_theirs() {
     assert_eq!(inverse(&before, 0), vec![0, 2]);
 }
 
-#[test]
-fn a_reference_lists_the_pages_of_rows_naming_each_page() {
-    let page = super::column::PAGE_ROWS as u64;
-    // The first page of rows names cell 0. The rows after name cells of the second page.
-    let cells: Vec<u64> = (0..3 * page).map(|row| if row < page { 0 } else { page + row % 10 }).collect();
-    let data = Data::new("grid");
-    data.apply(
-        Patch::new()
-            .set(Table::new("Cell", Ids::count(page as u32 + 100)))
-            .set(Table::new("Row", Ids::count(3 * page as u32)).reference("cell", "Cell", cells)),
-    )
-    .expect("valid");
-    let data = data.snapshot();
-    let Some(super::table::Field::Reference(reference)) = data.table("Row").and_then(|t| t.field_named("cell")) else {
-        panic!("a reference");
-    };
-    assert_eq!(reference.readers(&[0]), [0]);
-    assert_eq!(reference.readers(&[1]), [1, 2]);
-    assert_eq!(reference.readers(&[0, 1]), [0, 1, 2], "every page named");
-    assert_eq!(reference.readers(&[]), [0_u32; 0]);
-}
-
 /// A dataset of `rows` rows of `Line` with a `flow` sampled over `frames` frames, one per second.
 fn sampled(rows: usize, frames: usize) -> Snapshot {
     let data = Data::new("grid");

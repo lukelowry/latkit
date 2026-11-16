@@ -138,6 +138,14 @@ impl Runs {
         &self.0
     }
 
+    /// The rows of `runs`, which ascend.
+    #[cfg(test)]
+    pub(crate) fn of(runs: &[Range<u32>]) -> Runs {
+        let mut rows = Runs::default();
+        runs.iter().cloned().for_each(|run| rows.push(run));
+        rows
+    }
+
     /// Adds `run`, which starts at or after the end of every run held.
     fn push(&mut self, run: Range<u32>) {
         match self.0.last_mut() {

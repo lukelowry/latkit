@@ -1,7 +1,8 @@
+use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use super::bits::Bits;
-use super::column::{Column, PAGE_BITS, PAGE_ROWS, Page};
+use super::column::{Column, Page};
 use super::ids::{Ids, Index, RowIds};
 use super::name::{Id, IdRef, Name, PageId, Version};
 use super::samples::Samples;
@@ -67,12 +68,44 @@ pub(crate) struct Inverse {
 }
 
 impl Inverse {
+    /// The rows naming each target, given every row's target row, or [`UNWIRED`] where it names
+    /// none. Counts the rows per target, prefix-sums the counts, then writes each row into its
+    /// target's range.
+    pub(crate) fn new(targets: &[u32]) -> Inverse {
+        let wired = || targets.iter().filter(|&&t| t != UNWIRED);
+        let count = wired().max().map_or(0, |&t| t as usize + 1);
+        let mut starts = vec![0_u32; count + 1];
+        for &t in wired() {
+            starts[t as usize + 1] += 1;
+        }
+        for t in 0..count {
+            starts[t + 1] += starts[t];
+        }
+        let mut next = starts.clone();
+        let mut rows = vec![0_u32; starts[count] as usize];
+        for (row, &t) in targets.iter().enumerate() {
+            if t != UNWIRED {
+                rows[next[t as usize] as usize] = row as u32;
+                next[t as usize] += 1;
+            }
+        }
+        Inverse { starts, rows }
+    }
+
     /// The rows that reference target row `target`.
     pub(crate) fn of(&self, target: usize) -> &[u32] {
-        match (self.starts.get(target), self.starts.get(target + 1)) {
-            (Some(&start), Some(&end)) => &self.rows[start as usize..end as usize],
-            _ => &[],
-        }
+        self.over(target as u32..target as u32 + 1)
+    }
+
+    /// The rows that reference any of target rows `targets`, by target.
+    pub(crate) fn over(&self, targets: Range<u32>) -> &[u32] {
+        let at = |target: u32| self.starts.get(target as usize).or(self.starts.last()).map_or(0, |&at| at as usize);
+        &self.rows[at(targets.start)..at(targets.end)]
+    }
+
+    /// The number of target rows that any row references, up to the last one.
+    pub(crate) fn targets(&self) -> usize {
+        self.starts.len().saturating_sub(1)
     }
 }
 
@@ -193,49 +226,9 @@ impl Reference {
         }
     }
 
-    /// The rows that reference each target row. Built once by counting the rows per target,
-    /// prefix-summing the counts, then writing each row into its target's range.
+    /// The rows that reference each target row, built once.
     pub(crate) fn inverse(&self) -> &Inverse {
-        self.inverse.get_or_init(|| {
-            let targets = self.targets();
-            let count = targets.iter().filter(|&&t| t != UNWIRED).max().map_or(0, |&t| t as usize + 1);
-            let mut starts = vec![0_u32; count + 1];
-            for &t in targets.iter().filter(|&&t| t != UNWIRED) {
-                starts[t as usize + 1] += 1;
-            }
-            for t in 0..count {
-                starts[t + 1] += starts[t];
-            }
-            let mut next = starts.clone();
-            let mut rows = vec![0_u32; starts[count] as usize];
-            for (row, &t) in targets.iter().enumerate() {
-                if t != UNWIRED {
-                    rows[next[t as usize] as usize] = row as u32;
-                    next[t as usize] += 1;
-                }
-            }
-            Inverse { starts, rows }
-        })
-    }
-
-    /// The pages of rows holding a row that references any row in pages `pages` of the target
-    /// table, ascending. Every page of rows when `pages` lists every page that is referenced.
-    pub(crate) fn readers(&self, pages: &[u32]) -> Vec<u32> {
-        let inverse = self.inverse();
-        let count = self.rows.pages().len();
-        let targets = inverse.starts.len() - 1;
-        if pages.len() >= targets.div_ceil(PAGE_ROWS) {
-            return (0..count as u32).collect();
-        }
-        let mut reads = vec![false; count];
-        for &page in pages {
-            let at = |target: usize| inverse.starts[target.min(targets)] as usize;
-            let (first, end) = (page as usize * PAGE_ROWS, (page as usize + 1) * PAGE_ROWS);
-            for &row in &inverse.rows[at(first)..at(end)] {
-                reads[row as usize >> PAGE_BITS] = true;
-            }
-        }
-        (0..count as u32).filter(|&page| reads[page as usize]).collect()
+        self.inverse.get_or_init(|| Inverse::new(&self.targets()))
     }
 
     /// Whether `rows` must be resolved again against a target with these versions.

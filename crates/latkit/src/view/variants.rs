@@ -331,19 +331,24 @@ impl View {
         channels(self.marks.iter())
     }
 
-    /// The targets the view's frames draw into, each a format and sample count: those it asked
-    /// pipelines for, else the GPU's default target once a frame has set its sample count.
-    pub(super) fn targets(&self) -> Vec<(wgpu::TextureFormat, u32)> {
-        let mut targets: Vec<_> = Vec::new();
+    /// The multisample count of its frames at `pixel_ratio` (see [`samples`]).
+    pub(super) fn samples(&self, pixel_ratio: f32) -> u32 {
+        samples(&self.scene, self.gpu.samples_for(pixel_ratio))
+    }
+
+    /// The formats the view's frames draw into: those it asked pipelines for, else the GPU's
+    /// default.
+    pub(super) fn formats(&self) -> Vec<wgpu::TextureFormat> {
+        let mut formats: Vec<_> = Vec::new();
         for asking in &self.asked {
-            if !targets.contains(&asking.target) {
-                targets.push(asking.target);
+            if !formats.contains(&asking.target.0) {
+                formats.push(asking.target.0);
             }
         }
-        if targets.is_empty() {
-            targets.extend(self.gpu.samples().map(|samples| (crate::gpu::FORMAT, samples)));
+        if formats.is_empty() {
+            formats.push(crate::gpu::FORMAT);
         }
-        targets
+        formats
     }
 
     /// Why the browser refused to build a pipeline the view asked for, if it refused one.
@@ -409,6 +414,14 @@ pub(super) fn channels<'a>(marks: impl Iterator<Item = &'a Shown> + Clone) -> Ve
         channels.push(Asked::Shader(Variant::raster(Shader::Words, "maximum")));
     }
     channels
+}
+
+/// The multisample count frames of `scene` draw with, on a GPU whose screen takes `most`. Only
+/// areas need more than one sample: their triangle edges are the edges of the shape. Points,
+/// strokes, text, and the backdrop antialias in their shaders, hooks included, so a scene without
+/// areas draws one sample a pixel, and reads the depth it drew without drawing it again.
+pub(super) fn samples(scene: &Scene, most: u32) -> u32 {
+    if scene.marks.iter().any(|mark| mark.kind() == MarkKind::Areas) { most } else { 1 }
 }
 
 /// The pipelines a frame of `scene` into `format` at `samples` per pixel draws with, except each
@@ -532,7 +545,22 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Edges, Event, Lines, Plane, Vertices};
+    use crate::{Areas, Edges, Event, Lines, Plane, Vertices};
+
+    #[test]
+    fn only_a_scene_that_draws_areas_multisamples() {
+        let graph = Scene::new(Plane::default()).draw(Vertices::of("g", "V")).draw(Edges::of("g", "E").ends("a", "b"));
+        let map = graph.clone().draw(Areas::of("g", "A"));
+        assert_eq!([samples(&graph, 4), samples(&map, 4), samples(&map, 1)], [1, 4, 1]);
+        // One sample a pixel leaves depth readable where it was drawn, so only a multisampled
+        // scene asks for the pipelines that draw it again for probes.
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let replays = |scene: &Scene| {
+            let backdrop = Variant::draw(Shader::Backdrop, format, 1).projection(Projection::of(&scene.space));
+            stages(scene, format, samples(scene, 4)).of(Stage::Input).contains(&Asked::Shader(backdrop))
+        };
+        assert!(!replays(&graph) && replays(&map));
+    }
 
     #[test]
     fn only_marks_that_frame_a_fit_ask_for_a_bounds_pass() {
@@ -716,7 +744,7 @@ mod tests {
         let after = Scene::new(Plane::default())
             .draw(Vertices::of("g", "V"))
             .draw(Edges::of("g", "E").ends("a", "b").flow(crate::field("s")));
-        let new: Vec<Asked> = draws(&after, format, gpu.samples().expect("set"))
+        let new: Vec<Asked> = draws(&after, format, samples(&after, gpu.samples().expect("set")))
             .into_iter()
             .filter(|need| !drawn.contains(need))
             .collect();

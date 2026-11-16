@@ -420,7 +420,12 @@ fn hover_is_reported_without_glow_and_follows_the_frame() {
     let data = graph();
     let mut view = view_of(&gpu, Controls { hover: false, ..Controls::default() }, &data);
     let at = [C + 40.0, C];
-    let hovered = after(&gpu, &mut view, &[moved(at)], |e| match e {
+    // The frame that probes reads the depth it drew: it draws nothing a second time.
+    let still = view.stats().draws;
+    view.input(&moved(at), common::now());
+    step(&gpu, &mut view);
+    assert_eq!(view.stats().draws, still, "a probe adds no draw");
+    let hovered = after(&gpu, &mut view, &[], |e| match e {
         Event::Hovered { hit: Some(hit), trigger } => Some((hit.row.clone(), trigger.device)),
         _ => None,
     });
