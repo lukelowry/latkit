@@ -1,5 +1,28 @@
 # latkit
 
+## 0.9.0
+
+### Minor Changes
+
+- 6d460a1: A field can be read from the row a reference names, and a write costs what it changes through joins, transitions, and typed arrays.
+
+  - Added: `field(name).of(reference)`, `{ "field": name, "of": reference }` in JSON, and `Expr::of` in Rust. It reads the field from the row that a reference field of the mark's own table names, such as `field('kv').of('from')` for an edge's first bus. Writing that row changes every row that names it. A row whose reference names no row reads a missing value. In a table too large to draw at once, a position that adds a field read through a reference moves its rows without paging the table again.
+  - Changed: a write to a table that a mark reads through `from` or `of` evaluates only the pages of the mark's rows that read the rows written. Before, it evaluated every row of the mark.
+  - Changed: a join of two tables that list the same ids in the same order costs nothing: its fields read like the mark's own. Any other join is built again only when either table's rows come or go, not when values change.
+  - Changed: a transition freezes and eases only the pages a write changed. Before, each write eased every row of the mark.
+  - Changed: `Data.set` and `Data.replace` with typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or not at all, write the columns directly, without an encoded patch. A whole column written with the ids it already has replaces its pages without a lookup per row.
+  - Changed: one pass evaluates a batch of rows, whatever the row's width. Before, a batch took one pass per four words of a row, and one more to pack them.
+  - Fixed: an expression that compares a text with `is` and also uses opaque white drew the wrong color, since the two shared a constant.
+  - Fixed: a canvas drew one frame more when its element's box was reported without a change of size, as it is once after the canvas is made or its device is replaced.
+
+### Patch Changes
+
+- 6d460a1: A write uploads only the rows it changed, and a field written every frame no longer grows GPU memory.
+
+  - Changed: a row written into a table drawn whole uploads its own values into the page the GPU already holds. Before, the whole page of 4,096 rows uploaded into newly allocated memory. `gpu.work.uploaded` counts the rows written, 16 bytes for one.
+  - Changed: a version of a page that no view draws any more is freed at once. Before, it stayed cached, so writing a field every frame grew GPU memory to the budget. A view drawing a `Snapshot` keeps the pages of its version, and `Data.restore` uploads the pages it brings back.
+  - Changed: `f32` values upload as stored, without conversion.
+
 ## 0.8.0
 
 ### Minor Changes
