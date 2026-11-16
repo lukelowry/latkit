@@ -519,10 +519,11 @@ function isReference(field: Values | Reference): field is Reference {
 }
 
 /**
- * Returns the ids and fields of `replace` or `set`, given as `(ids, fields)` or as `(fields)`. With
- * `(fields)` the rows are `0` to `n - 1`, where `n` is the length of the first field's values.
+ * @internal Returns the ids and fields of `replace` or `set`, given as `(ids, fields)` or as
+ * `(fields)`. With `(fields)` the rows are `0` to `n - 1`, where `n` is the length of the first
+ * field's values.
  */
-function rows(ids: RowIds | Fields, fields: Fields | undefined): [RowIds, Fields] {
+export function rows(ids: RowIds | Fields, fields: Fields | undefined): [RowIds, Fields] {
   if (fields !== undefined || isIds(ids)) return [ids as RowIds, fields ?? {}];
   const first = Object.values(ids)[0];
   return [{ count: first ? length(isReference(first) ? first.ids : first) : 0 }, ids];

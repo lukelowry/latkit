@@ -14,7 +14,7 @@ pub(crate) struct Compiled {
     pub(crate) kernel: Arc<str>,
     /// For each plane of four words of the mark's rows, the channels evaluated to write it.
     #[cfg(feature = "gpu")]
-    pub(crate) planes: Arc<[u32]>,
+    pub(crate) texels: Arc<[u32]>,
     pub(crate) drawing: Drawing,
     pub(crate) schemas: Vec<(Name, u64)>,
     pub(crate) failures: Vec<Error>,
@@ -28,7 +28,7 @@ pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Re
     let style = mark.style();
     let Some(data) = all.iter().find(|d| *d.name() == style.data) else { return Ok(None) };
     let Some(table) = data.table(&style.table) else { return Ok(None) };
-    let fields = Schema { table, all };
+    let fields = Schema { data: data.name(), table, all };
     let mut compiler = Compiler::new(&fields);
     let mut drawing = mark.compile(&mut compiler, context)?;
     // A row starts at an RGBA texel. Labels and custom marker inputs keep their
@@ -54,7 +54,7 @@ pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Re
         #[cfg(feature = "gpu")]
         kernel: crate::gpu::kernel::source(&program, width),
         #[cfg(feature = "gpu")]
-        planes: crate::gpu::kernel::plane_channels(&program, width),
+        texels: crate::gpu::kernel::texel_channels(&program, width),
         program: Arc::new(program),
         drawing,
         schemas,
@@ -63,6 +63,7 @@ pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Re
 }
 
 struct Schema<'a> {
+    data: &'a Name,
     table: &'a Table,
     all: &'a [Snapshot],
 }
@@ -88,5 +89,9 @@ impl Fields for Schema<'_> {
             crate::data::Field::Reference(reference) => Some(reference.to.clone()),
             _ => None,
         }
+    }
+
+    fn through(&self, name: &str) -> Option<(Name, Name)> {
+        Some((self.data.clone(), self.target(name)?))
     }
 }

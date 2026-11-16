@@ -565,8 +565,11 @@ fn column_of<'t>(table: &'t Table, name: &Name) -> Option<&'t Column> {
 /// The fields `expr` reads of its mark's own table.
 fn fields_of(expr: &Expr, out: &mut Vec<Name>) {
     expr.for_each_field(&mut |f| {
-        if f.from.is_none() {
-            out.push(f.name.clone());
+        match (&f.from, &f.of) {
+            (None, None) => out.push(f.name.clone()),
+            // A field of the row a reference names changes with the reference.
+            (None, Some(reference)) => out.push(reference.clone()),
+            (Some(_), _) => {}
         }
     });
 }

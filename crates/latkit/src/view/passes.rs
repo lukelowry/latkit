@@ -463,7 +463,8 @@ impl View {
 
     /// Writes the blocks buffer, which each mark's uniform points into. For each mark, it lists the
     /// row blocks it evaluates this frame (every block when a channel changed for every row,
-    /// otherwise the changed pages), then the row blocks whose endpoints it resolves.
+    /// otherwise the changed pages), then the row blocks whose endpoints it resolves. A mark in a
+    /// transition that eases only some blocks lists those, and the blocks it freezes, after them.
     pub(super) fn lay_out_blocks(&mut self) {
         let mut words = Vec::new();
         for shown in &mut self.marks {
@@ -471,11 +472,29 @@ impl View {
             let blocks = if evaluates { listed(shown) } else { Vec::new() };
             shown.block = words.len() as u32;
             shown.block_count = blocks.len() as u32;
+            // Rows that evaluate while a transition runs write its settled words, so it eases them.
+            let every = (shown.dirty != 0 || shown.reduce) && shown.blocks == super::marks::Blocks::All;
+            if let Some(transition) = shown.transition.as_mut().filter(|_| !blocks.is_empty()) {
+                let evaluated: Vec<u32> = blocks.iter().map(|block| block & !wgsl::FRESH).collect();
+                let evaluated = if every { super::marks::Blocks::All } else { super::marks::Blocks::Listed(evaluated) };
+                transition.blocks.merge(&evaluated);
+            }
             words.extend(blocks);
             let ends = if shown.drawable() { shown.unresolved.of(shown.live()) } else { Vec::new() };
             shown.end_block = words.len() as u32;
             shown.end_block_count = ends.len() as u32;
             words.extend(ends);
+            let held = shown.held();
+            let mut list = |blocks: Option<&super::marks::Blocks>| match blocks.and_then(|b| b.listed().map(|_| b)) {
+                Some(blocks) => {
+                    let at = words.len() as u32;
+                    words.extend(blocks.of(held));
+                    at
+                }
+                None => wgsl::NONE,
+            };
+            shown.ease_block = list(shown.transition.as_ref().map(|transition| &transition.blocks));
+            shown.freeze_block = list(Some(&shown.frozen));
         }
         let gpu = self.gpu.clone();
         let resources = self.resources.as_mut().expect("created before passes");

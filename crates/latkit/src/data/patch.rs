@@ -3,7 +3,7 @@ use std::sync::{Arc, OnceLock};
 use super::bytes::DecodeLimits;
 use super::column::Column;
 use super::ids::Ids;
-use super::name::{Name, Version};
+use super::name::{Id, Name, Version};
 use super::samples::{Run, Samples};
 use super::snapshot::Inner;
 use super::table::{Field, Reference, Table};
@@ -419,27 +419,41 @@ fn refill(existing: &Table, input: Table) -> Table {
     }
     let mut kept = existing.clone();
     kept.fields.retain(|(name, field)| !matches!(field, Field::Sampled(..)) && input.field_named(name).is_some());
-    set(&kept, input.clone()).unwrap_or(input)
+    // The same ids in the same order: every row is written where it is, and none is looked up.
+    let writes: Vec<(usize, usize)> = (0..input.len()).map(|row| (row, row)).collect();
+    write(&kept, input.clone(), &writes, &[]).unwrap_or(input)
 }
 
+/// `existing` with `input`'s fields written for `input`'s rows, found by id. Ids it lacks add rows.
 fn set(existing: &Table, input: Table) -> Result<Table> {
     let index = existing.index()?;
     let mut added = Vec::new();
     let mut writes = Vec::with_capacity(input.len());
+    // Rows given in the table's order, as a whole column or a sorted selection is, need no sort.
+    let mut ascending = true;
     for k in 0..input.len() {
         let key = input.ids.key(k).expect("checked ids");
         let row = index.get(&existing.ids, key).unwrap_or_else(|| {
             added.push(key.to_id());
             existing.len() + added.len() - 1
         });
+        ascending &= writes.last().is_none_or(|&(last, _)| last < row);
         writes.push((row, k));
     }
-    writes.sort_unstable();
+    if !ascending {
+        writes.sort_unstable();
+    }
+    write(existing, input, &writes, &added)
+}
+
+/// `existing` with `input`'s fields written: each of `writes` is a row of `existing`, or of the
+/// rows `added` after them, and the row of `input` written there, ascending.
+fn write(existing: &Table, input: Table, writes: &[(usize, usize)], added: &[Id]) -> Result<Table> {
     let len = existing.len() + added.len();
     let mut table = existing.clone();
     if !added.is_empty() {
-        table.ids = existing.ids.extend(&added).map_err(|e| e.at("ids"))?;
-        let index = index.extended(&table.ids, existing.len()).map_err(|e| e.at("ids"))?;
+        table.ids = existing.ids.extend(added).map_err(|e| e.at("ids"))?;
+        let index = existing.index()?.extended(&table.ids, existing.len()).map_err(|e| e.at("ids"))?;
         table.index = Arc::new(OnceLock::from(index));
         table.structure = Version::next();
     }
@@ -447,16 +461,16 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
         let next = match (existing.field_named(&name), field) {
             // A field whose values did not change keeps its pages and version.
             (Some(Field::Values(column, version)), Field::Values(source, _)) => {
-                let written = column.write(len, &writes, &source).map_err(|e| e.at(&name))?;
+                let written = column.write(len, writes, &source).map_err(|e| e.at(&name))?;
                 let version = if written.shares(column) { *version } else { Version::next() };
                 Field::Values(written, version)
             }
             (None, Field::Values(source, _)) => {
-                let column = Column::missing(source.like(), existing.len()).write(len, &writes, &source)?;
+                let column = Column::missing(source.like(), existing.len()).write(len, writes, &source)?;
                 Field::Values(column, Version::next())
             }
             (Some(Field::Reference(old)), Field::Reference(source)) if old.to == source.to => {
-                let ids = old.ids.widened_for(&source.ids).write(len, &writes, &source.ids).map_err(|e| e.at(&name))?;
+                let ids = old.ids.widened_for(&source.ids).write(len, writes, &source.ids).map_err(|e| e.at(&name))?;
                 if ids.shares(&old.ids) {
                     Field::Reference(old.clone())
                 } else {
@@ -472,16 +486,16 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
             // reference that names no row yet can name another table, and missing values write
             // missing references.
             (None, Field::Reference(source)) => {
-                let ids = Column::missing(source.ids.like(), existing.len()).write(len, &writes, &source.ids)?;
+                let ids = Column::missing(source.ids.like(), existing.len()).write(len, writes, &source.ids)?;
                 Field::Reference(Reference::new(source.to, ids))
             }
             (Some(old @ (Field::Values(..) | Field::Reference(..))), Field::Reference(source)) if !old.fixed() => {
-                let ids = Column::missing(source.ids.like(), existing.len()).write(len, &writes, &source.ids)?;
+                let ids = Column::missing(source.ids.like(), existing.len()).write(len, writes, &source.ids)?;
                 Field::Reference(Reference::new(source.to, ids))
             }
             (Some(Field::Reference(old)), Field::Values(source, _)) if !source.fixed() => {
                 let missing = Column::missing(old.ids.like(), source.len());
-                let ids = old.ids.write(len, &writes, &missing).map_err(|e| e.at(&name))?;
+                let ids = old.ids.write(len, writes, &missing).map_err(|e| e.at(&name))?;
                 Field::Reference(Reference { ids, version: Version::next(), inverse: Arc::default(), ..old.clone() })
             }
             (Some(Field::Reference(old)), Field::Reference(source)) => {

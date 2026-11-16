@@ -1,6 +1,6 @@
-//! Bounded row evaluation. A fragment evaluates one row into an integer plane of four of its words,
-//! one draw per plane; a second pass packs those planes into the existing arena layout. Callers
-//! copy just the changed pages.
+//! Bounded row evaluation. A fragment evaluates one row and writes one texel of it, four of its
+//! words, and one pass writes a batch of rows as the arena stores them. Callers copy just the
+//! changed pages.
 
 use std::sync::Arc;
 
@@ -9,8 +9,8 @@ use bytemuck::Zeroable as _;
 use super::pipelines::Variant;
 use super::raster::Raster;
 use super::retired::Retired;
-use super::shaders::{PAGE_ROWS, STATE_WORDS, Shader, StateStep, WordStep};
-use super::words::{WIDTH, Words, origin, spans};
+use super::shaders::{PAGE_ROWS, STATE_WORDS, Shader, StateStep};
+use super::words::{WIDTH, Words};
 
 /// Sixteen pages keep evaluation scratch independent of the number of rows in a scene.
 pub(crate) const BATCH: u32 = 16 * PAGE_ROWS;
@@ -27,8 +27,8 @@ pub(crate) struct Inputs<'a> {
 }
 
 pub(crate) struct State {
-    planes: [Words; 8],
-    packed: Words,
+    /// A batch of evaluated rows, each row's texels side by side.
+    rows: Words,
     summary: Words,
     maximum: super::reduce::Maximum,
 }
@@ -36,17 +36,16 @@ pub(crate) struct State {
 impl State {
     pub(crate) fn new(device: &wgpu::Device, retired: &Retired) -> State {
         State {
-            planes: std::array::from_fn(|_| Words::new(device, retired, "latkit row plane")),
-            packed: Words::new(device, retired, "latkit packed rows"),
+            rows: Words::new(device, retired, "latkit evaluated rows"),
             summary: Words::new(device, retired, "latkit domain summaries"),
             maximum: super::reduce::Maximum::new(device, retired),
         }
     }
 
-    /// Evaluates a batch using `entry`, returning packed row words. With a kernel, the pass writing
-    /// plane `i` evaluates the channels `planes[i]` names, or every channel past the list's end.
-    /// This only records commands; values stay on the GPU and the caller owns submission and sparse
-    /// destination copies.
+    /// Evaluates a batch using `entry` in one pass, returning its rows' words, `width` per row.
+    /// With a kernel, a fragment writing texel `i` of a row evaluates the channels `texels[i]`
+    /// names, or every channel past the list's end. This only records commands. Values stay on the
+    /// GPU, and the caller owns submission and sparse destination copies.
     pub(crate) fn record<'s>(
         &'s mut self,
         raster: &mut Raster<'_>,
@@ -56,7 +55,7 @@ impl State {
         mut step: StateStep,
         width: u32,
     ) -> &'s Words {
-        assert!(step.rows > 0 && step.rows <= BATCH && width <= STATE_WORDS);
+        assert!(step.rows > 0 && step.rows <= BATCH && width.is_multiple_of(4) && width <= STATE_WORDS);
         let shader = Shader::State;
         let reads = if matches!(entry, "evaluate" | "reduce") { input.reads } else { super::pipelines::Reads::ALL };
         let variant = Variant::state(shader, entry, reads);
@@ -65,60 +64,52 @@ impl State {
         } else {
             (raster.pipelines.render(raster.device, variant), &[][..])
         };
-        let used = width.div_ceil(4) as usize;
-        for plane in &mut self.planes[..used] {
-            plane.ensure(raster.device, u64::from(step.rows) * 4);
+        for (texel, mask) in step.texels.as_flattened_mut().iter_mut().enumerate() {
+            *mask = channels.get(texel).copied().unwrap_or(u32::MAX);
         }
+        // The widest row over a whole batch fills one layer.
+        let texels = step.rows * (width / 4);
+        self.rows.ensure(raster.device, u64::from(texels) * 4);
         let layout = raster.pipelines.pass_layout(raster.device, shader);
-        let base = step.word;
-        for plane in 0..used {
-            step.word = base + plane as u32 * 4;
-            step.channels = channels.get(plane).copied().unwrap_or(u32::MAX);
-            let uniform = raster.queue.uniform(raster.device, bytemuck::bytes_of(&step));
-            let entries: Vec<_> = shader
-                .source()
-                .pass
-                .iter()
-                .map(|binding| wgpu::BindGroupEntry {
-                    binding: binding.slot,
-                    resource: match binding.slot {
-                        0 => input.pages.binding(),
-                        4 => input.domains.binding(),
-                        12 => input.remap.binding(),
-                        16 => input.blocks.binding(),
-                        17 => uniform.as_entire_binding(),
-                        _ => unreachable!("row evaluator binding"),
-                    },
-                })
-                .collect();
-            let group = raster.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("latkit state inputs"),
-                layout: &layout,
-                entries: &entries,
-            });
-            let view = self.planes[plane].attachment(0);
-            let mut pass = raster.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(entry),
-                color_attachments: &[Some(target(&view))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, input.view, &[]);
-            pass.set_bind_group(1, input.mark, &[input.offset]);
-            pass.set_bind_group(2, &group, &[]);
-            pass.set_scissor_rect(0, 0, step.rows.min(WIDTH), step.rows.div_ceil(WIDTH));
-            pass.draw(0..3, 0..1);
-        }
-        // A four-word row already occupies one complete texel in the first plane.
-        // Areas and domain reductions can consume it directly, without a packing pass.
-        if width == 4 {
-            return &self.planes[0];
-        }
-        self.pack(raster, step.rows, width);
-        &self.packed
+        let uniform = raster.queue.uniform(raster.device, bytemuck::bytes_of(&step));
+        let entries: Vec<_> = shader
+            .source()
+            .pass
+            .iter()
+            .map(|binding| wgpu::BindGroupEntry {
+                binding: binding.slot,
+                resource: match binding.slot {
+                    0 => input.pages.binding(),
+                    4 => input.domains.binding(),
+                    12 => input.remap.binding(),
+                    16 => input.blocks.binding(),
+                    17 => uniform.as_entire_binding(),
+                    _ => unreachable!("row evaluator binding"),
+                },
+            })
+            .collect();
+        let group = raster.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("latkit state inputs"),
+            layout: &layout,
+            entries: &entries,
+        });
+        let view = self.rows.attachment(0);
+        let mut pass = raster.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(entry),
+            color_attachments: &[Some(target(&view))],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, input.view, &[]);
+        pass.set_bind_group(1, input.mark, &[input.offset]);
+        pass.set_bind_group(2, &group, &[]);
+        pass.set_scissor_rect(0, 0, texels.min(WIDTH), texels.div_ceil(WIDTH));
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        &self.rows
     }
 
     /// Fits a mark's domains over its live rows without reading an intermediate result on the
@@ -157,7 +148,7 @@ impl State {
                 );
                 self.maximum.record(
                     raster,
-                    At::new(&self.planes[0], 0),
+                    At::new(&self.rows, 0),
                     At::new(&self.summary, batch * 4),
                     (rows - first).min(BATCH),
                 );
@@ -168,46 +159,6 @@ impl State {
                 At::new(input.domains, destination + domain * 2),
                 batches,
             );
-        }
-    }
-
-    fn pack(&mut self, raster: &mut Raster<'_>, rows: u32, width: u32) {
-        let count = rows * width;
-        self.packed.ensure(raster.device, u64::from(count.next_multiple_of(4)));
-        let layout = raster.pipelines.pass_layout(raster.device, Shader::Pack);
-        let pipeline = raster.pipelines.render(raster.device, Variant::raster(Shader::Pack, "pack"));
-        for part in spans(0, count.next_multiple_of(4)) {
-            let at = origin(part.at);
-            let step = WordStep { source: 0, other: 0, destination: 0, count, layer: at.z, value: width, size: [0; 2] };
-            let uniform = raster.queue.uniform(raster.device, bytemuck::bytes_of(&step));
-            let mut entries: Vec<_> = self
-                .planes
-                .iter()
-                .enumerate()
-                .map(|(i, plane)| wgpu::BindGroupEntry { binding: i as u32, resource: plane.binding() })
-                .collect();
-            entries.push(wgpu::BindGroupEntry { binding: 8, resource: uniform.as_entire_binding() });
-            let group = raster.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("latkit row packing"),
-                layout: &layout,
-                entries: &entries,
-            });
-            let view = self.packed.attachment(at.z);
-            let mut pass = raster.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("latkit row packing"),
-                color_attachments: &[Some(target(&view))],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &raster.pipelines.empty, &[]);
-            pass.set_bind_group(1, &raster.pipelines.empty, &[]);
-            pass.set_bind_group(2, &group, &[]);
-            let size = part.size();
-            pass.set_scissor_rect(at.x, at.y, size.width, size.height);
-            pass.draw(0..3, 0..1);
         }
     }
 }
@@ -229,11 +180,11 @@ mod tests {
 
     #[test]
     fn generated_channels_preserve_bits_sparse_rows_and_wide_extras() {
-        evaluated_rows(21);
+        evaluated_rows(24);
     }
 
     #[test]
-    fn compact_rows_preserve_bits_and_relocated_sparse_pages_without_packing() {
+    fn one_texel_rows_preserve_bits_and_relocated_sparse_pages() {
         evaluated_rows(4);
     }
 
@@ -242,7 +193,7 @@ mod tests {
         let Some(mut fixture) = super::super::raster::tests::fixture() else { return };
         let (device, queue) = (&fixture.device, &fixture.queue);
         let rows = 8193u32;
-        let state_words = (rows * width).next_multiple_of(4);
+        let state_words = rows * width;
         let mut values: Vec<u32> = (0..state_words).map(|i| 0xac00_0000 | i).collect();
         values.extend((0..rows).map(|i| (i as f32).to_bits()));
         values.resize(values.len().next_multiple_of(4), 0);
@@ -262,7 +213,7 @@ mod tests {
             });
         }
         let kernel = kernel::source(&program, width);
-        let planes = kernel::plane_channels(&program, width);
+        let texels = kernel::texel_channels(&program, width);
         let mut words = vec![0u32; 40];
         for page in 0..3 {
             words[page] = page as u32 * w::PAGE_ROWS * width;
@@ -288,7 +239,8 @@ mod tests {
             constants: 16,
             frozen: w::NONE,
             settled: w::NONE,
-            mask: 0x0015_5555,
+            // Every other channel changed, and none of the second texel's.
+            mask: 0x0055_5505,
             channels: width,
             ..w::Mark::zeroed()
         };
@@ -344,8 +296,8 @@ mod tests {
             &mut raster,
             &input,
             "evaluate",
-            Some((&kernel, &planes)),
-            StateStep { first: 0, rows, block: 0, word: 0, ..StateStep::zeroed() },
+            Some((&kernel, &texels)),
+            StateStep { first: 0, rows, block: 0, ..StateStep::zeroed() },
             width,
         );
         let read = Readback::words(

@@ -1,6 +1,7 @@
 //! Writes: a row written into an unpaged table uploads its own texel into the page the GPU already
-//! holds. However often a column is written, nothing is allocated. A view drawing an earlier
-//! version keeps it, and rows that come, go, or come back draw as written.
+//! holds. However often a column is written, nothing is allocated. A row that reads a field of the
+//! row it references follows writes to that row. A view drawing an earlier version keeps it, and
+//! rows that come, go, or come back draw as written.
 
 #![cfg(feature = "gpu")]
 
@@ -47,7 +48,7 @@ fn gray() -> Vertices {
 /// A scene of `marks` that changes without easing.
 fn scene(marks: impl IntoIterator<Item = Vertices>) -> Scene {
     let plain = Scene::new(plane()).theme(plain_theme()).ease(Duration::ZERO);
-    marks.into_iter().fold(plain, |scene, mark| scene.draw(mark))
+    marks.into_iter().fold(plain, Scene::draw)
 }
 
 /// A view of `scene` drawing `source`, with its first frames drawn.
@@ -134,7 +135,8 @@ fn written_texts_and_positions_rewrite_in_place() {
         .color(when(field("kind").is("on")).then(Color::WHITE).otherwise(red));
     let mut view = shown(&gpu, scene([mark]), &data);
     let resident = gpu.resident();
-    // A text the field has not held before: its code is written into the page of codes.
+    // A text the field has not held before: its code is written into the page of codes. The
+    // color it selects is opaque white, whose bits a text's code starts with.
     let before = gpu.work();
     data.apply(Table::new("P", vec![u64::from(SHOWN)]).field("kind", vec!["on"])).expect("valid");
     let pixels = frame(&gpu, &mut view);
@@ -148,6 +150,37 @@ fn written_texts_and_positions_rewrite_in_place() {
     assert!(!close(pixel(&pixels, 0), WHITE), "away from where it was");
     assert_eq!((gpu.work() - before).uploaded, 32, "one texel of each page");
     assert_eq!(gpu.resident(), resident);
+}
+
+#[test]
+fn a_field_of_a_referenced_row_follows_that_row() {
+    let Some(gpu) = gpu() else { return };
+    let data = points();
+    // Two tags, each naming a point. Only the first is in view, right of the center.
+    data.apply(Table::new("Tag", Ids::count(2)).field("x", vec![20.0, 1000.0]).field("y", vec![0.0, 0.0]).reference(
+        "of",
+        "P",
+        vec![u64::from(SHOWN), 7],
+    ))
+    .expect("valid");
+    let tags = Vertices::of("points", "Tag")
+        .position(field("x"), field("y"))
+        .radius(6.0)
+        .color(field("v").of("of").colormap(Colormap::GRAYS).domain(0.0..=1.0));
+    let mut view = shown(&gpu, scene([tags]), &data);
+    // Writing the point changes the tag naming it: one texel uploads, and only the tags evaluate.
+    let before = gpu.work();
+    write(&data, 1.0);
+    let pixels = frame(&gpu, &mut view);
+    let work = gpu.work() - before;
+    assert!(close(pixel(&pixels, 20), WHITE), "the tag reads its point: {:?}", pixel(&pixels, 20));
+    assert_eq!(work.uploaded, 16, "one texel of the point's page");
+    assert!(work.evaluated <= 2, "only the tags evaluate: {}", work.evaluated);
+    // A tag that names another point reads that one.
+    data.apply(Table::new("Tag", vec![0_u64]).reference("of", "P", vec![7_u64])).expect("valid");
+    let pixels = frame(&gpu, &mut view);
+    assert!(!close(pixel(&pixels, 20), WHITE), "the tag reads the point it names now: {:?}", pixel(&pixels, 20));
+    assert_eq!(errors(&mut view), []);
 }
 
 #[test]

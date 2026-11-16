@@ -143,9 +143,13 @@ impl schemars::JsonSchema for Value {
 pub(crate) enum Picks<'a> {
     /// Value `i` is row `rows[i]` of the pages.
     Rows(&'a [usize]),
-    /// Value `i` is row `from[i]` of the pages where it is written, else row `i` of the first
-    /// source while `i < kept`, else missing.
-    Writes { from: &'a [Option<usize>], kept: usize },
+    /// Value `i` is row `rows[i]` of the pages, or missing where it is `None`.
+    Found(&'a [Option<usize>]),
+    /// A page of `len` values, written over the first source, which holds `kept` of them. Each of
+    /// `writes` is a row of the column and the row of the pages written there, ascending by the
+    /// column's row, and the page begins at the column's row `start`. A value not written is the
+    /// first source's at the same index, or missing past its end.
+    Written { writes: &'a [(usize, usize)], start: usize, kept: usize, len: usize },
 }
 
 /// A run of values to copy, and its length. The run is a source and its first row, with
@@ -153,35 +157,33 @@ pub(crate) enum Picks<'a> {
 type Run = (Option<(usize, usize)>, usize);
 
 impl Picks<'_> {
-    fn len(self) -> usize {
-        match self {
-            Picks::Rows(rows) => rows.len(),
-            Picks::Writes { from, .. } => from.len(),
-        }
-    }
-
-    /// The source and row of value `i`, or `None` where it is missing.
-    #[inline]
-    fn get(self, i: usize) -> Option<(usize, usize)> {
-        let paged = |row: usize| Some((1 + (row >> PAGE_BITS), row & PAGE_MASK));
-        match self {
-            Picks::Rows(rows) => paged(rows[i]),
-            Picks::Writes { from, kept } => match from[i] {
-                Some(row) => paged(row),
-                None => (i < kept).then_some((0, i)),
-            },
-        }
-    }
-
-    /// The picks grouped into runs, in order.
+    /// The picks grouped into runs, in order. A written page costs its writes, not its rows.
     fn runs(self) -> Vec<Run> {
         let mut runs: Vec<Run> = Vec::new();
-        for i in 0..self.len() {
-            let pick = self.get(i);
-            match runs.last_mut() {
-                Some((Some((s, r)), n)) if pick == Some((*s, *r + *n)) => *n += 1,
-                Some((None, n)) if pick.is_none() => *n += 1,
-                _ => runs.push((pick, 1)),
+        let mut push = |pick: Option<(usize, usize)>, n: usize| match runs.last_mut() {
+            _ if n == 0 => {}
+            Some((Some((s, r)), had)) if pick == Some((*s, *r + *had)) => *had += n,
+            Some((None, had)) if pick.is_none() => *had += n,
+            _ => runs.push((pick, n)),
+        };
+        let paged = |row: usize| Some((1 + (row >> PAGE_BITS), row & PAGE_MASK));
+        match self {
+            Picks::Rows(rows) => rows.iter().for_each(|&row| push(paged(row), 1)),
+            Picks::Found(rows) => rows.iter().for_each(|row| push(row.and_then(paged), 1)),
+            Picks::Written { writes, start, kept, len } => {
+                let end = (start + len, 0);
+                let mut at = 0;
+                for &(row, written) in writes.iter().chain([&end]) {
+                    // The values up to the next write are the first source's, then missing.
+                    let to = row - start;
+                    let held = to.min(kept).max(at);
+                    push(Some((0, at)), held - at);
+                    push(None, to - held);
+                    if to < len {
+                        push(paged(written), 1);
+                    }
+                    at = to + 1;
+                }
             }
         }
         runs
@@ -388,8 +390,15 @@ impl Values {
         if let Some(other) = sources.iter().find(|s| s.kind() != kind) {
             return Err(Error::invalid(format!("{:?} values for a {kind:?} field", other.kind())));
         }
+        Ok(Values::picked(sources, picks))
+    }
+
+    /// The values `picks` names among `sources`, which all hold the first source's kind. Unlike
+    /// [`assemble`](Values::assemble), it looks only at the sources picked from, so a page of a
+    /// large column costs the page.
+    pub(crate) fn picked(sources: &[&Values], picks: Picks<'_>) -> Values {
         // Consecutive rows from one source copy as a run.
-        Ok(Values::of_runs(sources, &picks.runs()))
+        Values::of_runs(sources, &picks.runs())
     }
 
     /// `parts` concatenated in the first part's storage, converting numbers from other storages.
@@ -406,20 +415,17 @@ impl Values {
     fn of_runs(sources: &[&Values], runs: &[Run]) -> Values {
         let len = runs.iter().map(|&(_, n)| n).sum();
         let like = sources.first().expect("a source");
+        // A run from a source stored like the first is copied. A run from another storage converts
+        // alone, so a write costs the values written, however many pages its source holds.
         macro_rules! numbers {
-            ($variant:ident, $t:ty, $store:expr) => {{
-                let cast: Vec<Values> = sources.iter().map(|s| s.cast(|x| x as $t, $store)).collect();
-                let typed: Vec<&[$t]> = cast
-                    .iter()
-                    .map(|values| match &values.array {
-                        Array::$variant(v) => &v[..],
-                        _ => unreachable!("cast to the first source's storage"),
-                    })
-                    .collect();
+            ($variant:ident, $t:ty) => {{
                 let mut out: Vec<$t> = Vec::with_capacity(len);
                 for &(run, n) in runs {
                     match run {
-                        Some((s, r)) => out.extend_from_slice(&typed[s][r..r + n]),
+                        Some((s, r)) => match &sources[s].array {
+                            Array::$variant(v) => out.extend_from_slice(&v[r..r + n]),
+                            _ => sources[s].slice(r..r + n).extend_numbers(&mut out, |x| x.unwrap_or(0.0) as $t),
+                        },
                         None => out.resize(out.len() + n, <$t>::default()),
                     }
                 }
@@ -427,11 +433,11 @@ impl Values {
             }};
         }
         let array = match &like.array {
-            Array::F64(_) => numbers!(F64, f64, Store::F64),
-            Array::F32(_) => numbers!(F32, f32, Store::F32),
-            Array::I32(_) => numbers!(I32, i32, Store::I32),
-            Array::U32(_) => numbers!(U32, u32, Store::U32),
-            Array::U64(_) => numbers!(U64, u64, Store::U64),
+            Array::F64(_) => numbers!(F64, f64),
+            Array::F32(_) => numbers!(F32, f32),
+            Array::I32(_) => numbers!(I32, i32),
+            Array::U32(_) => numbers!(U32, u32),
+            Array::U64(_) => numbers!(U64, u64),
             Array::Bool(_) => Array::Bool(
                 runs.iter()
                     .flat_map(|&(run, n)| (0..n).map(move |k| run.map(|(s, r)| (s, r + k))))
@@ -477,27 +483,6 @@ impl Values {
         Values { array, valid: (!all).then(|| bits.finish()) }
     }
 
-    /// Whether `other` holds exactly these values in the same storage. Compares the stored form
-    /// without building any [`Value`]. Floats compare by their bits, so NaN equals itself.
-    pub(crate) fn same(&self, other: &Values) -> bool {
-        let len = self.len();
-        if other.len() != len || (0..len).any(|i| self.is_valid(i) != other.is_valid(i)) {
-            return false;
-        }
-        let bits = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
-        match (&self.array, &other.array) {
-            (Array::F64(a), Array::F64(b)) => bits(a, b),
-            (Array::F32(a), Array::F32(b)) => a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits()),
-            (Array::I32(a), Array::I32(b)) => a[..] == b[..],
-            (Array::U32(a), Array::U32(b)) => a[..] == b[..],
-            (Array::U64(a), Array::U64(b)) => a[..] == b[..],
-            (Array::Bool(a), Array::Bool(b)) => (0..len).all(|i| a.get(i) == b.get(i)),
-            (Array::Text(a), Array::Text(b)) => a.iter().eq(b.iter()),
-            (Array::Geometry(a), Array::Geometry(b)) => (0..len).all(|i| a.same_row(i, b, i)),
-            _ => false,
-        }
-    }
-
     /// Whether value `i` equals value `j` of `other` as stored. Floats compare by their bits, so
     /// NaN equals itself. Two missing values are equal, and values in different storages differ.
     pub(crate) fn same_row(&self, i: usize, other: &Values, j: usize) -> bool {
@@ -521,34 +506,24 @@ impl Values {
         }
     }
 
-    /// Numbers converted to `store`. Other kinds are unchanged.
-    fn cast<T: Copy>(&self, convert: impl Fn(f64) -> T, store: Store) -> Values
-    where
-        Buffer<T>: Into<Array>,
-    {
-        let same = matches!(
-            (&self.array, store),
-            (Array::F64(_), Store::F64)
-                | (Array::F32(_), Store::F32)
-                | (Array::I32(_), Store::I32)
-                | (Array::U32(_), Store::U32)
-                | (Array::U64(_), Store::U64)
-        );
-        if same || self.kind() != Kind::Number {
-            return self.clone();
+    /// The rows whose stored values differ from `other`'s, ascending. `other` holds as many values.
+    /// Floats compare by their bits, as in [`same_row`](Values::same_row), and values in another
+    /// storage all differ.
+    pub(crate) fn differing(&self, other: &Values) -> Vec<u32> {
+        let rows = |differs: &dyn Fn(usize) -> bool| -> Vec<u32> {
+            (0..self.len()).filter(|&i| differs(i)).map(|i| i as u32).collect()
+        };
+        match (&self.array, &other.array, &self.valid, &other.valid) {
+            (Array::F32(a), Array::F32(b), None, None) => rows(&|i| a[i].to_bits() != b[i].to_bits()),
+            (Array::F64(a), Array::F64(b), None, None) => rows(&|i| a[i].to_bits() != b[i].to_bits()),
+            _ => rows(&|i| !self.same_row(i, other, i)),
         }
-        let converted = self.map_numbers(|x| convert(x.unwrap_or(0.0)));
-        Values { array: Buffer::from(converted).into(), valid: self.valid.clone() }
     }
-}
 
-#[derive(Clone, Copy)]
-enum Store {
-    F64,
-    F32,
-    I32,
-    U32,
-    U64,
+    /// Whether `other` holds its values in the same storage, such as `f32`.
+    pub(crate) fn stored_like(&self, other: &Values) -> bool {
+        std::mem::discriminant(&self.array) == std::mem::discriminant(&other.array)
+    }
 }
 
 macro_rules! array_from_buffer {
@@ -775,12 +750,30 @@ mod tests {
     fn assemble_scatters_and_converts() {
         let base = Values::from(vec![1.0_f64, 2.0, 3.0]);
         let source = Values::from(vec![10_i32, 20]);
-        let from = [None, Some(1), None, Some(0)];
-        let out = Values::assemble(&[&base, &source], Picks::Writes { from: &from, kept: 1 }).expect("numbers");
+        // A page of four values over a page of one, which begins at the column's row 8.
+        let written = Picks::Written { writes: &[(9, 1), (11, 0)], start: 8, kept: 1, len: 4 };
+        let out = Values::assemble(&[&base, &source], written).expect("numbers");
         assert_eq!(
             Vec::<Option<Value>>::from(out),
             vec![Some(Value::Number(1.0)), Some(Value::Number(20.0)), None, Some(Value::Number(10.0))]
         );
+        // With nothing written, the page keeps what it held and grows with missing values.
+        let grown = Picks::Written { writes: &[], start: 0, kept: 3, len: 5 };
+        let out = Values::assemble(&[&base, &source], grown).expect("numbers");
+        assert_eq!(out.len(), 5);
+        assert_eq!((out.get(2), out.get(3)), (Some(Value::Number(3.0)), None));
+    }
+
+    #[test]
+    fn differing_rows_compare_as_stored() {
+        let a = Values::from(vec![1.0_f32, f32::NAN, 3.0]);
+        assert_eq!(a.differing(&Values::from(vec![1.0_f32, f32::NAN, 4.0])), [2], "a NaN equals itself");
+        assert_eq!(a.differing(&Values::from(vec![Some(1.0_f32), None, Some(3.0)])), [1], "missing differs");
+        assert_eq!(a.differing(&Values::from(vec![1.0_f64, 2.0, 3.0])), [0, 1, 2], "another storage differs");
+        assert!(a.stored_like(&a.slice(0..1)) && !a.stored_like(&Values::from(vec![1.0_f64])));
+        let path = |x: f64| Values::from(vec![vec![[0.0, 0.0], [x, 1.0]]]);
+        assert_eq!(path(2.0).differing(&path(2.0)), [0_u32; 0]);
+        assert_eq!(path(2.0).differing(&path(3.0)), [0]);
     }
 
     #[test]
@@ -788,17 +781,6 @@ mod tests {
         let base = Values::from(vec![1.0_f64]);
         let source = Values::from(vec!["a"]);
         assert!(Values::assemble(&[&base, &source], Picks::Rows(&[0])).is_err());
-    }
-
-    #[test]
-    fn same_compares_the_stored_representation() {
-        let a = Values::from(vec![Some(1.0_f64), None, Some(f64::NAN)]);
-        assert!(a.same(&a.slice(0..3)), "a NaN equals itself");
-        assert!(!a.same(&Values::from(vec![Some(1.0_f64), Some(0.0), Some(f64::NAN)])), "missing differs");
-        assert!(!a.same(&Values::from(vec![1.0_f32, 0.0, 0.0])), "another storage differs");
-        let path = |x: f64| Values::from(vec![vec![[0.0, 0.0], [x, 1.0]]]);
-        assert!(path(2.0).same(&path(2.0)));
-        assert!(!path(2.0).same(&path(3.0)));
     }
 
     #[test]
@@ -823,8 +805,8 @@ mod tests {
     fn assemble_gathers_across_sources() {
         let a = Values::from(vec!["x", "y"]);
         let b = Values::from(vec!["z"]);
-        let from = [None, None, Some(0)];
-        let joined = Values::assemble(&[&a, &b], Picks::Writes { from: &from, kept: 2 }).expect("texts");
+        let written = Picks::Written { writes: &[(2, 0)], start: 0, kept: 2, len: 3 };
+        let joined = Values::assemble(&[&a, &b], written).expect("texts");
         assert_eq!(joined.len(), 3);
         assert_eq!(joined.get(2), Some(Value::Text("z".into())));
     }

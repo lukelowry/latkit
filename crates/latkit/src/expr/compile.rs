@@ -49,8 +49,12 @@ pub(crate) enum Words {
     Values,
     /// Text as dictionary codes.
     Codes,
-    /// Referenced rows as `u32`, `NONE` where the reference is unset.
+    /// Referenced rows as `u32`, `NONE` where the reference is unset. Where the referenced table
+    /// is drawn in an order of its own, these are the rows' places in that order.
     Bits,
+    /// Referenced rows as `u32`, as their table lists them however it is drawn, `NONE` where the
+    /// reference is unset. A field read through the reference reads these rows.
+    Rows,
     /// A point's x.
     X,
     /// A point's y.
@@ -60,11 +64,15 @@ pub(crate) enum Words {
     Path,
 }
 
-/// A column a program reads: from the mark's own table, from another dataset's table joined by row
-/// id, or from the derived table the view keeps alongside the mark's table, row for row.
+/// A column a program reads: from the mark's own table, from another table, or from the derived
+/// table the view keeps alongside the mark's table, row for row. A row reads another table's row
+/// with the same id, or with `through`, the row its reference names.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ColumnUse {
     pub(crate) from: Option<(Name, Name)>,
+    /// The program column holding the rows of a reference field of the mark's table, when each
+    /// row reads the row of `from` that its reference names.
+    pub(crate) through: Option<u32>,
     pub(crate) derived: bool,
     pub(crate) name: Name,
     pub(crate) words: Words,
@@ -81,6 +89,7 @@ impl ColumnUse {
     fn own(name: impl Into<Name>, words: Words) -> ColumnUse {
         ColumnUse {
             from: None,
+            through: None,
             derived: false,
             name: name.into(),
             words,
@@ -198,6 +207,9 @@ pub(crate) trait Fields {
     fn kind(&self, from: Option<&(Name, Name)>, name: &str) -> Option<Kind>;
     /// The table that reference field `name` of the mark's table points to.
     fn target(&self, name: &str) -> Option<Name>;
+    /// The dataset and table that reference field `name` of the mark's table points to: the
+    /// mark's own dataset, and `target`.
+    fn through(&self, name: &str) -> Option<(Name, Name)>;
     /// Whether `name` holds no value yet, so its kind is not fixed. Such a field reads as missing,
     /// whatever kind its use needs.
     fn empty(&self, from: Option<&(Name, Name)>, name: &str) -> bool;
@@ -222,6 +234,10 @@ pub(crate) struct Compiler<'a> {
     /// Code of each fitted domain's reduction, placed after the channels by `finish`.
     reductions: Vec<Vec<[u32; 4]>>,
     reducing: bool,
+    /// The constants that expressions share: each holds a value written in the scene. The others
+    /// are filled in by the view, such as a text's code or a history's range, so a value that
+    /// happens to equal one never shares it.
+    shared: Vec<u32>,
     /// Why options did not fit the data. Each such option stores what it stores unset.
     pub(crate) failures: Vec<Error>,
 }
@@ -240,6 +256,7 @@ impl<'a> Compiler<'a> {
             columns_read: 0,
             reductions: Vec::new(),
             reducing: false,
+            shared: Vec::new(),
             failures: Vec::new(),
         }
     }
@@ -350,9 +367,7 @@ impl<'a> Compiler<'a> {
             Node::State(State::Pointer) => Some("the pointer"),
             Node::State(State::Elapsed) => Some("time"),
             Node::State(State::Zoom) => Some("the zoom"),
-            Node::Field(f) if self.fields.kind(f.from.as_ref(), &f.name) == Some(Kind::Sampled) => {
-                Some("a sampled field")
-            }
+            Node::Field(f) if self.kind_of(f) == Some(Kind::Sampled) => Some("a sampled field"),
             _ => expr.children().find_map(|child| self.unstructural(child)),
         }
     }
@@ -390,8 +405,7 @@ impl<'a> Compiler<'a> {
     /// between one and missing.
     pub(crate) fn writes_number(&self, expr: &Expr) -> bool {
         let Ok(Some(f)) = text_field(expr, None) else { return true };
-        let from = f.from.as_ref();
-        !self.fields.empty(from, &f.name) && self.fields.kind(from, &f.name).is_some_and(|kind| kind != Kind::Text)
+        !self.empty(f) && self.kind_of(f).is_some_and(|kind| kind != Kind::Text)
     }
 
     /// Compiles channel `name`, which stores at `word` the dictionary code of text field `expr`.
@@ -486,7 +500,7 @@ impl<'a> Compiler<'a> {
     /// The column of a plain number field or point component, with its low part.
     fn plain(&mut self, e: &Expr) -> Option<u32> {
         let Node::Field(f) = &*e.0 else { return None };
-        if f.from.is_some() || f.step {
+        if f.from.is_some() || f.of.is_some() || f.step {
             return None;
         }
         let words = match (self.fields.kind(None, &f.name)?, f.component) {
@@ -509,14 +523,14 @@ impl<'a> Compiler<'a> {
     fn missing(&self, e: &Expr) -> bool {
         match &*e.0 {
             Node::Missing => true,
-            Node::Field(f) => self.fields.empty(f.from.as_ref(), &f.name),
+            Node::Field(f) => self.empty(f),
             _ => false,
         }
     }
 
     /// Whether field `f` has kind `kind`, or holds no value yet and so fits any kind.
     fn fits(&self, f: &FieldRef, kind: Kind) -> bool {
-        self.fields.kind(f.from.as_ref(), &f.name) == Some(kind) || self.fields.empty(f.from.as_ref(), &f.name)
+        self.kind_of(f) == Some(kind) || self.empty(f)
     }
 
     fn expect(&mut self, e: &Expr, want: Ty) -> Result<()> {
@@ -549,7 +563,7 @@ impl<'a> Compiler<'a> {
             Node::Bool(b) => self.constant(f32::from(u8::from(*b)).to_bits(), Ty::Bool),
             Node::Color(c) => self.constant(c.packed(), Ty::Color),
             Node::Missing => self.push(wgsl::OP_MISSING, 0, Ty::Number),
-            Node::Field(f) if self.fields.empty(f.from.as_ref(), &f.name) => self.push(wgsl::OP_MISSING, 0, Ty::Number),
+            Node::Field(f) if self.empty(f) => self.push(wgsl::OP_MISSING, 0, Ty::Number),
             Node::Field(f) => self.field(f),
             Node::State(State::Selected) => self.state(wgsl::OP_SELECTED, Deps::FOCUS, Ty::Bool),
             Node::State(State::Hovered) => self.state(wgsl::OP_HOVERED, Deps::FOCUS, Ty::Bool),
@@ -597,7 +611,7 @@ impl<'a> Compiler<'a> {
                 // The view computes each row's match on the CPU, as a derived field alongside the
                 // mark's own table.
                 let Node::Field(f) = &*a.0 else { return Err(invalid("contains needs a text field")) };
-                if f.from.is_some() || !self.fits(f, Kind::Text) {
+                if f.from.is_some() || f.of.is_some() || !self.fits(f, Kind::Text) {
                     return Err(invalid("contains needs a text field of the mark's own table").at(&f.name));
                 }
                 let name = crate::derive::matches::contains_of(&f.name, text);
@@ -647,7 +661,8 @@ impl<'a> Compiler<'a> {
     }
 
     fn field(&mut self, f: &FieldRef) -> Result<Ty> {
-        let kind = self.fields.kind(f.from.as_ref(), &f.name).ok_or_else(|| match &f.from {
+        let from = self.read_from(f)?;
+        let kind = self.fields.kind(from.as_ref(), &f.name).ok_or_else(|| match &from {
             Some((data, table)) => invalid(format!("no field {} in {data}.{table}", f.name)),
             None => invalid(format!("no field {}", f.name)),
         })?;
@@ -670,7 +685,35 @@ impl<'a> Compiler<'a> {
     fn field_column(&mut self, f: &FieldRef, words: Words, sampled: bool) -> u32 {
         self.deps |= if sampled { Deps::SAMPLES } else { Deps::DATA };
         let step = f.step && sampled;
-        self.column(ColumnUse { from: f.from.clone(), sampled, step, ..ColumnUse::own(f.name.clone(), words) })
+        // A field of the row a reference names is read through the reference's rows, a column of
+        // their own. A channel reading the field reads both, so rewiring a row evaluates it again.
+        let through = f.of.as_ref().map(|reference| self.column(ColumnUse::own(reference.clone(), Words::Rows)));
+        let from = self.read_from(f).ok().flatten();
+        self.column(ColumnUse { from, through, sampled, step, ..ColumnUse::own(f.name.clone(), words) })
+    }
+
+    /// The dataset and table field `f` is read from, when not the mark's own table: a table
+    /// joined by row id, or the table its `of` reference names. Errors when `of` names no
+    /// reference field of the mark's table, or the field is read both ways.
+    fn read_from(&self, f: &FieldRef) -> Result<Option<(Name, Name)>> {
+        match (&f.from, &f.of) {
+            (from, None) => Ok(from.clone()),
+            (Some(_), Some(_)) => Err(invalid("a field is read from a table or of a reference, not both").at(&f.name)),
+            (None, Some(reference)) => match self.fields.through(reference) {
+                Some(table) => Ok(Some(table)),
+                None => Err(invalid("of needs a reference field of the mark's own table").at(reference)),
+            },
+        }
+    }
+
+    /// The kind of field `f` in the table it is read from.
+    fn kind_of(&self, f: &FieldRef) -> Option<Kind> {
+        self.fields.kind(self.read_from(f).ok()?.as_ref(), &f.name)
+    }
+
+    /// Whether field `f` holds no value yet in the table it is read from.
+    fn empty(&self, f: &FieldRef) -> bool {
+        self.read_from(f).is_ok_and(|from| self.fields.empty(from.as_ref(), &f.name))
     }
 
     fn column(&mut self, use_: ColumnUse) -> u32 {
@@ -730,7 +773,7 @@ impl<'a> Compiler<'a> {
             }
             Domain::All => {
                 let Node::Field(f) = &*input.0 else { return Err(invalid("a domain over all values needs a field")) };
-                if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Sampled) {
+                if self.kind_of(f) != Some(Kind::Sampled) {
                     return self.domain(input, Domain::Fit);
                 }
                 let column = self.field_column(f, Words::Values, true);
@@ -776,13 +819,18 @@ impl<'a> Compiler<'a> {
         Ok(ty)
     }
 
+    /// Pushes the constant `word`. Equal values written in the scene share one slot. A slot the
+    /// view fills in later is never shared: a text's code starts as `NONE`, which is also the bits
+    /// of opaque white, and a color sharing that slot would turn into the code.
     fn constant(&mut self, word: u32, ty: Ty) -> Result<Ty> {
         let constants = &mut self.program.constants;
-        let i = constants.iter().position(|&c| c == word).unwrap_or_else(|| {
+        let found = self.shared.iter().copied().find(|&i| constants[i as usize] == word);
+        let i = found.unwrap_or_else(|| {
             constants.push(word);
-            constants.len() - 1
+            self.shared.push(constants.len() as u32 - 1);
+            constants.len() as u32 - 1
         });
-        self.push(wgsl::OP_CONST, i as u32, ty)
+        self.push(wgsl::OP_CONST, i, ty)
     }
 
     fn op(&mut self, code: u32, a: u32, b: u32, c: u32, pops: u32, pushes: u32) -> Result<()> {
@@ -856,7 +904,7 @@ fn text_field<'e>(expr: &'e Expr, seen: Option<&'e FieldRef>) -> Result<Option<&
     match &*expr.0 {
         Node::Missing => Ok(seen),
         Node::Field(f) => match seen {
-            Some(g) if g.name != f.name || g.from != f.from => {
+            Some(g) if g.name != f.name || g.from != f.from || g.of != f.of => {
                 Err(invalid("a label's text chooses between one text field and missing, not two fields"))
             }
             _ => Ok(Some(f)),

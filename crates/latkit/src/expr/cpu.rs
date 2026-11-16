@@ -9,6 +9,7 @@ use rustc_hash::FxHashMap;
 
 use super::{Binary, Domain, Expr, FieldRef, Node, Unary};
 use crate::Kind;
+use crate::data::Name;
 use crate::data::{Field, Geometry, Snapshot, Table, Value};
 
 /// The rows an expression reads: a table, and every dataset its joins may name.
@@ -57,7 +58,7 @@ impl<'a> Rows<'a> {
                 out.resize_with(n, || make(*v));
                 return out;
             }
-            Node::Field(f) if f.from.is_none() => {
+            Node::Field(f) if f.from.is_none() && f.of.is_none() => {
                 if let Some(Field::Values(column, _)) = self.table.field_named(&f.name) {
                     let pages = column.pages().iter().map(|p| &p.values);
                     match (column.kind(), f.component) {
@@ -85,16 +86,27 @@ impl<'a> Rows<'a> {
         out
     }
 
-    /// Field `f`'s value in `row`: from the table, or for a join, from the joined table's row with
-    /// the same id.
+    /// The table named `name` in the dataset that holds these rows' table.
+    fn beside(&self, name: &Name) -> Option<&'a Table> {
+        let own = |d: &&Snapshot| d.table(self.table.name()).is_some_and(|t| t.structure == self.table.structure);
+        self.all.iter().find(own)?.table(name)
+    }
+
+    /// Field `f`'s value in `row`: from the table, from the joined table's row with the same id, or
+    /// from the row that its `of` reference names.
     fn value(&self, f: &FieldRef, row: usize) -> Option<Value> {
-        let value = match &f.from {
-            None => self.table.value(row, &f.name, self.at)?,
-            Some((data, table)) => {
+        let value = match (&f.from, &f.of) {
+            (None, None) => self.table.value(row, &f.name, self.at)?,
+            (Some((data, table)), None) => {
                 let other = self.all.iter().find(|d| d.name() == data)?.table(table)?;
                 let key = self.table.ids.key(row)?;
                 other.value(other.row(key)?, &f.name, self.at)?
             }
+            (None, Some(reference)) => {
+                let Field::Reference(reference) = self.table.field_named(reference)? else { return None };
+                self.beside(&reference.to)?.value(reference.target(row)? as usize, &f.name, self.at)?
+            }
+            (Some(_), Some(_)) => return None,
         };
         Some(match (value, f.component) {
             (Value::Point(p), Some(k)) => Value::Number(p[usize::from(k.min(1))]),

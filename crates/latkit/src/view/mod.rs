@@ -518,7 +518,7 @@ impl View {
                     shown.inherit(&mut before);
                     came_from.insert(at, i);
                     if easing && shown.compiled.is_some() {
-                        shown.begin(None);
+                        shown.begin(None, None);
                     }
                 }
                 shown

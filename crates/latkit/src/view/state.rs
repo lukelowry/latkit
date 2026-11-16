@@ -1,6 +1,6 @@
 //! Records changed row pages through the shared raster evaluator. Arena addresses and retained
-//! endpoint state stay stable; only the pages written by this step are gathered from scratch, one
-//! pass per batch.
+//! endpoint state stay stable. One pass evaluates a batch of pages into scratch, and one more
+//! copies the pages written by this step home.
 
 use super::{View, marks::Blocks, passes::offset, words::Kept};
 use crate::gpu::work::Count;
@@ -24,12 +24,19 @@ impl View {
         for &index in marks {
             let shown = &mut self.marks[index];
             let Some(compiled) = &shown.compiled else { continue };
-            let (kernel, planes) = (compiled.kernel.clone(), compiled.planes.clone());
+            let (kernel, texels) = (compiled.kernel.clone(), compiled.texels.clone());
             let rows = if matches!(entry, "evaluate" | "ends") { shown.live() } else { shown.held() };
+            let every = Blocks::All;
             let (blocks, first) = match entry {
                 "evaluate" => (shown.blocks.of(rows), shown.block),
                 "ends" => (shown.unresolved.of(rows), shown.end_block),
-                _ => ((0..rows.div_ceil(w::PAGE_ROWS)).collect(), w::NONE),
+                // Only the blocks a transition eases are frozen when it starts again, and eased.
+                "freeze" => (shown.frozen.of(rows), shown.freeze_block),
+                "ease" => {
+                    let eased = shown.transition.as_ref().map_or(&every, |transition| &transition.blocks);
+                    (eased.of(rows), shown.ease_block)
+                }
+                _ => (every.of(rows), w::NONE),
             };
             let kept = match entry {
                 "freeze" => Kept::Frozen,
@@ -53,38 +60,38 @@ impl View {
                             queue,
                             encoder,
                             at,
-                            (shown.filled(page).min(rows - page * w::PAGE_ROWS) * width).next_multiple_of(4),
+                            shown.filled(page).min(rows - page * w::PAGE_ROWS) * width,
                         );
                     }
                 }
                 let mut raster = Raster { device, queue, pipelines: &mut inner.pipelines, encoder };
-                let packed = inner.state.record(
+                let evaluated = inner.state.record(
                     &mut raster,
                     &input,
                     entry,
-                    (entry == "evaluate").then_some((&kernel, &*planes)),
+                    (entry == "evaluate").then_some((&kernel, &*texels)),
                     w::StateStep {
                         first: batch.start as u32 * w::PAGE_ROWS,
                         rows: count,
                         block: first,
-                        word: 0,
                         ..bytemuck::Zeroable::zeroed()
                     },
                     width,
                 );
-                let copies: Vec<[u32; 3]> = pages
-                    .iter()
-                    .enumerate()
-                    .map(|(local, &page)| {
+                let copies = |kept: Kept| -> Vec<[u32; 3]> {
+                    let to = &shown.words.pages(kept).blocks;
+                    let copy = |(local, &page): (usize, &u32)| {
                         let count = filled[batch.start + local];
-                        [
-                            local as u32 * w::PAGE_ROWS * width,
-                            shown.words.pages(kept).blocks[page as usize],
-                            (count * width).next_multiple_of(4),
-                        ]
-                    })
-                    .collect();
-                raster.gather(packed, inner.arena.words(), &copies);
+                        [local as u32 * w::PAGE_ROWS * width, to[page as usize], count * width]
+                    };
+                    pages.iter().enumerate().map(copy).collect()
+                };
+                raster.gather(evaluated, inner.arena.words(), &copies(kept));
+                // A transition that begins with none running writes each row's state to its settled
+                // words too, so its channels evaluate only what changed.
+                if entry == "freeze" && shown.settles {
+                    raster.gather(evaluated, inner.arena.words(), &copies(Kept::Settled));
+                }
             }
             let changed: u64 = filled.iter().map(|&count| u64::from(count)).sum();
             match entry {

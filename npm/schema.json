@@ -514,6 +514,13 @@
           "description": "The dataset and table the field is read from, joined by row id.",
           "tsType": "TableInput"
         },
+        "of": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The reference field of the mark's table whose row the field is read from. Many rows can\nname one row. A row whose reference names no row reads a missing value."
+        },
         "step": {
           "type": "boolean",
           "description": "For a sampled field, reads the last frame at or before the shown coordinate instead of\ninterpolating. Defaults to `false`."
@@ -522,7 +529,7 @@
       "required": [
         "field"
       ],
-      "description": "A field's value in each row, from the mark's own table. With `from`, it reads another\ndataset's table, joined by row id. `\"$name\"` is the short form of `{ \"field\": \"name\" }`."
+      "description": "A field's value in each row, from the mark's own table. With `from`, it reads another\ndataset's table, joined by row id. With `of`, it reads the row a reference field names.\n`\"$name\"` is the short form of `{ \"field\": \"name\" }`."
     },
     "StateNode": {
       "type": "object",

@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use super::name::PageId;
 use super::values::{Array, Kind, Picks, Value, Values};
-use crate::Result;
+use crate::{Error, Result};
 
 /// Log2 of the rows per page (4,096). A page is the unit of sharing between versions, of GPU
 /// upload, of residency when a paged table is drawn, and of a mark's per-row evaluation.
@@ -162,7 +162,7 @@ impl Column {
     pub(crate) fn pick(&self, rows: &[u32]) -> Values {
         let from: Vec<Option<usize>> = rows.iter().map(|&r| Some(r as usize).filter(|&r| r < self.len)).collect();
         let sources: Vec<&Values> = std::iter::once(&self.like).chain(self.pages.iter().map(|p| &p.values)).collect();
-        Values::assemble(&sources, Picks::Writes { from: &from, kept: 0 }).expect("one storage")
+        Values::assemble(&sources, Picks::Found(&from)).expect("one storage")
     }
 
     /// A copy with `len` rows (at least the current count) and `writes` applied.
@@ -172,6 +172,10 @@ impl Column {
     /// nothing downstream. New rows not written are missing.
     /// Returns an error if both hold values, of different kinds. A column that holds no value takes
     /// the kind of `source`, and a `source` that holds none writes missing values of this kind.
+    ///
+    /// A write costs the values written and the pages they land in, not the column's rows. Writing
+    /// every row in order, in the column's storage, copies nothing: each page of `source` becomes
+    /// the column's (see [`replaced_by`](Column::replaced_by)).
     pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &Column) -> Result<Column> {
         if self.kind() != source.kind() {
             if !self.fixed {
@@ -180,14 +184,18 @@ impl Column {
             if !source.fixed {
                 return self.write(len, writes, &Column::missing(&self.like, source.len));
             }
+            return Err(Error::invalid(format!("{:?} values for a {:?} field", source.kind(), self.kind())));
         }
         debug_assert!(len >= self.len);
         debug_assert!(writes.windows(2).all(|w| w[0].0 < w[1].0));
+        let whole = len == self.len && source.len == len && writes.len() == len;
+        if whole && self.like.stored_like(&source.like) && writes.iter().enumerate().all(|(row, w)| *w == (row, row)) {
+            return Ok(self.replaced_by(source));
+        }
         let count = len.div_ceil(PAGE_ROWS);
         let mut pages: Vec<Page> = Vec::with_capacity(count);
         let mut sources: Vec<&Values> = vec![&self.like];
         sources.extend(source.pages.iter().map(|p| &p.values));
-        sources.push(&source.like);
         let mut next = 0;
         let mut fixed = self.fixed;
         for p in 0..count {
@@ -206,13 +214,9 @@ impl Column {
                 pages.push(old.clone());
                 continue;
             }
-            let mut from = vec![None; page_len];
-            for &(row, k) in page_writes {
-                from[row - start] = Some(k);
-            }
             sources[0] = old.map_or(&self.like, |o| &o.values);
             let kept = sources[0].len();
-            let values = Values::assemble(&sources, Picks::Writes { from: &from, kept })?;
+            let values = Values::picked(&sources, Picks::Written { writes: page_writes, start, kept, len: page_len });
             fixed |= source.fixed && values.holds_any();
             pages.push(match old {
                 // Record the rows whose values changed, plus the rows added past the old page's end.
@@ -231,6 +235,23 @@ impl Column {
             });
         }
         Ok(Column { len, pages: pages.into(), like: self.like.clone(), fixed })
+    }
+
+    /// This column with the values of `source`, which holds the same rows in the same storage. Each
+    /// page of `source` becomes the column's as it is, so nothing is copied. A page whose values are
+    /// equal keeps its id. Any other records the rows that differ, as a written page does.
+    pub(crate) fn replaced_by(&self, source: &Column) -> Column {
+        debug_assert!(source.len == self.len && self.like.stored_like(&source.like));
+        let pages = self
+            .pages
+            .iter()
+            .zip(source.pages.iter())
+            .map(|(old, new)| match new.values.differing(&old.values) {
+                rows if rows.is_empty() => old.clone(),
+                rows => Page::over(new.values.clone(), old, rows),
+            })
+            .collect();
+        Column { len: self.len, pages, like: self.like.clone(), fixed: self.fixed || source.fixed }
     }
 
     /// This column, ready for `source` to be written into it: `u32` numbers widen to `u64` when

@@ -227,6 +227,7 @@ when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10'));
 when(zoom().ge(6)).then(field('name')).otherwise(null); // a label's text, from zoom 6 on
 units('$radius', { atLeast: 2 }); // a size in position units, kept within pixels
 field('vm').from(weather.table('Station')); // read from another dataset, joined by id
+field('kv').of('from'); // read from the row a reference names, such as an edge's first bus
 ```
 
 Sizes are in CSS pixels. Wrap a size in `units()` to give it in position units, which scale with

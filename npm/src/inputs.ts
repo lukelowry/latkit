@@ -553,13 +553,19 @@ export type ExprNode =
 
 /**
  * A field's value in each row, from the mark's own table. With `from`, it reads another dataset's
- * table, joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
+ * table, joined by row id. With `of`, it reads the row a reference field names. `"$name"` is the
+ * short form of `{ "field": "name" }`.
  */
 export interface FieldNode {
   /** The field's name. */
   field: string;
   /** The dataset and table the field is read from, joined by row id. */
   from?: TableInput | null;
+  /**
+   * The reference field of the mark's table whose row the field is read from. Many rows can name one
+   * row. A row whose reference names no row reads a missing value.
+   */
+  of?: string | null;
   /**
    * For a sampled field, reads the last frame at or before the shown coordinate instead of
    * interpolating. Defaults to `false`.

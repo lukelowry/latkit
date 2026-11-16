@@ -181,6 +181,8 @@ impl View {
             shown.words.settle();
             shown.remap = wgsl::NONE;
             shown.carry = false;
+            shown.frozen = super::marks::Blocks::default();
+            shown.settles = false;
         }
         let atlas = std::mem::take(&mut inner.atlas.errors);
         drop(inner);
@@ -739,7 +741,7 @@ impl View {
         let carries = shown.mark.flows() && moved.is_some();
         let eased = published.as_ref().is_some_and(|p| shown.static_columns(p.data));
         if (easing || carries) && shown.before > 0 && (moved.is_some() || eased) {
-            shown.begin(moved);
+            shown.begin(moved, published.as_ref().and_then(|p| p.blocks.as_deref()));
         } else if moved.is_some() {
             shown.exits = 0;
         } else if shown.transition.is_some() && !bound.is_empty() {

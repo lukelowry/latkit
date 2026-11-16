@@ -14,7 +14,7 @@ import {
 } from './internal.js';
 import { load } from './load.js';
 import type { Description, Value } from './outputs.js';
-import { framed, Patch, type Fields, type RowIds, type Run, type Values } from './patch.js';
+import { framed, Patch, rows, type Fields, type RowIds, type Run, type Values } from './patch.js';
 
 /**
  * A table in a dataset, such as `grid.table('Bus')`. Marks draw its rows and `field().from()` reads
@@ -204,18 +204,43 @@ export class Data extends Dataset {
   replace(table: string, fields: Fields): this;
   replace(table: string, ids: RowIds, fields?: Fields): this;
   replace(table: string, ids: RowIds | Fields, fields?: Fields): this {
-    // `Patch.replace` tells ids from fields itself.
-    return this.apply(new Patch().replace(table, ids as RowIds, fields));
+    return this.#write(true, table, ...rows(ids, fields));
   }
 
   /**
    * Applies {@link Patch.set}: writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
-   * adding new rows.
+   * adding new rows. Typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or
+   * not at all, are copied once and become the fields' values as they are. That is the way to
+   * write a field every frame.
    */
   set(table: string, fields: Fields): this;
   set(table: string, ids: RowIds, fields?: Fields): this;
   set(table: string, ids: RowIds | Fields, fields?: Fields): this {
-    return this.apply(new Patch().set(table, ids as RowIds, fields));
+    return this.#write(false, table, ...rows(ids, fields));
+  }
+
+  /**
+   * Applies one `set`, or with `replace` one `replace`. Number arrays for numbered rows go to
+   * WebAssembly as they are. Any other ids or values are written as a patch.
+   */
+  #write(replace: boolean, table: string, ids: RowIds, fields: Fields): this {
+    const numbers = numbered(ids, fields);
+    if (!numbers) {
+      const patch = new Patch();
+      return this.apply(
+        replace ? patch.replace(table, ids, fields) : patch.set(table, ids, fields),
+      );
+    }
+    const names = Object.keys(fields);
+    inner<bindings.Data>(this).write(
+      replace,
+      table,
+      numbers.ids,
+      numbers.count,
+      names,
+      numbers.values,
+    );
+    return this;
   }
 
   /** Applies {@link Patch.remove}: removes the rows of `table` with `ids`. */
@@ -256,6 +281,32 @@ export class Data extends Dataset {
     inner<bindings.Data>(this).restore(inner<bindings.Snapshot>(snapshot));
     return this;
   }
+}
+
+/** A typed array of numbers. A `Uint8Array` holds booleans, so it is not one. */
+type Numbers = Float32Array | Float64Array | Int32Array | Uint32Array;
+
+/**
+ * Returns `ids` and `fields` as the bindings take typed writes: the ids, or the count of rows from
+ * 0, and each field's array. Returns `undefined` unless the ids are a `Uint32Array` or a whole
+ * `{ count }` and every field is a typed array of numbers.
+ */
+function numbered(
+  ids: RowIds,
+  fields: Fields,
+): { ids: Uint32Array | undefined; count: number; values: Numbers[] } | undefined {
+  const values = Object.values(fields);
+  const typed = (v: unknown): v is Numbers =>
+    v instanceof Float32Array ||
+    v instanceof Float64Array ||
+    v instanceof Int32Array ||
+    v instanceof Uint32Array;
+  if (!values.every(typed)) return undefined;
+  if (ids instanceof Uint32Array) return { ids, count: ids.length, values };
+  if (ArrayBuffer.isView(ids) || Array.isArray(ids) || !('count' in ids)) return undefined;
+  const { count } = ids;
+  if (!Number.isInteger(count) || count < 0 || count > 0xffffffff) return undefined;
+  return { ids: undefined, count, values };
 }
 
 /**

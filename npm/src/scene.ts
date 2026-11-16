@@ -58,6 +58,15 @@ export class Expr {
   }
 
   /**
+   * Reads this expression's fields from the row that reference field `reference` of the mark's table
+   * names, such as `field('kv').of('from')` for an edge's first bus. Writing that row's fields
+   * changes every row that names it. A row whose reference names no row reads missing values.
+   */
+  of(reference: string): Expr {
+    return new Expr(mapFields(this.node, (f) => ({ ...f, of: reference })));
+  }
+
+  /**
    * Reads this expression's sampled fields at the last frame at or before the view's `at`, without
    * interpolating toward the next frame.
    */
@@ -241,8 +250,8 @@ function mapFields(input: ExprInput, f: (field: FieldNode) => FieldNode): ExprNo
 const state = (name: State): Expr => new Expr({ state: name });
 
 /**
- * Reads field `name` of each row. In JSON it is `'$name'`, or the `{ field }` form after `from()`
- * or `step()`.
+ * Reads field `name` of each row. In JSON it is `'$name'`, or the `{ field }` form after `from()`,
+ * `of()`, or `step()`.
  */
 export const field = (name: string): Expr => new Expr(`$${name}`);
 /** Whether the row is selected. */

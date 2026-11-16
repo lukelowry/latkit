@@ -436,7 +436,6 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.add_all(Stage::Changes, [Asked::Shader(EASE), Asked::Shader(GATHER)]);
     }
     if !scene.marks.is_empty() {
-        stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Pack, "pack")));
         stages.add(Stage::Draw, Asked::Shader(PAGES));
         if any(&|mark| matches!(mark, Mark::Edges(_))) {
             stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::State, "ends")));

@@ -80,6 +80,23 @@ pub(crate) fn id(value: &JsValue) -> Result<latkit::Id, Error> {
         .ok_or_else(|| Error::invalid("expected a whole number from 0 to 2^53 - 1, or a string").at("id"))
 }
 
+/// A typed array of numbers as values in its own storage, copied once.
+pub(crate) fn numbers(array: &JsValue) -> Result<latkit::Values, Error> {
+    if let Some(values) = array.dyn_ref::<js_sys::Float32Array>() {
+        return Ok(values.to_vec().into());
+    }
+    if let Some(values) = array.dyn_ref::<Float64Array>() {
+        return Ok(values.to_vec().into());
+    }
+    if let Some(values) = array.dyn_ref::<js_sys::Int32Array>() {
+        return Ok(values.to_vec().into());
+    }
+    if let Some(values) = array.dyn_ref::<js_sys::Uint32Array>() {
+        return Ok(values.to_vec().into());
+    }
+    Err(Error::invalid("expected a typed array of numbers").at("fields"))
+}
+
 /// `values` as exactly `N` numbers, or an invalid error at `what`.
 pub(crate) fn fixed<T: Copy, const N: usize>(values: &[T], what: &str) -> Result<[T; N], Error> {
     values.try_into().map_err(|_| Error::invalid(format!("expected {N} numbers")).at(what))

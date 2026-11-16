@@ -241,12 +241,16 @@ grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
 {#data-set .member}
 **`set`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#data-set){.headerlink}
 : Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
-  adding new rows.
+  adding new rows. Typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or
+  not at all, are copied once and become the fields' values as they are. That is the way to
+  write a field every frame.
 
 {.member}
 **`set`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
 : Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
-  adding new rows.
+  adding new rows. Typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or
+  not at all, are copied once and become the fields' values as they are. That is the way to
+  write a field every frame.
 
 {#data-remove .member}
 **`remove`**`(table: string, ids:` [`RowIds`](#rowids)`): this` [¶](#data-remove){.headerlink}
@@ -758,6 +762,12 @@ a conditional that chooses between colors.
 : Reads this expression's fields from `table`, such as `weather.table('Station')`, joined by row
   id. The view also loads that table's dataset.
 
+{#expr-of .member}
+**`of`**`(reference: string): Expr` [¶](#expr-of){.headerlink}
+: Reads this expression's fields from the row that reference field `reference` of the mark's table
+  names, such as `field('kv').of('from')` for an edge's first bus. Writing that row's fields
+  changes every row that names it. A row whose reference names no row reads missing values.
+
 {#expr-step .member}
 **`step`**`(): Expr` [¶](#expr-step){.headerlink}
 : Reads this expression's sampled fields at the last frame at or before the view's `at`, without
@@ -942,8 +952,8 @@ start with `$` is a color.
 {.signature}
 `function field(name: string):` [`Expr`](#expr)
 
-Reads field `name` of each row. In JSON it is `'$name'`, or the `{ field }` form after `from()`
-or `step()`.
+Reads field `name` of each row. In JSON it is `'$name'`, or the `{ field }` form after `from()`,
+`of()`, or `step()`.
 
 (when-function)=
 

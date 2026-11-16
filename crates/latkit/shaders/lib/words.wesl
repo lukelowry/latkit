@@ -17,16 +17,6 @@ fn word_read(words: texture_2d_array<u32>, at: u32) -> u32 {
     return lane_word(word_quad(words, at), at % 4u);
 }
 
-// Four words at any address. Aligned row records take one fetch; an unaligned range takes two.
-fn word_four(words: texture_2d_array<u32>, at: u32) -> vec4u {
-    let a = word_quad(words, at);
-    let lane = at % 4u;
-    if lane == 0u { return a; }
-    let b = word_quad(words, at + 4u);
-    let shifted = select(vec4u(a.yzw, b.x), vec4u(a.zw, b.xy), lane == 2u);
-    return select(shifted, vec4u(a.w, b.xyz), lane == 3u);
-}
-
 fn word_index(position: vec4f, layer: u32) -> u32 {
     return ((layer * WORD_HEIGHT + u32(position.y)) * WORD_WIDTH + u32(position.x)) * 4u;
 }

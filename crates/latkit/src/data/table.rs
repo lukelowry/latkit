@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use super::bits::Bits;
-use super::column::{Column, Page};
+use super::column::{Column, PAGE_BITS, PAGE_ROWS, Page};
 use super::ids::{Ids, Index, RowIds};
 use super::name::{Id, IdRef, Name, PageId, Version};
 use super::samples::Samples;
@@ -216,6 +216,26 @@ impl Reference {
             }
             Inverse { starts, rows }
         })
+    }
+
+    /// The pages of rows holding a row that references any row in pages `pages` of the target
+    /// table, ascending. Every page of rows when `pages` lists every page that is referenced.
+    pub(crate) fn readers(&self, pages: &[u32]) -> Vec<u32> {
+        let inverse = self.inverse();
+        let count = self.rows.pages().len();
+        let targets = inverse.starts.len() - 1;
+        if pages.len() >= targets.div_ceil(PAGE_ROWS) {
+            return (0..count as u32).collect();
+        }
+        let mut reads = vec![false; count];
+        for &page in pages {
+            let at = |target: usize| inverse.starts[target.min(targets)] as usize;
+            let (first, end) = (page as usize * PAGE_ROWS, (page as usize + 1) * PAGE_ROWS);
+            for &row in &inverse.rows[at(first)..at(end)] {
+                reads[row as usize >> PAGE_BITS] = true;
+            }
+        }
+        (0..count as u32).filter(|&page| reads[page as usize]).collect()
     }
 
     /// Whether `rows` must be resolved again against a target with these versions.

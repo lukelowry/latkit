@@ -207,7 +207,7 @@ pub(crate) fn append_words(values: &Values, words: Words, low: bool, out: &mut V
             Some(floats) => out.extend_from_slice(bytemuck::cast_slice(floats)),
             None => values.extend_numbers(out, |x| x.map_or(MISSING, word)),
         },
-        Words::Bits => values.extend_numbers(out, |x| x.map_or(NONE, |x| x as u32)),
+        Words::Bits | Words::Rows => values.extend_numbers(out, |x| x.map_or(NONE, |x| x as u32)),
         Words::X | Words::Y => {
             let component = usize::from(words == Words::Y);
             let coords = values.geometry().map(crate::data::Geometry::coords);
@@ -875,12 +875,10 @@ mod tests {
         let (sent, received) = std::sync::mpsc::channel();
         let slice = output.slice(..);
         slice.map_async(wgpu::MapMode::Read, move |result| sent.send(result).unwrap());
-        device
-            .poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(10)) })
-            .unwrap();
+        device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(10)) }).unwrap();
         received.recv().unwrap().unwrap();
         let bytes = slice.get_mapped_range().unwrap().to_vec();
-        bytes.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().unwrap())).collect()
+        bytemuck::pod_collect_to_vec(&bytes)
     }
 
     /// A page of `f32` values with an id of its own, asked for whole.

@@ -31,7 +31,7 @@ use std::task::Waker;
 
 use rustc_hash::FxHasher;
 
-use crate::data::{Column, Field, Keyed, Name, Op, Page, Patch, Snapshot, Table, Value, Values, Version};
+use crate::data::{Column, Field, Keyed, Name, Op, Patch, Snapshot, Table, Value, Values, Version};
 use crate::gpu::readback::Readback;
 use crate::gpu::work::{Count, Counters};
 use crate::host::{Host, Job, Key, Request};
@@ -330,9 +330,15 @@ impl Input<'_> {
     /// Calls `read` with every field that `expr` reads, for a mark drawing `table`.
     fn read_expr<'a>(&'a self, table: (&'a Name, &'a Name), expr: &'a crate::Expr, read: &mut impl FnMut(Read<'a>)) {
         expr.for_each_field(&mut |f| {
-            let (data, read_from) = f.from.as_ref().map_or(table, |(d, t)| (d, t));
-            let field = self.data(data).and_then(|d| d.table(read_from)).and_then(|t| t.field_named(&f.name));
-            read(Read { data, table: read_from, name: f.name.as_str(), field });
+            let Some(reference) = &f.of else {
+                return self.read_field(f.from.as_ref().map_or(table, |(d, t)| (d, t)), &f.name, read);
+            };
+            // A field of the row a reference names: the reference, then the field in its table.
+            self.read_field(table, reference, read);
+            let own = self.data(table.0).and_then(|d| d.table(table.1));
+            if let Some(Field::Reference(reference)) = own.and_then(|t| t.field_named(reference)) {
+                self.read_field((table.0, &reference.to), &f.name, read);
+            }
         });
     }
 
@@ -507,26 +513,25 @@ pub(crate) fn beside(source: &Table, fields: impl IntoIterator<Item = (Name, Fie
 }
 
 /// Field `name` of a derived table beside `source`, holding `values`. Returns `before`'s field when
-/// its values are equal, so nothing uploads again. Otherwise builds a column that reuses each of
-/// `before`'s pages whose values are unchanged, so only changed pages upload and evaluate again.
-/// Reuse needs `before` to share `source`'s structure and the field's length.
+/// its values are equal, so nothing uploads again. Otherwise each of `before`'s pages whose values
+/// are unchanged keeps its id, and each other page records the rows that changed, so only those
+/// rows upload and only their pages evaluate again. Reuse needs `before` to share `source`'s
+/// structure and the field's length and storage.
 pub(crate) fn kept(name: &str, values: &Values, source: &Table, before: Option<&Table>) -> Field {
     let fresh = Column::new(values);
     let old = before.filter(|b| b.structure == source.structure).and_then(|b| match b.field_named(name) {
         Some(Field::Values(column, version)) if column.len() == fresh.len() => Some((column, *version)),
         _ => None,
     });
-    let Some((column, version)) = old else { return Field::Values(fresh, Version::next()) };
-    let pages: Vec<Page> = fresh
-        .pages()
-        .iter()
-        .zip(column.pages())
-        .map(|(new, old)| if new.values.same(&old.values) { old.clone() } else { new.clone() })
-        .collect();
-    if pages.iter().zip(column.pages()).all(|(page, old)| page.id == old.id) {
-        return Field::Values(column.clone(), version);
+    let Some((column, version)) = old.filter(|(column, _)| column.like().stored_like(fresh.like())) else {
+        return Field::Values(fresh, Version::next());
+    };
+    let replaced = column.replaced_by(&fresh);
+    if replaced.shares(column) {
+        Field::Values(column.clone(), version)
+    } else {
+        Field::Values(replaced, Version::next())
     }
-    Field::Values(Column::of_pages(pages, column.like()), Version::next())
 }
 
 /// Reads a job's answer patch: for each row it sets, the row's key and its values of `fields`. An

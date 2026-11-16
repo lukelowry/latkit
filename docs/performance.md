@@ -63,7 +63,14 @@ timings need a GPU.
   Tiles split by the area they cover on screen, so the globe's edge and a tilted horizon stay
   coarse. When the tile budget runs out, the tiles drawn largest split first.
 - A write evaluates only the pages that hold the rows it changed, and an append only the page the
-  new rows go into. In a table drawn whole, only the rows written upload, into the pages the GPU
-  already holds, so a field written every frame allocates nothing. A paged table uploads the pages
-  that hold the rows written, and rebuilds its spatial tiles only once the rows appended since the
-  last build reach an eighth of the rows that build used.
+  new rows go into. A mark that reads the field from another table, joined by id or through a
+  reference, evaluates only the pages of its rows that read the rows written, and a transition
+  eases only those pages. In a table drawn whole, only the rows written upload, into the pages the
+  GPU already holds, so a field written every frame allocates nothing. A paged table uploads the
+  pages that hold the rows written, and rebuilds its spatial tiles only once the rows appended
+  since the last build reach an eighth of the rows that build used.
+- Typed arrays written with `Data.set` or `Data.replace` go to the columns as they are, without an
+  encoded patch between. A whole column written with the ids it already has replaces its pages
+  without a lookup per row.
+- A row's state is whole texels, and one pass evaluates a batch of 16 pages, whatever the row's
+  width.
