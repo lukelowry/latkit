@@ -1,5 +1,84 @@
 # latkit
 
+## 0.11.0
+
+### Minor Changes
+
+- 590f95e: A page can read where a view's marks draw, and set the room between the view's edge and its guides.
+
+  - Added: `view.area`, where marks draw as `[x, y, width, height]` in CSS pixels: inside the insets and the room that titles, legends, and a plot's axes take. An `area` event reports each change. A timeline or readout over a plot lines up with it, without projecting the camera.
+  - Added: `theme.padding`, the space between the view's edge, inside its insets, and the guides beside it, in CSS pixels. Defaults to 1.5 times the text size, as before.
+
+- 590f95e: Edges joining the same two vertices run side by side, a few pixels apart at any zoom, instead of bowing apart. The theme sets their spacing and how they meet their vertices.
+
+  - Added: `theme.edge.parallel`, with `gap`, the space between neighboring edges in CSS pixels (defaults to 3), and `converge`, how they meet the vertices they join: `squeeze` (the default) draws them closer so the family fits within the smaller vertex, `fan` keeps their spacing and angles them in to each vertex's center, and `straight` keeps their spacing and stops each at its vertex's outline, or beside it. `null` draws them over one another. Rust: `EdgeTheme::parallel`, `Parallel`, and `Converge`.
+  - Removed: `theme.edge.bow`. Use `parallel`, or `parallel: null` where `bow` was 0.
+  - Changed: parallel edges are each moved sideways on screen by a step, an edge's width plus `gap`, so they look the same on a plane, tilted, and on the globe, and stay apart when zoomed out. Edges that bend through the same points, and edges along great circles, now run side by side too. More than eight edges pack within eight steps, and edges less than a pixel apart draw only every second one, or fewer.
+  - Changed: a straight edge with parallel neighbors draws as one segment instead of sixteen, or three where it fans. Only fans and great circles need a segment list, and moving the camera never rebuilds it.
+
+- 590f95e: Views can follow a `Playhead`, which plays the axis coordinate they show without the page setting `at` every frame.
+
+  - Added: `Playhead`, an axis coordinate that moves at a rate while it plays, within an optional span that it stops at or loops around. Views that follow one show the same coordinate in the same frame. A frame moves it at most a quarter second's worth, so a page that stalls or is hidden resumes where it was.
+  - Added: `view.playhead` and the `playhead` option of `View.create`. Scrubbing a view that follows a playhead moves the playhead, and setting the view's `at` does too.
+  - Added: in Rust, `web::Playhead` and `PageView::follow`.
+
+- 590f95e: A history can be written as time tiles while it is recorded, with the levels of detail latkit builds, in memory that stays the same however long it grows.
+
+  - Added: `TileWriter`, which applies patches of appends to the tables of a base dataset and writes each span as it fills. `flush` writes the spans in progress, the base, and `frames.json`, so `Tiles` drawing them find every frame so far. Its files are the ones `latkit tile` writes for the same frames.
+  - Added: in Rust, `TileWriter`.
+
+### Patch Changes
+
+- 590f95e: A canvas shows its views' backgrounds from the moment it is made, never black, and keeps its last frame when the GPU is lost.
+
+  - Fixed: a canvas showed black until its views' shaders compiled, about half a second on a large scene. It now shows each view's background from the same task that makes it, as frames show until a fit places the camera. Resizing it before its first frame shows the backdrop too.
+  - Fixed: on a canvas with several views, a view that had not drawn yet showed black in its panel. It shows its background until it draws.
+  - Fixed: gaps between a canvas's panels showed black, or what an earlier layout drew there. They show the first view's background, as gaps in a picture do.
+  - Fixed: after the GPU was lost, a canvas started over while its views compiled again. It keeps its last frame, its focus, and the pointers it holds.
+  - Fixed: while its views' shaders compiled, a new canvas asked for a frame on every animation frame. It now waits for each compile to land.
+  - Added: in Rust, `Canvas::move_to`, which moves a canvas to a new `Gpu` as `PageView::move_to` moves a view.
+
+- 590f95e: Setting a view's scene or camera to what it already has changes nothing, so a page no longer needs to compare scenes before it sets them.
+
+  - Changed: setting `view.scene` to an equal scene no longer swaps scenes, emits a `waiting` event, or draws a frame.
+  - Changed: setting `view.camera` to the camera already placed, while no flight or fit moves it, no longer cancels anything. A plot camera with `y: null` keeps fitting its values as before.
+  - Changed: a setter that changes nothing draws no frame. Before, every setter drew one.
+
+- 590f95e: Labels finish in browsers on Windows: a view with more labels than it sets in one frame no longer waits on `labels` forever, drawing every frame.
+
+  - Fixed: on Direct3D, which Chrome and Edge use on Windows, the pass that lists the texts labels need misread which texts were set once a view took more than one frame to set them, as with more than 48 labels in view or a font that rasterizes slowly. The view kept asking for the same texts, some labels never showed theirs, and `waiting` stayed `['labels']`.
+  - Changed: a label text asked for again after it was set no longer counts as progress. The view finishes, and the mark lists a failure saying some labels show no text.
+  - Changed: building latkit fails if a shader indexes a swizzle by a runtime value, which Direct3D reads wrong.
+
+- 590f95e: A path draws as one stroke: curved edges and other paths of several pieces no longer show a bead where two pieces meet.
+
+  - Fixed: both pieces of a path drew the pixels around the point where they met, so a translucent stroke darkened there. The beads showed along edges through bends and along great circles, and on lines and traces. They showed under a hover or selection glow, on rows a selection dims, on translucent colors, and faintly along thin strokes, whose antialiased edges are translucent. Comets brightened as they passed each point.
+  - Changed: where a path runs on through a point, the two pieces split its pixels along the line that halves the angle between them, and each draws only its side. Their quads no longer overlap there, so a curved edge and its glow shade fewer pixels. A turn too sharp for the pieces' lengths, as at a dense trace's spikes, keeps both pieces' round ends. An arrowhead is drawn whole.
+
+- 590f95e: Fewer stalls on the browser's GPU process, readbacks without warnings, plots that fit their traces on the CPU, and time tiles that draw their last frames at every zoom.
+
+  - Fixed: with time tiles, a plot zoomed out far enough to draw from a coarse level left out the frames past that level's last whole bucket: up to 511 frames where it draws buckets of 512. They are now fetched from the finer levels that hold them and drawn.
+  - Changed: with WebGL, latkit reads errors raised outside an error scope only while the GPU has finished everything issued, which happens between frames. Reading them waits for the browser's GPU process to finish everything issued before it, so errors read after the next frame was issued waited out that frame's GPU work: several milliseconds a frame while zooming or hovering. Where the GPU never finishes between frames, errors wait at most a second.
+  - Fixed: Chrome warned that a "READ-usage buffer was written, then fenced, but written again before being read back" for every readback after the first, as when hovering. Each readback buffer now starts over once read, so the browser keeps the copy it takes for the next read.
+  - Changed: a plot without a value range fits it to its traces from the samples it holds on the CPU, as the traces change or the window moves. It no longer measures them on the GPU and reads the result back a frame later. A trace whose rows' visibility comes from a field is still measured on the GPU.
+  - Changed: hover and edge labels no longer read the points on either side of each segment, which only strokes need to join their segments.
+
+- 590f95e: A tile file that fails to fetch is fetched again on its own, and an aborted fetch is no failure.
+
+  - Changed: a file of tiles that fails to fetch (a span, a tile, a base dataset, an index, or an archive directory) is fetched again a second later, then twice as long after each further failure, at most a minute. Before, it stayed failed until `refresh()`.
+  - Changed: a `fetch` option that rejects with an `AbortError` cancels the file rather than failing it. Nothing is reported, and the file is fetched again when next needed.
+  - Changed: once a failed file arrives, its views stop reporting the failure.
+  - Fixed: a time tiles base that failed to fetch was never fetched again, even by `refresh()`.
+
+- 590f95e: Tiles never draw less than they did while what replaces them loads, a scene and its new tiles swap in together, a plot draws its axes with its first traces, and hovering a monitor of many traces probes only the points near the pointer.
+
+  - Fixed: as a trace of time tiles turned coarser, such as a live history growing or a window zooming out, it dropped the spans it drew before the coarser ones landed, which showed holes, blank stretches, and blocky bands. It now draws the finer spans until the spans that replace them land, and a trace draws finer frames that hold a whole bucket before a coarser placeholder. Vector tiles keep their finer tiles the same way while zooming out.
+  - Fixed: setting `view.sources` to tiles the view did not draw yet blanked the view until their first spans or tiles landed, about 100 ms. The view goes on drawing the sources and scene before until each new `Tiles` can draw, then swaps them in on one frame. A scene set between two frames swaps in with the sources set then, whichever was set first, so switching a plot to tiles under another name no longer blanks it either. A refresh that starts tiles over, as vector tiles do or time tiles whose manifest names a new base, keeps what they drew the same way.
+  - Fixed: a trace that began reading a field of time tiles after only their coarsest spans loaded, as when a scene switched to them, never fetched the frames past those spans' last whole bucket.
+  - Changed: a view takes a refresh of time tiles in one change, once every span it fetched again has landed, rather than one change per span.
+  - Fixed: a plot drew its grid lines and axes about 400 ms after its traces on its first draw, since they waited for the text shaders. They now draw with the marks, and the tick labels follow once text can draw.
+  - Changed: hovering or picking a line tracing a sampled field reaches only the segments within the radius and the line's width of the point along the axis, not every point of every row.
+
 ## 0.10.0
 
 ### Minor Changes
