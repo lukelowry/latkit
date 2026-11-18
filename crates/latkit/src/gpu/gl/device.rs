@@ -36,12 +36,12 @@ pub(super) struct State {
     lost: RefCell<Option<BoxDeviceLostCallback>>,
     handler: RefCell<Option<Arc<dyn wgpu::UncapturedErrorHandler>>>,
     /// Readbacks whose fences signaled, waiting for the GPU to be quiet before they copy (see
-    /// [`Device::settle`]).
+    /// [`Device::settle_quiet`]).
     pub(super) reads: RefCell<Vec<super::resource::Read>>,
-    /// Whether resources were made outside an error scope since errors were last read, and when
-    /// they were.
+    /// Whether resources were made outside an error scope since errors were last read, and since
+    /// when.
     pending_errors: Cell<bool>,
-    errors_read: Cell<Option<web_time::Instant>>,
+    errors_since: Cell<Option<web_time::Instant>>,
     /// Whether a fence waits to settle readbacks and errors.
     settling: Cell<bool>,
     listener: RefCell<Option<LossListener>>,
@@ -66,8 +66,11 @@ pub(super) struct Device(pub(super) Rc<State>);
 /// `FIRST_VERTEX_CONVENTION_WEBGL` of `WEBGL_provoking_vertex`.
 const FIRST_VERTEX: u32 = 0x8E4D;
 
-/// How often a frame's start reads errors raised outside a scope.
-const ERRORS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest a readback waits for the GPU to be quiet before it copies anyway, as under GPU-bound
+/// animation, which leaves no quiet moment.
+const READS_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+/// The longest errors raised outside a scope wait for the GPU to be quiet before they are read.
+const ERRORS_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Device {
     pub(super) fn new(gl: Gl) -> Result<Self, JsValue> {
@@ -98,7 +101,7 @@ impl Device {
             handler: RefCell::default(),
             reads: RefCell::default(),
             pending_errors: Cell::new(false),
-            errors_read: Cell::new(None),
+            errors_since: Cell::new(None),
             settling: Cell::new(false),
             listener: RefCell::default(),
             lost_reason: Cell::new(None),
@@ -168,7 +171,7 @@ impl Device {
         if !self.0.pending_errors.replace(false) {
             return;
         }
-        self.0.errors_read.set(Some(web_time::Instant::now()));
+        self.0.errors_since.set(None);
         loop {
             match self.0.gl.get_error() {
                 Gl::NO_ERROR | Gl::CONTEXT_LOST_WEBGL => break,
@@ -181,23 +184,30 @@ impl Device {
     }
 
     /// Notes a resource made outside an error scope. Its errors are read once the GPU is quiet
-    /// after it, or at a frame's start (see [`Device::settle`]).
+    /// after it (see [`Device::settle_quiet`]).
     pub(super) fn changed(&self) {
-        self.0.pending_errors.set(true);
+        if !self.0.pending_errors.replace(true) {
+            self.0.errors_since.set(Some(web_time::Instant::now()));
+        }
         Self::settle_later(&self.0);
     }
 
     /// Copies waiting readbacks and reads errors now if the GPU is quiet, else later.
     ///
     /// The browser's GPU process answers a synchronous query, such as reading a buffer or its
-    /// errors, only after running every command issued before it. Asked while a frame's commands
-    /// are queued, it waits out that frame's GPU work. So queries are made only while the GPU is
-    /// quiet (see [`Waits::quiet`]), or at a frame's start, before the frame issues any work.
+    /// errors, only after running every command issued before it, and while it builds shaders for
+    /// a first draw it answers nothing. Asked then, a query blocks the page: for a frame's GPU work,
+    /// or for up to seconds on opening. So queries are made only while the GPU is quiet (see
+    /// [`Waits::quiet`]), which the poller sees between frames. GPU-bound animation leaves no
+    /// quiet moment, so a readback waits at most [`READS_WAIT`] and errors [`ERRORS_WAIT`].
     pub(super) fn settle_quiet(state: &Rc<State>) {
-        if state.reads.borrow().is_empty() && !state.pending_errors.get() {
+        let waited = |since: Option<web_time::Instant>, most| since.is_some_and(|at| at.elapsed() >= most);
+        let oldest = state.reads.borrow().first().map(super::resource::Read::queued);
+        if oldest.is_none() && !state.pending_errors.get() {
             return;
         }
-        if !state.waits.quiet() {
+        let overdue = waited(oldest, READS_WAIT) || waited(state.errors_since.get(), ERRORS_WAIT);
+        if !state.waits.quiet() && !overdue {
             Self::settle_later(state);
             return;
         }
@@ -221,17 +231,6 @@ impl Device {
         let reads = std::mem::take(&mut *state.reads.borrow_mut());
         for read in reads {
             read.copy(state);
-        }
-    }
-
-    /// Settles at a frame's start, before the frame issues any work: copies the readbacks whose
-    /// fences signaled, and at most once every [`ERRORS_EVERY`], reads errors, which only the
-    /// uncaptured error handler hears of.
-    fn settle(&self) {
-        Self::settle_reads(&self.0);
-        let due = self.0.errors_read.get().is_none_or(|at| at.elapsed() >= ERRORS_EVERY);
-        if due {
-            self.check_errors();
         }
     }
 
@@ -511,10 +510,7 @@ impl DeviceInterface for Device {
     }
     unsafe fn start_graphics_debugger_capture(&self) {}
     unsafe fn stop_graphics_debugger_capture(&self) {}
-    /// Runs the callbacks of readbacks whose fences signaled, as polling a native device does. A
-    /// view polls at each frame's start (see [`Device::settle`]).
     fn poll(&self, _poll_type: wgpu_types::PollType<u64>) -> Result<wgpu::PollStatus, wgpu::PollError> {
-        self.settle();
         Ok(wgpu::PollStatus::QueueEmpty)
     }
     fn get_internal_counters(&self) -> wgpu::InternalCounters {

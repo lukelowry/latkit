@@ -81,9 +81,15 @@ pub(super) struct Read {
     generation: u64,
     range: Range<u64>,
     callback: BufferMapCallback,
+    queued: web_time::Instant,
 }
 
 impl Read {
+    /// When its fence signaled.
+    pub(super) fn queued(&self) -> web_time::Instant {
+        self.queued
+    }
+
     /// Copies the bytes and completes the mapping, or fails it if the buffer was unmapped or
     /// destroyed since, or its context lost.
     pub(super) fn copy(self, state: &State) {
@@ -120,7 +126,8 @@ impl BufferInterface for Buffer {
                 return;
             }
             // Copying the bytes is a synchronous query, made while the GPU is quiet.
-            state.reads.borrow_mut().push(Read { buffer: this, generation, range, callback });
+            let queued = web_time::Instant::now();
+            state.reads.borrow_mut().push(Read { buffer: this, generation, range, callback, queued });
             super::device::Device::settle_quiet(state);
         });
     }

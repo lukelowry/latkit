@@ -105,8 +105,7 @@ impl View {
         if let Some(timer) = &mut self.timer {
             timer.begin(encoder);
         }
-        // Runs the callbacks of finished readbacks. With WebGL it also copies them and reads errors,
-        // which wait on the browser's GPU process, so it does so here, before the frame issues work.
+        // Runs the callbacks of finished readbacks. A no-op in browsers, which run them themselves.
         let _ = device.poll(wgpu::PollType::Poll);
         // The guides take their room before fits frame what they leave.
         let mut inner = gpu.0.lock();
