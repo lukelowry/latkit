@@ -1772,7 +1772,7 @@
               "format": "float"
             },
             "color": {
-              "description": "Each row's text color. Defaults to the theme's text color. Inside a marker, it keeps a 4.5:1\ncontrast with the marker's color.",
+              "description": "Each row's text color. Defaults to the theme's text color. Inside a shape or block, it keeps a\n4.5:1 contrast with the row's color.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Expr"
@@ -1825,7 +1825,7 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible. A block, or a marker with a\nwidth and height, holds its label inside where the text fits, and otherwise the label shows\nbeside it. Text inside a marker keeps a 4.5:1 contrast with the marker's color, made lighter or\ndarker as it needs, and its halo is that color.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible. A block, or a marker with a\nwidth and height, holds its label inside where the text fits, and otherwise the label shows\nbeside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or\ndarker as it needs, and its halo is that color.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
     },
     "Legend": {
       "anyOf": [

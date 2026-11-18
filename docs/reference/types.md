@@ -1427,7 +1427,7 @@ How a line runs between its samples.
 Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
 field, a number, or options. A label shows when its row is visible. A block, or a marker with a
 width and height, holds its label inside where the text fits, and otherwise the label shows
-beside it. Text inside a marker keeps a 4.5:1 contrast with the marker's color, made lighter or
+beside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or
 darker as it needs, and its halo is that color.
 
 Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
@@ -1447,8 +1447,8 @@ rows.
 
 {#label-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#label-color){.headerlink}
-: Each row's text color. Defaults to the theme's text color. Inside a marker, it keeps a 4.5:1
-  contrast with the marker's color.
+: Each row's text color. Defaults to the theme's text color. Inside a shape or block, it keeps a
+  4.5:1 contrast with the row's color.
 
 {#label-maxwidth .member}
 **`maxWidth`**`?: number | null` [¶](#label-maxwidth){.headerlink}

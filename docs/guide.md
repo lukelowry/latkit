@@ -212,8 +212,8 @@ Either way, every mark shows which of its rows are selected and hovered.
 `flow` animates comets along a stroke. An edges mark with `joins: [table, reference]` draws each
 row as a net: a star from the center of the vertex rows whose `reference` names it out to each one.
 
-`label` shows a text field beside each row, inside a block, or along a stroke, when the row is
-visible and the text fits. Labels never overlap. Where two would, the row drawn on top keeps its
+`label` shows a text field beside each row, inside a block where the text fits, or along a stroke,
+when the row is visible. Labels never overlap. Where two would, the row drawn on top keeps its
 label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit.
 A row whose text is missing has no label, so a `when` that picks between the field and `null`
 labels only some rows, as in the scene above. A number label is written on the GPU each frame, so it

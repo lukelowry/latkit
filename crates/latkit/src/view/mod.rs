@@ -1266,14 +1266,14 @@ impl View {
     }
 
     /// Whether the only difference a new frame would show is comets moving along their lines, so it
-    /// starts from the still (see `still_until`).
+    /// may start from the still (see `still_until` and `View::comets_travel`).
     pub(crate) fn comets_only(&self) -> bool {
         let (comets, other) = self.own_motion();
         comets && !other && !self.changes()
     }
 
     /// The first mark whose comets draw, while comets alone move: what frames draw up to its comets
-    /// is the still, which a frame where only comets moved starts from (see `View::draw`).
+    /// is the still, which a frame that draws comets apart starts from (see `View::draw`).
     pub(super) fn still_until(&self) -> Option<usize> {
         match self.own_motion() {
             (true, false) => self.marks.iter().position(|m| m.drawable() && m.instances() > 0 && m.mark.flows()),

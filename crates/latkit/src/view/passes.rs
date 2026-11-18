@@ -194,7 +194,7 @@ impl Marks<'_> {
         }
     }
 
-    /// Draws what a frame where only comets moved draws over the still: the comets of mark `first`,
+    /// Draws what a frame that draws comets apart draws over the still: the comets of mark `first`,
     /// then the marks after it, each with its comets. While comets rest from a camera that just
     /// moved (`comets` false, see `View::comets_travel`), they draw none.
     fn over_still(

@@ -2,12 +2,13 @@
 // text is set and its row shows. It fades with its row's tile. A label beside its row also shows
 // only if it kept its claim on every cell it covers this frame (`raster/claims.wesl`), so labels
 // never overlap. Nothing depends on an earlier frame. A halo of the background color keeps text
-// readable over anything below it. Text inside its row's marker reads on the marker's fill instead:
-// it keeps `TEXT_CONTRAST` with the fill, and its halo is the fill. Text is a distance field, so
+// readable over anything below it. Text inside a shape or block reads on its fill instead: it keeps
+// `TEXT_CONTRAST` with the fill, and its halo is the fill. Text is a distance field, so
 // edges stay crisp at any size, and the halo is a wider threshold of the same field.
 
 import package::lib::types::{
-    NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS, POINTS, SIZED, MARKER_BLOCK, VERTEX_COLOR,
+    NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS, POINTS, SIZED, MARKER_SHAPE, MARKER_BLOCK,
+    VERTEX_COLOR,
 };
 import package::lib::bind::{frame, eye, mark, word, ramp};
 import package::lib::state::{extra_at, row_at};
@@ -114,13 +115,15 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
         return unshown();
     }
     let color = unpack4x8unorm(word(extra_at(row, mark.label + LABEL_COLOR)));
-    // Text inside its row's marker reads on the marker's fill, and its halo is the fill.
+    // Text inside a shape or block reads on the row's color there, over the background where that
+    // color is translucent, and its halo is that color. Other markers draw something else there.
     var rgb = color.rgb;
     var halo = frame.background;
-    if (prepared.w & 32u) != 0u {
-        let fill = unpack4x8unorm(word(row_at(row) + VERTEX_COLOR)).rgb;
-        rgb = legible(rgb, fill, TEXT_CONTRAST);
-        halo = vec4f(fill, 1.0);
+    if ((prepared.w & 32u) != 0u) & ((mark.marker == MARKER_SHAPE) | (mark.marker == MARKER_BLOCK)) {
+        let fill = unpack4x8unorm(word(row_at(row) + VERTEX_COLOR));
+        let ground = mix(frame.background.rgb, fill.rgb, fill.a);
+        rgb = legible(rgb, ground, TEXT_CONTRAST);
+        halo = vec4f(ground, max(fill.a, frame.background.a));
     }
     let t = text_at(own.x, own.y, size, lo + vec2f(before, 0.0), vec2f(0.0));
     return quad(t, corner, vec4f(rgb, color.a * alpha), halo);

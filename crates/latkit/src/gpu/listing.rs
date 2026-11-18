@@ -89,7 +89,7 @@ impl Listing {
     }
 
     /// Writes `kept` entries into `packed`: each segment's row and the distance along its row's path
-    /// where it starts, the sum of the lengths of the segments before it.
+    /// where it ends, the sum of its length and those of the segments before it.
     fn lengths_along(&mut self, raster: &mut Raster<'_>, input: &Inputs<'_>, kept: u32, words: u32) {
         render(raster, input, "segments", &self.scanned, &self.work, kept, kept * 4);
         self.lengths.record(raster, At::new(&self.work, 0), At::new(&self.scanned, 0), kept);

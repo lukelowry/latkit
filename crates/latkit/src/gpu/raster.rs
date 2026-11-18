@@ -394,8 +394,9 @@ fn scan(raster: &mut Raster<'_>, levels: &[Level], input: At<'_>, output: At<'_>
     raster.run((Shader::Words, "scan"), input.words, other, output.words, step, (count + 1).next_multiple_of(4));
 }
 
-/// An exclusive sum of lengths within each contiguous row. The hierarchy carries the last row
-/// and only its trailing sum; no global prefix is subtracted, preserving short local distances.
+/// An inclusive sum of lengths within each contiguous row, so each entry holds the distance to its
+/// end and a row's last entry its whole length. The hierarchy carries the last row and only its
+/// trailing sum; no global prefix is subtracted, preserving short local distances.
 #[derive(Default)]
 pub(crate) struct Lengths {
     levels: Vec<Level>,
@@ -417,7 +418,7 @@ impl Lengths {
             self.levels[level].prefix.ensure(raster.device, u64::from(n) * 4);
             level += 1;
         }
-        lengths(raster, &self.levels, input, output, count, false);
+        lengths(raster, &self.levels, input, output, count, true);
     }
 }
 
@@ -509,9 +510,9 @@ pub(super) mod tests {
                     sum = 0.0;
                 }
                 let length = (i % 7) as f32 + 0.25;
+                sum += length;
                 values.extend([row, length.to_bits(), 0, 0]);
                 expected.extend([row, sum.to_bits(), 0, 0]);
-                sum += length;
             }
             input.write(queue, 0, &values);
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

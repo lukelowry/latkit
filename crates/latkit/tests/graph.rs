@@ -238,20 +238,21 @@ fn edges_along_great_circles_settle_while_their_vertices_pulse() {
 #[test]
 fn arrows_draw_heads_at_second_ends_clear_of_comets() {
     let Some(gpu) = gpu() else { return };
-    // An edge 80 pixels long, and a stub 12 long, too short for a comet beside its arrowhead. Red
-    // comets 12 pixels apart move so slowly they stand still.
-    let (x, y) = (vec![-40.0, 40.0, -6.0, 6.0], vec![0.0, 0.0, 30.0, 30.0]);
+    // An edge 80 pixels long, one as long that bends 5 pixels before its end, so its arrowhead
+    // reaches back past the bend, and a stub 12 long, too short for a comet beside its arrowhead.
+    // Red comets 12 pixels apart move so slowly they stand still.
+    let (x, y) = (vec![-40.0, 40.0, -6.0, 6.0, -40.0, 40.0], vec![0.0, 0.0, 30.0, 30.0, -30.0, -30.0]);
     let draw = |arrows: bool| {
         let data = Data::new("graph");
-        let links = Table::new("Link", Ids::count(2)).reference("from", "Node", vec![1_u64, 3]).reference(
-            "to",
-            "Node",
-            vec![2_u64, 4],
-        );
+        let bends: Vec<Vec<[f64; 2]>> = vec![vec![], vec![], vec![[35.0, -30.0]]];
+        let links = Table::new("Link", Ids::count(3))
+            .reference("from", "Node", vec![1_u64, 3, 5])
+            .reference("to", "Node", vec![2_u64, 4, 6])
+            .field("bends", bends);
         data.apply(Patch::new().set(nodes(x.clone(), y.clone())).set(links)).expect("valid");
         let red = latkit::Color::rgb(1.0, 0.0, 0.0);
         let flow = latkit::FlowTheme { color: red, spacing: Length::Px(12.0), length: Length::Px(4.0), width: 4.0 };
-        let edges = Edges::of("graph", "Link").ends("from", "to").width(2.0).arrows(arrows).flow(1e-4);
+        let edges = Edges::of("graph", "Link").ends("from", "to").bends("bends").width(2.0).arrows(arrows).flow(1e-4);
         let scene = Scene::new(plane())
             .theme(latkit::Theme { flow, ..plain_theme() })
             .draw(edges.color(latkit::Color::WHITE))
@@ -262,10 +263,10 @@ fn arrows_draw_heads_at_second_ends_clear_of_comets() {
         let pixels = common::rest(&gpu, &mut view);
         assert_eq!(errors(&mut view), Vec::new());
         let on = |i: usize| view.screen([x[i], y[i], 0.0]).expect("on screen").map(|v| v.round() as i32);
-        (pixels, [on(1), on(3)])
+        (pixels, [on(1), on(3), on(5)])
     };
     let lit_count = |pixels: &[[u8; 4]]| pixels.iter().filter(|&&p| lit(p)).count();
-    let (plain, (headed, [tip, stub])) = (lit_count(&draw(false).0), draw(true));
+    let (plain, (headed, [tip, stub, bent])) = (lit_count(&draw(false).0), draw(true));
     assert!(lit_count(&headed) > plain + 20, "{plain} → {}", lit_count(&headed));
     // Red pixels in the box `dx` pixels before a tip, and 6 either side of its edge.
     let red = |tip: [i32; 2], dx: std::ops::RangeInclusive<i32>| {
@@ -274,8 +275,9 @@ fn arrows_draw_heads_at_second_ends_clear_of_comets() {
             .filter(|&[x, y]| red(at(&headed, x as u32, y as u32)))
             .count()
     };
-    assert!(red(tip, 12..=70) > 0, "comets along the edge");
-    assert_eq!(red(tip, 0..=9), 0, "none over its arrowhead");
+    assert!(red(tip, 12..=70) > 0 && red(bent, 12..=70) > 0, "comets along the edges");
+    assert_eq!(red(tip, 0..=9), 0, "none over an arrowhead");
+    assert_eq!(red(bent, 0..=9), 0, "none over one that reaches past a bend");
     assert_eq!(red(stub, 0..=12), 0, "none on the stub");
 }
 

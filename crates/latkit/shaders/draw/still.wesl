@@ -1,5 +1,5 @@
 // The still: what a view draws before its first mark's comets, as the last frame that drew it left
-// it. A frame where only comets moved starts from it, and draws only the comets and what follows.
+// it. A frame that draws comets apart starts from it, and draws only the comets and what follows.
 
 import package::lib::words::fullscreen;
 

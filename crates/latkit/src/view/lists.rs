@@ -28,8 +28,9 @@ use crate::{Mark, Space};
 /// A listed mark's segment list (see `Shown::listed`), used when its rows have different numbers
 /// of segments, or for areas, of triangles: where it lies, a stamp of its last build's inputs (the
 /// list, the paths, and for great circles where the vertices are drawn), a stamp of what its
-/// distances along were last measured from, and its count. Each entry is a segment's row and
-/// distance along its path, or an area's row and prepared corner address. Distances along are in
+/// distances along were last measured from, and its count. Each entry is a segment's row and the
+/// distance along its path to the segment's end, or an area's row and prepared corner address, so
+/// a row's last entry holds its path's whole length. Distances along are in
 /// position units for comets spaced in them, and otherwise in CSS pixels on screen, measured again
 /// as the projection changes. A curved mark's count is read back, one readback at a time, and its
 /// list grows to fit what was found.

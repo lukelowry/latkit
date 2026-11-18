@@ -2,13 +2,12 @@
 'latkit': minor
 ---
 
-Comets keep their spacing on screen along every path, and a view whose only motion is comets draws them without drawing everything again.
+Comets keep their spacing on screen, cost little while only they move, rest while the camera moves, and keep clear of arrowheads.
 
-- Fixed: comets and dashes in CSS pixels bunched up on edges that fan into their vertices, and spread out on edges running north and south away from the equator, twice as far apart at 60°. They now keep the theme's spacing on screen along straight edges, great circles, bends, and fans, on a flat map, a tilted one, and the globe.
-- Fixed: comets on an edge that fans continue through its fans, in position units too, instead of crowding where the fans meet the edge.
-- Changed: comets move without a pass over their rows each frame. Their rows' travel is written only when their flow changes, their rows move, and once a minute.
-- Changed: a mark's comets draw after its rows, over its own lines and wherever nothing nearer was drawn. While comets move, a view keeps an image of what it draws before the first mark's comets, and frames where only comets moved, one after another, start from it: the backdrop, the marks under the comets, and their lines draw only when something changes. A lone such frame between changes, as a feed at half the display's rate makes, draws whole, so it never costs more than before. This holds on a flat map, a tilted one, and the globe.
-- Changed: a comet whose color contrasts less than 3:1 with its stroke takes a 1-pixel rim of the background color ahead of its head, so it shows on light strokes.
-- Changed: while the camera moves by a gesture, a flight, a fit, or a new camera from code, comets fade out and hold still, and they fade back in once it has rested for 0.15 s. An orbit keeps them moving. Pictures, videos, and reduced motion are unchanged.
-- Fixed: a comet covered the arrowhead of a short edge. Comets now fade out before the arrowhead, and an edge too short for one beside its arrowhead carries none.
-- Added: `controls.fps`, the most frames a second a view in a canvas draws while the only thing moving is motion that never settles: comets, an orbit, and options that read `elapsed()`. Any other change draws on the next display frame. Defaults to 60. Rust: `Controls::fps`.
+- Fixed: comets and dashes in CSS pixels bunched on fanned edges and spread out on north–south edges away from the equator. They keep the theme's spacing on screen along every path, through fans, on a flat map, a tilted one, and the globe.
+- Fixed: comets covered the arrowheads of short or bent edges. They fade out before the head, and a stub too short for one carries none.
+- Changed: comets move without a pass over their rows each frame.
+- Changed: frames where only comets moved, one after another, draw them over a kept image of what lies under them, so the rest draws only when something changes. A lone such frame between changes draws whole.
+- Changed: while the camera moves by a gesture, a flight, a fit, or a camera set from code, comets fade out and hold still, and they fade back in once it rests for 0.15 s. Orbits, pictures, videos, and reduced motion keep them moving.
+- Changed: a comet with less than 3:1 contrast to its stroke takes a 1-pixel rim of the background color.
+- Added: `controls.fps` (Rust: `Controls::fps`), the most frames a second a canvas draws while only endless motion moves: comets, an orbit, or options that read `elapsed()`. Defaults to 60.

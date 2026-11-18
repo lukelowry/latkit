@@ -483,8 +483,8 @@ struct Frame {
     flow_unit: u32,
     flow_step: f32,
     flow_time: f32,
-    // 1 in a frame where only comets moved: marks' comets draw apart from their rows, after them,
-    // over the still. Otherwise rows paint their own comets.
+    // 1 where marks' comets draw apart from their rows, after them, over the still (see
+    // `View::comets_travel`). Otherwise rows paint their own comets.
     comets_apart: u32,
     // The space between neighboring parallel edges, in CSS pixels.
     gap: f32,

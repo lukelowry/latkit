@@ -58,8 +58,9 @@ fn joins() -> bool {
     return false;
 }
 
-// One segment of a row's path. `along` is the distance along the path where it starts, in position
-// units (degrees on the earth). The segment list stores it. Without a list it is 0. `row` is the
+// One segment of a row's path. `along` is the distance along the path where it ends, in the unit
+// its list measures (see `segments` in `raster/lists.wesl`). The segment list stores it. Without a
+// list it is 0. `row` is the
 // held row, whose state and columns it reads. `item` is the drawn row, which the mark's list
 // numbers. While its tile fades in or out, the segment shows with opacity `presence` and scale
 // `growth`, and a leaving segment ignores the pointer.
@@ -73,7 +74,7 @@ struct Segment {
     leaving: bool,
 }
 
-// Segment `index` of drawn row `item`'s path, starting at distance `along`.
+// Segment `index` of drawn row `item`'s path, ending at distance `along`.
 fn path_segment(item: u32, index: u32, along: f32) -> Segment {
     let d = drawn_row(item);
     return Segment(d.row, item, index, along, d.presence, d.growth, d.leaving);
@@ -195,6 +196,13 @@ fn lit_segment(instance: u32) -> Segment {
     return path_segment(item, index, select(0.0, along, listed));
 }
 
+// The length of drawn row `item`'s whole path, in the unit its list measures: where its last listed
+// segment ends.
+fn path_total(item: u32) -> f32 {
+    let last = max(list_start(mark.list, item + 1u), 1u) - 1u;
+    return bitcast<f32>(list(list_entry(mark.list, 2u * last) + 1u));
+}
+
 // Distance between two path points in position units, which a segment adds to the distance along.
 fn path_length(a: PathPoint, b: PathPoint) -> f32 {
     return length((b.hi + b.lo) - (a.hi + a.lo));
@@ -295,6 +303,12 @@ fn exit_marker(v: PathPoint, center: vec2f, p: vec2f, dir: vec2f) -> f32 {
     let outside = dot(q, q) - v.half.x * v.half.x;
     let circle = select(0.0, sqrt(max(along * along - outside, 0.0)) - along, outside <= 0.0);
     return select(circle, boxed, v.boxed);
+}
+
+// The farthest vertex `v`'s marker reaches from its center, in CSS pixels: its radius, or a box's
+// half diagonal. No path leaves the marker farther out (see `exit_marker`).
+fn marker_reach(v: PathPoint) -> f32 {
+    return select(v.half.x, length(v.half), v.boxed);
 }
 
 // How far vertex `v`'s marker reaches across a path whose sideways direction is `n`, from its
