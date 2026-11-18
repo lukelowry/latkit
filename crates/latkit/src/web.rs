@@ -454,6 +454,8 @@ struct Moving {
     span: Option<[f64; 2]>,
     /// Whether it wraps to the other end of its span at the end it plays toward, rather than stop.
     looping: bool,
+    /// While live, how it plays along the end of its span (see [`Playhead::set_live`]).
+    live: Option<crate::time::Live>,
     /// The animation frame time it last played at, in seconds. `None` until it plays a frame.
     played: Option<f64>,
     followers: Vec<Weak<RefCell<Held>>>,
@@ -471,6 +473,7 @@ impl Playhead {
             playing: false,
             span: None,
             looping: false,
+            live: None,
             played: None,
             followers: Vec::new(),
             listeners: Vec::new(),
@@ -484,8 +487,14 @@ impl Playhead {
     }
 
     /// Moves it to `at`, within its span, and every view that follows it at once. A coordinate that
-    /// is not finite changes nothing.
+    /// is not finite changes nothing. A live playhead stops playing along the end of its span.
     pub fn seek(&self, at: f64) {
+        self.leave_live();
+        self.place(at);
+    }
+
+    /// Moves it to `at`, within its span, as [`seek`](Playhead::seek) does without leaving live.
+    fn place(&self, at: f64) {
         {
             let mut moving = self.0.borrow_mut();
             let at = moving.span.map_or(at, |span| at.clamp(span[0], span[1]));
@@ -498,26 +507,53 @@ impl Playhead {
         self.moved();
     }
 
-    /// Axis units per second it moves while it plays.
+    /// Axis units per second it moves while it plays. While live, the rate the end of its span
+    /// moves.
     pub fn rate(&self) -> f64 {
-        self.0.borrow().rate
+        let moving = self.0.borrow();
+        moving.live.map_or(moving.rate, |live| live.rate())
     }
 
-    /// Whether it plays.
-    pub fn playing(&self) -> bool {
-        self.0.borrow().playing
+    /// Whether it plays along the end of its span as the span grows (see
+    /// [`set_live`](Playhead::set_live)).
+    pub fn live(&self) -> bool {
+        self.0.borrow().live.is_some()
     }
 
-    /// Plays at `rate` axis units per second from the next animation frame, backward when negative.
-    /// At the end of its span it stops, or wraps to the other end when it loops. A rate of 0, or one
-    /// that is not finite, pauses it.
-    pub fn play(&self, rate: f64) {
+    /// Plays along the end of its span while the page extends the span as data arrives, as a
+    /// recording does. It trails the end by a little more than the time between arrivals, at the
+    /// rate the end moves, so data that arrives in uneven chunks plays at an even pace, and it eases
+    /// to a stop at the end when no more arrives. It starts at the end. Seeking, playing, or pausing
+    /// stops it, as does turning it off, which pauses it where it is.
+    pub fn set_live(&self, live: bool) {
+        if !live {
+            self.pause();
+            return;
+        }
+        let end = {
+            let mut moving = self.0.borrow_mut();
+            moving.live = Some(crate::time::Live::default());
+            moving.span.map(|[_, end]| end)
+        };
+        if let Some(end) = end {
+            self.place(end);
+        }
+        self.wake();
+    }
+
+    /// Stops playing along the end of its span, if it was.
+    fn leave_live(&self) {
+        let mut moving = self.0.borrow_mut();
+        if moving.live.take().is_some() {
+            moving.playing = false;
+        }
+    }
+
+    /// Plays from the next animation frame, requesting it for every view that follows.
+    fn wake(&self) {
         let followers = {
             let mut moving = self.0.borrow_mut();
-            moving.playing = rate.is_finite() && rate != 0.0;
-            if moving.playing {
-                moving.rate = rate;
-            }
+            moving.playing = true;
             moving.played = None;
             moving.followers.clone()
         };
@@ -527,8 +563,27 @@ impl Playhead {
         }
     }
 
-    /// Stops it where it is.
+    /// Whether it plays.
+    pub fn playing(&self) -> bool {
+        self.0.borrow().playing
+    }
+
+    /// Plays at `rate` axis units per second from the next animation frame, backward when negative.
+    /// At the end of its span it stops, or wraps to the other end when it loops. A rate of 0, or one
+    /// that is not finite, pauses it. A live playhead stops playing along the end of its span.
+    pub fn play(&self, rate: f64) {
+        self.leave_live();
+        if !(rate.is_finite() && rate != 0.0) {
+            self.pause();
+            return;
+        }
+        self.0.borrow_mut().rate = rate;
+        self.wake();
+    }
+
+    /// Stops it where it is, live or not.
     pub fn pause(&self) {
+        self.leave_live();
         self.0.borrow_mut().playing = false;
     }
 
@@ -538,12 +593,21 @@ impl Playhead {
     }
 
     /// Keeps it between the two coordinates of `span`, in either order, moving it inside if it is
-    /// out. `None`, or a span that is not finite, lets it move anywhere.
+    /// out. `None`, or a span that is not finite, lets it move anywhere. A live playhead that
+    /// reached the end plays on when the end moves.
     pub fn set_span(&self, span: Option<[f64; 2]>) {
         let span = span.filter(|s| s.iter().all(|v| v.is_finite())).map(|[a, b]| [a.min(b), a.max(b)]);
-        self.0.borrow_mut().span = span;
+        let resumes = {
+            let mut moving = self.0.borrow_mut();
+            let grew = span.is_some_and(|[_, end]| moving.span.is_none_or(|[_, last]| end > last));
+            moving.span = span;
+            grew && moving.live.is_some() && !moving.playing
+        };
         if let Some(span) = span {
-            self.seek(self.at().clamp(span[0], span[1]));
+            self.place(self.at().clamp(span[0], span[1]));
+        }
+        if resumes {
+            self.wake();
         }
     }
 
@@ -579,25 +643,40 @@ impl Playhead {
     /// moves once per frame.
     fn play_to(&self, now: f64) {
         {
-            let mut moving = self.0.borrow_mut();
+            let mut held = self.0.borrow_mut();
+            let moving = &mut *held;
             if !moving.playing {
                 return;
             }
             let step = moving.played.map_or(0.0, |played| (now - played).clamp(0.0, MOST_PLAYED));
             moving.played = Some(now);
-            if step == 0.0 {
-                return;
-            }
-            let mut at = moving.at + moving.rate * step;
-            if let Some([low, high]) = moving.span {
-                if moving.looping && high > low {
-                    at = low + (at - low).rem_euclid(high - low);
-                } else {
-                    at = at.clamp(low, high);
-                    // It stops at the end it plays toward.
-                    moving.playing = !((moving.rate > 0.0 && at >= high) || (moving.rate < 0.0 && at <= low));
+            let at = if let Some(live) = &mut moving.live {
+                // Live, it plays along the end of its span, and waits there, or until the rate is
+                // known, for the span to grow.
+                let Some([low, high]) = moving.span else {
+                    moving.playing = false;
+                    return;
+                };
+                live.heard(high, now);
+                let at = live.next(moving.at, high, step).max(low);
+                moving.playing = at < high && live.rate() > 0.0;
+                at
+            } else {
+                if step == 0.0 {
+                    return;
                 }
-            }
+                let mut at = moving.at + moving.rate * step;
+                if let Some([low, high]) = moving.span {
+                    if moving.looping && high > low {
+                        at = low + (at - low).rem_euclid(high - low);
+                    } else {
+                        at = at.clamp(low, high);
+                        // It stops at the end it plays toward.
+                        moving.playing = !((moving.rate > 0.0 && at >= high) || (moving.rate < 0.0 && at <= low));
+                    }
+                }
+                at
+            };
             if at.to_bits() == moving.at.to_bits() {
                 return;
             }

@@ -17,13 +17,13 @@ import package::lib::drawn::held_row;
 
 // A label's anchor point in CSS pixels, its alignment there (0 left or top, 0.5 centered), whether
 // it lies inside its row's marker, and whether its row shows. Before `fit` places a point's label,
-// `at` is the marker's center, `beside` the point beside the marker, and `room` the space inside
-// it, negative where the marker holds no label.
+// `at` is the marker's center and `beside` the point beside the marker. `half` is the half size of
+// a marker that holds labels, negative for any other.
 struct Anchor {
     at: vec2f,
     align: vec2f,
     beside: vec2f,
-    room: vec2f,
+    half: vec2f,
     inside: bool,
     shown: bool,
 }
@@ -49,7 +49,7 @@ fn anchor(item: u32) -> Anchor {
     a.at = c.at;
     a.shown = c.shown;
     a.beside = c.at + vec2f(p.half.x + 0.4 * text, 0.0);
-    a.room = select(vec2f(-1.0), vec2f(2.0 * p.half.x - text, 2.0 * p.half.y), holds);
+    a.half = select(vec2f(-1.0), p.half, holds);
     return a;
 }
 
@@ -61,7 +61,7 @@ fn fit(a: Anchor, extent: vec2f) -> Anchor {
         return a;
     }
     var f = a;
-    f.inside = all(extent <= a.room);
+    f.inside = all(extent <= vec2f(2.0 * a.half.x - mark.label_size, 2.0 * a.half.y));
     f.at = select(a.beside, a.at, f.inside);
     f.align = select(vec2f(0.0, 0.5), vec2f(0.5), f.inside);
     return f;
@@ -269,20 +269,17 @@ fn in_view(lo: vec2f, hi: vec2f) -> bool {
     return all(hi > vec2f(0.0)) && all(lo < eye.size);
 }
 
-// Labels beside their rows compete for space. Each label writes its claim key into the cells its
-// box covers, and each cell keeps the largest key. A label shows only if it keeps every cell it
-// covers, so where labels would overlap, the label of the row drawn on top shows. The claims depend
-// on this frame alone. A label inside its row's marker, such as a block's label, does not compete.
+// Labels compete for space. Each label writes its claim key into the cells of the room it takes,
+// and each cell keeps the largest key. A label shows only if it keeps every cell it covers, so
+// where labels would overlap, the label of the row drawn on top shows. A label inside its row's
+// marker takes the marker's room, so where such markers overlap, only the top one's label shows,
+// and no label shows over a marker drawn over its own. The claims depend on this frame alone.
 
-// Whether the label anchored at `a` competes for space with other labels.
-fn claims_room(a: Anchor) -> bool {
-    return !a.inside;
-}
-
-// The box a label claims: its runs' box (of size `extent`) once all are set (`ready`), else space
-// for a short text at its anchor.
+// The box a label claims: inside its marker, the marker's box. Elsewhere, its runs' box (of size
+// `extent`) once all are set (`ready`), else space for a short text at its anchor.
 fn claimed(a: Anchor, ready: bool, extent: vec2f, size: f32) -> Text {
-    return label_box(a, select(vec2f(LABEL_GUESS * size, size), extent, ready));
+    let text = select(vec2f(LABEL_GUESS * size, size), extent, ready);
+    return label_box(a, select(text, 2.0 * a.half, a.inside));
 }
 
 // The claim grid's cells a box covers: its first and last column and row (none when it lies off the

@@ -285,6 +285,13 @@ fn a_sized_shape_holds_its_label_where_it_fits_in_a_color_that_reads_on_it() {
     let (middle, beside) = (at(&pixels, c, c), at(&pixels, c + 24, c));
     assert!(middle[2] < 60, "only the shape: {middle:?}");
     assert!(beside[2] > 200 && beside[0] < 60, "the label beside it: {beside:?}");
+    // Where shapes overlap, only the top one's label shows: the red one inside the shape below
+    // never draws over the shape above it.
+    let mut stacked = shown(&gpu, vec![0.0, 8.0], |v| v.size(60.0, 20.0).color(black));
+    let pixels = frame(&gpu, &mut stacked);
+    let count = |hue: fn([u8; 4]) -> bool| (c - 30..c + 40).filter(|&x| hue(at(&pixels, x, c))).count();
+    assert_eq!(count(|p| p[0] > 100 && p[2] < 60), 0, "the lower shape's label is hidden");
+    assert!(count(|p| p[2] > 200) > 0, "the top shape's label shows");
 }
 
 #[test]

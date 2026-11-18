@@ -1,14 +1,13 @@
 // Glyphs: every labeled row's text, placed from its prepared screen position. A label shows when its
-// text is set and its row shows. It fades with its row's tile. A label beside its row also shows
-// only if it kept its claim on every cell it covers this frame (`raster/claims.wesl`), so labels
-// never overlap. Nothing depends on an earlier frame. A halo of the background color keeps text
-// readable over anything below it. Text inside a shape or block reads on its fill instead: it keeps
-// `TEXT_CONTRAST` with the fill, and its halo is the fill. Text is a distance field, so
-// edges stay crisp at any size, and the halo is a wider threshold of the same field.
+// text is set, its row shows, and it kept its claim on every cell of its room this frame
+// (`raster/claims.wesl`), so labels never overlap, nor show over a marker drawn over their own. It
+// fades with its row's tile. Nothing depends on an earlier frame. A halo of the background color
+// keeps text readable over anything below it. Text inside a shape or block reads on its fill
+// instead: it keeps `TEXT_CONTRAST` with the fill, and its halo is the fill. Text is a distance
+// field, so edges stay crisp at any size, and the halo is a wider threshold of the same field.
 
 import package::lib::types::{
-    NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS, POINTS, SIZED, MARKER_SHAPE, MARKER_BLOCK,
-    VERTEX_COLOR,
+    NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS, MARKER_SHAPE, MARKER_BLOCK, VERTEX_COLOR,
 };
 import package::lib::bind::{frame, eye, mark, word, ramp};
 import package::lib::state::{extra_at, row_at};
@@ -63,12 +62,10 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let per = select(NUMBER_CHARS, 1u, mark.number == NONE);
     var item = instance / per;
     let k = instance % per;
-    // A label that claims cells must own its first cell. Enumerating those cells bounds dense
-    // draws by the viewport while preserving each winner exactly once. Labels inside sized
-    // markers do not all claim space, so they continue to enumerate rows.
+    // A label that shows owns the first cell of its room. Enumerating cells bounds dense draws by
+    // the viewport while drawing each winner exactly once.
     let grid = vec2u(grid_size());
-    let outside = mark.primitive != POINTS || ((mark.flags & SIZED) == 0u && mark.marker != MARKER_BLOCK);
-    let by_cell = outside && grid.x * grid.y < mark.rows;
+    let by_cell = grid.x * grid.y < mark.rows;
     var cell = vec2u(0u);
     if by_cell {
         cell = vec2u(item % grid.x, item / grid.x);
@@ -82,11 +79,9 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let prepared = word_quad(labels, mark.label_metadata + item * 4u);
     if (prepared.w & 8u) == 0u { return unshown(); }
     if by_cell && prepared.x != (cell.x | (cell.y << 16u)) { return unshown(); }
-    if (prepared.w & 16u) != 0u {
-        let cells = Cells(vec2i(i32(prepared.x & 65535u), i32(prepared.x >> 16u)),
-            vec2i(i32(prepared.y & 65535u), i32(prepared.y >> 16u)), 0);
-        if !keeps(cells, claim_key(item)) { return unshown(); }
-    }
+    let room = Cells(vec2i(i32(prepared.x & 65535u), i32(prepared.x >> 16u)),
+        vec2i(i32(prepared.y & 65535u), i32(prepared.y >> 16u)), 0);
+    if !keeps(room, claim_key(item)) { return unshown(); }
     let drawn = drawn_row(item);
     let row = drawn.row;
     let bits = word(extra_at(row, mark.label + LABEL_CODE));
@@ -119,7 +114,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     // color is translucent, and its halo is that color. Other markers draw something else there.
     var rgb = color.rgb;
     var halo = frame.background;
-    if ((prepared.w & 32u) != 0u) & ((mark.marker == MARKER_SHAPE) | (mark.marker == MARKER_BLOCK)) {
+    if ((prepared.w & 16u) != 0u) & ((mark.marker == MARKER_SHAPE) | (mark.marker == MARKER_BLOCK)) {
         let fill = unpack4x8unorm(word(row_at(row) + VERTEX_COLOR));
         let ground = mix(frame.background.rgb, fill.rgb, fill.a);
         rgb = legible(rgb, ground, TEXT_CONTRAST);

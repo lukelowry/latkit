@@ -60,6 +60,17 @@ impl Playhead {
         Ok(())
     }
 
+    /// Whether it plays along the end of its span as the span grows.
+    #[wasm_bindgen(getter)]
+    pub fn live(&self) -> bool {
+        self.0.live()
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_live(&self, live: bool) {
+        self.0.set_live(live);
+    }
+
     #[wasm_bindgen(getter)]
     pub fn looping(&self) -> bool {
         self.0.looping()

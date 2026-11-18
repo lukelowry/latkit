@@ -3,16 +3,17 @@
 //! In the labels buffer, each labeled mark keeps a run table that maps its text codes to where the
 //! atlas holds each text. Both words are 0 until the text is set. A number label's codes are the
 //! characters it writes, so the GPU writes any number from a few texts. Preparation retains each
-//! label's screen box until its placement inputs change. A label shows when its text is set, its row is visible, and the text fits,
-//! for example inside a block. No label depends on another label or on an earlier frame. A row
-//! whose text is missing has no label.
+//! label's screen box until its placement inputs change. A label shows when its text is set, its
+//! row is visible, and it keeps its room. No label depends on an earlier frame. A row whose text is
+//! missing has no label.
 //!
-//! Labels beside their rows compete for screen space. When the camera, a labeled mark's places, or
-//! a run table changes, the claim pass writes each such label's claim into the screen cells its
-//! text covers. Until its text is set, a label claims the cells a short text would cover. Each cell
-//! keeps the claim of the row drawn on top. A label shows only if it kept every cell it covers, so
-//! labels never overlap. Only labels that keep their cells need texts, so however large the data,
-//! the texts in view are only as many as fit on the screen. The claims depend on that frame alone.
+//! Labels compete for screen space. When the camera, a labeled mark's places, or a run table
+//! changes, the claim pass writes each label's claim into the screen cells of its room: the cells
+//! its text covers, or inside a marker, the marker's. Until its text is set, a label claims the
+//! cells a short text would cover. Each cell keeps the claim of the row drawn on top. A label shows
+//! only if it kept every cell of its room, so labels never overlap, nor show over a marker drawn
+//! over their own. Only labels that keep their cells need texts, so however large the data, the
+//! texts in view are only as many as fit on the screen. The claims depend on that frame alone.
 //!
 //! The texts pass then finds the texts those labels need. Each label near the view whose text the
 //! atlas lacks asks for it, and each one in view whose text is set marks it seen. The host reads
@@ -532,16 +533,13 @@ impl View {
             );
             pass.set_bind_group(2, glyphs, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
+            // Each label that shows owns a cell of the claim grid, so a dense mark draws at most
+            // one label a cell (see `draw/glyphs.wesl`).
             let grid = self.size.map(|side| {
                 let side = side as f32;
                 ((side + 2.0 * wgsl::LABEL_MARGIN * side) / wgsl::LABEL_CELL).ceil() as u32
             });
-            let outside = shown.compiled.as_ref().is_some_and(|c| {
-                shown.kind().primitive() != crate::scene::mark::Primitive::Points
-                    || (c.drawing.flags & wgsl::SIZED == 0 && c.drawing.markers.marker != wgsl::MARKER_BLOCK)
-            });
-            let items = if outside { shown.rows.min(grid[0] * grid[1]) } else { shown.rows };
-            drawn.draw(pass, 4, items * per);
+            drawn.draw(pass, 4, shown.rows.min(grid[0] * grid[1]) * per);
         }
     }
 }

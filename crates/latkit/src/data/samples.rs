@@ -14,7 +14,7 @@
 //! row block's values together.
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 
 use super::column::{PAGE_BITS, PAGE_MASK, PAGE_ROWS};
 use super::name::PageId;
@@ -257,6 +257,15 @@ impl<T: Copy> Page<T> {
     /// A handle to the same page that reads only its first `len` entries.
     fn capped(&self, len: u32) -> Page<T> {
         Page { cap: len, ..self.clone() }
+    }
+}
+
+impl<T: Send + Sync + 'static> Page<T> {
+    /// A handle that tells whether any version still holds the page. Once none does, as after its
+    /// frames were forgotten, nothing can read it again.
+    pub(crate) fn kept(&self) -> Weak<dyn Send + Sync> {
+        let kept: Weak<Store<T>> = Arc::downgrade(&self.store);
+        kept
     }
 }
 
@@ -598,7 +607,9 @@ impl Samples {
         stored
     }
 
-    /// The first and last coordinates of the entries this version reads, across all levels.
+    /// The first and last coordinates of the entries this version reads: its first and last frames'
+    /// where it holds them, else those of the coarser buckets covering them, as time tiles hold
+    /// before their finer spans arrive. Forgetting frames moves the first to the first kept.
     pub(crate) fn span(&self) -> Option<[f64; 2]> {
         let mut span: Option<[f64; 2]> = None;
         for (level, log) in self.axes.iter().enumerate() {
@@ -607,7 +618,11 @@ impl Samples {
             let (Some(lo), Some(hi)) = (first.coordinate(a.start, 0), last.coordinate(b.end - 1, 1)) else { continue };
             span = Some(span.map_or([lo, hi], |s| [s[0].min(lo), s[1].max(hi)]));
         }
-        span
+        // A held frame at either end is exact. A coarser bucket covering an end can reach past it,
+        // as one that began before the frames forgotten does.
+        let first = self.at(self.start);
+        let last = self.end.checked_sub(1).and_then(|frame| self.at(frame));
+        span.map(|[lo, hi]| [first.unwrap_or(lo), last.unwrap_or(hi)])
     }
 
     /// The coordinate of the last frame, or if that frame is missing, the end of the span across
@@ -1380,6 +1395,7 @@ mod tests {
         assert_eq!((samples.start(), samples.end()), (50, 100));
         assert_eq!(samples.value(7, 60), Some(60.0), "frames keep their numbers");
         assert_eq!(samples.at(49), None);
+        assert_eq!(samples.span(), Some([50.0, 99.0]), "the span starts at the first kept frame, not its bucket");
         assert!(pages(&samples) < before, "whole pages before the first kept frame drop");
         assert_eq!(older.value(7, 10), Some(10.0), "an older version still reads them");
         samples.append(&[100.0], &Values::from(vec![1.0_f32; rows]), rows).expect("frame");

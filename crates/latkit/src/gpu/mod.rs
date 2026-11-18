@@ -273,10 +273,11 @@ pub struct Budget {
     /// GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's
     /// per-row state. A table too large for a view's share draws as a paged table, with only the
     /// pages the camera needs, so it always fits. Pages no view draws stay cached in the rest of
-    /// the budget, and the least recently drawn are evicted first. Defaults to half the device's
-    /// addressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never
-    /// shrinks, so set the budget before drawing data. A device without the memory to grow the pool
-    /// further lowers the budget to the pool's size.
+    /// the budget, and the least recently drawn are evicted first. Frames a dataset forgot are
+    /// freed instead, so a recording that forgets its oldest frames keeps only what it holds.
+    /// Defaults to half the device's addressable word-texture capacity, at most 1 GiB. The page
+    /// pool grows as data needs it and never shrinks, so set the budget before drawing data. A
+    /// device without the memory to grow the pool further lowers the budget to the pool's size.
     pub bytes: u64,
     /// The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to
     /// 32 MiB.

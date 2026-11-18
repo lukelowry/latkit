@@ -625,10 +625,11 @@ it for the tiles they fetched.
 : GPU memory in bytes for the data all views of the [`Gpu`](#gpu) draw: its pages and each view's per-row
   state. A table too large for a view's share draws as a paged table, with only the pages the
   camera needs, so it always fits. Pages no view draws stay cached in the rest of the budget, and
-  the least recently drawn are evicted first. Defaults to half the device's addressable
-  word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never shrinks, so
-  set the budget before drawing data. A device without the memory to grow the pool further lowers
-  the budget to the pool's size.
+  the least recently drawn are evicted first. Frames a dataset forgot are freed instead, so a
+  recording that forgets its oldest frames keeps only what it holds. Defaults to half the device's
+  addressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never
+  shrinks, so set the budget before drawing data. A device without the memory to grow the pool
+  further lowers the budget to the pool's size.
 
 {#budget-uploadperframe .member}
 **`uploadPerFrame`**`: number` [¶](#budget-uploadperframe){.headerlink}
@@ -1430,8 +1431,9 @@ width and height, holds its label inside where the text fits, and otherwise the 
 beside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or
 darker as it needs, and its halo is that color.
 
-Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
-its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
+Labels never overlap. Where they would, the row drawn on top keeps its label (so `priority`
+decides), and a dense view labels as many rows as fit. A label inside a marker takes the
+marker's room, so where such markers overlap, only the top one's label shows. A row whose text
 is missing or empty has no label, so a `when` that returns the field or missing labels only some
 rows.
 

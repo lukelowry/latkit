@@ -16,6 +16,119 @@ pub(crate) fn wake_after(after: Duration, waker: Waker) {
     platform::wake_after(after, waker);
 }
 
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub(crate) use live::Live;
+
+/// Live playheads, which play along the end of a span as data arrives.
+#[cfg(any(test, all(feature = "web", target_arch = "wasm32")))]
+mod live {
+    /// Weight of each arrival in [`Live`]'s averages.
+    const AVERAGED: f64 = 0.2;
+    /// How many times the time between arrivals a [`Live`] playhead trails the end of its span, and
+    /// the least it trails, in seconds.
+    const TRAILED: f64 = 2.5;
+    const LEAST_TRAILED: f64 = 0.05;
+    /// How many trails behind a [`Live`] playhead falls before it jumps to one trail behind, as
+    /// after a hidden page comes back.
+    const BEHIND: f64 = 4.0;
+    /// Seconds over which a [`Live`] playhead eases to a stop at the end of its span when no more
+    /// arrives.
+    const EASED: f64 = 0.15;
+
+    /// How a live playhead plays along the end of a span that grows as data arrives. It trails the
+    /// end by a little more than the time between arrivals, at the rate the end moves, both averaged
+    /// over recent arrivals, so data that arrives in uneven chunks plays at an even pace instead of
+    /// in jumps. It speeds up a little when it falls behind and slows when it gains, and eases to a
+    /// stop at the end when no more arrives.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct Live {
+        /// The span's end when it last grew, and the time it grew, in seconds.
+        end: Option<(f64, f64)>,
+        /// Axis units per second the end moves, and seconds between arrivals, averaged.
+        rate: f64,
+        every: f64,
+    }
+
+    impl Live {
+        /// Axis units per second the end of the span moves, averaged over recent arrivals.
+        pub(crate) fn rate(&self) -> f64 {
+            self.rate
+        }
+
+        /// Notes that the span ends at `end` at time `now`, in seconds. An end that moved back, as
+        /// a new recording's, starts the averages again.
+        pub(crate) fn heard(&mut self, end: f64, now: f64) {
+            match self.end {
+                Some((last, at)) if end > last && now > at => {
+                    let (every, rate) = (now - at, (end - last) / (now - at));
+                    if self.every == 0.0 {
+                        (self.every, self.rate) = (every, rate);
+                    } else {
+                        self.every += AVERAGED * (every - self.every);
+                        self.rate += AVERAGED * (rate - self.rate);
+                    }
+                    self.end = Some((end, now));
+                }
+                Some((last, _)) if end >= last => {}
+                _ => *self = Live { end: Some((end, now)), ..Live::default() },
+            }
+        }
+
+        /// Where a playhead at `at` moves `step` seconds later, trailing `end`. It holds until two
+        /// arrivals tell the rate, and never passes `end`.
+        pub(crate) fn next(&self, at: f64, end: f64, step: f64) -> f64 {
+            if self.rate <= 0.0 {
+                return at.min(end);
+            }
+            let trail = self.rate * (TRAILED * self.every).max(LEAST_TRAILED);
+            let gap = end - at;
+            if gap > BEHIND * trail {
+                return end - trail;
+            }
+            let pace = (1.0 + (gap - trail) / (3.0 * trail)).clamp(0.0, 2.0);
+            let speed = (self.rate * pace).min(gap.max(0.0) / EASED);
+            let moved = (at + speed * step).min(end);
+            // Within rounding of the end, it is there, so it stops.
+            if end - moved <= 1e-9 * end.abs().max(1.0) { end } else { moved }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Live;
+
+        #[test]
+        fn a_live_playhead_plays_an_uneven_feed_at_an_even_pace() {
+            // Frames at 60 per second. A recording grows at 0.8 axis units a second, arriving every
+            // 60 to 140 ms, then stops.
+            let (frame, rate) = (1.0 / 60.0, 0.8);
+            let (mut live, mut at, mut end, mut next) = (Live::default(), 0.0_f64, 0.0_f64, 0.0_f64);
+            let mut steps = Vec::new();
+            for f in 0..1200 {
+                let now = f64::from(f) * frame;
+                if now >= next && now < 15.0 {
+                    end = rate * now;
+                    next = now + 0.06 + 0.08 * f64::from((f * 7919) % 11) / 10.0;
+                }
+                live.heard(end, now);
+                let moved = live.next(at, end, frame);
+                assert!(moved <= end && moved >= at, "it never passes the end nor goes back");
+                steps.push(moved - at);
+                at = moved;
+            }
+            // Once the rate is known, every frame moves it, at nearly the same pace: no stops, no
+            // jumps.
+            let playing = &steps[120..900];
+            let (least, most) = playing.iter().fold((f64::MAX, 0.0_f64), |(l, m), &s| (l.min(s), m.max(s)));
+            assert!(least > 0.0, "it never stops while data arrives");
+            assert!(most / least < 1.6, "its pace stays even: steps from {least} to {most}");
+            assert!((live.rate() - rate).abs() < 0.08, "the rate it plays at is the feed's: {}", live.rate());
+            // Once the feed stops, it eases to the end.
+            assert_eq!(at, end, "it reaches the end");
+        }
+    }
+}
+
 /// Waits until `after` has passed.
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn sleep(after: Duration) {

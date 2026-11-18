@@ -33,7 +33,10 @@ export class Playhead extends Handle {
     if (options.loop) this.loop = true;
   }
 
-  /** The axis coordinate it is at. Setting it moves every view that follows it at once. */
+  /**
+   * The axis coordinate it is at. Setting it moves every view that follows it at once, and stops a
+   * live playhead.
+   */
   get at(): number {
     return playhead(this).at;
   }
@@ -42,12 +45,15 @@ export class Playhead extends Handle {
     playhead(this).seek(at);
   }
 
-  /** Axis units per second it moves while it plays, backward when negative. */
+  /**
+   * Axis units per second it moves while it plays, backward when negative. While live, the rate the
+   * end of its span moves.
+   */
   get rate(): number {
     return playhead(this).rate;
   }
 
-  /** Whether it plays. */
+  /** Whether it is moving. A live playhead that reached the end of its span waits there. */
   get playing(): boolean {
     return playhead(this).playing;
   }
@@ -61,9 +67,31 @@ export class Playhead extends Handle {
     playhead(this).play(rate);
   }
 
-  /** Stops it where it is. */
+  /** Stops it where it is, live or not. */
   pause(): void {
     playhead(this).pause();
+  }
+
+  /**
+   * Whether it plays along the end of its span while the page extends the span as data arrives, as
+   * a recording does. It trails the end by a little more than the time between arrivals, at the rate
+   * the end moves, so data that arrives in uneven chunks plays at an even pace, and eases to a stop
+   * at the end when no more arrives. Turning it on starts at the end. Seeking, playing, or pausing
+   * stops it, and turning it off pauses it where it is.
+   *
+   * ```ts
+   * playhead.live = true;
+   * // As frames arrive:
+   * data.append('Bus', times, { vm });
+   * playhead.span = [0, times.at(-1)];
+   * ```
+   */
+  get live(): boolean {
+    return playhead(this).live;
+  }
+
+  set live(live: boolean) {
+    playhead(this).live = live;
   }
 
   /** The coordinates it stays between, lowest first, or `null` to move anywhere. */

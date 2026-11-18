@@ -211,21 +211,21 @@ impl Fetched {
         let Some(landed) = pending.take() else { return };
         let (waker, fetch) = (self.waker.clone(), self.fetch.clone());
         let jobs = jobs.waking(&waker).fetching(fetch.as_ref());
-        // An index that failed to fetch is fetched again after its retry, and a cancelled one at
-        // once. One that can't be read waits for a refresh.
-        self.state = match landed {
+        // An index that failed to fetch, or is not there yet (as a recording's manifest before its
+        // first frames), is fetched again after its retry, and a cancelled one at once. One that
+        // can't be read waits for a refresh.
+        let read = landed.map(|bytes| Index::read(url, &bytes).and_then(|index| opened(url, index, &bytes, &jobs)));
+        self.state = match read {
+            Ok(Ok(holds)) => {
+                self.retry = None;
+                State::Open(holds)
+            }
             Err(Error::Cancelled) => start(url, &jobs),
-            Err(error) => {
+            Err(error) | Ok(Err(error @ Error::Io(_))) => {
                 self.retry = Some(Retry::after(self.retry, &waker));
                 State::Failed(error)
             }
-            Ok(bytes) => match Index::read(url, &bytes).and_then(|index| opened(url, index, &bytes, &jobs)) {
-                Ok(holds) => {
-                    self.retry = None;
-                    State::Open(holds)
-                }
-                Err(error) => State::Failed(error),
-            },
+            Ok(Err(error)) => State::Failed(error),
         };
     }
 }
