@@ -401,7 +401,8 @@ impl View {
     /// fits.
     ///
     /// The view goes on drawing, and answering for, the scene before until the pipelines this
-    /// scene's frames draw with have compiled, then draws it from the next frame. They compile after
+    /// scene's frames draw with have compiled, and the tiles of sources given since can draw (see
+    /// [`set_sources`](View::set_sources)), then draws it from the next frame. They compile after
     /// those of the scene before, so a scene set before the view's first frame draws second. Fits and
     /// cameras asked for meanwhile apply to this scene. A view's first scene draws at once.
     ///
@@ -422,9 +423,9 @@ impl View {
             replaced.release(&mut inner);
         }
         drop(inner);
-        self.swap_when_ready();
-        // Until it draws, the view waits on its pipelines, so `done` waits for it.
-        if self.incoming.is_some() && !self.waiting.compiling {
+        // Until it draws, the view waits on its pipelines, so `done` waits for it. A scene ready to
+        // draw waits only for the next frame, which takes it with any sources given since.
+        if self.swap_when_ready(false) && !self.waiting.compiling {
             self.waiting.compiling = true;
             self.events.tell(Event::Waiting(self.waiting));
         }
@@ -466,12 +467,21 @@ impl View {
         })
     }
 
-    /// Draws the incoming scene from the next frame once it can: the pipelines its frames draw with
-    /// have landed, or the browser refused one, which the view then reports. It asks for them first,
-    /// after those of the scene drawn, for each target its frames draw into. A view's first scene,
-    /// or one set before any frame on the GPU, swaps in at once.
-    fn swap_when_ready(&mut self) {
-        let Some(incoming) = &self.incoming else { return };
+    /// Draws the incoming scene and sources once they can, together, as a frame starts
+    /// (`starting`). So a scene and the sources given with it between two frames swap on one
+    /// frame, whichever was set first. Sources can once the tiles among them that the view did not
+    /// draw can draw (see [`set_sources`](View::set_sources)). A scene can once the pipelines its
+    /// frames draw with have landed, or the browser refused one, which the view then reports. It
+    /// asks for them first, after those of the scene drawn, for each target its frames draw into.
+    /// A view's first scene, or one set before any frame on the GPU, swaps in at once. Returns
+    /// whether the scene waits on its pipelines or sources.
+    fn swap_when_ready(&mut self, starting: bool) -> bool {
+        if starting && self.incoming_sources.is_some() && self.derived.tiles.loaded() {
+            let sources = self.incoming_sources.take().expect("checked");
+            let gpu = self.gpu.clone();
+            self.use_sources(sources, &mut gpu.0.lock());
+        }
+        let Some(incoming) = &self.incoming else { return false };
         let gpu = self.gpu.clone();
         // While it waits, the compiles that had landed when it last checked.
         let waiting = if let Some(most) = gpu.samples().filter(|_| self.scene_version > 0) {
@@ -490,10 +500,16 @@ impl View {
         };
         if let Some(landed) = waiting {
             self.compiling = Some(landed);
-        } else {
+            return true;
+        }
+        if self.incoming_sources.is_some() {
+            return true;
+        }
+        if starting || self.stats.frames == 0 {
             let incoming = self.incoming.take().expect("checked");
             self.swap(incoming);
         }
+        false
     }
 
     /// Draws `incoming`'s scene from the next frame. Each changed mark takes over the rows of the
@@ -600,8 +616,8 @@ impl View {
     ///
     /// Tiles the view does not draw yet load while it goes on drawing the sources before, as a
     /// scene waits for its pipelines. Once each can draw (its base landed, and every piece in view
-    /// draws at least a placeholder, or failed), all the sources swap in on one frame. A view that
-    /// has not drawn yet takes them at once.
+    /// draws at least a placeholder, or failed), all the sources swap in on one frame, with a scene
+    /// set since. A view that has not drawn yet takes them at once.
     pub fn set_sources<S: Into<Source>>(&mut self, sources: impl IntoIterator<Item = S>) -> Result<()> {
         let sources: Vec<Source> = sources.into_iter().map(Into::into).collect();
         for (i, source) in sources.iter().enumerate() {
@@ -689,13 +705,18 @@ impl View {
     /// but tiles still arrive.
     fn refresh(&mut self, inner: &mut crate::gpu::Inner) {
         self.update_tiles(inner);
-        // Sources given while the view drew others swap in together, once their tiles can draw.
-        if self.incoming_sources.is_some() && self.derived.tiles.loaded() {
-            let sources = self.incoming_sources.take().expect("checked");
-            self.use_sources(sources, inner);
-        }
+        let mut compiled = false;
         for data in self.derived.tiles.take_changed() {
-            self.take_data(data, inner);
+            compiled |= self.take_data(data, inner);
+        }
+        // Marks compiled against the tiles' data may read fields the tiles did not know of, so the
+        // tiles update again for them: what they fetch, and whether they are complete, follows the
+        // marks the frame draws.
+        if compiled {
+            self.update_tiles(inner);
+            for data in self.derived.tiles.take_changed() {
+                self.take_data(data, inner);
+            }
         }
         if self.signal.holding() {
             return;
@@ -716,8 +737,9 @@ impl View {
 
     /// Takes a new version of a dataset, with the GPU's state locked. Marks whose schema it changed
     /// recompile, as do failed marks that read it. Failures stay until the data fits again, and the
-    /// next frame reports them. A caller outside a frame requests a frame to draw the data.
-    fn take_data(&mut self, data: Snapshot, inner: &mut crate::gpu::Inner) {
+    /// next frame reports them. A caller outside a frame requests a frame to draw the data. Returns
+    /// whether a mark compiled.
+    fn take_data(&mut self, data: Snapshot, inner: &mut crate::gpu::Inner) -> bool {
         let at = match self.snapshots.binary_search_by(|d| d.name().cmp(data.name())) {
             Ok(i) => {
                 self.snapshots[i] = data;
@@ -729,8 +751,10 @@ impl View {
             }
         };
         let context = Context { theme: &self.scene.theme, space: &self.scene.space, layout: &self.scene.layout };
+        let mut compiled = false;
         for (i, shown) in self.marks.iter_mut().enumerate() {
             if shown.stale(&self.snapshots[at]) {
+                compiled = true;
                 if let Some(staged) = self.staged.get_mut(&shown.mark.style().data) {
                     staged.forget(i, inner);
                 }
@@ -746,6 +770,7 @@ impl View {
             let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
             for shown in incoming.fresh.iter_mut().flatten() {
                 if shown.stale(&self.snapshots[at]) {
+                    compiled = true;
                     shown.compile(&self.snapshots, context, inner);
                 }
             }
@@ -753,6 +778,7 @@ impl View {
         // Rows may have moved under the focus.
         self.focus.dirty = true;
         self.fitting.plot_due = true;
+        compiled
     }
 
     /// Stops drawing dataset `name` until a source provides it again, and releases the GPU tables
@@ -1226,6 +1252,8 @@ impl View {
             || self.guides.retry
             || self.signal.landed()
             || self.derived.tiles.pending()
+            // Sources given since swap in on the next frame once their tiles can draw.
+            || (self.incoming_sources.is_some() && self.derived.tiles.loaded())
             || self.rig.easing()
             || (self.rig.orbit != 0.0 && moves)
             || self.measure_due()

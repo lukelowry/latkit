@@ -770,7 +770,7 @@ mod tests {
         for need in &new {
             gpu.0.lock().pipelines.release(need);
         }
-        view.swap_when_ready();
+        view.swap_when_ready(true);
         assert!(view.incoming.is_none() && view.marks.len() == 2, "it draws once they land");
         assert!(matches!(view.camera, crate::Camera::Map { center: [5.0, ..], .. }), "with the camera set for it");
         assert!(view.ready_for(format, 1.0, true));

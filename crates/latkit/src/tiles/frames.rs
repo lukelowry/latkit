@@ -324,8 +324,15 @@ fn wanted(
         wanted.extend(spans(0, &within(0, &(frame..frame.saturating_add(2)))));
     }
     if traced {
+        // Frames past those held may lie in view, where the samples cannot place the window, so
+        // there it runs on to the field's first or last frame.
         let window = match (held, reading.across) {
-            (Some(samples), Some(across)) => samples.across(across),
+            (Some(samples), Some(across)) => {
+                let window = samples.across(across);
+                let start = if window.start <= samples.start() { frames.start } else { window.start };
+                let end = if window.end >= samples.end() { frames.end } else { window.end };
+                start..end.max(start)
+            }
             _ => frames.clone(),
         };
         // A trace draws from one level: the one whose entries fit a pixel column, or a coarser one

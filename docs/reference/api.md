@@ -1283,8 +1283,10 @@ const view = await View.create(canvas, {
 : Datasets the view draws besides those its scene uses. A source replaces a scene dataset with
   the same name. A mark whose table is written `[data, table]` draws the source named `data`. The
   view draws a [`Data`](#data) at its latest version from the frame after each change, a [`Snapshot`](#snapshot) as it
-  is, and [`Tiles`](#tiles) as the pieces it needs. A mark whose dataset no longer fits it draws nothing.
-  It is listed in `failures`, and the next frame emits an `error` event.
+  is, and [`Tiles`](#tiles) as the pieces it needs. `Tiles` the view does not draw yet load while it goes
+  on drawing the sources before, which all swap on one frame once each new `Tiles` can draw, as
+  a scene waits for its shaders. A mark whose dataset no longer fits it draws nothing. It is
+  listed in `failures`, and the next frame emits an `error` event.
 
 {#view-at .member}
 **`at`**`: number` [¶](#view-at){.headerlink}
