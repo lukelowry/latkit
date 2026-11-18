@@ -2409,6 +2409,14 @@
               "type": "number",
               "format": "float"
             },
+            "padding": {
+              "description": "The space between the view's edge, inside its insets, and the guides beside it: titles,\nlegends, and a plot's axes. Defaults to 1.5 times the text size.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
             "text": {
               "description": "How labels, axis ticks, and titles look.",
               "$ref": "#/$defs/TextTheme"
@@ -4330,6 +4338,29 @@
             "detail"
           ],
           "description": "The axis coordinate shown changed: [`View::at`](crate::View::at). A press on a plot whose\ninput scrubs, as [`Controls::gestures`](crate::Controls) says, moved it."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "area"
+            },
+            "detail": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "float"
+              },
+              "minItems": 4,
+              "maxItems": 4
+            }
+          },
+          "required": [
+            "type",
+            "detail"
+          ],
+          "description": "Where marks draw changed: [`View::area`](crate::View::area), `[x, y, width, height]` in CSS\npixels. The view's size, its insets, or its guides changed it."
         },
         {
           "type": "object",

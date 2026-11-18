@@ -13,6 +13,7 @@ use std::sync::Arc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::Span;
+use super::retry::Retry;
 use super::sets::Reading;
 use super::tiling::{Decoding, Pieces, Requested, Tiling};
 use crate::data::{
@@ -27,8 +28,9 @@ use crate::{Error, Pending};
 /// base was opened.
 pub(crate) struct Fetched {
     manifest: Manifest,
-    /// The spans' URL template, resolved against the manifest's URL.
+    /// The spans' URL template, and the base's URL, resolved against the manifest's URL.
     url: String,
+    base_url: String,
     base: Base,
     /// Each listed field's spans.
     pub(super) fields: Vec<Tiling<Span>>,
@@ -37,19 +39,23 @@ pub(crate) struct Fetched {
 
 /// The base dataset, without its sampled fields' entries, as it arrives.
 enum Base {
-    Fetching(Pending<Vec<u8>>),
+    /// Being fetched, after a fetch that failed with this retry, if any.
+    Fetching(Pending<Vec<u8>>, Option<Retry>),
     Landed(Snapshot),
-    Failed(Error),
+    /// It could not be read: a fetch that failed, fetched again after its retry, or bytes that
+    /// are not a dataset, read again only after a refresh.
+    Failed(Error, Option<Retry>),
 }
 
 impl Fetched {
     /// Opens the fields that `manifest`, fetched from `url`, lists. Their base dataset is fetched
     /// immediately.
     pub(crate) fn open(url: &str, manifest: Manifest, jobs: &Jobs<'_>) -> Fetched {
-        let base = jobs.fetch(&Request::new(crate::url::resolve(url, &manifest.data)));
+        let base_url = crate::url::resolve(url, &manifest.data);
         Fetched {
             url: crate::url::resolve(url, &manifest.url),
-            base: Base::Fetching(base),
+            base: Base::Fetching(jobs.fetch(&Request::new(base_url.clone())), None),
+            base_url,
             fields: manifest.fields.iter().map(|_| Tiling::default()).collect(),
             manifest,
             opened: 0,
@@ -59,7 +65,8 @@ impl Fetched {
     /// Takes `manifest`, a newer version of this one, fetched again from `url`. A manifest that
     /// names another base, span size, or span template starts over. Otherwise each field keeps the
     /// spans the frames it listed filled, and fetches the rest again, such as the last span of each
-    /// level, which the new manifest may extend. Spans that failed are fetched again too.
+    /// level, which the new manifest may extend. A base or span that failed is fetched again too,
+    /// without waiting for its retry.
     pub(crate) fn refresh(&mut self, url: &str, manifest: Manifest, jobs: &Jobs<'_>) {
         let old = &self.manifest;
         if manifest.data != old.data || manifest.chunk != old.chunk || manifest.url != old.url {
@@ -67,6 +74,9 @@ impl Fetched {
             *self = Fetched::open(url, manifest, jobs);
             self.opened = opened;
             return;
+        }
+        if let Base::Failed(_, retry) = self.base {
+            self.base = Base::Fetching(jobs.fetch(&Request::new(self.base_url.clone())), retry);
         }
         let chunk = u64::from(manifest.chunk);
         let mut fields = Vec::with_capacity(manifest.fields.len());
@@ -86,22 +96,36 @@ impl Fetched {
 
     /// Fetches and decodes in progress.
     pub(crate) fn under_way(&self) -> usize {
-        usize::from(matches!(self.base, Base::Fetching(_))) + self.fields.iter().map(Tiling::under_way).sum::<usize>()
+        usize::from(matches!(self.base, Base::Fetching(..))) + self.fields.iter().map(Tiling::under_way).sum::<usize>()
     }
 
     /// Takes the base dataset once it arrives: a patch applied to an empty dataset. Each set draws
-    /// it under the tiles' name, so the patch need not name one.
-    fn settle(&mut self) {
-        let Base::Fetching(pending) = &self.base else { return };
-        let Some(landed) = pending.take() else { return };
-        let read = |bytes: Vec<u8>| {
-            let patch = Patch::from_bytes(&bytes)?;
-            Snapshot::new(patch.data.clone().unwrap_or_else(|| Name::from("base"))).applied(patch)
-        };
-        self.base = match landed.and_then(read) {
-            Ok(base) => Base::Landed(base),
-            Err(error) => Base::Failed(error.at(self.manifest.data.as_str())),
-        };
+    /// it under the tiles' name, so the patch need not name one. A fetch that failed runs again
+    /// after its retry, and a cancelled one at once.
+    fn settle(&mut self, jobs: &Jobs<'_>) {
+        let fetch = |url: &str, retry| Base::Fetching(jobs.fetch(&Request::new(url.to_owned())), retry);
+        match &self.base {
+            Base::Fetching(pending, last) => {
+                let last = *last;
+                let Some(landed) = pending.take() else { return };
+                self.base = match landed {
+                    Ok(bytes) => {
+                        let patch = Patch::from_bytes(&bytes);
+                        let base = patch.and_then(|patch| {
+                            Snapshot::new(patch.data.clone().unwrap_or_else(|| Name::from("base"))).applied(patch)
+                        });
+                        base.map_or_else(
+                            |error| Base::Failed(error.at(self.manifest.data.as_str()), None),
+                            Base::Landed,
+                        )
+                    }
+                    Err(Error::Cancelled) => fetch(&self.base_url, last),
+                    Err(error) => Base::Failed(error, Some(Retry::after(last, jobs.waker()))),
+                };
+            }
+            Base::Failed(_, Some(retry)) if retry.due() => self.base = fetch(&self.base_url, Some(*retry)),
+            Base::Landed(_) | Base::Failed(..) => {}
+        }
     }
 }
 
@@ -138,11 +162,11 @@ impl Drawing {
         fetched: &mut Fetched,
         jobs: &Jobs<'_>,
     ) -> (bool, bool, Option<Error>) {
-        fetched.settle();
+        fetched.settle(jobs);
         // Once a new base arrives, the set draws it from scratch. Until then it keeps drawing what
         // it drew.
         if self.opened != fetched.opened {
-            if matches!(fetched.base, Base::Fetching(_)) {
+            if matches!(fetched.base, Base::Fetching(..)) {
                 return (false, true, None);
             }
             *self = Drawing::new(fetched);
@@ -150,8 +174,8 @@ impl Drawing {
         let mut changed = false;
         if !self.based {
             match &fetched.base {
-                Base::Fetching(_) => return (false, true, None),
-                Base::Failed(error) => return (false, false, Some(error.clone())),
+                Base::Fetching(..) => return (false, true, None),
+                Base::Failed(error, _) => return (false, false, Some(error.clone())),
                 Base::Landed(base) => {
                     *data = base.renamed(name.clone());
                     self.based = true;

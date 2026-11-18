@@ -235,7 +235,7 @@ impl View {
     fn axes_sprites(&self, inner: &mut Inner) -> (Vec<wgsl::Sprite>, u32) {
         let Space::Plot(plot) = &self.scene.space else { return (Vec::new(), 0) };
         let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return (Vec::new(), 0) };
-        self.axes(inner, plot, self.area(), x, y)
+        self.axes(inner, plot, self.edges(), x, y)
     }
 
     /// The plot's grid lines, then its axes and playhead, and the number of grid lines.

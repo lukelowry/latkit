@@ -673,6 +673,11 @@ Lengths are in CSS pixels, except comet lengths given in position units.
 **`dash`**`?: number` [¶](#theme-dash){.headerlink}
 : The dash period: one dash and one gap of equal length.
 
+{#theme-padding .member}
+**`padding`**`?: number | null` [¶](#theme-padding){.headerlink}
+: The space between the view's edge, inside its insets, and the guides beside it: titles, legends,
+  and a plot's axes. Defaults to 1.5 times the text size.
+
 {#theme-text .member}
 **`text`**`?:` [`TextTheme`](#texttheme) [¶](#theme-text){.headerlink}
 : How labels, axis ticks, and titles look.
@@ -2049,7 +2054,7 @@ View events and hits, dataset descriptions and values, and frame statistics.
 ### `ViewEvent`
 
 {.signature}
-`type ViewEvent = { type: 'click'; detail: { … } } | { type: 'open'; detail: { … } } | { type: 'menu'; detail: { … } } | { type: 'drag'; detail: { … } } | { type: 'connect'; detail: { … } } | { type: 'delete'; detail: { … } } | { type: 'hovered'; detail: { … } } | { type: 'selection'; detail: { … } } | { type: 'camera'; detail:` [`Camera`](#camera) `} | { type: 'at'; detail: number } | { type: 'waiting'; detail:` [`Waiting`](#waiting) `} | { type: 'failures'; detail:` [`Failure`](#failure)`[] } | { type: 'error'; detail:` [`Failure`](#failure) `}`
+`type ViewEvent = { type: 'click'; detail: { … } } | { type: 'open'; detail: { … } } | { type: 'menu'; detail: { … } } | { type: 'drag'; detail: { … } } | { type: 'connect'; detail: { … } } | { type: 'delete'; detail: { … } } | { type: 'hovered'; detail: { … } } | { type: 'selection'; detail: { … } } | { type: 'camera'; detail:` [`Camera`](#camera) `} | { type: 'at'; detail: number } | { type: 'area'; detail: [number, number, number, number] } | { type: 'waiting'; detail:` [`Waiting`](#waiting) `} | { type: 'failures'; detail:` [`Failure`](#failure)`[] } | { type: 'error'; detail:` [`Failure`](#failure) `}`
 
 Something that happened in a view, as [`view.on`](#view-on) reports it.
 
@@ -2185,6 +2190,11 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 **`'at'`**`: number` [¶](#viewevent-at){.headerlink}
 : The axis coordinate shown changed: [`view.at`](#view-at). A press on a plot whose input scrubs, as
   [`controls.gestures`](#controls-gestures) says, moved it.
+
+{#viewevent-area .member}
+**`'area'`**`: [number, number, number, number]` [¶](#viewevent-area){.headerlink}
+: Where marks draw changed: [`view.area`](#view-area), `[x, y, width, height]` in CSS pixels. The view's size,
+  its insets, or its guides changed it.
 
 {#viewevent-waiting .member}
 **`'waiting'`**`:` [`Waiting`](#waiting) [¶](#viewevent-waiting){.headerlink}

@@ -9,6 +9,7 @@
 mod cache;
 mod frames;
 mod index;
+mod retry;
 mod sets;
 mod tiling;
 mod vector;
@@ -55,6 +56,11 @@ use crate::pending::Watchers;
 /// arriving tile appends its rows to the view's dataset. The dataset keeps the rows of tiles it no
 /// longer draws until they outnumber the rows it draws.
 ///
+/// A file that fails to fetch draws nothing and is fetched again on its own: a second later, then
+/// twice as long after each further failure, at most a minute. Each view reports the failure once.
+/// A fetch that fails with [`Error::Cancelled`](crate::Error::Cancelled), as when the page's own
+/// fetch is aborted, is no failure: the file is fetched again when next needed.
+///
 /// ```
 /// # use latkit::Tiles;
 /// let base = Tiles::new("base", "https://tiles.openfreemap.org/planet");
@@ -100,8 +106,9 @@ impl Tiles {
     /// Fetches the index again, as when a running simulation records more frames, and redraws what
     /// changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
     /// earlier frames filled. They fetch the last span of each level again, which draws what it
-    /// held until the new one lands, and every span that failed. A manifest that names another
-    /// base, span size, or span template starts over, as vector tiles always do.
+    /// held until the new one lands. Every file that failed is fetched again at once. A manifest
+    /// that names another base, span size, or span template starts over, as vector tiles always
+    /// do.
     pub fn refresh(&self) {
         self.refreshes.count.fetch_add(1, Ordering::Relaxed);
         self.refreshes.views.wake_all();

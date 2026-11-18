@@ -54,6 +54,16 @@ impl View {
         self.view.with(|v| v.set_at(at));
     }
 
+    /// Follows `playhead`, showing its coordinate.
+    pub fn follow(&self, playhead: &crate::Playhead) {
+        self.view.follow(Some(&playhead.0));
+    }
+
+    /// Stops following a playhead.
+    pub fn unfollow(&self) {
+        self.view.follow(None);
+    }
+
     /// The camera as JSON.
     #[wasm_bindgen(getter)]
     pub fn camera(&self) -> String {
@@ -141,6 +151,12 @@ impl View {
         let insets = fixed::<_, 4>(insets, "insets")?;
         self.view.with(|v| v.set_insets(insets));
         Ok(())
+    }
+
+    /// Where marks draw, `[x, y, width, height]` in CSS pixels.
+    #[wasm_bindgen(getter)]
+    pub fn area(&self) -> Vec<f32> {
+        self.view.read(|v| v.area().to_vec())
     }
 
     #[wasm_bindgen(getter)]

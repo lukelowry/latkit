@@ -949,7 +949,7 @@ impl View {
         let anchor = match self.camera {
             Camera::Map { center, .. } => center,
             Camera::Plot { .. } => {
-                let area = self.area();
+                let area = self.edges();
                 self.anchor([area[0].midpoint(area[2]) as f32, area[1].midpoint(area[3]) as f32], None)
             }
         };
@@ -1050,7 +1050,7 @@ impl View {
 
     /// The middle of the part of the view the camera frames, CSS pixels from the top left.
     fn middle(&self) -> [f32; 2] {
-        let [left, top, right, bottom] = self.area();
+        let [left, top, right, bottom] = self.edges();
         [left.midpoint(right) as f32, top.midpoint(bottom) as f32]
     }
 }

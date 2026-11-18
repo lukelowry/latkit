@@ -21,7 +21,7 @@
 //! left beyond what the texts in view use, the rest wait. A run table grows with its mark's texts,
 //! and the new one starts with every text already set, so labels keep showing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -117,6 +117,9 @@ pub(crate) struct Labels {
     wanting: bool,
     /// Each labeled mark's codes whose texts are set, with the run and its glyphs in the atlas.
     written: HashMap<usize, HashMap<u32, (TextRun, Glyphs)>>,
+    /// Each labeled mark's codes answered in its run table: their texts set, or found to draw
+    /// nothing. A texts pass that asks for one again did not see the answer.
+    answered: HashMap<usize, HashSet<u32>>,
     evictions: u64,
     /// Bumps whenever a run table changes.
     changes: u64,
@@ -167,13 +170,16 @@ impl View {
     }
 
     /// Sets the texts the last texts pass asked for, within the frame's budget. The next pass asks
-    /// for any left over.
+    /// for any left over. A text answered already and asked for again means the pass did not see
+    /// the answer: answering it again changes nothing, so it does not count as progress, and the
+    /// mark lists the failure. The labels then finish without it rather than ask forever.
     pub(super) fn settle_labels(&mut self, inner: &mut Inner) {
         let Some((_, bytes)) = self.labels.gathered.landed() else { return };
         let asked = std::mem::take(&mut self.labels.asked);
         let words = crate::wire::words(&bytes);
         let started = Instant::now();
         let (mut set, mut left) = (0, false);
+        let mut unseen: Vec<usize> = Vec::new();
         'marks: for (i, slots) in asked {
             if self.labels.slots(i) != Some(slots) {
                 continue;
@@ -202,6 +208,12 @@ impl View {
             codes.sort_unstable();
             codes.dedup();
             for code in codes.into_iter().take_while(|&code| code < slots.codes) {
+                if self.labels.answered.get(&i).is_some_and(|codes| codes.contains(&code)) {
+                    if !unseen.contains(&i) {
+                        unseen.push(i);
+                    }
+                    continue;
+                }
                 if set == BUDGET || started.elapsed() > BUDGET_TIME {
                     left = true;
                     break 'marks;
@@ -218,11 +230,19 @@ impl View {
                     break 'marks;
                 }
                 set += 1;
+                self.labels.answered.entry(i).or_default().insert(code);
                 match glyphs {
                     Some(glyphs) => self.write_run(i, slots, code, run, glyphs),
                     // A text that draws nothing gives no label too.
                     None => self.write_words(slots, code, [wgsl::NONE; 2]),
                 }
+            }
+        }
+        for i in unseen {
+            let failure =
+                crate::Error::invalid("some labels show no text: they asked again for texts already set").at("label");
+            if !self.marks[i].failures.contains(&failure) {
+                self.marks[i].failures.push(failure);
             }
         }
         self.labels.wanting = set > 0 || left;
@@ -292,6 +312,9 @@ impl View {
             let before = std::mem::take(&mut self.labels.settings);
             let kept = |i: usize| settings.get(i).is_some_and(|s| s.is_some() && before.get(i) == Some(s));
             self.labels.written.retain(|&i, _| kept(i));
+            // The new run table holds only the texts written back, so only they stay answered.
+            self.labels.answered =
+                self.labels.written.iter().map(|(&i, written)| (i, written.keys().copied().collect())).collect();
             self.labels.slots = slots;
             self.labels.settings = settings;
             for &i in &labeled {
@@ -336,10 +359,12 @@ impl View {
         let mut cleared = Vec::new();
         for (&i, written) in &mut self.labels.written {
             let Some(slots) = self.labels.slots.get(i).copied().flatten() else { continue };
+            let answered = self.labels.answered.entry(i).or_default();
             written.retain(|&code, (run, glyphs)| {
                 let held = inner.atlas.holds(run, *glyphs);
                 if !held {
                     cleared.push(slots.runs + 4 * code);
+                    answered.remove(&code);
                 }
                 held
             });

@@ -17,16 +17,18 @@ mod data;
 mod error;
 mod gpu;
 mod pending;
+mod playhead;
 mod shot;
 mod view;
 
 use wasm_bindgen::prelude::*;
 
 pub use canvas::{Canvas, Handle};
-pub use data::{Data, Snapshot, Source, read_patch};
+pub use data::{Data, Snapshot, Source, TileWriter, read_patch};
 pub use error::Error;
 pub use gpu::{Gpu, Listener};
 pub use pending::Task;
+pub use playhead::Playhead;
 pub use shot::{Image, Video, image, set_encoder, video};
 pub use view::View;
 

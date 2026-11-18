@@ -1278,6 +1278,11 @@ export type Theme =
       contrast?: number;
       /** The dash period: one dash and one gap of equal length. */
       dash?: number;
+      /**
+       * The space between the view's edge, inside its insets, and the guides beside it: titles, legends,
+       * and a plot's axes. Defaults to 1.5 times the text size.
+       */
+      padding?: number | null;
       /** How labels, axis ticks, and titles look. */
       text?: TextTheme;
       /** Defaults for vertices. */

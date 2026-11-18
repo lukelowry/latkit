@@ -324,14 +324,76 @@ export class Snapshot extends Dataset {
   }
 }
 
+/**
+ * Writes a history as time tiles while it is recorded: the files `latkit tile` writes for the same
+ * frames, which {@link Tiles} draw. It holds only what is still to be written, each level's span and
+ * bucket in progress, so its memory stays the same however long the history grows. Levels of detail
+ * are built as appends to a {@link Data} build them.
+ *
+ * ```ts
+ * const writer = new TileWriter(new Data('grid').axis('time', 's').replace('Bus', ids));
+ * const files = new Map<string, Uint8Array>();
+ * const write = (path: string, bytes: Uint8Array) => void files.set(path, bytes);
+ * writer.apply(new Patch().append('Bus', at, { vm }), write);
+ * writer.flush(write); // then tiles.refresh()
+ * ```
+ */
+export class TileWriter extends Handle {
+  /**
+   * A writer of the frames appended to the tables of `base`, the dataset without its frames: at
+   * least its axis and the tables' rows, as it is now.
+   */
+  constructor(
+    base: Data | Snapshot,
+    options: {
+      /**
+       * The entries a span holds: frames, or buckets of frames at coarser levels. A multiple of 8
+       * from 8 to 2^20. Defaults to 256, as `latkit tile` writes them.
+       */
+      chunk?: number;
+    } = {},
+  ) {
+    const version = base instanceof Data ? base.snapshot() : base;
+    try {
+      super(
+        new (wasm().TileWriter)(inner<bindings.Snapshot>(version), options.chunk ?? 256),
+        'TileWriter',
+      );
+    } finally {
+      if (version !== base) version.destroy();
+    }
+  }
+
+  /**
+   * Appends the frames of `patch`, calling `write` with the path and bytes of each span they fill.
+   * Every change must append frames to every row of a table of the base, at coordinates that do not
+   * decrease, or it throws an `invalid` error and changes nothing.
+   */
+  apply(patch: Patch | Uint8Array, write: (path: string, bytes: Uint8Array) => void): this {
+    const bytes = patch instanceof Uint8Array ? patch : framed(patch);
+    inner<bindings.TileWriter>(this).apply(bytes, write);
+    return this;
+  }
+
+  /**
+   * Calls `write` with the spans in progress as they stand, then the base and the `frames.json`
+   * manifest, so `Tiles` drawing the manifest find every frame appended so far. A span written
+   * again as it grows replaces the one before.
+   */
+  flush(write: (path: string, bytes: Uint8Array) => void): void {
+    inner<bindings.TileWriter>(this).flush(write);
+  }
+}
+
 /** How {@link Tiles} fetch their files. */
 export interface TilesOptions {
   /**
    * Fetches a file in place of the browser, such as with credentials or from the app's own store:
    * the index at `url`, the pieces at URLs resolved against it, and bytes `[start, end)` of an
-   * archive. A 404 or 204 `Response` is a missing piece. latkit calls it after the frame that needs
-   * the file, so it may change views and datasets. Tiles at one URL with different `fetch`
-   * functions share nothing.
+   * archive. A 404 or 204 `Response` is a missing piece. A rejection with an `AbortError`, as from
+   * an aborted `fetch`, is no failure: the file is fetched again when next needed. latkit calls it
+   * after the frame that needs the file, so it may change views and datasets. Tiles at one URL with
+   * different `fetch` functions share nothing.
    */
   fetch?: (url: string, range?: [start: number, end: number]) => Promise<ByteSource>;
 }
@@ -352,8 +414,8 @@ const tiled = new WeakMap<Tiles, { fetch?: TilesOptions['fetch']; bound?: bindin
  *   {@link Patch.frames} patch of `chunk` entries of one level. `url` names `{level}` and
  *   `{index}`, and `{field}`, the field's index in `frames`, when several fields are listed. A span
  *   holds every row of its table, so choose `chunk` to keep a span near 1 MiB, and give a plot of a
- *   few rows of a large table its own manifest of those rows. A server that records more frames
- *   rewrites the manifest and the spans past the old end, then the app calls `refresh()`.
+ *   few rows of a large table its own manifest of those rows. While frames are recorded, a
+ *   {@link TileWriter} writes the files as they arrive, then the app calls `refresh()`.
  * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
  *   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
  *   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
@@ -363,7 +425,9 @@ const tiled = new WeakMap<Tiles, { fetch?: TilesOptions['fetch']; bound?: bindin
  * A GPU keeps what it fetched and decoded while the `Tiles` object lives, so a view that stops
  * drawing the tiles and starts again fetches nothing twice. Every `Tiles` on a GPU shares its
  * `budget.tiles` bytes. Past them, the pieces no view draws are dropped, least recently drawn
- * first.
+ * first. A file that fails to fetch draws nothing and is fetched again on its own: a second later,
+ * then twice as long after each further failure, at most a minute. Each view reports the failure
+ * once in an `error` event.
  */
 export class Tiles {
   /** The name of the dataset the tiles are drawn as. */
@@ -387,8 +451,8 @@ export class Tiles {
    * Fetches the index again, as when a running simulation records more frames, and redraws what
    * changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
    * earlier frames filled. They fetch the last span of each level again, which shows what it held
-   * until the new one arrives, and every span that failed. A manifest that names another base,
-   * `chunk`, or `url` starts over, as vector tiles always do.
+   * until the new one arrives. Every file that failed is fetched again at once. A manifest that
+   * names another base, `chunk`, or `url` starts over, as vector tiles always do.
    */
   refresh(): void {
     tiled.get(this)!.bound?.refresh();

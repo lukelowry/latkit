@@ -21,6 +21,7 @@ import {
 } from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
 import { owned, Patch } from './patch.js';
+import { playhead as bound, type Playhead } from './playhead.js';
 
 /** The region covering a whole canvas or picture. */
 const WHOLE: Rect = [0, 0, 1, 1];
@@ -31,8 +32,8 @@ export let canvasOf: (view: View) => Canvas | undefined;
 /**
  * The events a view emits, mapping each type to its detail. Intents (`click`, `open`, `menu`,
  * `drag`, `connect`, `delete`) are emitted once each, in the order the user acted. Changes
- * (`hovered`, `selection`, `camera`, `at`, `waiting`, `failures`) are named after the property that
- * changed and carry only its latest value. An `error` event says the view can't draw, and its
+ * (`hovered`, `selection`, `camera`, `at`, `area`, `waiting`, `failures`) are named after the
+ * property that changed and carry only its latest value. An `error` event says the view can't draw, and its
  * detail is a {@link LatkitError}. Setters emit nothing, so events report only what the application
  * did not do itself. Views share their selection, hover, and time through these events:
  *
@@ -54,6 +55,9 @@ export type ViewEvents = {
 
 /** CSS pixels kept clear at the top, right, bottom, and left. */
 export type Insets = [top: number, right: number, bottom: number, left: number];
+
+/** A box in CSS pixels from the view's top left corner. */
+export type Area = [x: number, y: number, width: number, height: number];
 
 /** A point on screen, in CSS pixels from the view's top left corner. */
 export type Point = [x: number, y: number];
@@ -93,6 +97,7 @@ export class View extends Handle {
   /** The datasets of the tables the scene names. */
   #tables: readonly Source[];
   #sources: readonly Source[] = [];
+  #playhead: Playhead | null = null;
 
   private constructor(gpu: Gpu, scene: Scene, region: Rect) {
     // The view sends events once it exists, so the callback finds it through `told`.
@@ -131,6 +136,8 @@ export class View extends Handle {
       camera?: Partial<Camera>;
       /** Datasets to draw besides those the scene uses. See {@link View.sources}. */
       sources?: readonly Source[];
+      /** The playhead the view follows. See {@link View.playhead}. */
+      playhead?: Playhead;
       /**
        * The GPU that draws the view. Defaults to the first `Gpu` created, creating one if needed.
        */
@@ -146,6 +153,7 @@ export class View extends Handle {
     const view = new View(gpu, scene, options.region ?? WHOLE);
     try {
       view.sources = options.sources ?? [];
+      if (options.playhead) view.playhead = options.playhead;
       const { camera } = options;
       if (!camera || !('center' in camera || 'zoom' in camera || 'x' in camera)) void view.fit();
       if (camera) view.camera = camera;
@@ -235,14 +243,30 @@ export class View extends Handle {
 
   /**
    * The axis coordinate shown, such as a time. Marks read sampled fields at it, interpolating
-   * between the frame at or before it and the next, unless an expression uses `step()`.
+   * between the frame at or before it and the next, unless an expression uses `step()`. Setting it
+   * on a view that follows a playhead moves the playhead.
    */
   get at(): number {
     return view(this).at;
   }
 
   set at(at: number) {
-    view(this).at = at;
+    if (this.#playhead) this.#playhead.at = at;
+    else view(this).at = at;
+  }
+
+  /**
+   * The playhead the view follows, or `null`. The view shows the playhead's coordinate as its `at`
+   * from the frame it moves in, and scrubbing the view moves the playhead.
+   */
+  get playhead(): Playhead | null {
+    return this.#playhead;
+  }
+
+  set playhead(playhead: Playhead | null) {
+    if (playhead) view(this).follow(bound(playhead));
+    else view(this).unfollow();
+    this.#playhead = playhead;
   }
 
   /**
@@ -276,6 +300,16 @@ export class View extends Handle {
 
   set insets(insets: Insets) {
     view(this).insets = Float32Array.from(insets);
+  }
+
+  /**
+   * Where marks draw: inside the insets and the room that titles, legends, and a plot's axes take.
+   * Line up what the page shows over the data with it, such as a timeline under a plot. An `area`
+   * event reports each change. All zero until the view first draws.
+   */
+  get area(): Area {
+    const [x, y, width, height] = view(this).area;
+    return [x!, y!, width!, height!];
   }
 
   /**

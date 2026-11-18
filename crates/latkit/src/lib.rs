@@ -59,7 +59,7 @@ mod wire;
 pub use data::Source;
 pub use data::{
     Data, DecodeLimits, Description, Envelope, EnvelopeRequest, FieldDescription, Id, Ids, Kind, Name, Patch, Row,
-    Rows, Snapshot, Table, TableDescription, Value, Values,
+    Rows, Snapshot, Table, TableDescription, TileWriter, Value, Values,
 };
 pub use data::{Order, Patches, Query, QueryResult, Reading};
 pub use error::{Error, Path, Result, Step};

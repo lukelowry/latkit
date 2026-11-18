@@ -29,6 +29,9 @@ pub struct Theme {
     pub contrast: f32,
     /// The dash period: one dash and one gap of equal length.
     pub dash: f32,
+    /// The space between the view's edge, inside its insets, and the guides beside it: titles,
+    /// legends, and a plot's axes. Defaults to 1.5 times the text size.
+    pub padding: Option<f32>,
     /// How labels, axis ticks, and titles look.
     pub text: TextTheme,
     /// Defaults for vertices.
@@ -283,6 +286,7 @@ impl Theme {
             missing: hex("#6b7480"),
             contrast: 1.0,
             dash: 8.0,
+            padding: None,
             text: TextTheme {
                 color: hex("#a8b2c2"),
                 font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),

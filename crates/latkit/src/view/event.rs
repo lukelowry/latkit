@@ -2,9 +2,9 @@
 //!
 //! An intent asks the application to act: a click, open, menu, drag, connection, or deletion. Each
 //! is reported once, in the order the user acted. A change reports that view state changed and is
-//! named after that state: `hovered`, `selection`, `camera`, `at`, `waiting`, `failures`. Only the
-//! latest change of each is reported, and the state can always be read, so a late listener can
-//! catch up. A view reports only what the application did not do itself. Its setters change state
+//! named after that state: `hovered`, `selection`, `camera`, `at`, `area`, `waiting`, `failures`.
+//! Only the latest change of each is reported, and the state can always be read, so a late
+//! listener can catch up. A view reports only what the application did not do itself. Its setters change state
 //! silently. An error reports that the view can't draw.
 
 use std::collections::VecDeque;
@@ -101,6 +101,9 @@ pub enum Event {
     /// The axis coordinate shown changed: [`View::at`](crate::View::at). A press on a plot whose
     /// input scrubs, as [`Controls::gestures`](crate::Controls) says, moved it.
     At(f64),
+    /// Where marks draw changed: [`View::area`](crate::View::area), `[x, y, width, height]` in CSS
+    /// pixels. The view's size, its insets, or its guides changed it.
+    Area([f32; 4]),
     /// The work the last frame waited on changed: [`View::waiting`](crate::View::waiting). Empty
     /// once frames are complete.
     Waiting(Waiting),
@@ -149,6 +152,7 @@ impl Event {
                 | Event::Selection { .. }
                 | Event::Camera(_)
                 | Event::At(_)
+                | Event::Area(_)
                 | Event::Waiting(_)
                 | Event::Failures(_),
                 _,

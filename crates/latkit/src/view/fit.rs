@@ -365,7 +365,7 @@ impl View {
             Some(Fit::Reveal(_)) => {
                 let middle = [lo[0].midpoint(hi[0]), lo[1].midpoint(hi[1]), lo[2].midpoint(hi[2])];
                 let view = self.projected();
-                let area = self.area();
+                let area = self.edges();
                 let inside = view
                     .screen(view.world(middle))
                     .is_some_and(|s| s[0] >= area[0] && s[0] <= area[2] && s[1] >= area[1] && s[1] <= area[3]);
@@ -394,7 +394,7 @@ impl View {
     /// limits. A fit to everything replaces that box, and a fit to part of it grows the box and
     /// never shrinks it.
     fn frame_box(&mut self, min: [f64; 3], max: [f64; 3], margin: f64, everything: bool) {
-        let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area(), margin);
+        let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.edges(), margin);
         self.rig.hold();
         let framed = match camera {
             Camera::Map { zoom, .. } => Some(Bounds { min, max, zoom: [zoom; 2] }),

@@ -244,6 +244,7 @@ pub(crate) fn generate() {
             check_shared(&module, &bind_module, entry.module);
             check_targets(&module, entry.module);
             check_brace_bools(&module, &info, entry.module);
+            check_swizzle_indexes(&module, entry.module);
             let names = constant_names(&module);
             let constants = constants(&module, &names, &source);
             let file = format!("{}.{variant}", entry.module.replace("::", "."));
@@ -707,6 +708,24 @@ fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
                     function.name.as_deref().unwrap_or("an entry point"),
                 );
             }
+        }
+    }
+}
+
+/// Asserts that no swizzle in `module` is indexed by a runtime value, even through a `let`, such as
+/// `let b = v.zw; b[i]`. ANGLE's translation for Direct3D reads such an index from the vector the
+/// swizzle came from, so it reads the wrong component. Index the vector itself, or pick a
+/// component with `select`.
+fn check_swizzle_indexes(module: &naga::Module, name: &str) {
+    let functions = module.functions.iter().map(|(_, f)| f).chain(module.entry_points.iter().map(|e| &e.function));
+    for function in functions {
+        for (_, expression) in function.expressions.iter() {
+            let naga::Expression::Access { base, .. } = *expression else { continue };
+            assert!(
+                !matches!(function.expressions[base], naga::Expression::Swizzle { .. }),
+                "{name}: {} indexes a swizzle by a runtime value, which ANGLE on Direct3D misreads",
+                function.name.as_deref().unwrap_or("an entry point"),
+            );
         }
     }
 }

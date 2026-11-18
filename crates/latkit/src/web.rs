@@ -22,9 +22,9 @@ use web_sys::{
 };
 
 use crate::gpu::FORMAT;
-use crate::panels::Rect;
+use crate::panels::{self, Rect};
 use crate::shot::Views;
-use crate::{Button, Cursor, Device, Error, Event, Frame, Gpu, Input, Key, Modifiers, Panels, Result, View};
+use crate::{Button, Color, Cursor, Device, Error, Event, Frame, Gpu, Input, Key, Modifiers, Panels, Result, View};
 use crate::{Image, Shot, Video};
 
 /// Stops a listener when dropped.
@@ -214,6 +214,11 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     for view in &views {
         view.0.borrow_mut().view.set_reduced_motion(reduced);
     }
+    // Playheads move first, so the views that follow them draw where they are now.
+    let playheads: Vec<Playhead> = views.iter().filter_map(PageView::playhead).collect();
+    for playhead in &playheads {
+        playhead.play_to(now / 1000.0);
+    }
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
     let shown: Vec<_> = canvases
         .iter()
@@ -226,8 +231,10 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
         let encoder = recorded.take().unwrap_or_else(|| {
             gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit present") })
         });
-        if let Err(error) = canvas.borrow().surface.present(&texture, encoder) {
-            gpu.raise(error);
+        let presented = canvas.borrow().surface.present(&texture, encoder);
+        match presented {
+            Ok(()) => canvas.borrow_mut().showing = Showing::Frames,
+            Err(error) => gpu.raise(error),
         }
     }
     // Every recorded frame has been submitted before its retired resources are released.
@@ -239,7 +246,10 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
         canvas.borrow_mut().show_cursor();
     }
     let mapping = gpu.0.lock().readbacks.mapping() > 0;
-    let again = mapping || !frames.borrow().listeners.is_empty() || canvases.iter().any(|c| c.borrow().wants_frame());
+    let again = mapping
+        || !frames.borrow().listeners.is_empty()
+        || playheads.iter().any(Playhead::playing)
+        || canvases.iter().any(|c| c.borrow().wants_frame());
     if again {
         schedule(frames);
     } else if canvases.is_empty() && views.is_empty() {
@@ -409,10 +419,203 @@ pub struct PageView(Rc<RefCell<Held>>);
 struct Held {
     view: View,
     frames: Rc<RefCell<Frames>>,
-    /// Whether the view changed since it last drew.
+    /// Whether the view draws even if nothing changed: it is new, or moved to another device.
     due: bool,
     listeners: Vec<(u64, EventListener)>,
     next: u64,
+    /// The playhead it follows, if any.
+    playhead: Option<Playhead>,
+}
+
+/// The most seconds of play one animation frame moves a playhead, so a page that stalls or is
+/// hidden resumes where it was.
+const MOST_PLAYED: f64 = 0.25;
+
+/// A playhead views follow: the axis coordinate they show, such as a time, which moves on its own
+/// while it plays. Views on one `Gpu` that follow it show the same coordinate in the same animation
+/// frame, and the page runs nothing per frame to move them. Scrubbing a view that follows it moves
+/// it, and every other view that follows it.
+#[derive(Clone)]
+pub struct Playhead(Rc<RefCell<Moving>>);
+
+struct Moving {
+    at: f64,
+    /// Axis units per second while it plays. Negative plays backward.
+    rate: f64,
+    playing: bool,
+    /// The coordinates it stays between, if any.
+    span: Option<[f64; 2]>,
+    /// Whether it wraps to the other end of its span at the end it plays toward, rather than stop.
+    looping: bool,
+    /// The animation frame time it last played at, in seconds. `None` until it plays a frame.
+    played: Option<f64>,
+    followers: Vec<Weak<RefCell<Held>>>,
+    listeners: Vec<(u64, FrameListener)>,
+    next: u64,
+}
+
+impl Playhead {
+    /// A paused playhead at `at`, playing forward at one axis unit per second once it plays.
+    pub fn new(at: f64) -> Playhead {
+        let at = if at.is_finite() { at } else { 0.0 };
+        Playhead(Rc::new(RefCell::new(Moving {
+            at,
+            rate: 1.0,
+            playing: false,
+            span: None,
+            looping: false,
+            played: None,
+            followers: Vec::new(),
+            listeners: Vec::new(),
+            next: 0,
+        })))
+    }
+
+    /// The axis coordinate it is at.
+    pub fn at(&self) -> f64 {
+        self.0.borrow().at
+    }
+
+    /// Moves it to `at`, within its span, and every view that follows it at once. A coordinate that
+    /// is not finite changes nothing.
+    pub fn seek(&self, at: f64) {
+        {
+            let mut moving = self.0.borrow_mut();
+            let at = moving.span.map_or(at, |span| at.clamp(span[0], span[1]));
+            if !at.is_finite() || at.to_bits() == moving.at.to_bits() {
+                return;
+            }
+            moving.at = at;
+            moving.played = None;
+        }
+        self.moved();
+    }
+
+    /// Axis units per second it moves while it plays.
+    pub fn rate(&self) -> f64 {
+        self.0.borrow().rate
+    }
+
+    /// Whether it plays.
+    pub fn playing(&self) -> bool {
+        self.0.borrow().playing
+    }
+
+    /// Plays at `rate` axis units per second from the next animation frame, backward when negative.
+    /// At the end of its span it stops, or wraps to the other end when it loops. A rate of 0, or one
+    /// that is not finite, pauses it.
+    pub fn play(&self, rate: f64) {
+        let followers = {
+            let mut moving = self.0.borrow_mut();
+            moving.playing = rate.is_finite() && rate != 0.0;
+            if moving.playing {
+                moving.rate = rate;
+            }
+            moving.played = None;
+            moving.followers.clone()
+        };
+        for held in followers.iter().filter_map(Weak::upgrade) {
+            let frames = held.borrow().frames.clone();
+            schedule(&frames);
+        }
+    }
+
+    /// Stops it where it is.
+    pub fn pause(&self) {
+        self.0.borrow_mut().playing = false;
+    }
+
+    /// The coordinates it stays between, lowest first, if any.
+    pub fn span(&self) -> Option<[f64; 2]> {
+        self.0.borrow().span
+    }
+
+    /// Keeps it between the two coordinates of `span`, in either order, moving it inside if it is
+    /// out. `None`, or a span that is not finite, lets it move anywhere.
+    pub fn set_span(&self, span: Option<[f64; 2]>) {
+        let span = span.filter(|s| s.iter().all(|v| v.is_finite())).map(|[a, b]| [a.min(b), a.max(b)]);
+        self.0.borrow_mut().span = span;
+        if let Some(span) = span {
+            self.seek(self.at().clamp(span[0], span[1]));
+        }
+    }
+
+    /// Whether it wraps to the other end of its span instead of stopping.
+    pub fn looping(&self) -> bool {
+        self.0.borrow().looping
+    }
+
+    /// Sets whether it wraps to the other end of its span instead of stopping.
+    pub fn set_looping(&self, looping: bool) {
+        self.0.borrow_mut().looping = looping;
+    }
+
+    /// Calls `listener` with the coordinate whenever it moves: at most once per animation frame
+    /// while it plays, and on each seek. Stops when the returned [`Listener`] is dropped.
+    pub fn on(&self, listener: impl FnMut(f64) + 'static) -> Listener {
+        let id = {
+            let mut moving = self.0.borrow_mut();
+            moving.next += 1;
+            let id = moving.next;
+            moving.listeners.push((id, Rc::new(RefCell::new(listener))));
+            id
+        };
+        let weak = Rc::downgrade(&self.0);
+        Listener(Some(Box::new(move || {
+            if let Some(moving) = weak.upgrade() {
+                moving.borrow_mut().listeners.retain(|(i, _)| *i != id);
+            }
+        })))
+    }
+
+    /// Plays to animation frame time `now`, in seconds. However many `Gpu`s draw its followers, it
+    /// moves once per frame.
+    fn play_to(&self, now: f64) {
+        {
+            let mut moving = self.0.borrow_mut();
+            if !moving.playing {
+                return;
+            }
+            let step = moving.played.map_or(0.0, |played| (now - played).clamp(0.0, MOST_PLAYED));
+            moving.played = Some(now);
+            if step == 0.0 {
+                return;
+            }
+            let mut at = moving.at + moving.rate * step;
+            if let Some([low, high]) = moving.span {
+                if moving.looping && high > low {
+                    at = low + (at - low).rem_euclid(high - low);
+                } else {
+                    at = at.clamp(low, high);
+                    // It stops at the end it plays toward.
+                    moving.playing = !((moving.rate > 0.0 && at >= high) || (moving.rate < 0.0 && at <= low));
+                }
+            }
+            if at.to_bits() == moving.at.to_bits() {
+                return;
+            }
+            moving.at = at;
+        }
+        self.moved();
+    }
+
+    /// Shows its coordinate in every view that follows it, then tells its listeners.
+    fn moved(&self) {
+        let (at, followers) = {
+            let mut moving = self.0.borrow_mut();
+            moving.followers.retain(|held| held.strong_count() > 0);
+            (moving.at, moving.followers.clone())
+        };
+        for held in followers.iter().filter_map(Weak::upgrade) {
+            PageView(held).with(|view| view.set_at(at));
+        }
+        let listeners = self.0.borrow().listeners.clone();
+        for (id, listener) in &listeners {
+            if self.0.borrow().listeners.iter().any(|(i, _)| i == id) {
+                (listener.borrow_mut())(at);
+            }
+        }
+    }
 }
 
 impl PageView {
@@ -426,19 +629,22 @@ impl PageView {
             gpu.set_host(crate::host::Browser);
         }
         let frames = frames_of(&gpu);
-        let held =
-            Rc::new(RefCell::new(Held { view, frames: frames.clone(), due: true, listeners: Vec::new(), next: 0 }));
+        let held = Rc::new(RefCell::new(Held {
+            view,
+            frames: frames.clone(),
+            due: true,
+            listeners: Vec::new(),
+            next: 0,
+            playhead: None,
+        }));
         frames.borrow_mut().views.push(Rc::downgrade(&held));
         PageView(held)
     }
 
-    /// Calls `f` with the view, then requests a frame to draw any change.
+    /// Calls `f` with the view. A change wakes the view, which requests a frame to draw it, so a
+    /// call that changes nothing, such as setting a value the view already has, draws nothing.
     pub fn with<R>(&self, f: impl FnOnce(&mut View) -> R) -> R {
-        let result = f(&mut self.0.borrow_mut().view);
-        self.0.borrow_mut().due = true;
-        let frames = self.0.borrow().frames.clone();
-        schedule(&frames);
-        result
+        f(&mut self.0.borrow_mut().view)
     }
 
     /// Moves the view to `gpu`, which must come from [`Gpu::new`], as when its device is lost. It
@@ -468,6 +674,28 @@ impl PageView {
         f(&self.0.borrow().view)
     }
 
+    /// Follows `playhead`, showing its coordinate from now on, or follows none. Scrubbing the view
+    /// moves the playhead it follows.
+    pub fn follow(&self, playhead: Option<&Playhead>) {
+        let old = std::mem::replace(&mut self.0.borrow_mut().playhead, playhead.cloned());
+        if let Some(old) = old {
+            old.0.borrow_mut().followers.retain(|held| !std::ptr::eq(held.as_ptr(), Rc::as_ptr(&self.0)));
+        }
+        if let Some(playhead) = playhead {
+            playhead.0.borrow_mut().followers.push(Rc::downgrade(&self.0));
+            let at = playhead.at();
+            self.with(|view| view.set_at(at));
+            // It may be playing.
+            let frames = self.0.borrow().frames.clone();
+            schedule(&frames);
+        }
+    }
+
+    /// The playhead it follows, if any.
+    pub fn playhead(&self) -> Option<Playhead> {
+        self.0.borrow().playhead.clone()
+    }
+
     /// The GPU the view draws with.
     pub fn gpu(&self) -> Gpu {
         self.0.borrow().view.gpu().clone()
@@ -492,16 +720,23 @@ impl PageView {
         })))
     }
 
-    /// Sends the view's pending events to its listeners as one batch.
+    /// Sends the view's pending events to its listeners as one batch. A scrub moves the playhead the
+    /// view follows first.
     fn dispatch(&self) {
-        let (events, listeners) = {
+        let (events, listeners, playhead) = {
             let mut held = self.0.borrow_mut();
             let events: Vec<Event> = held.view.events().collect();
             if events.is_empty() {
                 return;
             }
-            (events, held.listeners.clone())
+            (events, held.listeners.clone(), held.playhead.clone())
         };
+        if let Some(playhead) = playhead
+            && let Some(at) =
+                events.iter().rev().find_map(|event| if let Event::At(at) = event { Some(*at) } else { None })
+        {
+            playhead.seek(at);
+        }
         for (id, listener) in &listeners {
             if self.0.borrow().listeners.iter().any(|(i, _)| i == id) {
                 (listener.borrow_mut())(&events);
@@ -516,6 +751,13 @@ impl PageView {
         !held.view.lent() && (held.view.wants_frame() || (held.due && !held.view.compiling()))
     }
 
+    /// Whether it could draw now: it is not lent to a shot, and its draw pipelines are not
+    /// compiling. A compile that lands wakes it.
+    fn can_draw(&self) -> bool {
+        let held = self.0.borrow();
+        !held.view.lent() && !held.view.compiling()
+    }
+
     /// Whether it can draw into `format` at `pixel_ratio`: see [`View::ready`].
     fn ready(&self, format: wgpu::TextureFormat, pixel_ratio: f32) -> bool {
         self.0.borrow_mut().view.ready(format, pixel_ratio)
@@ -524,6 +766,11 @@ impl PageView {
     /// Whether it is lent to a shot.
     fn lent(&self) -> bool {
         self.0.borrow().view.lent()
+    }
+
+    /// The background of its scene, which its panel shows until it draws.
+    fn background(&self) -> Color {
+        self.read(|view| view.scene().theme.background)
     }
 }
 
@@ -575,6 +822,19 @@ struct Painted {
     touch: &'static str,
     handlers: Vec<Handler>,
     resize: Option<Resizing>,
+    /// What the canvas shows.
+    showing: Showing,
+    /// The color last cleared into the gaps between panels on the canvas's texture.
+    gaps: Option<Color>,
+}
+
+/// What a canvas shows.
+#[derive(PartialEq)]
+enum Showing {
+    /// Its backdrop, from these fills (none yet when empty), until a frame shows.
+    Backdrop(Vec<(Rect, Color)>),
+    /// Frames, which draw the background wherever no view has drawn.
+    Frames,
 }
 
 /// A listener for one kind of element event.
@@ -645,6 +905,8 @@ impl Canvas {
             touch: "none",
             handlers: Vec::new(),
             resize: None,
+            showing: Showing::Backdrop(Vec::new()),
+            gaps: None,
         }));
         frames.borrow_mut().canvases.push(Rc::downgrade(&state));
         schedule(&frames);
@@ -674,7 +936,36 @@ impl Canvas {
         state.hovered = None;
         state.focus = 0;
         state.due = true;
+        // In the same task that made the canvas or changed its views, so the page never paints it
+        // blank.
+        state.cover();
         drop(state);
+        schedule(&frames);
+        Ok(())
+    }
+
+    /// Moves the canvas to `gpu`, which must come from [`Gpu::new`], as when its device is lost. It
+    /// stays the same canvas, with its element, input, and last frame, and draws from the next
+    /// animation frame of `gpu`. Move its views first, with [`PageView::move_to`].
+    pub fn move_to(&self, gpu: &Gpu) -> Result<()> {
+        let old = {
+            let mut state = self.0.borrow_mut();
+            // The panel textures belong to the old device, which the surface's move destroys.
+            let textures: Vec<_> = state.textures.drain(..).flatten().collect();
+            let retired = state.surface.gpu.0.queue.retired();
+            for (texture, _) in textures {
+                retired.retire(texture);
+            }
+            state.surface.move_to(gpu)?;
+            state.gaps = None;
+            state.due = true;
+            let frames = frames_of(gpu);
+            frames.borrow_mut().canvases.push(Rc::downgrade(&self.0));
+            std::mem::replace(&mut state.frames, frames)
+        };
+        old.borrow_mut().canvases.retain(|canvas| !std::ptr::eq(canvas.as_ptr(), Rc::as_ptr(&self.0)));
+        release_idle(&old);
+        let frames = self.0.borrow().frames.clone();
         schedule(&frames);
         Ok(())
     }
@@ -709,22 +1000,42 @@ impl Painted {
         (size[0] > 0 && size[1] > 0).then_some((size, ratio))
     }
 
-    /// Whether a frame is due: the canvas changed, or a view it shows wants to draw. Never while
-    /// the canvas has no box, since its views have nothing to draw into until the resize observer
-    /// sees one, and never while every view it shows is lent to a shot, since it keeps their last
-    /// frames.
+    /// Whether a frame is due: the canvas changed and a view it shows could draw, or a view wants
+    /// to draw. Never while the canvas has no box, since its views have nothing to draw into until
+    /// the resize observer sees one, and never while every view it shows is lent to a shot, since
+    /// it keeps their last frames. While every view's pipelines compile, a change waits for them,
+    /// as a view's own change does: each compile that lands wakes its view.
     fn wants_frame(&self) -> bool {
         self.measure().is_some()
             && self.views.iter().any(|v| !v.lent())
-            && (self.due || self.views.iter().any(PageView::wants_frame))
+            && ((self.due && self.views.iter().any(PageView::can_draw)) || self.views.iter().any(PageView::wants_frame))
     }
 
-    /// Records a frame if one is needed, first sizing the canvas to its CSS box. Each view that
-    /// needs to draw renders into its panel, or straight into the canvas when one view fills it. A
-    /// view lent to a shot, or whose pipelines still compile, keeps its panel's previous contents.
-    /// While no view can draw, or the canvas has no box, the canvas keeps its current frame. Its
-    /// views then derive, sync, and fit nothing.
+    /// Paints the backdrop until the canvas shows a frame, whenever it differs from the one painted
+    /// last. The canvas is opaque, so it is black until something paints it, and its views draw
+    /// nothing until their pipelines compile. The backdrop is painted at the canvas's current size,
+    /// which the browser stretches to the CSS box. Panels are fractions, so they still line up.
+    fn cover(&mut self) {
+        let Showing::Backdrop(painted) = &self.showing else { return };
+        let size = self.surface.sink.size();
+        let backgrounds: Vec<Color> = self.views.iter().map(PageView::background).collect();
+        let rects = self.panels.rects(size, [1, 1]).unwrap_or_default();
+        let fills = panels::backdrop(&rects, size, &backgrounds);
+        if fills != *painted {
+            self.surface.sink.fill(&fills);
+            self.showing = Showing::Backdrop(fills);
+        }
+    }
+
+    /// Records a frame if one is needed, at the canvas's size in its CSS box. Each view that needs
+    /// to draw renders into its panel, or straight into the canvas when one view fills it. A view
+    /// lent to a shot, or whose pipelines still compile, keeps its panel's previous contents, and a
+    /// new panel shows its view's background until the view draws. Gaps between panels show the
+    /// first view's background. While no view can draw, or the canvas has no box, the canvas keeps
+    /// its current frame, or its backdrop before the first. Its views then derive, sync, and fit
+    /// nothing.
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, time: f64) -> Option<wgpu::Texture> {
+        self.cover();
         let (size, ratio) = self.measure()?;
         let resized = size != self.surface.size();
         if self.views.is_empty() || !(resized || self.wants_frame()) {
@@ -737,12 +1048,9 @@ impl Painted {
         }
         let rects = self.panels.rects(size, [1, 1]).ok()?;
         let direct = rects.len() == 1 && rects[0].size == size;
+        // The sink sizes the element when it presents the frame, so it is never blank on screen.
         if resized {
             self.due = true;
-            if let Target::Element(element) = &self.target {
-                element.set_width(size[0]);
-                element.set_height(size[1]);
-            }
         }
         self.rects = rects.iter().map(|r| css(*r, ratio)).collect();
         let texture = self.surface.texture(size);
@@ -759,6 +1067,12 @@ impl Painted {
                 retired.retire(texture);
             }
             self.textures.resize_with(rects.len(), || None);
+            // Gaps between panels show the first view's background, as in a shot.
+            let first = self.views[0].background();
+            if panels::gaps(&rects, size) && (self.due || self.gaps != Some(first)) {
+                clear(encoder, &target, first);
+                self.gaps = Some(first);
+            }
             for (i, rect) in rects.iter().enumerate() {
                 let fresh = self.textures[i].as_ref().is_none_or(|(_, made)| *made != rect.size);
                 if fresh {
@@ -774,6 +1088,10 @@ impl Painted {
                     let frame = Frame { target: &target, format, size: rect.size, pixel_ratio: ratio, time };
                     held.view.render(encoder, &frame);
                     held.due = false;
+                } else if fresh {
+                    // Until its view draws, a new panel shows the view's background.
+                    let target = panel.create_view(&wgpu::TextureViewDescriptor::default());
+                    clear(encoder, &target, held.view.scene().theme.background);
                 }
                 encoder.copy_texture_to_texture(
                     panel.as_image_copy(),
@@ -902,6 +1220,27 @@ fn within(input: Input, origin: [f32; 2]) -> Input {
     }
 }
 
+/// Clears `target` to `color`. A clear needs no pipeline, so it shows before any shader compiles.
+fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, color: Color) {
+    let [r, g, b, a] = color.to_array().map(f64::from);
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("latkit backdrop"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+}
+
 /// A panel's texture. A view draws into it, and the canvas copies it into place.
 fn panel_texture(device: &wgpu::Device, format: wgpu::TextureFormat, size: [u32; 2]) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
@@ -956,6 +1295,19 @@ impl Surface {
 
     fn size(&self) -> [u32; 2] {
         [self.raw.width(), self.raw.height()]
+    }
+
+    /// Moves to `gpu`, keeping the sink and what it shows.
+    fn move_to(&mut self, gpu: &Gpu) -> Result<()> {
+        if gpu.0.browser.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            return Err(Error::Unsupported("a canvas needs a Gpu created by Gpu::new".into()));
+        }
+        let raw = Self::make(gpu, self.size());
+        let retired = self.gpu.0.queue.retired();
+        retired.retire(std::mem::replace(&mut self.raw, raw));
+        retired.destroy();
+        self.gpu = gpu.clone();
+        Ok(())
     }
 
     fn texture(&mut self, size: [u32; 2]) -> wgpu::Texture {

@@ -1,6 +1,12 @@
 //! Panels: the region of a shared target each view draws in. A canvas with several views and a
 //! picture or video composed from them use the same layout.
+//!
+//! Where no view has drawn, a target shows its backdrop: the first view's background in the gaps
+//! between panels, and each view's own in its panel. Canvases show it until their views draw, and
+//! shots in the gaps between their panels.
 
+#[cfg(any(target_arch = "wasm32", test))]
+use crate::Color;
 use crate::{Error, Result};
 
 /// The region of a shared target each view draws in, one panel per view, in order. A panel is
@@ -71,12 +77,37 @@ pub(crate) struct Rect {
 }
 
 impl Rect {
+    /// The whole of a target of `size`.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn whole(size: [u32; 2]) -> Rect {
+        Rect { origin: [0, 0], size }
+    }
+
     /// Whether the two share a pixel.
     pub(crate) fn overlaps(self, other: Rect) -> bool {
         (0..2).all(|i| {
             self.origin[i] < other.origin[i] + other.size[i] && other.origin[i] < self.origin[i] + self.size[i]
         })
     }
+}
+
+/// Whether `rects` may leave pixels of a target of `size` uncovered: they cover less than its
+/// area, or they overlap, so their areas overcount.
+pub(crate) fn gaps(rects: &[Rect], size: [u32; 2]) -> bool {
+    let area = u64::from(size[0]) * u64::from(size[1]);
+    let covered: u64 = rects.iter().map(|r| u64::from(r.size[0]) * u64::from(r.size[1])).sum();
+    covered < area || rects.iter().enumerate().any(|(i, a)| rects[i + 1..].iter().any(|b| a.overlaps(*b)))
+}
+
+/// What a target of `size` shows where no view has drawn: the first view's background, then each
+/// view's background over its own panel, as its frames show until a fit places the camera.
+/// `backgrounds` holds one color per rect. Later fills cover earlier ones, as later panels do.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn backdrop(rects: &[Rect], size: [u32; 2], backgrounds: &[Color]) -> Vec<(Rect, Color)> {
+    let Some(&first) = backgrounds.first() else { return Vec::new() };
+    let mut fills = vec![(Rect::whole(size), first)];
+    fills.extend(rects.iter().copied().zip(backgrounds.iter().copied()).filter(|&(_, color)| color != first));
+    fills
 }
 
 #[cfg(test)]
@@ -94,5 +125,15 @@ mod tests {
             [Rect { origin: [0, 0], size: [10, 10] }]
         );
         assert!(Panels::from([[0.5, 0.5, 0.0, 0.5]]).rects([10, 10], [1, 1]).is_err());
+    }
+
+    #[test]
+    fn the_backdrop_shows_each_panel_its_views_background_over_the_first() {
+        let rects = Panels::from([[0.0, 0.0, 0.5, 1.0], [0.6, 0.0, 0.4, 1.0]]).rects([10, 10], [1, 1]).expect("valid");
+        assert!(gaps(&rects, [10, 10]), "a column between the panels shows neither");
+        assert!(!gaps(&Panels::default().rects([10, 10], [1, 1]).expect("valid"), [10, 10]));
+        let fills = backdrop(&rects, [10, 10], &[Color::WHITE, Color::BLACK]);
+        assert_eq!(fills, [(Rect::whole([10, 10]), Color::WHITE), (rects[1], Color::BLACK)]);
+        assert_eq!(backdrop(&rects, [10, 10], &[]), [], "nothing to show without views");
     }
 }

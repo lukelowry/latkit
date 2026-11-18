@@ -230,6 +230,11 @@ impl View {
     /// without `input` (a picture's) requests no frame for probes and queries, which only input
     /// frames run.
     fn end(&mut self, started: Instant, input: bool) {
+        let area = self.area();
+        if area != self.told_area {
+            self.told_area = area;
+            self.events.tell(Event::Area(area));
+        }
         let waiting = self.under_way();
         if waiting != self.waiting {
             self.waiting = waiting;
@@ -548,7 +553,7 @@ impl View {
             Camera::Plot { x, .. } => Some(x),
             Camera::Map { .. } => None,
         };
-        let area = self.area();
+        let area = self.edges();
         let columns = ((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32;
         Window { across, columns, most: self.trace_entries, steps: 0 }
     }

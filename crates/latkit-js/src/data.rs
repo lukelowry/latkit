@@ -108,6 +108,40 @@ impl Snapshot {
     }
 }
 
+/// Writes a history as time tiles while it is recorded.
+#[wasm_bindgen]
+pub struct TileWriter(latkit::TileWriter);
+
+#[wasm_bindgen]
+impl TileWriter {
+    /// A writer of the frames appended to the tables of `base`, in spans of `chunk` entries.
+    #[wasm_bindgen(constructor)]
+    pub fn new(base: &Snapshot, chunk: u32) -> Result<TileWriter, Error> {
+        Ok(TileWriter(latkit::TileWriter::new(base.version(), chunk)?))
+    }
+
+    /// Appends the frames of the patch in `bytes`, calling `write(path, bytes)` for each span they
+    /// fill.
+    pub fn apply(&mut self, bytes: &[u8], write: &js_sys::Function) -> Result<(), Error> {
+        let patch = latkit::Patch::from_bytes(bytes)?;
+        Ok(self.0.apply(patch, |path, bytes| written(write, path, bytes))?)
+    }
+
+    /// Writes the spans in progress, the base, and the manifest, calling `write(path, bytes)` for
+    /// each.
+    pub fn flush(&mut self, write: &js_sys::Function) -> Result<(), Error> {
+        Ok(self.0.flush(|path, bytes| written(write, path, bytes))?)
+    }
+}
+
+/// Calls `write` with a file's path and bytes. A throw fails the write with an `io` error.
+fn written(write: &js_sys::Function, path: &str, bytes: &[u8]) -> latkit::Result<()> {
+    write
+        .call2(&JsValue::NULL, &path.into(), &js_sys::Uint8Array::from(bytes))
+        .map(drop)
+        .map_err(|thrown| latkit::Error::Io(format!("writing {path} failed: {thrown:?}").into()))
+}
+
 /// Adds the read methods to each class that holds a dataset version.
 macro_rules! reads {
     ($class:ident) => {
@@ -213,9 +247,14 @@ impl PageFetch {
         PageFetch(id)
     }
 
-    /// Calls the function for `url` and `range`, and resolves to the bytes it returns.
+    /// Calls the function for `url` and `range`, and resolves to the bytes it returns. A rejection
+    /// with an `AbortError`, as when the page aborts its fetch, cancels it rather than failing it.
     async fn call(&self, url: &str, range: Option<Range<u64>>) -> latkit::Result<Vec<u8>> {
         let failed = |error: &JsValue| {
+            let name = js_sys::Reflect::get(error, &"name".into()).ok().and_then(|n| n.as_string());
+            if name.as_deref() == Some("AbortError") {
+                return latkit::Error::Cancelled;
+            }
             let message = js_sys::Reflect::get(error, &"message".into()).ok().and_then(|m| m.as_string());
             let message = message.or_else(|| error.as_string()).unwrap_or_default();
             latkit::Error::Io(format!("{url} could not be fetched: {message}").into())

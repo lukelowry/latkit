@@ -426,11 +426,11 @@ impl Samples {
         (self.start, self.end) = (frames.start, frames.end);
     }
 
-    /// Samples with the same frame range but no entries: the base of a dataset written as time
-    /// tiles.
-    pub(crate) fn emptied(&self) -> Samples {
-        let mut empty = Samples::from_frame(self.start);
-        empty.reads(self.start..self.end);
+    /// Samples that read `frames` but hold no entries: a sampled field in the base of a dataset
+    /// written as time tiles.
+    pub(crate) fn over(frames: Range<u64>) -> Samples {
+        let mut empty = Samples::from_frame(frames.start);
+        empty.reads(frames);
         empty
     }
 

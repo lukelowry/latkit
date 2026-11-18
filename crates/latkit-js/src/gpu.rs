@@ -138,6 +138,6 @@ fn telling(view: latkit::View, tell: js_sys::Function) -> View {
     View { view, _telling: telling }
 }
 
-/// A frame listener. Freeing it stops it.
+/// A frame or playhead listener. Freeing it stops it.
 #[wasm_bindgen]
-pub struct Listener(#[allow(dead_code, reason = "kept until freed")] latkit::web::Listener);
+pub struct Listener(#[allow(dead_code, reason = "kept until freed")] pub(crate) latkit::web::Listener);

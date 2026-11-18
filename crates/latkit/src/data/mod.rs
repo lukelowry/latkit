@@ -24,6 +24,7 @@ mod values;
 
 pub use bytes::DecodeLimits;
 pub use describe::{Description, Envelope, EnvelopeRequest, FieldDescription, TableDescription};
+pub use frames::TileWriter;
 pub use ids::Ids;
 pub use json::{Patches, Reading};
 pub use name::{Id, Name, Row, Rows};

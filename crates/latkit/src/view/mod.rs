@@ -119,6 +119,8 @@ pub struct View {
     scene_failures_due: bool,
     /// The failures the last `Failures` event reported.
     told_failures: Vec<Error>,
+    /// The area the last `Area` event reported.
+    told_area: [f32; 4],
     /// The sources the application gave, each a named dataset.
     sources: Vec<Source>,
     /// The version of each dataset the view draws, sorted by name: a given snapshot, the latest
@@ -266,6 +268,7 @@ impl View {
             scene_failures: Vec::new(),
             scene_failures_due: false,
             told_failures: Vec::new(),
+            told_area: [0.0; 4],
             sources: Vec::new(),
             snapshots: Vec::new(),
             choices: crate::derive::tiled::Choices::default(),
@@ -342,6 +345,7 @@ impl View {
         moved.scene_failures = std::mem::take(&mut self.scene_failures);
         // Failures already told are told again only when they change.
         moved.told_failures = std::mem::take(&mut self.told_failures);
+        moved.told_area = self.told_area;
         // The camera where it was placed, and the fit not yet applied, which keeps its pitch and
         // bearing.
         if self.placed {
@@ -392,9 +396,16 @@ impl View {
     /// scene's frames draw with have compiled, then draws it from the next frame. They compile after
     /// those of the scene before, so a scene set before the view's first frame draws second. Fits and
     /// cameras asked for meanwhile apply to this scene. A view's first scene draws at once.
+    ///
+    /// Like every setter, given the scene it already has, with the same failures, it changes
+    /// nothing: no swap, no wait, no event, and no frame.
     pub fn set_scene(&mut self, mut scene: Scene) {
         let mut failures = std::mem::take(&mut scene.unread);
         failures.extend(scene.sanitize());
+        let last = self.incoming.as_ref().map_or(&self.scene_failures, |incoming| &incoming.failures);
+        if scene == *self.scene() && failures == *last {
+            return;
+        }
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
@@ -772,11 +783,19 @@ impl View {
     /// or half a view at the widest fit's zoom for a smaller box. The view learns its size from its
     /// first frame. When its size, insets, or space change, the next frame moves the camera back
     /// within the limits and emits a [`Camera`](Event::Camera) event.
+    ///
+    /// Given the camera already placed, while no flight or fit moves it, it changes nothing: a plot
+    /// camera that fits its values keeps fitting them as before.
     pub fn set_camera(&mut self, camera: Camera) {
         if let Some(incoming) = &mut self.incoming {
             if camera.fits(&incoming.scene.space) {
                 incoming.camera = Some(camera);
             }
+            return;
+        }
+        // A reveal waits only behind an asked fit, so none waits either.
+        let still = self.placed && !self.rig.easing() && self.fitting.asked().is_none();
+        if still && camera == self.camera {
             return;
         }
         if camera.fits(&self.scene.space) {
@@ -1271,9 +1290,22 @@ impl View {
         self.wake();
     }
 
-    /// The part of the view the camera frames, in CSS pixels: inside the insets and the room the
-    /// guides on its sides take, a plot's axes among them. At least one pixel each way.
-    fn area(&self) -> Area {
+    /// Where marks draw, in CSS pixels from the view's top left: `[x, y, width, height]`, inside
+    /// the insets and the room the guides on its sides take, a plot's axes among them. The camera
+    /// frames it, and a page lines up what it shows over the data with it. It changes with the
+    /// view's size, its insets, and its guides, and an [`Area`](Event::Area) event reports each
+    /// change. Zero until the first frame gives the view a size.
+    pub fn area(&self) -> [f32; 4] {
+        if !self.sized() {
+            return [0.0; 4];
+        }
+        let [left, top, right, bottom] = self.edges();
+        [left, top, right - left, bottom - top].map(|v| v as f32)
+    }
+
+    /// The edges of the [`area`](View::area): left, top, right, and bottom. At least one pixel
+    /// apart each way.
+    fn edges(&self) -> Area {
         let [w, h] = self.size;
         let [top, right, bottom, left]: [f64; 4] =
             std::array::from_fn(|i| f64::from(self.insets[i]) + self.guides.room[i]);
@@ -1297,7 +1329,7 @@ impl View {
         if room.iter().all(|&r| r <= 0.0) {
             return None;
         }
-        let area = self.area();
+        let area = self.edges();
         let [w, h] = self.size;
         Some([
             if room[3] > 0.0 { area[0] } else { 0.0 },
@@ -1337,7 +1369,7 @@ impl View {
             camera => camera,
         };
         let space = &self.scene.space;
-        Projected::new(space, &camera, self.size, self.area(), Projected::globe_of(space))
+        Projected::new(space, &camera, self.size, self.edges(), Projected::globe_of(space))
     }
 }
 

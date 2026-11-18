@@ -516,3 +516,34 @@ fn a_label_keeps_showing_while_its_mark_gains_texts() {
     }
     panic!("the view settles within {SETTLE} frames");
 }
+
+#[test]
+fn labels_finish_when_their_rows_arrive_after_the_first_frame() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    // Rows in view with names of their own, written after the first frame drew one. 65 names
+    // outgrow the run table of 64 texts the mark started with. 39 and 64 fit it.
+    let table = |n: u32| {
+        let x: Vec<f64> = (0..n).map(|i| f64::from(i % 8) * 15.0 - 60.0).collect();
+        let y: Vec<f64> = (0..n).map(|i| f64::from(i / 8) * 7.0 - 60.0).collect();
+        let names: Vec<String> = (0..n).map(|i| format!("{i}")).collect();
+        Table::new("V", Ids::count(n)).field("x", x).field("y", y).field("name", names)
+    };
+    for n in [39, 64, 65] {
+        let data = Data::new("d");
+        data.apply(table(1)).expect("valid");
+        let label = Label::new(field("name")).size(6.0);
+        let marks = Vertices::of("d", "V").position(field("x"), field("y")).radius(1.0).pick(false);
+        let mut view = View::new(&gpu, Scene::new(plane()).theme(haloless()).draw(marks.label(label)));
+        view.set_camera(camera());
+        view.set_sources([&data]).expect("a source");
+        frame(&gpu, &mut view);
+        data.apply(table(n)).expect("valid");
+        let finished = (0..SETTLE).any(|_| {
+            step(&gpu, &mut view);
+            view.complete()
+        });
+        assert!(finished, "{n} labels finish within {SETTLE} frames, waiting on {}", view.waiting());
+        assert_eq!(view.failures().collect::<Vec<_>>(), Vec::new(), "{n} labels");
+    }
+}
