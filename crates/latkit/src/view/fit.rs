@@ -282,6 +282,17 @@ impl View {
         }
         let auto = matches!(self.camera, Camera::Plot { y: None, .. });
         let lines = self.marks.iter().any(|m| m.kind() == MarkKind::Lines);
+        if auto && self.fitting.plot_due && lines && self.fits_traces() {
+            // The traces' plans hold the least and greatest value they draw this frame, so the
+            // value range follows them at once, with no pass and no readback.
+            if let Some([lo, hi]) = self.traced_values() {
+                self.fitting.plot_due = false;
+                if lo <= hi {
+                    self.fit_values(f64::from(lo), f64::from(hi));
+                }
+            }
+            return None;
+        }
         if auto && self.fitting.plot_due && ready && lines && self.can_use(Stage::Fit) {
             self.fitting.plot_due = false;
             return Some(Measure { rows: false, fit: None });
@@ -290,12 +301,33 @@ impl View {
     }
 
     /// Whether a fit will measure rows on the GPU: one asked for that is not a box, or a plot's value
-    /// range following its traces. Its passes are then as urgent as drawing.
+    /// range following marks the CPU cannot fit it to (see `fits_traces`). Its passes are then as
+    /// urgent as drawing.
     pub(super) fn measures(&self) -> bool {
         let asked = self.fitting.wanted.as_ref().is_some_and(|fit| !matches!(fit, Fit::Bounds { .. }));
         let traced = matches!(self.camera, Camera::Plot { y: None, .. })
-            && self.marks.iter().any(|m| m.kind() == MarkKind::Lines);
+            && self.marks.iter().any(|m| m.kind() == MarkKind::Lines)
+            && !self.fits_traces();
         asked || traced
+    }
+
+    /// Whether a plot's value range follows its marks on the CPU: every mark a fit frames traces a
+    /// sampled field and draws all its rows, so the values its plan draws are the values shown.
+    /// A row's visibility otherwise comes from the GPU, which then measures.
+    fn fits_traces(&self) -> bool {
+        self.marks.iter().filter(|m| m.measured()).all(|m| {
+            matches!(&m.mark, crate::Mark::Lines(lines) if lines.trace.is_some())
+                && matches!(*m.mark.style().visible.0, crate::expr::Node::Bool(true))
+        })
+    }
+
+    /// The least and greatest value a plot's traces draw this frame (`NO_EXTENT` for none), or
+    /// `None` until every trace with rows is planned.
+    fn traced_values(&self) -> Option<[f32; 2]> {
+        let traces = self.marks.iter().filter(|m| m.measured() && m.held() > 0);
+        traces
+            .map(|m| m.tables.traced_values())
+            .try_fold(crate::data::NO_EXTENT, |values, traced| Some(crate::data::widen(values, traced?)))
     }
 
     /// Whether a fit is due and can measure: the view is not limited, the passes measuring rows

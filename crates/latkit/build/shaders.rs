@@ -65,13 +65,14 @@ const ENTRIES: &[Entry] = &[
             ("custom_shaded_focus", &["custom", "shaded", "focused"]),
         ],
     },
+    // Only strokes join their segments, so only they read the points beside each one.
     Entry {
         module: "draw::strokes",
         variants: &[
-            ("main", &[]),
-            ("focus", &["focused"]),
-            ("shaded", &["shaded"]),
-            ("shaded_focus", &["shaded", "focused"]),
+            ("main", &["joined"]),
+            ("focus", &["focused", "joined"]),
+            ("shaded", &["shaded", "joined"]),
+            ("shaded_focus", &["shaded", "focused", "joined"]),
         ],
     },
     Entry {
@@ -93,7 +94,7 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::fields", variants: &[("main", &[]), ("columns", &["columns"])] },
 ];
 
-const FEATURES: &[&str] = &["custom", "shaded", "focused", "columns", "scatter", "gather"];
+const FEATURES: &[&str] = &["custom", "shaded", "focused", "columns", "scatter", "gather", "joined"];
 
 /// The hooks a variant calls, by the feature that calls each: the function's name and a
 /// placeholder definition, appended to validate and translate the variant. The browser's copy

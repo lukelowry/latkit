@@ -249,6 +249,8 @@ struct ColumnTable {
     missing: Vec<(usize, PageKey, u32)>,
     /// What a traced column draws.
     plan: Option<Plan>,
+    /// The least and greatest value a traced column draws, `NO_EXTENT` if it draws none.
+    values: [f32; 2],
     /// The most points a geometry column's paths take.
     points: u32,
     /// For a column whose rows each read their own page, the page each page of rows reads. `None`
@@ -916,6 +918,12 @@ impl Tables {
         self.plan().map_or(0, |plan| plan.points)
     }
 
+    /// The least and greatest value the traced column draws (`NO_EXTENT` for none), or `None`
+    /// before it is planned.
+    pub(crate) fn traced_values(&self) -> Option<[f32; 2]> {
+        self.current.iter().find(|t| t.plan.is_some()).map(|t| t.values)
+    }
+
     /// Absolute trace-record address, points per row, row-block count, capacity, and ring head.
     /// Uniforms carry these dimensions, avoiding descriptor and header fetches for every vertex.
     pub(crate) fn trace_layout(&self, base: u32) -> Option<[u32; 5]> {
@@ -1275,6 +1283,7 @@ struct Builder<'g> {
     asks: Vec<(usize, Ask)>,
     rewrites: Vec<Rewrite>,
     plan: Option<Plan>,
+    values: [f32; 2],
     points: u32,
     /// The page each page of rows reads, while every row reads only its own page.
     pages: Option<Vec<Option<PageId>>>,
@@ -1296,6 +1305,7 @@ impl<'g> Builder<'g> {
             asks: Vec::new(),
             rewrites: Vec::new(),
             plan: None,
+            values: crate::data::NO_EXTENT,
             points: 0,
             pages: Some(Vec::new()),
             drawn,
@@ -1306,7 +1316,8 @@ impl<'g> Builder<'g> {
     }
 
     fn finish(self, stamp: Stamp, held: u64, descriptor: [u32; WORDS]) -> ColumnTable {
-        let Builder { words, cursors, asks, rewrites, plan, points, pages, drawn: _, read, valued, gpu: _ } = self;
+        let Builder { words, cursors, asks, rewrites, plan, values, points, pages, drawn: _, read, valued, gpu: _ } =
+            self;
         ColumnTable {
             stamp,
             generation: 0,
@@ -1319,6 +1330,7 @@ impl<'g> Builder<'g> {
             pins: Vec::new(),
             missing: Vec::new(),
             plan,
+            values,
             points,
             pages,
             read,
@@ -1824,6 +1836,13 @@ impl<'g> Builder<'g> {
                 }
             }
         }
+        // The least and greatest value it draws, which a plot fits its value range to without
+        // measuring on the GPU (see `View::measuring`).
+        self.values = plan.runs.iter().fold(crate::data::NO_EXTENT, |values, drawn| {
+            blocks.iter().fold(values, |values, (samples, block)| {
+                crate::data::widen(values, samples.extent(*block, drawn.run.level, drawn.run.entries.clone()))
+            })
+        });
         self.plan = Some(plan);
     }
 

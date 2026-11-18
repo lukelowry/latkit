@@ -524,7 +524,9 @@ fn segment_ends(s: Segment) -> PathEnds {
 
 // Segment `s`'s points: the own segment of its row's path it draws, or for a fan draws beside
 // (`ends`), the points before and after that segment, each hidden where the path does not run on
-// through it, and for an edge, its lane, its vertices, and its width (see `EdgePath`).
+// through it, and for an edge, its lane, its vertices, and its width (see `EdgePath`). Only strokes
+// read the points beside a segment, to join it with its neighbors (`joined`): elsewhere they stay
+// hidden, and a parallel edge's segment moves sideways by its own normal.
 struct SegmentPoints {
     before: PathPoint,
     ends: PathEnds,
@@ -548,27 +550,37 @@ fn segment_points(s: Segment) -> SegmentPoints {
     var i = s.index;
     var last = count;
     if PATH == PATH_TRACE {
-        let samples = trace_around(s.row, s.index);
-        out.before = sample_point(samples[0]);
-        out.ends = PathEnds(sample_point(samples[1]), sample_point(samples[2]));
-        out.after = sample_point(samples[3]);
+        @if(joined) {
+            let samples = trace_around(s.row, s.index);
+            out.before = sample_point(samples[0]);
+            out.ends = PathEnds(sample_point(samples[1]), sample_point(samples[2]));
+            out.after = sample_point(samples[3]);
+        }
+        @if(!joined) {
+            let samples = trace_pair(s.row, s.index);
+            out.ends = PathEnds(sample_point(samples[0]), sample_point(samples[1]));
+        }
     } else if has_end_vertices() {
         let e = edge_path(s, count);
         let piece = piece_of(e, s.index);
         i = piece.x;
         last = e.last;
-        out.before = edge_path_point(e, max(i, 1u) - 1u);
+        @if(joined) {
+            out.before = edge_path_point(e, max(i, 1u) - 1u);
+            out.after = edge_path_point(e, i + 2u);
+        }
         out.ends = PathEnds(edge_path_point(e, i), edge_path_point(e, i + 1u));
-        out.after = edge_path_point(e, i + 2u);
         out.fan = piece.y;
         out.lane = e.lane;
         out.vertex_a = vertex_shape(e.a);
         out.vertex_b = vertex_shape(e.b);
         out.width = e.width;
     } else {
-        out.before = path_point(s.row, count, max(i, 1u) - 1u);
+        @if(joined) {
+            out.before = path_point(s.row, count, max(i, 1u) - 1u);
+            out.after = path_point(s.row, count, i + 2u);
+        }
         out.ends = PathEnds(path_point(s.row, count, i), path_point(s.row, count, i + 1u));
-        out.after = path_point(s.row, count, i + 2u);
     }
     out.first = i == 0u;
     out.last = i + 1u >= last;
@@ -749,16 +761,19 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
         out.shown = (shows(wa) | shows(wb)) & (cut.x < cut.y);
     }
     // The own segment on screen, and its joints. An end cut at the near plane joins nothing. A path
-    // of one segment has no joint, so it projects nothing more.
+    // of one segment has no joint, so it projects nothing more, and neither does anything but a
+    // stroke (`joined`).
     let sa = to_screen(out.ca);
     let sb = to_screen(out.cb);
     let front = vec2f(select(0.0, 1.0, cut.x == 0.0), select(0.0, 1.0, cut.y == 1.0));
     var before = vec3f(0.0);
     var after = vec3f(0.0);
     let single = p.first & p.last;
-    if !single {
-        before = point_screen(p.before);
-        after = point_screen(p.after);
+    @if(joined) {
+        if !single {
+            before = point_screen(p.before);
+            after = point_screen(p.after);
+        }
     }
     var start = joint(before, vec3f(sa, front.x), vec3f(sb, front.y));
     var end = joint(vec3f(sa, front.x), vec3f(sb, front.y), after);

@@ -73,6 +73,32 @@ impl Drop for BufferData {
         self.gl.delete_buffer(Some(&self.raw));
     }
 }
+
+/// A buffer mapped for reading whose fence signaled, waiting to copy its bytes while the GPU is
+/// quiet (see `Device::settle_quiet`).
+pub(super) struct Read {
+    buffer: Buffer,
+    generation: u64,
+    range: Range<u64>,
+    callback: BufferMapCallback,
+}
+
+impl Read {
+    /// Copies the bytes and completes the mapping, or fails it if the buffer was unmapped or
+    /// destroyed since, or its context lost.
+    pub(super) fn copy(self, state: &State) {
+        let data = &self.buffer.0;
+        if data.destroyed.get() || data.generation.get() != self.generation || state.gl.is_context_lost() {
+            (self.callback)(Err(wgpu::BufferAsyncError));
+            return;
+        }
+        let mut bytes = vec![0; (self.range.end - self.range.start) as usize];
+        state.gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&data.raw));
+        state.gl.get_buffer_sub_data_with_f64_and_u8_array(Gl::COPY_READ_BUFFER, self.range.start as f64, &mut bytes);
+        *data.mapped.borrow_mut() = Some((self.range, wgpu::MapMode::Read, Rc::new(bytes)));
+        (self.callback)(Ok(()));
+    }
+}
 impl BufferInterface for Buffer {
     fn map_async(&self, mode: wgpu::MapMode, range: Range<u64>, callback: BufferMapCallback) {
         assert!(range.end <= self.0.size);
@@ -87,17 +113,15 @@ impl BufferInterface for Buffer {
                 callback(Err(wgpu::BufferAsyncError));
                 return;
             }
-            let mut bytes = vec![0; (range.end - range.start) as usize];
-            if mode == wgpu::MapMode::Read {
-                state.gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&this.0.raw));
-                state.gl.get_buffer_sub_data_with_f64_and_u8_array(
-                    Gl::COPY_READ_BUFFER,
-                    range.start as f64,
-                    &mut bytes,
-                );
+            if mode == wgpu::MapMode::Write {
+                *this.0.mapped.borrow_mut() =
+                    Some((range.clone(), mode, Rc::new(vec![0; (range.end - range.start) as usize])));
+                callback(Ok(()));
+                return;
             }
-            *this.0.mapped.borrow_mut() = Some((range, mode, Rc::new(bytes)));
-            callback(Ok(()));
+            // Copying the bytes is a synchronous query, made while the GPU is quiet.
+            state.reads.borrow_mut().push(Read { buffer: this, generation, range, callback });
+            super::device::Device::settle_quiet(state);
         });
     }
     fn get_mapped_range(&self, sub_range: Range<u64>) -> Result<DispatchBufferMappedRange, wgpu::MapRangeError> {

@@ -872,6 +872,41 @@ fn trace_bounds_include_last_points_and_ignore_missing_hidden_and_unfitted_rows(
 }
 
 #[test]
+fn a_plot_without_a_value_range_fits_it_to_its_traces_without_reading_back() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("signals");
+    data.apply(Table::new("Signal", Ids::count(2))).unwrap();
+    for t in 0..64 {
+        let v = f64::from(t);
+        data.apply(Patch::new().append("Signal", [v], [("v", vec![v, -v])])).unwrap();
+    }
+    let axis = Axis { grid: false, hidden: true, ..Axis::default() };
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis })
+        .ease(std::time::Duration::ZERO)
+        .draw(Lines::of("signals", "Signal").trace("v"));
+    let mut view = View::new(&gpu, scene);
+    view.set_sources([&data]).unwrap();
+    // The value range shown: the values at the bottom and top of where marks draw.
+    let shown = |view: &View| {
+        let [x, y, w, h] = view.area();
+        let at = |y: f32| view.position([x + 0.5 * w, y]).expect("a position")[1];
+        [at(y + h), at(y)]
+    };
+    view.set_camera(Camera::Plot { x: [0.0, 63.0], y: None });
+    frame(&gpu, &mut view);
+    let [lo, hi] = shown(&view);
+    assert!(lo < -63.0 && hi > 63.0 && hi < 80.0, "the traces' values with headroom: {lo}..{hi}");
+    // Narrowed to its first frames, the range follows the values drawn there, fitted from the
+    // samples on the CPU: nothing is read back from the GPU.
+    let before = gpu.work();
+    view.set_camera(Camera::Plot { x: [0.0, 7.0], y: None });
+    frame(&gpu, &mut view);
+    let [lo, hi] = shown(&view);
+    assert!(lo < -7.0 && hi > 7.0 && hi < 12.0, "the first frames' values: {lo}..{hi}");
+    assert_eq!((gpu.work() - before).readbacks, 0);
+}
+
+#[test]
 fn a_plot_fit_frames_the_whole_trace_at_any_shown_coordinate() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("signals");

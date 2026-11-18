@@ -14,7 +14,7 @@
 //! row block's values together.
 
 use std::ops::Range;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use super::column::{PAGE_BITS, PAGE_MASK, PAGE_ROWS};
 use super::name::PageId;
@@ -29,6 +29,14 @@ pub(crate) const FRAME_PAGE_WORDS: usize = 1 << 16;
 pub(crate) const LEVELS: u32 = 6;
 /// The highest level the format allows: a bucket of `8^21 = 2^63` frames still fits a `u64`.
 pub(crate) const MAX_LEVEL: u32 = 21;
+
+/// An extent holding no value: least above greatest, so widening it by any value gives that value.
+pub(crate) const NO_EXTENT: [f32; 2] = [f32::INFINITY, f32::NEG_INFINITY];
+
+/// `extent` widened to hold `other`.
+pub(crate) fn widen(extent: [f32; 2], other: [f32; 2]) -> [f32; 2] {
+    [extent[0].min(other[0]), extent[1].max(other[1])]
+}
 
 /// The number of frames an entry of `level` covers: `8^level`.
 pub(crate) fn bucket_frames(level: u32) -> u64 {
@@ -169,9 +177,12 @@ impl<T: Clone> Log<T> {
 }
 
 /// A page's storage, shared by every version that reads the page, and whether appends may grow it.
+/// A page of values also keeps each entry's least and greatest across its rows, as reads ask for
+/// them (see [`FramePage::extent`]).
 struct Store<T> {
     grows: bool,
     items: RwLock<Vec<T>>,
+    extents: Mutex<Vec<[f32; 2]>>,
 }
 
 /// Consecutive entries of one level, `per` items each, entry-major. In a frame page the items are
@@ -202,7 +213,7 @@ impl<T: Copy> Page<T> {
             first,
             per: per as u32,
             cap: u32::MAX,
-            store: Arc::new(Store { grows, items: RwLock::new(items) }),
+            store: Arc::new(Store { grows, items: RwLock::new(items), extents: Mutex::default() }),
         }
     }
 
@@ -246,6 +257,28 @@ impl<T: Copy> Page<T> {
     /// A handle to the same page that reads only its first `len` entries.
     fn capped(&self, len: u32) -> Page<T> {
         Page { cap: len, ..self.clone() }
+    }
+}
+
+impl FramePage {
+    /// The least and greatest of entries `entries`' values across the page's rows, passing over
+    /// missing values: [`NO_EXTENT`] where all are missing. Each entry's is kept once worked out:
+    /// entries are only ever appended, so one never changes.
+    pub(crate) fn extent(&self, entries: Range<u64>) -> [f32; 2] {
+        let per = self.per.max(1) as usize;
+        let (from, to) = ((entries.start - self.first) as usize, (entries.end - self.first) as usize);
+        let mut kept = self.store.extents.lock().unwrap_or_else(PoisonError::into_inner);
+        if kept.len() < to {
+            let known = kept.len();
+            self.read(|items| {
+                kept.extend(
+                    items[known * per..to * per]
+                        .chunks(per)
+                        .map(|entry| entry.iter().fold(NO_EXTENT, |e, &v| widen(e, [v, v]))),
+                );
+            });
+        }
+        kept[from..to].iter().fold(NO_EXTENT, |e, &entry| widen(e, entry))
     }
 }
 
@@ -1101,6 +1134,45 @@ impl Samples {
         self.log(block, level, side).map_or_else(Vec::new, |log| held(log, entries))
     }
 
+    /// The least and greatest value row block `block` holds over `level`'s `entries`, passing over
+    /// missing values: [`NO_EXTENT`] where it holds none. Whole buckets come from the coarsest level
+    /// that holds them, and only the entries at either end from finer levels: a bucket keeps the
+    /// least and greatest of the eight entries below it, so the answer is exact from O(8 × levels)
+    /// entries, each worked out across the block's rows once (see [`FramePage::extent`]).
+    pub(crate) fn extent(&self, block: usize, level: u32, entries: Range<u64>) -> [f32; 2] {
+        let mut out = NO_EXTENT;
+        let mut fold = |at: u32, entries: Range<u64>| {
+            // A frame's one value is its least and its greatest. A bucket keeps each on a side.
+            let stored = sides(at);
+            for side in 0..stored {
+                for (page, held) in self.pages(block, at, side, entries.clone()) {
+                    let [lo, hi] = page.extent(held);
+                    let least = if side == 0 { lo } else { f32::INFINITY };
+                    let greatest = if side + 1 == stored { hi } else { f32::NEG_INFINITY };
+                    out = widen(out, [least, greatest]);
+                }
+            }
+        };
+        let (mut range, mut at) = (entries, level);
+        while !range.is_empty() {
+            let up = range.start.div_ceil(8)..range.end / 8;
+            if up.is_empty() || at >= self.levels() || !self.holds_all(at + 1, &up) {
+                fold(at, range);
+                break;
+            }
+            fold(at, range.start..up.start * 8);
+            fold(at, up.end * 8..range.end);
+            (range, at) = (up, at + 1);
+        }
+        out
+    }
+
+    /// Whether every entry of `level` in `entries` is present.
+    fn holds_all(&self, level: u32, entries: &Range<u64>) -> bool {
+        let held: u64 = self.axis_pages(level, entries.clone()).iter().map(|(_, r)| r.end - r.start).sum();
+        held == entries.end - entries.start
+    }
+
     /// The coordinate pages of `level` containing any of `entries` that this version reads, each
     /// with the range it contains.
     pub(crate) fn axis_pages(&self, level: u32, entries: Range<u64>) -> Vec<(AxisPage, Range<u64>)> {
@@ -1223,6 +1295,16 @@ mod tests {
         assert_eq!(samples.coordinate(2, 1, 0), Some(64.0), "a bucket holds its first frame's coordinate");
         assert_eq!(samples.coordinate(2, 1, 1), Some(127.0), "and its last's");
         assert_eq!(samples.drawn_at(2, 1), Some(95.5), "and draws at their middle");
+        // An extent over any frames is every frame's least and greatest, reading the whole buckets
+        // inside them from above.
+        for frames in [0..130, 3..127, 64..72, 70..71, 9..10] {
+            let mut exact = NO_EXTENT;
+            for (frame, row) in frames.clone().flat_map(|frame| (0..2).map(move |row| (frame, row))) {
+                let v = samples.value(row, frame).expect("a value") as f32;
+                exact = widen(exact, [v, v]);
+            }
+            assert_eq!(samples.extent(0, 0, frames.clone()), exact, "frames {frames:?}");
+        }
     }
 
     #[test]

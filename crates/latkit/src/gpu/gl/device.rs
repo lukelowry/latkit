@@ -35,8 +35,15 @@ pub(super) struct State {
     scopes: RefCell<Vec<Option<Scope>>>,
     lost: RefCell<Option<BoxDeviceLostCallback>>,
     handler: RefCell<Option<Arc<dyn wgpu::UncapturedErrorHandler>>>,
+    /// Readbacks whose fences signaled, waiting for the GPU to be quiet before they copy (see
+    /// [`Device::settle`]).
+    pub(super) reads: RefCell<Vec<super::resource::Read>>,
+    /// Whether resources were made outside an error scope since errors were last read, and when
+    /// they were.
     pending_errors: Cell<bool>,
-    checking_errors: Cell<bool>,
+    errors_read: Cell<Option<web_time::Instant>>,
+    /// Whether a fence waits to settle readbacks and errors.
+    settling: Cell<bool>,
     listener: RefCell<Option<LossListener>>,
     lost_reason: Cell<Option<wgpu::DeviceLostReason>>,
 }
@@ -58,6 +65,9 @@ pub(super) struct Device(pub(super) Rc<State>);
 
 /// `FIRST_VERTEX_CONVENTION_WEBGL` of `WEBGL_provoking_vertex`.
 const FIRST_VERTEX: u32 = 0x8E4D;
+
+/// How often a frame's start reads errors raised outside a scope.
+const ERRORS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Device {
     pub(super) fn new(gl: Gl) -> Result<Self, JsValue> {
@@ -86,8 +96,10 @@ impl Device {
             scopes: RefCell::default(),
             lost: RefCell::default(),
             handler: RefCell::default(),
+            reads: RefCell::default(),
             pending_errors: Cell::new(false),
-            checking_errors: Cell::new(false),
+            errors_read: Cell::new(None),
+            settling: Cell::new(false),
             listener: RefCell::default(),
             lost_reason: Cell::new(None),
         });
@@ -113,6 +125,8 @@ impl Device {
         self.0.lost_reason.set(Some(reason));
         self.0.programs.borrow_mut().clear();
         self.0.stages.borrow_mut().clear();
+        // A lost context copies nothing: each waiting readback fails.
+        Self::settle_reads(&self.0);
         let callback = self.0.lost.borrow_mut().take();
         if let Some(callback) = callback {
             callback(reason, "WebGL2 device lost".into());
@@ -154,6 +168,7 @@ impl Device {
         if !self.0.pending_errors.replace(false) {
             return;
         }
+        self.0.errors_read.set(Some(web_time::Instant::now()));
         loop {
             match self.0.gl.get_error() {
                 Gl::NO_ERROR | Gl::CONTEXT_LOST_WEBGL => break,
@@ -165,24 +180,59 @@ impl Device {
         }
     }
 
-    // Error queries synchronously cross the browser's GPU process. Coalesce unscoped work
-    // and wait for its fence before querying; scope boundaries still capture errors exactly.
-    // The fence follows the next task's submission, so the query never waits behind the frame
-    // that made these resources: its draws run only when it submits.
+    /// Notes a resource made outside an error scope. Its errors are read once the GPU is quiet
+    /// after it, or at a frame's start (see [`Device::settle`]).
     pub(super) fn changed(&self) {
         self.0.pending_errors.set(true);
-        if self.0.checking_errors.replace(true) {
+        Self::settle_later(&self.0);
+    }
+
+    /// Copies waiting readbacks and reads errors now if the GPU is quiet, else later.
+    ///
+    /// The browser's GPU process answers a synchronous query, such as reading a buffer or its
+    /// errors, only after running every command issued before it. Asked while a frame's commands
+    /// are queued, it waits out that frame's GPU work. So queries are made only while the GPU is
+    /// quiet (see [`Waits::quiet`]), or at a frame's start, before the frame issues any work.
+    pub(super) fn settle_quiet(state: &Rc<State>) {
+        if state.reads.borrow().is_empty() && !state.pending_errors.get() {
             return;
         }
-        let weak = Rc::downgrade(&self.0);
-        wasm_bindgen_futures::spawn_local(async move {
-            super::turn().await;
-            let Some(state) = weak.upgrade() else { return };
-            Waits::fence(&state, |state, _| {
-                Self(state.clone()).check_errors();
-                state.checking_errors.set(false);
-            });
+        if !state.waits.quiet() {
+            Self::settle_later(state);
+            return;
+        }
+        Self::settle_reads(state);
+        Self(state.clone()).check_errors();
+    }
+
+    /// Settles once the GPU finishes the work issued so far, if it is quiet then.
+    fn settle_later(state: &Rc<State>) {
+        if state.settling.replace(true) {
+            return;
+        }
+        Waits::fence(state, |state, _| {
+            state.settling.set(false);
+            Self::settle_quiet(state);
         });
+    }
+
+    /// Copies every waiting readback, or fails each on a lost context.
+    fn settle_reads(state: &Rc<State>) {
+        let reads = std::mem::take(&mut *state.reads.borrow_mut());
+        for read in reads {
+            read.copy(state);
+        }
+    }
+
+    /// Settles at a frame's start, before the frame issues any work: copies the readbacks whose
+    /// fences signaled, and at most once every [`ERRORS_EVERY`], reads errors, which only the
+    /// uncaptured error handler hears of.
+    fn settle(&self) {
+        Self::settle_reads(&self.0);
+        let due = self.0.errors_read.get().is_none_or(|at| at.elapsed() >= ERRORS_EVERY);
+        if due {
+            self.check_errors();
+        }
     }
 
     fn pipeline(&self, desc: &wgpu::RenderPipelineDescriptor<'_>) -> Result<Rc<Program>, String> {
@@ -461,7 +511,10 @@ impl DeviceInterface for Device {
     }
     unsafe fn start_graphics_debugger_capture(&self) {}
     unsafe fn stop_graphics_debugger_capture(&self) {}
+    /// Runs the callbacks of readbacks whose fences signaled, as polling a native device does. A
+    /// view polls at each frame's start (see [`Device::settle`]).
     fn poll(&self, _poll_type: wgpu_types::PollType<u64>) -> Result<wgpu::PollStatus, wgpu::PollError> {
+        self.settle();
         Ok(wgpu::PollStatus::QueueEmpty)
     }
     fn get_internal_counters(&self) -> wgpu::InternalCounters {

@@ -290,9 +290,9 @@ fn sampled<'a>(data: &'a Snapshot, listed: &Listed) -> Option<&'a Samples> {
 /// of the field's coarsest level holding any entry, as many as a window could draw. When a mark
 /// shows the field (`(_, true)`), it needs the frames around the shown coordinate. When a line
 /// traces it (`(true, _)`), it needs the spans of the level of detail the plot window draws at,
-/// middle first. That is the level the trace draws from, so what is fetched is what is drawn. The
-/// window's position among the frames comes from the samples already held, as precisely as they
-/// allow.
+/// middle first, then the finer spans of the frames past that level's whole buckets (see
+/// `covering`). That is what the trace draws, so what is fetched is what is drawn. The window's
+/// position among the frames comes from the samples already held, as precisely as they allow.
 fn wanted(
     frames: &Range<u64>,
     samples: Option<&Samples>,
@@ -301,25 +301,25 @@ fn wanted(
     chunk: u32,
     levels: u32,
 ) -> Vec<Span> {
-    // The bucket indices at each level within `frames`: whole buckets only.
     let chunk = u64::from(chunk);
-    let entries = |level: u32| frames.start >> (3 * level)..frames.end >> (3 * level);
-    // The spans of `level` covering its entries within frames `window`.
-    let spans = |level: u32, window: &Range<u64>| {
-        let (held, span) = (entries(level), bucket_frames(level));
-        let first = (window.start / span).max(held.start);
-        let end = window.end.div_ceil(span).min(held.end);
-        (first / chunk..end.div_ceil(chunk)).map(move |index| Span { level: level as u8, index })
+    // The spans holding `level`'s entries `entries`.
+    let spans = |level: u32, entries: &Range<u64>| {
+        (entries.start / chunk..entries.end.div_ceil(chunk)).map(move |index| Span { level: level as u8, index })
     };
-    let top = (0..=levels).rev().find(|&level| !entries(level).is_empty()).unwrap_or(0);
+    // `level`'s whole buckets within frames `window`.
+    let within = |level: u32, window: &Range<u64>| {
+        let (held, span) = (written(frames, level), bucket_frames(level));
+        (window.start / span).max(held.start)..window.end.div_ceil(span).min(held.end)
+    };
+    let top = (0..=levels).rev().find(|&level| !written(frames, level).is_empty()).unwrap_or(0);
     // A window draws at most a bucket's eight entries per pixel column, within what a trace holds.
     let drawable = reading.most.min(bucket_frames(1) * u64::from(reading.columns.max(1)));
     let placeholders = usize::try_from(drawable.div_ceil(chunk)).unwrap_or(usize::MAX);
-    let mut wanted: Vec<Span> = spans(top, frames).take(placeholders).collect();
+    let mut wanted: Vec<Span> = spans(top, &within(top, frames)).take(placeholders).collect();
     let held = samples.filter(|s| !s.is_empty());
     if shown && let Some(samples) = held {
         let frame = samples.bound(reading.at, true).saturating_sub(1);
-        wanted.extend(spans(0, &(frame..frame.saturating_add(2))));
+        wanted.extend(spans(0, &within(0, &(frame..frame.saturating_add(2)))));
     }
     if traced {
         let window = match (held, reading.across) {
@@ -330,19 +330,56 @@ fn wanted(
         // when the trace may not hold that many. Fine spans between coarse placeholders would
         // break the line where they overlap.
         let level = detail(window.end - window.start, reading.columns, reading.most).min(top);
-        let (held, span) = (entries(level), bucket_frames(level));
-        let first = (window.start / span).max(held.start) / chunk;
-        let end = window.end.div_ceil(span).min(held.end).div_ceil(chunk);
-        let count = end.saturating_sub(first);
-        let middle = first + count.saturating_sub(1) / 2;
-        wanted.extend((0..count).map(|offset| {
-            let index = if offset % 2 == 0 { middle - offset / 2 } else { middle + offset.div_ceil(2) };
-            Span { level: level as u8, index }
-        }));
+        let mut runs = Vec::new();
+        covering(frames, window, level, &mut runs);
+        for run in &runs {
+            if run.level != level {
+                continue;
+            }
+            let indices = run.entries.start / chunk..run.entries.end.div_ceil(chunk);
+            let middle = indices.start + (indices.end - indices.start).saturating_sub(1) / 2;
+            wanted.extend((0..indices.end - indices.start).map(|offset| {
+                let index = if offset % 2 == 0 { middle - offset / 2 } else { middle + offset.div_ceil(2) };
+                Span { level: level as u8, index }
+            }));
+        }
+        for run in runs.iter().filter(|run| run.level != level) {
+            wanted.extend(spans(run.level, &run.entries));
+        }
     }
     let mut seen = FxHashSet::default();
     wanted.retain(|span| seen.insert(*span));
     wanted
+}
+
+/// The entries of `level` a field over `frames` holds: whole buckets only, since a bucket is
+/// written once the eight entries below it are all present.
+fn written(frames: &Range<u64>, level: u32) -> Range<u64> {
+    let span = bucket_frames(level);
+    frames.start.div_ceil(span)..frames.end / span
+}
+
+/// The runs that draw frames `window` of a field over `frames` at `level` once fetched: that
+/// level's whole buckets, and at either end the next finer level for the frames they leave out, as
+/// [`Samples::cover`] draws them.
+fn covering(frames: &Range<u64>, window: Range<u64>, level: u32, runs: &mut Vec<Run>) {
+    let window = window.start.max(frames.start)..window.end.min(frames.end);
+    if window.is_empty() {
+        return;
+    }
+    if level == 0 {
+        runs.push(Run { level: 0, entries: window });
+        return;
+    }
+    let (held, span) = (written(frames, level), bucket_frames(level));
+    let entries = (window.start / span).max(held.start)..window.end.div_ceil(span).min(held.end);
+    if entries.is_empty() {
+        covering(frames, window, level - 1, runs);
+        return;
+    }
+    covering(frames, window.start..entries.start * span, level - 1, runs);
+    runs.push(Run { level, entries: entries.clone() });
+    covering(frames, entries.end * span..window.end, level - 1, runs);
 }
 
 /// Locates a field's spans: the spans' URL template and the field's index in the manifest.
@@ -367,18 +404,31 @@ mod tests {
 
     #[test]
     fn a_trace_fetches_the_one_level_it_draws_from() {
-        let traced = |most: u64| {
+        let traced = |most: u64, level: u8| {
             let reading = Reading { columns: 1000, most, ..Reading::default() };
             let all = wanted(&(0..100_000), None, (true, false), &reading, 64, 5);
-            all.into_iter().filter(|span| span.level != 5).collect::<Vec<Span>>()
+            all.into_iter().filter(|span| span.level == level).count()
         };
-        // 100,000 frames over 1,000 columns draw from level 2, whose buckets of 64 frames each fit
-        // a column: 1,563 buckets, in 25 spans.
-        let exact = traced(u64::MAX);
-        assert!(exact.iter().all(|span| span.level == 2) && exact.len() == 25, "{exact:?}");
+        // 100,000 frames over 1,000 columns draw from level 2, whose 1,562 whole buckets of 64
+        // frames each fit a column, in 25 spans.
+        assert_eq!(traced(u64::MAX, 2), 25);
         // A trace that may hold only 512 entries draws from level 3 across the whole window,
         // rather than a middle of level 2 between coarse placeholders.
-        let capped = traced(512);
-        assert!(capped.iter().all(|span| span.level == 3) && capped.len() == 4, "{capped:?}");
+        assert_eq!(traced(512, 3), 4);
+    }
+
+    #[test]
+    fn every_frame_a_trace_shows_is_fetched_at_a_level_that_holds_it() {
+        // Five whole buckets of 512 frames, and three frames past them that only finer levels hold.
+        let frames = 0..512 * 5 + 3;
+        let reading = Reading { columns: 4, most: u64::MAX, ..Reading::default() };
+        let wanted = wanted(&frames, None, (true, false), &reading, 8, 3);
+        for frame in frames.clone() {
+            let fetched = wanted.iter().any(|span| {
+                let entry = frame / bucket_frames(u32::from(span.level));
+                written(&frames, u32::from(span.level)).contains(&entry) && entry / 8 == span.index
+            });
+            assert!(fetched, "frame {frame} is fetched: {wanted:?}");
+        }
     }
 }

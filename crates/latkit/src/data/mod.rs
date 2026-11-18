@@ -52,7 +52,7 @@ pub(crate) use {
     json::{geojson, geojson_name, read_own},
     name::{PageId, Version},
     patch::Op,
-    samples::{FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, Run, Samples, bucket_frames, detail, sides},
+    samples::{FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, NO_EXTENT, Run, Samples, bucket_frames, detail, sides, widen},
     table::{Inverse, Reference, UNWIRED},
 };
 
