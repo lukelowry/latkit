@@ -151,6 +151,43 @@ impl Plan {
         Some((self.runs[p.run].run.level, p.entries, p.side))
     }
 
+    /// The segments of each row within axis coordinates `lo` to `hi`: from the last point at or
+    /// before `lo` through the first at or after `hi`, so the segments crossing either end count.
+    /// `at` gives the coordinate an entry of a level draws at. A run whose points do not rise
+    /// along the axis, a band of buckets wider than a pixel column, counts whole.
+    pub(crate) fn reach(&self, at: impl Fn(u32, u64) -> Option<f64>, [lo, hi]: [f64; 2]) -> Range<u32> {
+        let x = |point: u32| self.coordinate(point, &at);
+        let (mut first, mut last) = (0, self.points.saturating_sub(1));
+        let mut ended = false;
+        for drawn in &self.runs {
+            let Some(end) = (drawn.first + drawn.points(self.steps)).checked_sub(1) else { continue };
+            let (Some(a), Some(b)) = (x(drawn.first), x(end)) else { continue };
+            let points = drawn.first..end + 1;
+            let rises = drawn.run.level == 0 || matches!(drawn.shape, Shape::Columns(_));
+            if a <= lo {
+                // The last point at or before `lo`.
+                first =
+                    if rises { first_past(points.clone(), |k| x(k).is_some_and(|v| v > lo)) - 1 } else { drawn.first };
+            }
+            if !ended && b >= hi {
+                // The first point at or after `hi`.
+                last = if rises { first_past(points, |k| x(k).is_some_and(|v| v >= hi)) } else { end };
+                ended = true;
+            }
+        }
+        first..last.max(first + 1)
+    }
+
+    /// Where point `point` draws on the axis, `None` where it breaks the line. `at` gives the
+    /// coordinate an entry of a level draws at.
+    fn coordinate(&self, point: u32, at: impl Fn(u32, u64) -> Option<f64>) -> Option<f64> {
+        let p = self.point(point)?;
+        match p.at {
+            At::Coordinate(bits) => Some(f64::from_bits(bits)),
+            At::Entry(entry) => at(self.runs[p.run].run.level, entry),
+        }
+    }
+
     /// Point `point`, or `None` where it breaks the line. Queries and the GPU address plan share
     /// this mapping. Stepped corners draw at one frame with another's value.
     fn point(&self, point: u32) -> Option<Point> {
@@ -182,6 +219,21 @@ impl Plan {
         };
         Some(Point { run: i, at, entries, side })
     }
+}
+
+/// The first of `range` for which `past` holds, or its end. `past` holds for every value after
+/// one it holds for.
+fn first_past(range: Range<u32>, past: impl Fn(u32) -> bool) -> u32 {
+    let (mut low, mut high) = (range.start, range.end);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if past(middle) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low
 }
 
 /// How a mark's columns of its own table page its rows: by the data's pages, or by its drawing's
@@ -247,8 +299,8 @@ struct ColumnTable {
     pins: Vec<PageKey>,
     /// Words waiting for a page's offset: the word, the page, and the words the page must hold.
     missing: Vec<(usize, PageKey, u32)>,
-    /// What a traced column draws.
-    plan: Option<Plan>,
+    /// What a traced column draws, shared with the probes that decode against it.
+    plan: Option<Arc<Plan>>,
     /// The least and greatest value a traced column draws, `NO_EXTENT` if it draws none.
     values: [f32; 2],
     /// The most points a geometry column's paths take.
@@ -909,7 +961,7 @@ impl Tables {
     }
 
     /// What the traced column draws.
-    pub(crate) fn plan(&self) -> Option<&Plan> {
+    pub(crate) fn plan(&self) -> Option<&Arc<Plan>> {
         self.current.iter().find_map(|t| t.plan.as_ref())
     }
 
@@ -1282,7 +1334,7 @@ struct Builder<'g> {
     cursors: Vec<(usize, usize, u32)>,
     asks: Vec<(usize, Ask)>,
     rewrites: Vec<Rewrite>,
-    plan: Option<Plan>,
+    plan: Option<Arc<Plan>>,
     values: [f32; 2],
     points: u32,
     /// The page each page of rows reads, while every row reads only its own page.
@@ -1843,7 +1895,7 @@ impl<'g> Builder<'g> {
                 crate::data::widen(values, samples.extent(*block, drawn.run.level, drawn.run.entries.clone()))
             })
         });
-        self.plan = Some(plan);
+        self.plan = Some(Arc::new(plan));
     }
 
     /// A cursor per page of `rows` rows, at `frame` and the frame after it.
@@ -1974,6 +2026,17 @@ mod tests {
             [(Some([100.0, 164.0]), u64::MAX), (Some([0.0, 4000.0]), u64::MAX), (None, u64::MAX), (None, 512)]
         {
             let plan = plan(samples, Window { across, columns, most, steps: 0 }, &[]);
+            // A hover reaches the segments from the last point at or before its reach along the
+            // axis through the first at or after it: a few, where the points rise along the axis.
+            let at = |level, entry| samples.drawn_at(level, entry);
+            let [a, b] = across.unwrap_or([0.0, frames as f64]);
+            let band = [0.5, 0.52].map(|t| a + t * (b - a));
+            let reach = plan.reach(at, band);
+            assert!(reach.start == 0 || plan.coordinate(reach.start, at).is_some_and(|x| x <= band[0]), "{reach:?}");
+            assert!(plan.coordinate(reach.end, at).is_none_or(|x| x >= band[1]), "{reach:?}");
+            if plan.runs.iter().all(|drawn| drawn.run.level == 0 || matches!(drawn.shape, Shape::Columns(_))) {
+                assert!(reach.len() <= 16, "a few segments of {}: {reach:?}", plan.points);
+            }
             let wanted = across.map_or(samples.start()..samples.end(), |across| samples.across(across));
             let read: u64 = plan.runs.iter().map(|drawn| drawn.run.len() as u64).sum();
             assert!(read <= most, "{read} entries of {most}");

@@ -250,7 +250,7 @@ impl Raster<'_> {
             unused,
             unused,
             output.words,
-            WordStep { source: 0, other: 0, destination: output.at, count: words, layer: 0, value, size: [0; 2] },
+            WordStep { destination: output.at, value, ..WordStep::of(words) },
             words,
         );
     }
@@ -284,7 +284,7 @@ impl Raster<'_> {
         let size = [output.texture().width(), output.texture().height()];
         for layer in parts.chunk_by(|a, b| a[1] / LAYER_WORDS == b[1] / LAYER_WORDS) {
             let index = layer[0][1] / LAYER_WORDS;
-            let step = WordStep { source: 0, other: 0, destination: 0, count: 0, layer: index, value: 0, size };
+            let step = WordStep { layer: index, size, ..WordStep::of(0) };
             let params = self.queue.uniform(self.device, bytemuck::bytes_of(&step));
             let attachment = output.attachment(index);
             for group in layer.chunks(GATHER_PAGES as usize) {
@@ -373,8 +373,7 @@ impl Scan {
 }
 
 fn scan(raster: &mut Raster<'_>, levels: &[Level], input: At<'_>, output: At<'_>, count: u32) {
-    let mut step =
-        WordStep { source: input.at, other: 0, destination: output.at, count, layer: 0, value: 0, size: [0; 2] };
+    let mut step = WordStep { source: input.at, destination: output.at, ..WordStep::of(count) };
     let other = if count > SCAN_BLOCK {
         let (level, rest) = levels.split_first().expect("a scan hierarchy");
         let blocks = count.div_ceil(SCAN_BLOCK);
@@ -423,15 +422,8 @@ impl Lengths {
 }
 
 fn lengths(raster: &mut Raster<'_>, levels: &[Level], input: At<'_>, output: At<'_>, count: u32, inclusive: bool) {
-    let mut step = WordStep {
-        source: input.at,
-        other: 0,
-        destination: output.at,
-        count,
-        layer: 0,
-        value: u32::from(inclusive) * 2,
-        size: [0; 2],
-    };
+    let mut step =
+        WordStep { source: input.at, destination: output.at, value: u32::from(inclusive) * 2, ..WordStep::of(count) };
     let other = if count > SCAN_BLOCK {
         let (level, rest) = levels.split_first().expect("length scan hierarchy");
         let blocks = count.div_ceil(SCAN_BLOCK);
@@ -573,14 +565,7 @@ pub(super) mod tests {
             let mut raster = Raster { device, queue, pipelines: &mut fixture.pipelines, encoder: &mut encoder };
             raster.fill(&input, At::new(&output, 0), room, 0xfedc_ba98);
             if n == 1 {
-                raster.run(
-                    (Shader::Words, "copy"),
-                    &input,
-                    &input,
-                    &output,
-                    WordStep { source: 0, other: 0, destination: 0, count: room, layer: 0, value: 0, size: [0; 2] },
-                    room,
-                );
+                raster.run((Shader::Words, "copy"), &input, &input, &output, WordStep::of(room), room);
                 let copied = Readback::words(
                     &fixture.readbacks,
                     device,

@@ -53,15 +53,7 @@ impl Order {
         let mut source = input;
         for digit in 0..digits {
             let destination = if digit % 2 == 0 { At::new(&self.work, 0) } else { output };
-            let step = WordStep {
-                source: source.at,
-                other: 0,
-                destination: 0,
-                count,
-                layer: 0,
-                value: digit * RADIX_BITS,
-                size: [0; 2],
-            };
+            let step = WordStep { source: source.at, value: digit * RADIX_BITS, ..WordStep::of(count) };
             // Each block's counts, block by block into `offsets` as scratch, then digit by digit
             // into `counts` for the scan.
             raster.run((Shader::Order, "histogram"), source.words, source.words, &self.offsets, step, histograms);

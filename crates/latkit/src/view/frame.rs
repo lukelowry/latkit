@@ -172,7 +172,7 @@ impl View {
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
         if let Some(probe) = probe {
-            let readback = self.probe(encoder, &mut inner);
+            let readback = self.probe(encoder, &mut inner, &probe);
             self.probing(probe, readback);
         }
         self.run_query(encoder, &mut inner);

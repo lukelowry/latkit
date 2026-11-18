@@ -47,7 +47,7 @@ impl Bounds {
                     wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
                 ],
                 uniform: 19,
-                step: WordStep { source: 0, other: 0, destination: 0, count, layer: 0, value, size: [0; 2] },
+                step: WordStep { value, ..WordStep::of(count) },
                 output,
                 words: records * 4,
             });

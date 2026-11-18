@@ -4,10 +4,12 @@
 //! one source shares its tiling, so a piece one set fetched draws in another, and a set that
 //! returns to a source finds what it drew before. Each set decodes for a stamp that identifies
 //! what its decoding reads. A wanted key draws once it is decoded for that stamp. Until then its
-//! nearest decoded ancestor is drawn as a placeholder, and missing pieces are fetched, nearest
-//! first. A renewed piece is fetched again and draws what it holds until the new bytes land. A
-//! piece whose fetch failed draws nothing and is fetched again once wanted after its
-//! [`Retry`]. Earth tiles and spans of a sampled field's history both use tilings.
+//! nearest decoded ancestor is drawn as a placeholder, and so are the finer keys the set drew
+//! before within it, and missing pieces are fetched, nearest first. So a set never draws less than
+//! it did while what replaces it loads. A renewed piece is fetched again and draws what it holds
+//! until the new bytes land. A piece whose fetch failed draws nothing and is fetched again once
+//! wanted after its [`Retry`]. Earth tiles and spans of a sampled field's history both use
+//! tilings.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,19 +74,25 @@ pub(crate) trait Kept {
 }
 
 /// The result of an update. It lists each wanted key if decoded, else its nearest decoded
-/// ancestor, each once. It also says whether any wanted key shows a placeholder (an ancestor, or
-/// nothing).
+/// ancestor, and the finer keys drawn before within a wanted key still loading, each once.
 pub(crate) struct Drawn<K> {
     pub(crate) keys: Vec<K>,
+    /// Whether any wanted key shows a placeholder: an ancestor, finer keys, or nothing.
     pub(crate) standing_in: bool,
+    /// Whether any wanted key draws nothing at all.
+    pub(crate) bare: bool,
+    /// Whether any wanted key is being fetched again, and draws what it held until it lands.
+    pub(crate) renewing: bool,
     /// A failure to report: a piece that could not be fetched.
     pub(crate) failure: Option<Error>,
 }
 
-/// One set's claim on a tiling: the stamp it decodes for, and the keys it keeps. Those are the
-/// keys it draws, the keys it wants, and their ancestors, which are drawn as placeholders.
+/// One set's claim on a tiling: the stamp it decodes for, the keys it drew at its last update, and
+/// the keys it keeps. Those are the keys it draws, the keys it wants, and their ancestors, which
+/// are drawn as placeholders.
 struct Claim<K> {
     stamp: u64,
+    drawn: Vec<K>,
     keys: FxHashSet<K>,
 }
 
@@ -181,8 +189,18 @@ impl<K: Key> Tiling<K> {
         for key in decode {
             self.decode(key, stamp, pieces, jobs);
         }
-        let mut drawn: Vec<K> = Vec::new();
-        let mut standing_in = false;
+        // Wanted keys still loading: not yet decoded for the stamp, or being fetched again.
+        let loading: FxHashSet<K> =
+            wanted.iter().copied().filter(|&key| !self.ready(key, stamp) || self.renewing.contains(&key)).collect();
+        // A key drawn before goes on drawing while a wanted key covering it loads: finer spans once
+        // a trace draws coarser, finer tiles once the camera zooms out, and the spans of the frames
+        // a newly whole bucket holds. Coarser keys already stand in as ancestors.
+        let before = self.claims.get(&set).map(|claim| claim.drawn.as_slice()).unwrap_or_default();
+        let mut drawn: Vec<K> = (before.iter().copied())
+            .filter(|&old| self.ready(old, stamp) && ancestry(old).skip(1).any(|k| loading.contains(&k)))
+            .collect();
+        let kept = drawn.len();
+        let (mut standing_in, mut bare) = (false, false);
         for &key in wanted {
             let stands = ancestry(key).find(|&k| self.ready(k, stamp));
             if let Some(stand) = stands
@@ -191,7 +209,9 @@ impl<K: Key> Tiling<K> {
                 drawn.push(stand);
             }
             standing_in |= stands != Some(key);
+            bare |= stands.is_none() && !drawn[..kept].iter().any(|&old| ancestry(old).any(|k| k == key));
         }
+        let renewing = wanted.iter().any(|key| self.renewing.contains(key));
         let tick = self.tick;
         for key in &drawn {
             if let Some(held) = self.held.get_mut(key) {
@@ -211,9 +231,9 @@ impl<K: Key> Tiling<K> {
                 keys.insert(k);
             }
         }
-        self.claims.insert(set, Claim { stamp, keys });
+        self.claims.insert(set, Claim { stamp, drawn: drawn.clone(), keys });
         self.forget(set);
-        Drawn { keys: drawn, standing_in, failure: self.failure.clone() }
+        Drawn { keys: drawn, standing_in, bare, renewing, failure: self.failure.clone() }
     }
 
     /// The patch decoded from `key` for `stamp`, once ready.
@@ -392,5 +412,56 @@ impl<K: Key> Kept for Tiling<K> {
             }
             kept
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::gpu::work::Counters;
+    use crate::tiles::Span;
+
+    /// Pieces the source has: the rest wait.
+    struct Served(FxHashSet<Span>);
+
+    impl Pieces<Span> for Served {
+        fn request(&mut self, key: Span, _: &Jobs<'_>) -> Requested {
+            if self.0.contains(&key) { Requested::Fetch(Request::new(format!("{key:?}"))) } else { Requested::Wait }
+        }
+
+        fn decode(&self, _: Span, _: &Arc<Vec<u8>>, _: &Jobs<'_>) -> Decoding {
+            Decoding::Now(Patch::new())
+        }
+    }
+
+    #[test]
+    fn a_set_draws_what_it_drew_until_what_replaces_it_lands() {
+        let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
+        let fetch: crate::tiles::Fetch = Arc::new(|_: &Request| Pending::ready(Ok(vec![1])));
+        let jobs = Jobs::new(None, Waker::noop(), &counters, &errors).fetching(Some(&fetch));
+        let children: Vec<Span> = (0..8).map(|index| Span { level: 0, index }).collect();
+        let parent = Span { level: 1, index: 0 };
+        let mut served = Served(children.iter().copied().collect());
+        let mut tiling = Tiling::default();
+        // Fetched in one update, landed and decoded in the next.
+        let update = |tiling: &mut Tiling<Span>, wanted: &[Span], served: &mut Served| {
+            tiling.update(1, wanted, 0, served, &jobs);
+            tiling.update(1, wanted, 0, served, &jobs)
+        };
+        let drawn = update(&mut tiling, &children, &mut served);
+        assert_eq!((drawn.keys.len(), drawn.standing_in), (8, false));
+        // Zoomed out, the children draw while their parent loads.
+        let drawn = update(&mut tiling, &[parent], &mut served);
+        assert_eq!((drawn.keys, drawn.standing_in, drawn.bare), (children, true, false));
+        // Once the parent lands, it replaces them in one update.
+        served.0.insert(parent);
+        let drawn = update(&mut tiling, &[parent], &mut served);
+        assert_eq!((drawn.keys, drawn.standing_in), (vec![parent], false));
+        // A refresh draws the parent's bytes until it lands again.
+        tiling.renew(|_| true);
+        let drawn = tiling.update(1, &[parent], 0, &mut served, &jobs);
+        assert_eq!((drawn.keys, drawn.renewing), (vec![parent], true));
     }
 }

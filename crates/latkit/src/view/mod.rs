@@ -123,6 +123,9 @@ pub struct View {
     told_area: [f32; 4],
     /// The sources the application gave, each a named dataset.
     sources: Vec<Source>,
+    /// Sources given since, while the tiles among them that the view does not draw yet load. The
+    /// view draws `sources` until each of those can draw.
+    incoming_sources: Option<Vec<Source>>,
     /// The version of each dataset the view draws, sorted by name: a given snapshot, the latest
     /// version of a `Data` as of the last refresh, or the tiles loaded so far.
     snapshots: Vec<Snapshot>,
@@ -270,6 +273,7 @@ impl View {
             told_failures: Vec::new(),
             told_area: [0.0; 4],
             sources: Vec::new(),
+            incoming_sources: None,
             snapshots: Vec::new(),
             choices: crate::derive::tiled::Choices::default(),
             drawings: crate::data::Keyed::default(),
@@ -338,7 +342,7 @@ impl View {
     pub fn move_to(&mut self, gpu: &Gpu) {
         let identity = Identity { id: self.id, signal: self.signal.clone(), job_errors: self.job_errors.clone() };
         let mut moved = View::made(gpu, self.scene().clone(), identity);
-        moved.use_sources(self.sources.clone());
+        moved.use_sources(self.sources.clone(), &mut gpu.0.lock());
         // The same scene and data, so what was derived from them alone still holds, layouts too.
         moved.scene_version = self.scene_version;
         moved.derived.carry(&mut self.derived);
@@ -360,6 +364,10 @@ impl View {
         moved.clock = std::mem::take(&mut self.clock);
         moved.effect_time = self.effect_time;
         moved.stats = std::mem::take(&mut self.stats);
+        // Sources given since load again on `gpu`, while the moved view draws those it drew.
+        if let Some(sources) = self.incoming_sources.take() {
+            moved.give_sources(sources);
+        }
         moved.set_at(self.at);
         moved.set_insets(self.insets);
         moved.set_orbit(self.orbit());
@@ -589,6 +597,11 @@ impl View {
     /// whose dataset no longer fits it draws nothing, and the next frame reports why unless a new
     /// scene replaces that mark first. So the sources and the scene can be set in either order.
     /// Errors if two sources share a name.
+    ///
+    /// Tiles the view does not draw yet load while it goes on drawing the sources before, as a
+    /// scene waits for its pipelines. Once each can draw (its base landed, and every piece in view
+    /// draws at least a placeholder, or failed), all the sources swap in on one frame. A view that
+    /// has not drawn yet takes them at once.
     pub fn set_sources<S: Into<Source>>(&mut self, sources: impl IntoIterator<Item = S>) -> Result<()> {
         let sources: Vec<Source> = sources.into_iter().map(Into::into).collect();
         for (i, source) in sources.iter().enumerate() {
@@ -596,14 +609,27 @@ impl View {
                 return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
             }
         }
-        self.use_sources(sources);
+        self.give_sources(sources);
         Ok(())
     }
 
-    /// Replaces the view's sources with `sources`, whose names differ.
-    fn use_sources(&mut self, sources: Vec<Source>) {
+    /// Takes `sources`, whose names differ: at once, or once the tiles among them that the view
+    /// does not draw yet can draw.
+    fn give_sources(&mut self, sources: Vec<Source>) {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
+        let tiles = sources.iter().filter_map(|source| if let Source::Tiles(t) = source { Some(t) } else { None });
+        if self.stats.frames > 0 && self.derived.tiles.load(tiles, &mut inner.tiles) {
+            self.incoming_sources = Some(sources);
+            self.wake();
+        } else {
+            self.incoming_sources = None;
+            self.use_sources(sources, &mut inner);
+        }
+    }
+
+    /// Replaces the view's sources with `sources`, whose names differ.
+    fn use_sources(&mut self, sources: Vec<Source>, inner: &mut crate::gpu::Inner) {
         // Forget datasets no source provides any more, and those whose source switched to or from
         // tiles: the view draws the new source from scratch.
         let tiled = |source: &Source| matches!(source, Source::Tiles(_));
@@ -615,7 +641,7 @@ impl View {
             .collect();
         let forgot = !gone.is_empty();
         for name in gone {
-            self.forget(&name, &mut inner);
+            self.forget(&name, inner);
         }
         for old in &self.sources {
             if let Source::Data(data) = old {
@@ -626,14 +652,13 @@ impl View {
             match source {
                 Source::Data(data) => {
                     data.watchers().watch(self.id, &self.waker);
-                    self.take_newer(data.snapshot(), &mut inner);
+                    self.take_newer(data.snapshot(), inner);
                 }
-                Source::Snapshot(snapshot) => self.take_newer(snapshot.clone(), &mut inner),
+                Source::Snapshot(snapshot) => self.take_newer(snapshot.clone(), inner),
                 Source::Tiles(tiles) => self.derived.tiles.set(tiles.clone(), &mut inner.tiles),
             }
         }
         self.sources = sources;
-        drop(inner);
         // Marks that lost their tables need the program laid out again.
         if forgot {
             self.invalidate();
@@ -642,9 +667,10 @@ impl View {
         }
     }
 
-    /// The sources the view draws.
+    /// The sources last given. Until the tiles among them that the view did not draw can draw, the
+    /// view draws the sources before.
     pub fn sources(&self) -> &[Source] {
-        &self.sources
+        self.incoming_sources.as_deref().unwrap_or(&self.sources)
     }
 
     /// The version of dataset `name` the view draws: the latest version it took of a
@@ -663,6 +689,11 @@ impl View {
     /// but tiles still arrive.
     fn refresh(&mut self, inner: &mut crate::gpu::Inner) {
         self.update_tiles(inner);
+        // Sources given while the view drew others swap in together, once their tiles can draw.
+        if self.incoming_sources.is_some() && self.derived.tiles.loaded() {
+            let sources = self.incoming_sources.take().expect("checked");
+            self.use_sources(sources, inner);
+        }
         for data in self.derived.tiles.take_changed() {
             self.take_data(data, inner);
         }

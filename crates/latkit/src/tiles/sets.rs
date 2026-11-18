@@ -57,6 +57,40 @@ enum Drawing {
     Vector(vector::Drawing),
 }
 
+/// What an update of a set's drawing found.
+#[derive(Default)]
+pub(super) struct Updated {
+    /// Whether the dataset changed.
+    pub(super) changed: bool,
+    /// Whether a wanted piece shows a placeholder, or nothing.
+    pub(super) standing_in: bool,
+    /// Whether a wanted piece draws nothing, or the source's base has not landed.
+    pub(super) bare: bool,
+    /// Whether a wanted piece is being fetched again after a refresh.
+    pub(super) renewing: bool,
+    /// Whether the drawing started over on its source's new base.
+    pub(super) rebased: bool,
+    /// A failure to report.
+    pub(super) failure: Option<Error>,
+}
+
+impl Updated {
+    /// While the source's base loads: every wanted piece draws nothing.
+    pub(super) fn loading() -> Updated {
+        Updated { standing_in: true, bare: true, ..Updated::default() }
+    }
+
+    /// Takes in what `drawn`, the update of one tiling of the set, found.
+    pub(super) fn add<K>(&mut self, drawn: &super::tiling::Drawn<K>) {
+        self.standing_in |= drawn.standing_in;
+        self.bare |= drawn.bare;
+        self.renewing |= drawn.renewing;
+        if self.failure.is_none() {
+            self.failure.clone_from(&drawn.failure);
+        }
+    }
+}
+
 /// Counter that numbers each set, so the cache can tell sets apart.
 static SETS: AtomicU64 = AtomicU64::new(0);
 
@@ -70,9 +104,18 @@ struct TileSet {
     changed: bool,
     /// The failure the set last reported. A source reports each failure once.
     told: Option<Error>,
-    /// Whether a piece the view wanted at the last update showed a placeholder: an ancestor, or
-    /// nothing.
+    /// Whether a piece the view wanted at the last update showed a placeholder: an ancestor, finer
+    /// pieces, or nothing.
     standing_in: bool,
+    /// Whether a piece the view wanted at the last update drew nothing, or the base had not
+    /// landed.
+    bare: bool,
+    /// Whether a piece the view wanted at the last update was being fetched again after a
+    /// refresh.
+    renewing: bool,
+    /// Whether the set starts over on its source's new base, while the view draws the version
+    /// before until each piece it wants draws something.
+    rebasing: bool,
 }
 
 impl TileSet {
@@ -85,7 +128,23 @@ impl TileSet {
             changed: false,
             told: None,
             standing_in: true,
+            bare: true,
+            renewing: false,
+            rebasing: false,
         }
+    }
+
+    /// Whether the view may take the dataset: it is a whole version. That is never a new base
+    /// before each piece the view wants draws something, nor part of a refresh, whose pieces
+    /// land one by one. A piece that failed draws nothing, which counts as final.
+    fn whole(&self) -> bool {
+        !self.renewing && !self.rebasing
+    }
+
+    /// Stops drawing, so the source's pieces it claimed may be evicted.
+    fn release(&self, cache: &mut Cache) {
+        self.tiles.refreshes.views.unwatch(self.id);
+        cache.release(&self.tiles, self.id);
     }
 
     /// Pieces drawn.
@@ -100,20 +159,25 @@ impl TileSet {
     /// Updates the dataset to what the view needs, from what the cache holds of the source. Returns
     /// a failure to report, if any.
     fn update(&mut self, input: &Input<'_>, asked: &Asked<'_>, cache: &mut Cache, jobs: &Jobs<'_>) -> Option<Error> {
-        self.standing_in = false;
         self.tiles.refreshes.views.watch(self.id, jobs.waker());
         let fetched = cache.open(&self.tiles, self.id, jobs);
         let (waker, fetch) = (fetched.waker().clone(), fetched.fetch().cloned());
         let jobs = jobs.waking(&waker).fetching(fetch.as_ref());
         let holds = match &mut fetched.state {
+            // A source opening again after the set drew, as vector tiles do when refreshed, starts
+            // over like a new base.
             State::Opening(_) => {
-                self.standing_in = true;
+                (self.standing_in, self.bare, self.renewing) = (true, true, false);
+                self.rebasing |= self.drawing.is_some();
                 return None;
             }
-            State::Failed(error) => return Some(error.clone()),
+            State::Failed(error) => {
+                (self.standing_in, self.bare, self.renewing) = (false, false, false);
+                return Some(error.clone());
+            }
             State::Open(holds) => holds,
         };
-        let (changed, standing_in, failure) = match holds {
+        let updated = match holds {
             Holds::Frames(fetched) => {
                 if !matches!(self.drawing, Some(Drawing::Frames(_))) {
                     self.drawing = Some(Drawing::Frames(frames::Drawing::new(fetched)));
@@ -129,9 +193,10 @@ impl TileSet {
                 drawing.update(self.id, input, &self.tiles.name, &mut self.data, asked.sight, fetched, &jobs)
             }
         };
-        self.changed |= changed;
-        self.standing_in = standing_in;
-        failure
+        self.changed |= updated.changed;
+        (self.standing_in, self.bare, self.renewing) = (updated.standing_in, updated.bare, updated.renewing);
+        self.rebasing = (self.rebasing || updated.rebased) && updated.bare;
+        updated.failure
     }
 }
 
@@ -139,6 +204,9 @@ impl TileSet {
 #[derive(Default)]
 pub(crate) struct TileSets {
     sets: Vec<TileSet>,
+    /// Sets loading for sources given while the view draws others. They show nothing until every
+    /// one of them can draw, then swap in together (see [`loaded`](TileSets::loaded)).
+    incoming: Vec<TileSet>,
     /// Datasets the last update changed, for the view to take.
     changed: Vec<Snapshot>,
     errors: Vec<Error>,
@@ -146,7 +214,8 @@ pub(crate) struct TileSets {
 
 impl TileSets {
     /// Draws `tiles`, replacing any tiles of the same name and what they drew. Equal tiles keep what
-    /// they drew, and follow the refreshes of `tiles`.
+    /// they drew, and follow the refreshes of `tiles`. Tiles that loaded beside the sets drawn swap
+    /// in with what they loaded.
     pub(crate) fn set(&mut self, tiles: Tiles, cache: &mut Cache) {
         if let Some(set) = self.sets.iter_mut().find(|s| s.tiles == tiles) {
             set.tiles.refreshes.views.unwatch(set.id);
@@ -154,7 +223,43 @@ impl TileSets {
             return;
         }
         self.remove(&tiles.name, cache);
-        self.sets.push(TileSet::new(tiles));
+        let set = match self.incoming.iter().position(|s| s.tiles == tiles) {
+            // The view takes what it loaded at once, in the frame the sources swap.
+            Some(at) => {
+                let mut set = self.incoming.swap_remove(at);
+                set.changed = false;
+                self.changed.push(set.data.clone());
+                set
+            }
+            None => TileSet::new(tiles),
+        };
+        self.sets.push(set);
+    }
+
+    /// Starts loading each of `tiles` that no set draws, beside the sets drawn, and stops loading
+    /// any other. Returns whether any loads.
+    pub(crate) fn load<'a>(&mut self, tiles: impl IntoIterator<Item = &'a Tiles>, cache: &mut Cache) -> bool {
+        let new: Vec<&Tiles> = tiles.into_iter().filter(|&t| !self.sets.iter().any(|set| set.tiles == *t)).collect();
+        self.incoming.retain(|set| {
+            let kept = new.contains(&&set.tiles);
+            if !kept {
+                set.release(cache);
+            }
+            kept
+        });
+        for tiles in new {
+            if !self.incoming.iter().any(|set| set.tiles == *tiles) {
+                self.incoming.push(TileSet::new(tiles.clone()));
+            }
+        }
+        !self.incoming.is_empty()
+    }
+
+    /// Whether every set loading beside the sets drawn can draw: its base landed, and each piece
+    /// the view wants draws something, if only a placeholder. A source or piece that failed counts
+    /// as final.
+    pub(crate) fn loaded(&self) -> bool {
+        self.incoming.iter().all(|set| !set.bare)
     }
 
     /// Stops drawing the tiles drawn as dataset `name`, and drops their changes the view has not
@@ -164,8 +269,7 @@ impl TileSets {
         self.sets.retain(|set| {
             let kept = *set.tiles.name != *name;
             if !kept {
-                set.tiles.refreshes.views.unwatch(set.id);
-                cache.release(&set.tiles, set.id);
+                set.release(cache);
             }
             kept
         });
@@ -174,17 +278,17 @@ impl TileSets {
     /// Stops drawing every source, because the view no longer draws.
     pub(crate) fn release(&mut self, cache: &mut Cache) {
         self.changed.clear();
-        for set in self.sets.drain(..) {
-            set.tiles.refreshes.views.unwatch(set.id);
-            cache.release(&set.tiles, set.id);
+        for set in self.sets.drain(..).chain(self.incoming.drain(..)) {
+            set.release(cache);
         }
     }
 
-    /// Whether every piece the view wants is drawn rather than a placeholder (an ancestor, or
-    /// nothing while its source opens), and the view took every changed dataset. A piece that could
-    /// not be fetched draws nothing, which counts as final.
+    /// Whether every piece the view wants is drawn rather than a placeholder (an ancestor, finer
+    /// pieces, or nothing while its source opens), no refresh or source given is still loading,
+    /// and the view took every changed dataset. A piece that could not be fetched draws nothing,
+    /// which counts as final.
     pub(crate) fn complete(&self) -> bool {
-        self.changed.is_empty() && self.sets.iter().all(|s| !s.standing_in)
+        self.incoming.is_empty() && self.changed.is_empty() && self.sets.iter().all(|s| !s.standing_in && s.whole())
     }
 
     /// Whether changed datasets are waiting for the view to take them.
@@ -195,7 +299,7 @@ impl TileSets {
     /// The number of pieces drawn across all sources, and the number being fetched or decoded.
     pub(crate) fn counts(&self, cache: &Cache) -> [u64; 2] {
         let drawn = self.sets.iter().map(|set| set.drawn() as u64).sum();
-        let loading = self.sets.iter().map(|set| cache.under_way(&set.tiles) as u64).sum();
+        let loading = self.sets.iter().chain(&self.incoming).map(|set| cache.under_way(&set.tiles) as u64).sum();
         [drawn, loading]
     }
 
@@ -244,6 +348,8 @@ impl TileSets {
     }
 
     /// Updates every set to what the view needs and the scene draws, from what `cache` holds.
+    /// The view takes a set's dataset only as a whole version (see `TileSet::whole`). Sets loading
+    /// beside them update alike, and show nothing until they swap in.
     pub(crate) fn update(&mut self, input: &Input<'_>, asked: &Asked<'_>, cache: &mut Cache, jobs: &Jobs<'_>) {
         for set in &mut self.sets {
             if let Some(error) = set.update(input, asked, cache, jobs)
@@ -252,10 +358,14 @@ impl TileSets {
                 self.errors.push(error.clone().within(&set.tiles.name));
                 set.told = Some(error);
             }
-            if std::mem::take(&mut set.changed) {
+            if set.whole() && std::mem::take(&mut set.changed) {
                 self.changed.retain(|data| data.name() != set.data.name());
                 self.changed.push(set.data.clone());
             }
+        }
+        // A failure of a set loading is reported once it swaps in.
+        for set in &mut self.incoming {
+            set.update(input, asked, cache, jobs);
         }
     }
 }

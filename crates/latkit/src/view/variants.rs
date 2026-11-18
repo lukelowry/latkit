@@ -457,13 +457,14 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Words, "maximum")));
     }
     let controls = scene.controls;
-    // The overlay draws a plot's axes, the title, the legends, and the selection box and connection
-    // line that gestures draw.
+    // The overlay draws a plot's grid lines and axes, the title, the legends, and the selection box
+    // and connection line that gestures draw. Its lines and fills draw with the marks, so a plot
+    // never shows its traces without its axes. Its text draws once the text stage can.
     let legends = any(&|m| m.style().legend.is_some() && m.style().color.is_some());
     let written = matches!(scene.space, Space::Plot(_)) || scene.title.is_some() || legends;
     let draws = [Action::Box, Action::ZoomBox, Action::Connect].into_iter().any(|a| controls.gestures.any(a));
     if written || draws {
-        stages.add(Stage::Text, draw(Shader::Overlay));
+        stages.add(Stage::Draw, draw(Shader::Overlay));
     }
     // The distance fields of text a frame sets are built before the frame draws.
     let labeled = any(&|m| m.style().label.is_some());

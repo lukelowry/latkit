@@ -1028,9 +1028,10 @@ impl Samples {
     }
 
     /// The runs that draw frames `frames` at `level`, left to right. Uses that level's entries
-    /// where present. Elsewhere it uses, as a placeholder, the entry of the nearest coarser level
-    /// that contains them, and failing that, entries of finer levels. Frames no level has are not
-    /// drawn.
+    /// where present. Elsewhere it uses finer entries that hold all of a missing entry's frames,
+    /// which draw them exactly. Failing that, it uses, as a placeholder, the entry of the nearest
+    /// coarser level that contains them, and failing that, what finer entries there are. Frames no
+    /// level has are not drawn.
     pub(crate) fn cover(&self, frames: Range<u64>, level: u32) -> Vec<Run> {
         let mut runs = Vec::new();
         let frames = frames.start.max(self.start)..frames.end.min(self.end);
@@ -1052,13 +1053,18 @@ impl Samples {
                 continue;
             }
             let frame = (e * span).max(frames.start);
+            let entry_end = (e + 1).saturating_mul(span).min(frames.end);
+            if level > 0 && self.whole(frame..entry_end, level - 1) {
+                self.cover_into(frame..entry_end, level - 1, runs);
+                e += 1;
+                continue;
+            }
             if let Some(k) = (level + 1..=self.levels()).find(|&k| self.held(k, frame / bucket_frames(k))) {
                 let bucket = frame / bucket_frames(k);
                 join(runs, Run { level: k, entries: bucket..bucket + 1 });
                 e = (bucket + 1).saturating_mul(bucket_frames(k)).div_ceil(span);
                 continue;
             }
-            let entry_end = (e + 1).saturating_mul(span).min(frames.end);
             match self.next_held(frame) {
                 Some(next) if next < entry_end && level > 0 => {
                     self.cover_into(next..entry_end, level - 1, runs);
@@ -1068,6 +1074,16 @@ impl Samples {
                 None => break,
             }
         }
+    }
+
+    /// Whether `level` and the levels below it hold every one of `frames` between them.
+    fn whole(&self, frames: Range<u64>, level: u32) -> bool {
+        let span = bucket_frames(level);
+        let entries = frames.start / span..frames.end.div_ceil(span);
+        self.missing(level, entries).into_iter().all(|gap| {
+            let within = (gap.start * span).max(frames.start)..(gap.end.saturating_mul(span)).min(frames.end);
+            level > 0 && self.whole(within, level - 1)
+        })
     }
 
     /// Folds piece `(level, index)` of row block `block` into `extent`, which holds a least and a
@@ -1459,5 +1475,18 @@ mod tests {
         assert!(!samples.held(1, 0), "frames 0..4 are missing");
         assert!(samples.held(1, 1));
         assert_eq!(samples.cover(0..16, 1), vec![run, Run { level: 1, entries: 1..2 }]);
+    }
+
+    #[test]
+    fn finer_entries_holding_a_bucket_draw_it_before_a_coarser_placeholder() {
+        let mut samples = Samples::default();
+        let frames = Run { level: 0, entries: 0..56 };
+        let at: Vec<f64> = (0..56).map(f64::from).collect();
+        samples.insert(&frames, &at, &[1.0; 56], 1).expect("frames");
+        samples.insert(&Run { level: 2, entries: 0..1 }, &[0.0, 63.0], &[1.0, 1.0], 1).expect("a bucket");
+        // Level 1 is missing. The frames draw its first seven buckets exactly, and the coarser
+        // bucket stands in only where frames are missing too.
+        assert_eq!(samples.cover(0..56, 1), vec![frames]);
+        assert_eq!(samples.cover(56..64, 1), vec![Run { level: 2, entries: 0..1 }]);
     }
 }

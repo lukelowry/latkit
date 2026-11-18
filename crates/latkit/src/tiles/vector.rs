@@ -22,6 +22,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::TileKey;
 use super::retry::Retry;
+use super::sets::Updated;
 use super::tiling::{Decoding, Pieces, Requested, Tiling};
 use crate::data::{Field, Id, Keyed, Name, Op, Patch, Snapshot, Table, Values};
 use crate::derive::order::Order;
@@ -270,8 +271,7 @@ impl Drawing {
     }
 
     /// Updates `data` to what `sight` shows and set `set`'s scene draws of dataset `name`, from
-    /// what `fetched` holds. Returns whether it changed, whether any wanted tile still shows a
-    /// placeholder, and a failure to report.
+    /// what `fetched` holds, and says what it found.
     #[expect(clippy::too_many_arguments, reason = "a set's update reads the view, the frame, and the source")]
     pub(crate) fn update(
         &mut self,
@@ -282,22 +282,25 @@ impl Drawing {
         sight: Option<&Sight<'_>>,
         fetched: &mut Fetched,
         jobs: &Jobs<'_>,
-    ) -> (bool, bool, Option<Error>) {
+    ) -> Updated {
         let tables = decoded_tables(input.scene, name);
         if tables.is_empty() {
-            return (false, false, None);
+            return Updated::default();
         }
         let failure = fetched.settle(jobs);
         let Some((zooms, bounds)) = fetched.zooms() else {
-            return (false, matches!(fetched.opened, Opened::Root(..)), failure);
+            let opening = matches!(fetched.opened, Opened::Root(..));
+            return Updated { standing_in: opening, bare: opening, failure, ..Updated::default() };
         };
         let stamp = stamp_of(&tables);
         let wanted = sight.map(|s| wanted(s, zooms, bounds)).unwrap_or_default();
         let Fetched { url, opened, leaves, leaf_fetches, leaf_retries, tiling } = fetched;
         let mut pieces = Find { url, opened, leaves, leaf_fetches, leaf_retries, tables: &tables };
         let drawn = tiling.update(set, &wanted, stamp, &mut pieces, jobs);
-        let changed = self.draw(&drawn.keys, stamp, tiling, input, data);
-        (changed, drawn.standing_in, failure.or(drawn.failure))
+        let mut updated =
+            Updated { changed: self.draw(&drawn.keys, stamp, tiling, input, data), failure, ..Updated::default() };
+        updated.add(&drawn);
+        updated
     }
 
     /// Draws tiles `drawn`, decoded for `stamp`. A tile new to the tables appends its rows after

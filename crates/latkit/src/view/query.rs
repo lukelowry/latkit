@@ -229,7 +229,11 @@ impl View {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let marks: Vec<_> = found.iter().map(|f| (f.mark, f.room, f.at)).collect();
-        self.probe_pass(encoder, inner, ask.kind(), &marks);
+        let around = match &ask {
+            Ask::Hits { point, radius, .. } => Some((*point, *radius)),
+            _ => None,
+        };
+        self.probe_pass(encoder, inner, ask.kind(), &marks, around);
         let (at, count) = match &ask {
             Ask::Locate { .. } => (wgsl::PROBE_LOCATE_X, 4),
             _ => (wgsl::PROBE_WORDS, words.max(1)),

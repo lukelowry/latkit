@@ -54,7 +54,16 @@ impl Probing {
         raster.fill(&self.first, At::new(&self.details, 0), marks * 8, 0);
     }
 
-    pub(crate) fn nearest(&mut self, raster: &mut Raster<'_>, input: &ProbeInputs<'_>, count: u32, mark: u32) {
+    /// Finds the instance of mark `mark` nearest the probe among its first `count`, or with a
+    /// `reach` of `[first, span]`, among each row's segments from `first`, `span` of them.
+    pub(crate) fn nearest(
+        &mut self,
+        raster: &mut Raster<'_>,
+        input: &ProbeInputs<'_>,
+        count: u32,
+        mark: u32,
+        reach: [u32; 2],
+    ) {
         self.first.ensure(raster.device, u64::from(count.max(1)) * 4);
         self.packed.ensure(raster.device, 8);
         geometry(
@@ -63,7 +72,7 @@ impl Probing {
             input.variant.entry("probe"),
             [&self.winner, &self.details],
             &self.first,
-            WordStep { value: mark, ..step(count) },
+            WordStep { value: mark, reach, ..WordStep::of(count) },
             count * 4,
         );
         self.maximum.greatest(raster, At::new(&self.first, 0), At::new(&self.winners, mark * 4), count);
@@ -73,7 +82,7 @@ impl Probing {
             input.variant.entry("probe"),
             [&self.winners, &self.details],
             &self.packed,
-            WordStep { source: mark * 4, other: 1, ..step(count) },
+            WordStep { source: mark * 4, other: 1, reach, ..WordStep::of(count) },
             8,
         );
         self.packed.copy_to(raster.encoder, 0, &self.details, mark * 8, 8);
@@ -87,7 +96,7 @@ impl Probing {
             input.variant.entry("finish"),
             [&self.winner, &self.details],
             input.output,
-            step(marks),
+            WordStep::of(marks),
             12,
         );
     }
@@ -99,11 +108,13 @@ impl Probing {
             input.variant.entry("probe"),
             [&self.winner, &self.details],
             input.output,
-            WordStep { destination: 8, other: 4, ..step(1) },
+            WordStep { destination: 8, other: 4, ..WordStep::of(1) },
             4,
         );
     }
 
+    /// Keeps up to `room` of the instances within the query's radius, at `destination`, among the
+    /// first `count`, or with a `reach` (see [`nearest`](Probing::nearest)), among those it reaches.
     pub(crate) fn hits(
         &mut self,
         raster: &mut Raster<'_>,
@@ -111,6 +122,7 @@ impl Probing {
         count: u32,
         room: u32,
         destination: u32,
+        reach: [u32; 2],
     ) {
         self.first.ensure(raster.device, u64::from(count.max(1)) * 4);
         self.counts.ensure(raster.device, u64::from(count.next_multiple_of(4).max(4)));
@@ -122,10 +134,10 @@ impl Probing {
             input.variant.entry("probe"),
             [&self.winner, &self.details],
             &self.first,
-            WordStep { other: 2, ..step(count) },
+            WordStep { other: 2, reach, ..WordStep::of(count) },
             count * 4,
         );
-        pack(raster, "counts", &self.first, &self.counts, step(count), count.next_multiple_of(4));
+        pack(raster, "counts", &self.first, &self.counts, WordStep::of(count), count.next_multiple_of(4));
         self.scan.record(raster, At::new(&self.counts, 0), At::new(&self.prefix, 0), count);
         geometry(
             raster,
@@ -133,7 +145,7 @@ impl Probing {
             input.variant.entry("probe"),
             [&self.prefix, &self.details],
             &self.packed,
-            WordStep { other: 3, value: room, ..step(count) },
+            WordStep { other: 3, value: room, reach, ..WordStep::of(count) },
             4 + room * 8,
         );
         self.packed.copy_to(raster.encoder, 0, input.output, destination, 4 + room * 8);
@@ -155,7 +167,7 @@ impl Probing {
             input.variant.entry("probe"),
             [&self.winner, &self.details],
             &self.first,
-            WordStep { other: 5, ..step(count) },
+            WordStep { other: 5, ..WordStep::of(count) },
             count * 4,
         );
         let variant = Variant::raster(Shader::Boxed, "boxed_row");
@@ -167,7 +179,7 @@ impl Probing {
                 step: WordStep {
                     layer,
                     size: [self.counts.texture().width(), self.counts.texture().height()],
-                    ..step(count)
+                    ..WordStep::of(count)
                 },
                 bindings: &[wgpu::BindGroupEntry { binding: 18, resource: self.first.binding() }],
                 target: &self.counts.attachment(layer),
@@ -178,14 +190,11 @@ impl Probing {
         }
         let words = rows.div_ceil(32).next_multiple_of(4);
         self.packed.ensure(raster.device, u64::from(words.max(4)));
-        pack(raster, "boxed", &self.counts, &self.packed, step(rows), words);
+        pack(raster, "boxed", &self.counts, &self.packed, WordStep::of(rows), words);
         self.packed.copy_to(raster.encoder, 0, input.output, destination, words);
     }
 }
 
-fn step(count: u32) -> WordStep {
-    WordStep { source: 0, other: 0, destination: 0, count, layer: 0, value: 0, size: [0; 2] }
-}
 fn shared<'a>(input: &'a ProbeInputs<'a>) -> Shared<'a> {
     Shared { view: input.geometry.view, mark: input.geometry.mark, offset: input.geometry.offset }
 }

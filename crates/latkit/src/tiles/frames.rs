@@ -3,9 +3,11 @@
 //! coarsest spans, which are drawn as placeholders for any span still loading. A line tracing a
 //! field needs the spans at the level of detail the plot window draws at, middle first. A mark
 //! showing a field at the view's coordinate needs the frames around that coordinate. A drawn span
-//! adds its entries to the set's dataset, and a span no longer drawn removes them. A refresh keeps
-//! the base and every span the earlier frames filled, and fetches the last span of each level
-//! again, which draws what it held until the new one lands.
+//! adds its entries to the set's dataset, and a span no longer drawn removes them. A span the
+//! trace drew stays until the spans that replace it land, so a trace turning coarser draws the
+//! finer spans meanwhile. A refresh keeps the base and every span the earlier frames filled, and
+//! fetches the last span of each level again, which draws what it held until the new one lands.
+//! The view takes the refreshed spans together, once they all landed.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -14,7 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::Span;
 use super::retry::Retry;
-use super::sets::Reading;
+use super::sets::{Reading, Updated};
 use super::tiling::{Decoding, Pieces, Requested, Tiling};
 use crate::data::{
     Field, Listed, MAX_LEVEL, Manifest, Name, Op, Patch, Run, Samples, Snapshot, bucket_frames, detail, sides,
@@ -151,8 +153,7 @@ impl Drawing {
     }
 
     /// Updates `data`, set `set`'s dataset `name`, to what `reading` reads of it, from what
-    /// `fetched` holds. Returns whether it changed, whether any wanted span still shows a
-    /// placeholder, and a failure to report.
+    /// `fetched` holds, and says what it found.
     pub(crate) fn update(
         &mut self,
         set: u64,
@@ -161,25 +162,26 @@ impl Drawing {
         reading: &Reading,
         fetched: &mut Fetched,
         jobs: &Jobs<'_>,
-    ) -> (bool, bool, Option<Error>) {
+    ) -> Updated {
         fetched.settle(jobs);
         // Once a new base arrives, the set draws it from scratch. Until then it keeps drawing what
-        // it drew.
+        // it drew, and the view keeps the version before until each wanted span draws something.
+        let mut updated = Updated::default();
         if self.opened != fetched.opened {
             if matches!(fetched.base, Base::Fetching(..)) {
-                return (false, true, None);
+                return Updated::loading();
             }
             *self = Drawing::new(fetched);
+            updated.rebased = true;
         }
-        let mut changed = false;
         if !self.based {
             match &fetched.base {
-                Base::Fetching(..) => return (false, true, None),
-                Base::Failed(error, _) => return (false, false, Some(error.clone())),
+                Base::Fetching(..) => return Updated::loading(),
+                Base::Failed(error, _) => return Updated { failure: Some(error.clone()), ..updated },
                 Base::Landed(base) => {
                     *data = base.renamed(name.clone());
                     self.based = true;
-                    changed = true;
+                    updated.changed = true;
                 }
             }
         }
@@ -191,19 +193,18 @@ impl Drawing {
             .collect();
         for (table, field) in unlisted {
             let spans = self.fields.remove(&(table.clone(), field.clone())).unwrap_or_default();
-            changed |= data.sampled(&table, &field, |samples| {
+            updated.changed |= data.sampled(&table, &field, |samples| {
                 spans.values().flat_map(|(_, runs)| runs).for_each(|run| samples.remove(run));
                 true
             });
         }
-        let (mut standing_in, mut failure) = (false, None);
         for (k, listed) in manifest.fields.iter().enumerate() {
             let reads = reading.reads(name, &listed.table, &listed.field);
             let tiling = &mut fields[k];
             let drawn_spans = self.fields.entry((listed.table.clone(), listed.field.clone())).or_default();
             // Drawn spans may locate the window more precisely, which may need finer spans. Repeat
             // until the wanted spans stop changing, so a placeholder is never mistaken for data.
-            let (mut asked, mut standing) = (Vec::new(), false);
+            let (mut asked, mut last) = (Vec::new(), None);
             for _ in 0..=MAX_LEVEL {
                 let wanted =
                     wanted(&listed.frames, sampled(data, listed), reads, reading, manifest.chunk, listed.levels);
@@ -211,14 +212,15 @@ impl Drawing {
                     break;
                 }
                 let drawn = tiling.update(set, &wanted, 0, &mut At { url: url.as_str(), field: k }, jobs);
-                standing = drawn.standing_in;
-                failure = failure.or(drawn.failure);
-                changed |= draw(drawn_spans, tiling, &drawn.keys, &listed.table, &listed.field, data);
+                updated.changed |= draw(drawn_spans, tiling, &drawn.keys, &listed.table, &listed.field, data);
+                last = Some(drawn);
                 asked = wanted;
             }
-            standing_in |= standing;
+            if let Some(drawn) = &last {
+                updated.add(drawn);
+            }
         }
-        (changed, standing_in, failure)
+        updated
     }
 }
 

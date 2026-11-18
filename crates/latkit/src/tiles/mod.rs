@@ -1,7 +1,7 @@
 //! Tiles: data fetched in pieces, by key, as views need them. Each key is covered by its parent,
 //! up to a root. An earth tile's parent is the tile one zoom out. A span of a sampled field's
 //! history has the span one level of detail up. Until a piece is fetched, its nearest fetched
-//! ancestor is drawn as a placeholder.
+//! ancestor is drawn as a placeholder, and so are the finer pieces drawn before within it.
 //!
 //! A GPU fetches and decodes each source's pieces once for all the views drawing them (`cache`,
 //! `tiling`). Each view draws the pieces its camera needs as a dataset of its own (`sets`).
@@ -42,8 +42,8 @@ use crate::pending::Watchers;
 /// [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes it. The history of each sampled field
 /// is fetched in spans. A line tracing a field fetches the level of detail the plot window draws
 /// at. A mark showing a field fetches the frames around the view's coordinate. While a span loads,
-/// the coarser span above it is drawn. The base dataset needs at least the axis and the tables'
-/// rows. A span holds every row of its table.
+/// the finer spans drawn before within it are drawn, or else the coarser span above it. The base
+/// dataset needs at least the axis and the tables' rows. A span holds every row of its table.
 ///
 /// **Vector tiles**: a PMTiles archive, a TileJSON document, or a URL template with `{z}`, `{x}`,
 /// and `{y}`. Tiles are fetched as the camera needs them. Each layer becomes a table of the
@@ -105,10 +105,11 @@ impl Tiles {
 
     /// Fetches the index again, as when a running simulation records more frames, and redraws what
     /// changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
-    /// earlier frames filled. They fetch the last span of each level again, which draws what it
-    /// held until the new one lands. Every file that failed is fetched again at once. A manifest
-    /// that names another base, span size, or span template starts over, as vector tiles always
-    /// do.
+    /// earlier frames filled. They fetch the last span of each level again, and each view draws
+    /// what it drew until all the spans it fetched again land, then takes them in one change.
+    /// Every file that failed is fetched again at once. A manifest that names another base, span
+    /// size, or span template starts over, as vector tiles always do. Views draw what they drew
+    /// until what starts over can draw.
     pub fn refresh(&self) {
         self.refreshes.count.fetch_add(1, Ordering::Relaxed);
         self.refreshes.views.wake_all();

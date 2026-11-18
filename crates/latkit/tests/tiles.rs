@@ -352,10 +352,14 @@ fn time_tiles_the_app_fetches_refresh_as_frames_are_recorded() {
     assert_eq!((count("frames.json"), count("base.latk")), (2, 1), "a refresh keeps the base: {asked:?}");
 }
 
+/// Fetches held back until released, each with the file it answers.
+type Held = Arc<Mutex<Vec<(latkit::Resolver<Vec<u8>>, Option<Vec<u8>>)>>>;
+
 #[test]
 fn tiles_at_one_url_fetched_two_ways_draw_their_own_files() {
     let Some(gpu) = gpu() else { return };
-    let written = |frames: u32| {
+    // Tiles of a history of `frames` frames, whose fetches `held` holds back, if given.
+    let written = |frames: u32, held: Option<Held>| {
         let data = Data::new("signals");
         let base = Patch::new().axis("time", "s").set(Table::new("Signal", Ids::count(1)));
         data.apply(base.clone()).expect("valid");
@@ -372,7 +376,12 @@ fn tiles_at_one_url_fetched_two_ways_draw_their_own_files() {
         files.insert("base.latk".to_owned(), base.to_bytes());
         Tiles::new("signals", "frames.json").fetch(move |request: &Request| {
             let file = files.get(&*request.url).cloned();
-            Pending::ready(file.ok_or_else(|| latkit::Error::Io("no such file".into())))
+            let Some(held) = &held else {
+                return Pending::ready(file.ok_or_else(|| latkit::Error::Io("no such file".into())));
+            };
+            let (pending, resolver) = Pending::new();
+            held.lock().expect("unpoisoned").push((resolver, file));
+            pending
         })
     };
     let scene = Scene::new(Plot::default()).theme(plain_theme()).draw(Lines::of("signals", "Signal").trace("v"));
@@ -385,10 +394,37 @@ fn tiles_at_one_url_fetched_two_ways_draw_their_own_files() {
     };
     let last = |view: &View| view.snapshot("signals").and_then(|data| data.describe().span).map_or(0.0, |[_, l]| l);
     // Both views draw at once, so they would share one source if tiles were told apart by URL alone.
-    let long = open(written(200));
-    let short = open(written(40));
+    let mut long = open(written(200, None));
+    let short = open(written(40, None));
     assert!((190.0..200.0).contains(&last(&long)), "the long history, up to {}", last(&long));
     assert!((30.0..40.0).contains(&last(&short)), "the short history, up to {}", last(&short));
+    // Tiles given in place of those drawn load while the view goes on drawing the old ones, and
+    // swap in once they can draw.
+    let drawn = frame(&gpu, &mut long);
+    let held = Held::default();
+    let later = written(100, Some(held.clone()));
+    long.set_sources([later.clone()]).expect("a source");
+    assert!(matches!(long.sources(), [Source::Tiles(tiles)] if *tiles == later), "the sources given");
+    for _ in 0..3 {
+        let release: Vec<_> = held.lock().expect("unpoisoned").drain(..).collect();
+        assert_eq!(frame(&gpu, &mut long), drawn, "the old tiles draw meanwhile");
+        assert!((190.0..200.0).contains(&last(&long)), "the long history, up to {}", last(&long));
+        for (resolver, file) in release {
+            resolver.resolve(file.ok_or_else(|| latkit::Error::Io("no such file".into())));
+        }
+    }
+    for _ in 0..SETTLE {
+        if long.complete() {
+            break;
+        }
+        for (resolver, file) in held.lock().expect("unpoisoned").drain(..) {
+            resolver.resolve(file.ok_or_else(|| latkit::Error::Io("no such file".into())));
+        }
+        frame(&gpu, &mut long);
+    }
+    assert!(long.complete(), "the later tiles land, waiting on {}", long.waiting());
+    assert!((90.0..100.0).contains(&last(&long)), "the later history, up to {}", last(&long));
+    assert_eq!(errors(&mut long), Vec::new());
 }
 
 #[test]

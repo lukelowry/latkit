@@ -122,17 +122,13 @@ fn render(
         ],
         uniform: 19,
         step: WordStep {
-            source: 0,
             other: match entry {
                 "segments" => 4,
                 "pack_segments" | "segments_unmeasured" | "area_segments" => 2,
                 _ => 0,
             },
-            destination: 0,
-            count,
-            layer: 0,
             value: u32::from(input.measured),
-            size: [0; 2],
+            ..WordStep::of(count)
         },
         output,
         words,

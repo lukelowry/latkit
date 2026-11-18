@@ -50,7 +50,7 @@ struct Held {
     name: Option<Name>,
     selects: bool,
     holding: Option<Holding>,
-    traced: Option<(Name, Plan)>,
+    traced: Option<(Name, Arc<Plan>)>,
 }
 
 impl Drew {
@@ -234,6 +234,48 @@ impl View {
             (Some(Probe::Hover(point)), false) => Some(self.hover_area(*point)),
             _ => Some([0.0, 0.0, self.size[0], self.size[1]]),
         }
+    }
+
+    /// The instances of mark `i` that a probe covers: for one `around` a point within a radius,
+    /// those that can reach it (see [`reach`](View::reach)), and otherwise every instance. Returns
+    /// the reach and the number of instances.
+    pub(super) fn reached(&self, i: usize, around: Option<([f32; 2], f32)>) -> ([u32; 2], u32) {
+        let shown = &self.marks[i];
+        let reach = around.map_or([0, 0], |(point, radius)| self.reach(i, point, radius));
+        let count = if reach[1] == 0 { shown.counted_instances(shown.live_instances()) } else { shown.rows * reach[1] };
+        (reach, count)
+    }
+
+    /// The segments of each row of mark `i` that a probe within `radius` CSS pixels of `point`
+    /// reaches, as `[first, count]`, or a count of 0 for every instance. Over a trace, that is the
+    /// segments within the radius and half the line's width of the point along the axis, a few of
+    /// the thousands each row of a monitor draws.
+    pub(super) fn reach(&self, i: usize, point: [f32; 2], radius: f32) -> [u32; 2] {
+        let shown = &self.marks[i];
+        let (crate::Mark::Lines(lines), Some(plan), Some(holding)) = (&shown.mark, shown.tables.plan(), &shown.holding)
+        else {
+            return [0, 0];
+        };
+        let (Camera::Plot { x, .. }, Some(crate::data::Field::Sampled(samples, _))) =
+            (self.drawn_camera(), holding.table.field_named(&lines.traced()))
+        else {
+            return [0, 0];
+        };
+        let segments = shown.segments_per_row();
+        let widest = lines.stroke.widest(self.scene.theme.line.width);
+        if shown.segments.list.is_some() || !widest.is_finite() || segments == 0 {
+            return [0, 0];
+        }
+        // The point's reach along the axis, a CSS pixel more for rounding.
+        let margin = f64::from(radius + widest / 2.0) + 1.0;
+        let [left, _, right, _] = self.edges();
+        let axis = |px: f64| x[0] + (px - left) / (right - left).max(1e-9) * (x[1] - x[0]);
+        let [a, b] = [-margin, margin].map(|offset| axis(f64::from(point[0]) + offset));
+        let reach = plan.reach(|level, entry| samples.drawn_at(level, entry), [a.min(b), a.max(b)]);
+        // Past the last point, the last segment, which lies out of reach.
+        let first = reach.start.min(segments - 1);
+        let count = reach.end.min(segments).saturating_sub(first).max(1);
+        if count >= segments { [0, 0] } else { [first, count] }
     }
 
     /// The probe radius in CSS pixels: the scene's pick radius, plus 8 for touch.

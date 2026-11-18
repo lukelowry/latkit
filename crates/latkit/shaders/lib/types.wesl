@@ -21,6 +21,11 @@ struct WordStep {
     layer: u32,
     value: u32,
     size: vec2u,
+    // The segments of each row a probe of a trace reaches: the first, and how many. Every
+    // instance when the count is 0.
+    reach: vec2u,
+    // Whole 16-byte rows, as a uniform block takes.
+    padding: vec2u,
 }
 
 // The pages one gather pass copies into a layer. Each is a source word, a destination word, and a

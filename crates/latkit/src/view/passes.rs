@@ -633,7 +633,7 @@ impl View {
             pass.set_bind_group(2, group(Shader::Overlay), &[]);
             drawn.draw_range(pass, 4, sprites);
         };
-        if texts && under > 0 {
+        if under > 0 {
             overlay(&mut pass, drawn, inner, 0..under);
         }
 
@@ -666,10 +666,9 @@ impl View {
                 marks.draw(&mut pass, drawn, inner, i, shown, Draw::Lit);
             }
         }
-        if !texts {
-            return;
+        if texts {
+            self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, group(Shader::Glyphs));
         }
-        self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, group(Shader::Glyphs));
         if clip.is_some() {
             pass.set_scissor_rect(0, 0, frame.size[0], frame.size[1]);
         }
@@ -679,7 +678,17 @@ impl View {
     }
 
     /// Reduce candidate priorities on the GPU, then describe the selected row and depth.
-    pub(super) fn probe(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> Readback {
+    pub(super) fn probe(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        probe: &super::probe::Probe,
+    ) -> Readback {
+        let around = match probe {
+            super::probe::Probe::Hover(point) => Some((*point, self.probe_radius())),
+            super::probe::Probe::Step(_) => None,
+        };
+        let reached: Vec<_> = (0..self.marks.len()).map(|i| self.reached(i, around)).collect();
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let resources = self.resources.as_mut().expect("created before probes");
@@ -702,8 +711,9 @@ impl View {
         let mut raster =
             crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines: &mut inner.pipelines, encoder };
         inner.probing.begin(&mut raster, self.marks.len() as u32);
-        for (i, shown) in self.marks.iter().enumerate().filter(|(_, m)| m.probed()) {
-            inner.probing.nearest(&mut raster, &input(i), shown.counted_instances(shown.live_instances()), i as u32);
+        for (i, _) in self.marks.iter().enumerate().filter(|(_, m)| m.probed()) {
+            let (reach, count) = reached[i];
+            inner.probing.nearest(&mut raster, &input(i), count, i as u32, reach);
         }
         if let Some(i) = self.marks.iter().position(super::marks::Shown::drawable) {
             inner.probing.finish(&mut raster, &input(i), self.marks.len() as u32);
@@ -715,13 +725,17 @@ impl View {
         Readback::words(&inner.readbacks, device, encoder, resources.probe(), 0, wgsl::PROBE_WORDS, &self.waker)
     }
 
+    /// Records a query of `kind` over `marks`, each with its room and where its results go. A
+    /// query `around` a point within a radius covers only the instances that can reach it.
     pub(super) fn probe_pass(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         kind: super::query::Kind,
         marks: &[(usize, u32, u32)],
+        around: Option<([f32; 2], f32)>,
     ) {
+        let reached: Vec<_> = marks.iter().map(|&(i, ..)| self.reached(i, around)).collect();
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let resources = self.resources.as_mut().expect("created before queries");
@@ -731,7 +745,7 @@ impl View {
         let groups = resources.groups(&gpu.0, inner);
         let mut raster =
             crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines: &mut inner.pipelines, encoder };
-        for &(i, room, at) in marks {
+        for (&(i, room, at), &(reach, reached)) in marks.iter().zip(&reached) {
             let shown = &self.marks[i];
             let input = crate::gpu::probing::ProbeInputs {
                 geometry: crate::gpu::listing::Inputs {
@@ -750,7 +764,7 @@ impl View {
             };
             let instances = shown.counted_instances(shown.live_instances());
             match kind {
-                super::query::Kind::Hits => inner.probing.hits(&mut raster, &input, instances, room, at),
+                super::query::Kind::Hits => inner.probing.hits(&mut raster, &input, reached, room, at, reach),
                 super::query::Kind::Boxed => {
                     inner.probing.boxed(&mut raster, &input, instances, shown.live(), at);
                 }
