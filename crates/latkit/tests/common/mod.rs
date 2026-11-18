@@ -166,6 +166,12 @@ pub fn at(pixels: &[[u8; 4]], x: u32, y: u32) -> [u8; 4] {
     pixels[(y * SIZE + x) as usize]
 }
 
+/// Renders frames for as long as comets, which rest while the camera moves, take to come back
+/// once it holds still: four tenths of a second. Returns the last frame's pixels.
+pub fn rest(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
+    (0..24).map(|_| step(gpu, view)).last().expect("frames")
+}
+
 /// Where comet heads lie on the screen line from `a` to `b`, in pixels from `a`: the reddest pixel
 /// of each run of red, stepping a pixel at a time.
 pub fn heads_along(pixels: &[[u8; 4]], a: [f32; 2], b: [f32; 2]) -> Vec<u32> {

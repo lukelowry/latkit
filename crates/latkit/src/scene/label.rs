@@ -8,8 +8,10 @@ use crate::expr::form::Written;
 use crate::{Expr, Format};
 
 /// Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
-/// field, a number, or options. A label shows when its row is visible and its text fits, for
-/// example inside a block.
+/// field, a number, or options. A label shows when its row is visible. A block, or a marker with a
+/// width and height, holds its label inside where the text fits, and otherwise the label shows
+/// beside it. Text inside a marker keeps a 4.5:1 contrast with the marker's color, made lighter or
+/// darker as it needs, and its halo is that color.
 ///
 /// Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
 /// its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
@@ -34,7 +36,8 @@ pub struct Label {
     /// Font size in CSS pixels. Defaults to the theme's `text.size`.
     #[serde(default)]
     pub(crate) size: Option<f32>,
-    /// Each row's text color. Defaults to the theme's text color.
+    /// Each row's text color. Defaults to the theme's text color. Inside a marker, it keeps a 4.5:1
+    /// contrast with the marker's color.
     #[serde(default)]
     pub(crate) color: Option<Expr>,
     /// The width at which lines wrap, in CSS pixels.

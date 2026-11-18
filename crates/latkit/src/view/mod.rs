@@ -167,11 +167,18 @@ pub struct View {
     /// when their rows' travel was last written. Comets move on from there at their flow.
     comet_clock: f64,
     travel_written: f64,
-    /// Whether this frame shows nothing new but comets moving, so marks' comets draw apart from
-    /// their rows, over the still, and whether the still holds what frames draw up to the first
-    /// mark's comets now. A frame where more changed draws whole, and leaves the still behind.
+    /// How far comets show, from 0 while the camera moves to 1 once it rests (see
+    /// `View::comets_travel`).
+    comets_shown: f64,
+    /// Whether this frame shows nothing new but comets moving, whether it draws marks' comets apart
+    /// from their rows, over the still, and whether the still holds what frames draw up to the
+    /// first mark's comets now. A frame where more changed draws whole, and leaves the still
+    /// behind. `comet_frames` counts frames where only comets moved, in a row up to this one and
+    /// in the run before (see `View::comets_travel`).
     comets_only: bool,
+    comets_apart: bool,
     still_drawn: bool,
+    comet_frames: [u32; 2],
     events: Events,
     /// The signal that finished work wakes, and a waker for it. Readbacks, jobs, and fetches keep
     /// clones of the waker.
@@ -304,8 +311,11 @@ impl View {
             effect_time: f64::NAN,
             comet_clock: 0.0,
             travel_written: 0.0,
+            comets_shown: 1.0,
             comets_only: false,
+            comets_apart: false,
             still_drawn: false,
+            comet_frames: [0; 2],
             events: Events::default(),
             waker: Waker::from(signal.clone()),
             compile_waker: signal.compilation(),

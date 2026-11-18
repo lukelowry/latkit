@@ -1242,13 +1242,21 @@ fn comets_run_wider_than_their_line() {
     let c = SIZE / 2;
     let red = |pixels: &[[u8; 4]], y: u32| (c - 45..c + 45).filter(|&x| at(pixels, x, y)[0] > 100).count();
     // Comets never settle, so render a few frames instead of waiting.
-    let pixels = (0..3).map(|_| step(&gpu, &mut view)).last().expect("frames");
+    let pixels = (0..4).map(|_| step(&gpu, &mut view)).last().expect("frames");
     assert!(view.needs_render(), "comets travel every frame");
-    // A frame where only comets moved starts from the still, which holds the backdrop and the line.
+    // In a run of frames where only comets moved, a frame starts from the still, which holds the
+    // backdrop and the line.
     assert_eq!(view.stats().draws, 2, "such a frame draws the still and the comets");
     let beside = red(&pixels, c + 2);
     assert!(beside > 0 && beside < 60, "comets reach past the line, spaced apart: {beside} of 90 pixels");
     assert_eq!(red(&pixels, c + 6), 0, "and no further than their width");
+    // While the camera pans, comets fade out and rest, and once it holds still they come back.
+    let panned = (1..=10).map(|i| {
+        view.set_camera(Camera::Map { center: [0.5 * f64::from(i), 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+        step(&gpu, &mut view)
+    });
+    assert_eq!(red(&panned.last().expect("frames"), c + 2), 0, "comets rest while the camera moves");
+    assert!(red(&common::rest(&gpu, &mut view), c + 2) > 0, "and come back once it holds still");
     view.set_scene(comets_scene(false, None));
     assert_eq!(red(&frame(&gpu, &mut view), c + 2), 0, "a line without flow has no comets");
 }
@@ -1312,8 +1320,7 @@ fn comets_in_units_stay_on_their_lines_as_the_view_zooms() {
         let mut view = comets(&gpu, units, Some(1e-4));
         [0.0, 1.0].map(|zoom: f64| {
             view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
-            step(&gpu, &mut view);
-            let heads = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
+            let heads = heads(&common::rest(&gpu, &mut view), SIZE / 2 + 2);
             heads.into_iter().map(|x| (f64::from(x) - c) / 2f64.powf(zoom)).collect::<Vec<_>>()
         })
     };

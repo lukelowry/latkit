@@ -194,6 +194,24 @@ impl Marks<'_> {
         }
     }
 
+    /// Draws what a frame where only comets moved draws over the still: the comets of mark `first`,
+    /// then the marks after it, each with its comets. While comets rest from a camera that just
+    /// moved (`comets` false, see `View::comets_travel`), they draw none.
+    fn over_still(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        marks: &[super::marks::Shown],
+        first: usize,
+        comets: bool,
+    ) {
+        if comets {
+            self.draw(pass, drawn, inner, first, &marks[first], Draw::Comets);
+        }
+        self.rows(pass, drawn, inner, marks, first + 1..marks.len(), comets);
+    }
+
     /// Draws depth again at one sample a pixel into `targets`, over the scissor rectangle `read` a
     /// probe reads, where a frame multisamples: the backdrop's, and where depth varies, that of the
     /// opaque pixels of `marks` within `clip`.
@@ -676,9 +694,10 @@ impl View {
     /// `[under, sprites]` sprites, the first `under` before the marks. `depth` is the area where
     /// a probe or query of this frame reads depth, if any does: depth is then stored, and where the
     /// frame multisamples, drawn again over that area at one sample a pixel, which WebGL2 can
-    /// read. In a frame where only comets moved, what comes before the first mark's comets is the
+    /// read. In a frame that draws comets apart, what comes before the first mark's comets is the
     /// still: the first such frame draws it in a pass of its own, and the frames after start from
-    /// it (see `still_until`). While the camera is unplaced, it only clears.
+    /// it (see `still_until` and `View::comets_travel`). While the camera is unplaced, it only
+    /// clears.
     pub(super) fn draw(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -700,10 +719,10 @@ impl View {
         let clip = self.drawn_area().map(|area| scissor(area, frame)).filter(|s| s[2] > 0 && s[3] > 0);
         let samples = self.samples(frame.pixel_ratio);
         let (unplaced, layered) = (self.unplaced(), self.layered());
-        // While comets alone move, the view keeps a still. A frame where only they moved draws them
-        // apart, from the first mark with comets.
+        // While comets alone move, the view keeps a still. A frame where only they moved, in a run
+        // of such frames, draws them apart, from the first mark with comets.
         let kept = self.still_until().filter(|_| !unplaced);
-        let first = kept.filter(|_| self.comets_only);
+        let first = kept.filter(|_| self.comets_apart);
         let resources = self.resources.as_mut().expect("created before passes");
         let read = depth.map(|area| scissor(area, frame));
         let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
@@ -761,11 +780,11 @@ impl View {
             }
             marks.rows(pass, drawn, inner, &self.marks, 0..rows_of, false);
         };
-        // A frame where only comets moved draws marks' comets apart, each over its rows, on its own
-        // lines and in front of what is drawn. What it draws up to the first mark's comets is the
-        // still, depth included: the first such frame after a change draws it in a pass of its
-        // own, and the frames after start from it. Until a fit places the camera, frames show only
-        // the background.
+        // A frame that draws comets apart draws each mark's comets over its rows, on its own lines
+        // and in front of what is drawn. What it draws up to the first mark's comets is the still,
+        // depth included: the first such frame after a change draws it in a pass of its own, and
+        // the frames after start from it. Until a fit places the camera, frames show only the
+        // background.
         let from = first.zip(still.as_ref());
         if let Some((first, (still, fresh))) = from
             && (*fresh || !self.still_drawn)
@@ -787,8 +806,7 @@ impl View {
             if let Some([x, y, w, h]) = clip {
                 pass.set_scissor_rect(x, y, w, h);
             }
-            marks.draw(&mut pass, drawn, inner, first, &self.marks[first], Draw::Comets);
-            marks.rows(&mut pass, drawn, inner, &self.marks, first + 1..self.marks.len(), true);
+            marks.over_still(&mut pass, drawn, inner, &self.marks, first, self.comets_shown > 0.0);
         } else {
             start(&mut pass, drawn, inner, self.marks.len());
         }

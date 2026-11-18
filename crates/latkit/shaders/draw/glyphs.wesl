@@ -1,23 +1,29 @@
-// Glyphs: every labeled row's text, placed from its prepared screen position. A label shows when its text
-// is set, its row shows, and it fits its anchor's `room`. It fades with its row's tile. A label
-// beside its row also shows only if it kept its claim on every cell it covers this frame
-// (`raster/claims.wesl`), so labels never overlap. Nothing depends on an earlier frame. A halo of
-// the background color keeps text readable over anything below it. Text is a distance field, so
+// Glyphs: every labeled row's text, placed from its prepared screen position. A label shows when its
+// text is set and its row shows. It fades with its row's tile. A label beside its row also shows
+// only if it kept its claim on every cell it covers this frame (`raster/claims.wesl`), so labels
+// never overlap. Nothing depends on an earlier frame. A halo of the background color keeps text
+// readable over anything below it. Text inside its row's marker reads on the marker's fill instead:
+// it keeps `TEXT_CONTRAST` with the fill, and its halo is the fill. Text is a distance field, so
 // edges stay crisp at any size, and the halo is a wider threshold of the same field.
 
-import package::lib::types::{NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS, POINTS, SIZED, MARKER_BLOCK};
+import package::lib::types::{
+    NONE, LABEL_CODE, LABEL_COLOR, TEXT_SPREAD, NUMBER_CHARS, POINTS, SIZED, MARKER_BLOCK, VERTEX_COLOR,
+};
 import package::lib::bind::{frame, eye, mark, word, ramp};
-import package::lib::state::extra_at;
+import package::lib::state::{extra_at, row_at};
 import package::lib::read::missing_bits;
 import package::lib::label::{
     text_at, Text, label_chars, char_at, run_size,
     Cells, grid_size,
 };
 import package::lib::project::{culled, to_clip};
-import package::lib::color::output;
+import package::lib::color::{output, legible};
 import package::lib::drawn::drawn_row;
 import package::lib::labels::{labels, cells, run, keeps, claim_key};
 import package::lib::words::word_quad;
+
+// The least contrast ratio text inside a marker keeps with its fill: WCAG's minimum for text.
+const TEXT_CONTRAST: f32 = 4.5;
 
 @group(2) @binding(8) var atlas: texture_2d<f32>;
 struct Varyings {
@@ -26,11 +32,13 @@ struct Varyings {
     @location(1) @interpolate(flat) color: vec4f,
     // CSS pixels per atlas texel.
     @location(2) @interpolate(flat) scale: f32,
+    // The halo's color: the background, or the fill of the marker the text lies inside.
+    @location(3) @interpolate(flat) halo: vec4f,
 }
 
-// Corner `corner` of text `t`, drawn in `color`. Text has a fixed size, so snapping to whole target
-// pixels keeps it crisp.
-fn quad(t: Text, corner: u32, color: vec4f) -> Varyings {
+// Corner `corner` of text `t`, drawn in `color` with a halo of `halo`. Text has a fixed size, so
+// snapping to whole target pixels keeps it crisp.
+fn quad(t: Text, corner: u32, color: vec4f, halo: vec4f) -> Varyings {
     var out: Varyings;
     let q = vec2f(f32(corner & 1u), f32(corner >> 1u));
     let p = round(mix(t.quad_lo, t.quad_hi, q) * eye.pixel_ratio) / eye.pixel_ratio;
@@ -38,6 +46,7 @@ fn quad(t: Text, corner: u32, color: vec4f) -> Varyings {
     out.uv = mix(t.uv_lo, t.uv_hi, q);
     out.color = color;
     out.scale = t.scale;
+    out.halo = halo;
     return out;
 }
 
@@ -105,8 +114,16 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
         return unshown();
     }
     let color = unpack4x8unorm(word(extra_at(row, mark.label + LABEL_COLOR)));
+    // Text inside its row's marker reads on the marker's fill, and its halo is the fill.
+    var rgb = color.rgb;
+    var halo = frame.background;
+    if (prepared.w & 32u) != 0u {
+        let fill = unpack4x8unorm(word(row_at(row) + VERTEX_COLOR)).rgb;
+        rgb = legible(rgb, fill, TEXT_CONTRAST);
+        halo = vec4f(fill, 1.0);
+    }
     let t = text_at(own.x, own.y, size, lo + vec2f(before, 0.0), vec2f(0.0));
-    return quad(t, corner, vec4f(color.rgb, color.a * alpha));
+    return quad(t, corner, vec4f(rgb, color.a * alpha), halo);
 }
 
 // The distance field at `uv`, in texels from the text's edge, positive inside.
@@ -120,7 +137,7 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     // Distance from the edge in target pixels.
     let d = inside(v.uv) * v.scale * eye.pixel_ratio;
     let a_text = clamp(0.5 + d, 0.0, 1.0) * v.color.a;
-    let back = frame.background;
+    let back = v.halo;
     let a_halo = clamp(0.5 + d + frame.halo * eye.pixel_ratio, 0.0, 1.0) * v.color.a * back.a * 0.85;
     let a = a_text + a_halo * (1.0 - a_text);
     let rgb = v.color.rgb * a_text + back.rgb * a_halo * (1.0 - a_text);

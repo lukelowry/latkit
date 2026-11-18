@@ -467,14 +467,20 @@ impl Mark {
         stroke.flow != Stroke::default().flow
     }
 
-    /// Whether strokes need cumulative path lengths for dashes or moving comets.
-    pub(crate) fn measures_paths(&self) -> bool {
+    /// Whether the mark's rows can dash: a stroke mark whose `dash` is anything but the constant
+    /// false.
+    pub(crate) fn dashes(&self) -> bool {
         let stroke = match self {
             Mark::Edges(m) => &m.stroke,
             Mark::Lines(m) => &m.stroke,
             Mark::Vertices(_) | Mark::Areas(_) => return false,
         };
-        stroke.dash != Stroke::default().dash || stroke.flow != Stroke::default().flow
+        stroke.dash != Stroke::default().dash
+    }
+
+    /// Whether strokes need cumulative path lengths for dashes or moving comets.
+    pub(crate) fn measures_paths(&self) -> bool {
+        self.dashes() || self.flows()
     }
 
     /// The path a stroke mark's rows follow, or where a triangle's corners come from: one of the

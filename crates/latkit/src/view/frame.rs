@@ -44,6 +44,11 @@ pub(super) const TRAVEL: f64 = 0.1;
 /// each row's flow by the time since, which stays short enough to keep comets precise.
 const REWRITE: f64 = 60.0;
 
+/// Seconds the camera holds still before comets come back, and seconds comets take to fade out or
+/// in (see `View::comets_travel`).
+const REST: f64 = 0.15;
+const FADE: f64 = 0.12;
+
 impl View {
     /// Records `frame` of the scene into `encoder`. The caller submits it. Until the view is
     /// [ready](View::ready) for the frame's target, it records nothing and the target keeps its
@@ -146,7 +151,7 @@ impl View {
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
         let mut uniform = uniforms::frame(&self.scene, &projected, srgb, elapsed, self.at);
-        let catch_up = self.comets_travel(&mut uniform, step);
+        let catch_up = self.comets_travel(&mut uniform, step, input);
         if self.signal.transparent() {
             uniform.background[3] = 0.0;
         }
@@ -226,15 +231,38 @@ impl View {
     /// them apart from their rows (see `View::draw`). Returns whether this frame writes the travel
     /// first, which the travel pass does at the flows the rows still hold: before anything rewrites
     /// the rows comets ride, and every [`REWRITE`] seconds.
-    fn comets_travel(&mut self, uniform: &mut wgsl::Frame, step: f64) -> bool {
-        self.comet_clock += step;
+    ///
+    /// In a frame the user steers (`input`), comets rest while the camera moves by anything but an
+    /// orbit: they fade out over [`FADE`] seconds as they slow to a stop, and once the camera has
+    /// held still for [`REST`] seconds, they fade back in and travel on. Hidden, they cost a frame
+    /// nothing. Pictures and videos, and reduced motion, keep them.
+    fn comets_travel(&mut self, uniform: &mut wgsl::Frame, step: f64, input: bool) -> bool {
+        let fades = input && self.moves();
+        let resting = fades && self.rig.moved_at.is_some_and(|at| self.clock.now() - at < REST);
+        let most = if fades { step / FADE } else { 1.0 };
+        let toward = if resting { 0.0 } else { 1.0 };
+        self.comets_shown += (toward - self.comets_shown).clamp(-most, most);
+        uniform.flow[3] *= self.comets_shown as f32;
+        self.comet_clock += step * self.comets_shown;
         let since = self.comet_clock - self.travel_written;
         let catch_up = since > 0.0 && (since >= REWRITE || self.marks.iter().any(Shown::rewrites_comets));
         if catch_up {
             self.travel_written = self.comet_clock;
         }
         (uniform.flow_step, uniform.flow_time) = if catch_up { (since as f32, 0.0) } else { (0.0, since as f32) };
-        uniform.comets_apart = u32::from(self.comets_only && !self.unplaced() && self.still_until().is_some());
+        // Drawing comets apart costs a frame that draws the still first, which only frames where
+        // only comets moved repay, one after another. So a lone such frame between changes, as
+        // a feed at half the display's rate makes, draws whole. A run of them draws apart from its
+        // second frame, or from its first when the run before had more than one.
+        let alone = self.comets_only && !self.unplaced() && self.still_until().is_some();
+        let [run, before] = &mut self.comet_frames;
+        if alone {
+            *run += 1;
+        } else if *run > 0 {
+            (*before, *run) = (*run, 0);
+        }
+        self.comets_apart = alone && (*run > 1 || *before > 1);
+        uniform.comets_apart = u32::from(self.comets_apart);
         catch_up
     }
 
@@ -564,11 +592,12 @@ impl View {
         }
     }
 
-    /// Every mark's uniform at its dynamic offset, then each one's copy for its opaque draw, then
-    /// for its comets' draw (see [`passes::offset`](super::passes::offset)).
+    /// Every mark's uniform at its dynamic offset, then each one's copy for its opaque draw, then,
+    /// where any mark has comets, for its comets' draw (see [`passes::offset`](super::passes::offset)).
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
         let count = self.marks.len();
-        let mut marks = vec![0_u8; 3 * count * MARK_STRIDE as usize];
+        let blocks = if self.marks.iter().any(|shown| shown.mark.flows()) { 3 } else { 2 };
+        let mut marks = vec![0_u8; blocks * count * MARK_STRIDE as usize];
         let mut write = |at: usize, uniform: &wgsl::Mark| {
             let at = at * MARK_STRIDE as usize;
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(uniform));
@@ -581,8 +610,10 @@ impl View {
             write(i, &uniform);
             uniform.draw = wgsl::DRAW_OPAQUE;
             write(count + i, &uniform);
-            uniform.draw = wgsl::DRAW_COMETS;
-            write(2 * count + i, &uniform);
+            if blocks == 3 {
+                uniform.draw = wgsl::DRAW_COMETS;
+                write(2 * count + i, &uniform);
+            }
         }
         marks
     }

@@ -1,10 +1,10 @@
 // Label geometry is evaluated once per row, before scattering simple quads or text codes.
-import package::lib::types::{WordStep, NONE, VISIBLE, LABEL_CODE};
+import package::lib::types::{WordStep, NONE, VISIBLE, LABEL_CODE, LABEL_GUESS};
 import package::lib::bind::{eye, mark, word};
 import package::lib::state::{row_at, extra_at};
 import package::lib::read::missing_bits;
 import package::lib::drawn::drawn_row;
-import package::lib::label::{Anchor, Chars, anchor, label_chars, char_at, run_size, in_view, claims_room, claimed, cells_of, label_box, fits};
+import package::lib::label::{Anchor, Chars, anchor, fit, label_chars, char_at, run_size, in_view, claims_room, claimed, cells_of, label_box};
 import package::lib::labels::run;
 import package::lib::words::{word_index, fullscreen};
 @group(2) @binding(19) var<uniform> params: WordStep;
@@ -38,6 +38,9 @@ fn labeled(i: u32) -> Labeled {
         let s = run_size(corners, size);
         l.extent = vec2f(l.extent.x + s.x, max(l.extent.y, s.y));
     }
+    // Where the label goes depends on whether its text fits inside its marker. Until the text is
+    // set, a short text's size stands in, as it does for the room the label claims.
+    l.a = fit(l.a, select(vec2f(LABEL_GUESS * size, size), l.extent, l.ready));
     return l;
 }
 
@@ -62,9 +65,11 @@ fn metadata(@builtin(position) p: vec4f) -> @location(0) vec4u {
     let claim = claims_room(l.a) && valid && eligible;
     let ask = !l.ready && in_view(l.a.at - near, l.a.at + near) && eligible;
     let seen = l.ready && in_view(t.lo, t.hi) && eligible;
-    let drawable = l.ready && fits(l.extent, l.a.room);
     let first = vec2u(max(c.first, vec2i(0)));
     let last = vec2u(max(c.last, vec2i(0)));
+    // Bits: 0 claims cells, 1 asks for its texts, 2 is in view, 3 draws, 4 competes for room, 5 lies
+    // inside its row's marker.
     return vec4u(first.x | (first.y << 16u), last.x | (last.y << 16u), char_at(l.chars, 0u),
-        u32(claim) | (u32(ask) << 1u) | (u32(seen) << 2u) | (u32(drawable) << 3u) | (u32(claims_room(l.a)) << 4u));
+        u32(claim) | (u32(ask) << 1u) | (u32(seen) << 2u) | (u32(l.ready) << 3u) | (u32(claims_room(l.a)) << 4u)
+        | (u32(l.a.inside) << 5u));
 }

@@ -106,11 +106,14 @@ fn comets_keep_their_spacing_on_screen_along_every_path() {
             .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(1.0).color(green));
         let mut view = View::new(&gpu, scene);
         view.set_sources([&data]).expect("a source");
-        // Two zooms looking straight down, and tilted. The frame after the camera moves paints comets
-        // with their rows, and the frames after it, where only comets move, draw them apart.
+        // Two zooms looking straight down, and tilted. Once comets are back after the camera moves,
+        // frames where only comets move draw them apart, and a frame where more changed paints them
+        // with their rows.
         for (zoom, pitch) in [(8.0, 0.0), (7.5, 0.0), (8.0, 40.0)] {
             view.set_camera(latkit::Camera::Map { center: [0.3, 60.04, 0.0], zoom, pitch, bearing: 0.0 });
-            let frames: Vec<_> = (0..4).map(|_| step(&gpu, &mut view)).collect();
+            let apart = common::rest(&gpu, &mut view);
+            view.set_at(zoom + pitch);
+            let frames = [apart, step(&gpu, &mut view)];
             let on = |i: usize| view.screen([x[i], y[i], 0.0]).expect("on screen");
             // The middle of each path, and of each lane beside the family's middle: a step apart,
             // its width plus the gap.
@@ -125,7 +128,7 @@ fn comets_keep_their_spacing_on_screen_along_every_path() {
                 ("fan", middle(on(4), on(5), 4.0)),
                 ("other fan", middle(on(4), on(5), -4.0)),
             ];
-            for ((path, (a, b)), pixels) in paths.into_iter().flat_map(|p| [(p, &frames[0]), (p, &frames[3])]) {
+            for ((path, (a, b)), pixels) in paths.into_iter().flat_map(|p| [(p, &frames[0]), (p, &frames[1])]) {
                 let heads = common::heads_along(pixels, a, b);
                 let gaps: Vec<u32> = heads.windows(2).map(|w| w[1] - w[0]).collect();
                 assert!(
@@ -233,28 +236,47 @@ fn edges_along_great_circles_settle_while_their_vertices_pulse() {
 }
 
 #[test]
-fn arrows_draw_heads_at_second_ends() {
+fn arrows_draw_heads_at_second_ends_clear_of_comets() {
     let Some(gpu) = gpu() else { return };
-    let count = |arrows: bool| {
+    // An edge 80 pixels long, and a stub 12 long, too short for a comet beside its arrowhead. Red
+    // comets 12 pixels apart move so slowly they stand still.
+    let (x, y) = (vec![-40.0, 40.0, -6.0, 6.0], vec![0.0, 0.0, 30.0, 30.0]);
+    let draw = |arrows: bool| {
         let data = Data::new("graph");
-        data.apply(Patch::new().set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0])).set(
-            Table::new("Link", Ids::count(1)).reference("from", "Node", vec![1_u64]).reference(
-                "to",
-                "Node",
-                vec![2_u64],
-            ),
-        ))
-        .expect("valid");
+        let links = Table::new("Link", Ids::count(2)).reference("from", "Node", vec![1_u64, 3]).reference(
+            "to",
+            "Node",
+            vec![2_u64, 4],
+        );
+        data.apply(Patch::new().set(nodes(x.clone(), y.clone())).set(links)).expect("valid");
+        let red = latkit::Color::rgb(1.0, 0.0, 0.0);
+        let flow = latkit::FlowTheme { color: red, spacing: Length::Px(12.0), length: Length::Px(4.0), width: 4.0 };
+        let edges = Edges::of("graph", "Link").ends("from", "to").width(2.0).arrows(arrows).flow(1e-4);
         let scene = Scene::new(plane())
-            .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).arrows(arrows).color(latkit::Color::WHITE))
+            .theme(latkit::Theme { flow, ..plain_theme() })
+            .draw(edges.color(latkit::Color::WHITE))
             .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(1.0));
-        let mut view = view(&gpu, scene, &data);
-        let pixels = frame(&gpu, &mut view);
+        let mut view = View::new(&gpu, scene);
+        view.set_camera(camera());
+        view.set_sources([&data]).expect("a source");
+        let pixels = common::rest(&gpu, &mut view);
         assert_eq!(errors(&mut view), Vec::new());
-        pixels.iter().filter(|&&p| lit(p)).count()
+        let on = |i: usize| view.screen([x[i], y[i], 0.0]).expect("on screen").map(|v| v.round() as i32);
+        (pixels, [on(1), on(3)])
     };
-    let (plain, headed) = (count(false), count(true));
-    assert!(headed > plain + 20, "{plain} → {headed}");
+    let lit_count = |pixels: &[[u8; 4]]| pixels.iter().filter(|&&p| lit(p)).count();
+    let (plain, (headed, [tip, stub])) = (lit_count(&draw(false).0), draw(true));
+    assert!(lit_count(&headed) > plain + 20, "{plain} → {}", lit_count(&headed));
+    // Red pixels in the box `dx` pixels before a tip, and 6 either side of its edge.
+    let red = |tip: [i32; 2], dx: std::ops::RangeInclusive<i32>| {
+        let red = |p: [u8; 4]| p[0] > 100 && p[1] < p[0] / 2;
+        dx.flat_map(|dx| (-6..=6).map(move |dy| [tip[0] - dx, tip[1] + dy]))
+            .filter(|&[x, y]| red(at(&headed, x as u32, y as u32)))
+            .count()
+    };
+    assert!(red(tip, 12..=70) > 0, "comets along the edge");
+    assert_eq!(red(tip, 0..=9), 0, "none over its arrowhead");
+    assert_eq!(red(stub, 0..=12), 0, "none on the stub");
 }
 
 #[test]

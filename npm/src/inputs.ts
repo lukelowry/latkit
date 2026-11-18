@@ -627,7 +627,9 @@ export type Fit =
 /**
  * How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
  * tail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a
- * thin rim of the background color ahead of its head, which parts it from the line.
+ * thin rim of the background color ahead of its head, which parts it from the line. Comets end
+ * before an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,
+ * and they come back once it rests.
  *
  * `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
  * In position units (degrees on the earth), comets scale with the zoom and stay in place along
@@ -747,8 +749,10 @@ export type Interpolation =
 
 /**
  * Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
- * field, a number, or options. A label shows when its row is visible and its text fits, for
- * example inside a block.
+ * field, a number, or options. A label shows when its row is visible. A block, or a marker with a
+ * width and height, holds its label inside where the text fits, and otherwise the label shows
+ * beside it. Text inside a marker keeps a 4.5:1 contrast with the marker's color, made lighter or
+ * darker as it needs, and its halo is that color.
  *
  * Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
  * its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
@@ -766,7 +770,10 @@ export type Label =
       text: ExprInput;
       /** Font size in CSS pixels. Defaults to the theme's `text.size`. */
       size?: number | null;
-      /** Each row's text color. Defaults to the theme's text color. */
+      /**
+       * Each row's text color. Defaults to the theme's text color. Inside a marker, it keeps a 4.5:1
+       * contrast with the marker's color.
+       */
       color?: ExprInput | null;
       /** The width at which lines wrap, in CSS pixels. */
       maxWidth?: number | null;
@@ -932,7 +939,7 @@ export type Marker =
       shape: Shape;
     }
   | {
-      /** A rectangle with rounded corners that holds its label inside. */
+      /** A rectangle with rounded corners that holds its label inside where the text fits. */
       block: {
         /** Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`. */
         corner?: number | null;

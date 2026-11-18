@@ -1,5 +1,5 @@
-//! Labels show beside their rows once the host rasterizes their text, or inside a block while they
-//! fit. Where labels would overlap, the label of the row drawn on top shows. An empty text gives no
+//! Labels show beside their rows once the host rasterizes their text, or inside a block where they
+//! fit, in a color that reads on it. Where labels would overlap, the label of the row drawn on top shows. An empty text gives no
 //! label. Only labels that show near the view have their text rasterized, so a dense view settles.
 //! A conditional text labels only the rows it names, a number label writes its value, and a label
 //! keeps showing while its mark gains texts.
@@ -270,17 +270,21 @@ fn a_color_changing_every_frame_leaves_labels_placed() {
 }
 
 #[test]
-fn a_block_shows_its_label_inside_while_it_fits() {
+fn a_block_holds_its_label_where_it_fits_in_a_color_that_reads_on_it() {
     let Some(gpu) = gpu() else { return };
     let c = SIZE / 2;
-    let green = Color::rgb(0.0, 1.0, 0.0);
-    // The label is 36 by 10 pixels. A 60 by 20 block fits it, and a 20 by 20 block does not.
-    let mut wide = shown(&gpu, vec![0.0], |v| v.size(60.0, 20.0).color(green));
+    let black = Color::rgb(0.0, 0.0, 0.0);
+    // The second row's label is blue, 36 by 10 pixels. A black block 60 by 20 holds it, lightened
+    // to read on black.
+    let mut wide = shown(&gpu, vec![-1000.0, 0.0], |v| v.size(60.0, 20.0).color(black));
     let middle = at(&frame(&gpu, &mut wide), c, c);
-    assert!(middle[0] > 200 && middle[1] < 60, "the label inside: {middle:?}");
-    let mut narrow = shown(&gpu, vec![0.0], |v| v.size(20.0, 20.0).color(green));
-    let middle = at(&frame(&gpu, &mut narrow), c, c);
-    assert!(middle[1] > 200 && middle[0] < 60, "only the block: {middle:?}");
+    assert!(middle[2] > 200 && (60..140).contains(&middle[0]), "the label inside, lighter: {middle:?}");
+    // A 20 by 20 block does not hold it, so it shows beside the block in its own color.
+    let mut narrow = shown(&gpu, vec![-1000.0, 0.0], |v| v.size(20.0, 20.0).color(black));
+    let pixels = frame(&gpu, &mut narrow);
+    let (middle, beside) = (at(&pixels, c, c), at(&pixels, c + 24, c));
+    assert!(middle[2] < 60, "only the block: {middle:?}");
+    assert!(beside[2] > 200 && beside[0] < 60, "the label beside it: {beside:?}");
 }
 
 #[test]

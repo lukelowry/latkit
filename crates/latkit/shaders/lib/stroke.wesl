@@ -108,7 +108,9 @@ fn covered(d: vec3f, s: Stroke) -> f32 {
 // Coverage of the pixel at `d` by comets (x), and by their rims (y). Comets are
 // `frame.flow_spacing` apart, offset by stroke `s`'s travel. Each has a round head
 // `frame.flow_width` wide (at least the stroke's width), brightest at its middle, and a tail
-// `frame.flow_length` long that thins and fades. A rim rings the front of the head.
+// `frame.flow_length` long that thins and fades. A rim rings the front of the head. A comet never
+// covers an arrowhead: on the segment ending in one, a comet fades out as its head comes within its
+// own reach of where the stroke stops for the arrowhead, so a stub shorter than that carries none.
 fn comet(d: vec3f, s: Stroke) -> vec2f {
     if s.flow == 0.0 || frame.flow.a <= 0.0 {
         return vec2f(0.0);
@@ -133,7 +135,17 @@ fn comet(d: vec3f, s: Stroke) -> vec2f {
     let distance = select(across, length(vec2f(lead * px, across)), cap);
     let head = 1.0 - smoothstep(0.35 * reach, reach, distance);
     let rim = saturate(1.0 - smoothstep(reach, reach + COMET_RIM, distance) - head);
-    return fade * fade * vec2f(head, select(0.0, rim, s.rim & cap));
+    var clear = 1.0;
+    if s.arrow {
+        // Where this pixel's comet has its head, in CSS pixels from `a`: behind the pixel by `lead`
+        // in the direction comets run, or ahead of it by `trail`.
+        let len = length(s.b - s.a);
+        let head_at = d.z * len - select(-trail, lead, cap) * px * sign(s.flow);
+        let radius = 0.5 * max(frame.flow_width, s.width) + COMET_RIM;
+        let stop = (frame.arrow + s.width) * 0.8 + radius;
+        clear = saturate((len - head_at - stop) / radius);
+    }
+    return fade * fade * clear * vec2f(head, select(0.0, rim, s.rim & cap));
 }
 
 // Premultiplied color of stroke `s` at the pixel at `d`: its line, where `line` says, then any rim

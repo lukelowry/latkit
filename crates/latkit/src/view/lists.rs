@@ -444,12 +444,20 @@ impl View {
 
     /// The marks whose segment lists measure their distances along again, as the projection
     /// changed: those that dash, or carry comets spaced in CSS pixels, which measure on screen.
-    /// A list `built` this frame measures as it builds.
+    /// A list only comets read waits while comets rest (see `View::comets_travel`). A list `built`
+    /// this frame measures as it builds.
     pub(super) fn lengths_due(&mut self, built: &[usize]) -> Vec<usize> {
         let screen = self.screen_stamp();
+        let resting = self.comets_shown == 0.0;
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
-            if shown.segments.list.is_none() || !shown.drawable() || !shown.measures_paths() || shown.along_units {
+            let read = shown.mark.dashes() || !resting;
+            if shown.segments.list.is_none()
+                || !shown.drawable()
+                || !shown.measures_paths()
+                || shown.along_units
+                || !read
+            {
                 continue;
             }
             let stamp = stamp_of((shown.segments.built, screen));

@@ -15,19 +15,23 @@ import package::lib::path::PATH;
 import package::lib::center::{row_center, point_center};
 import package::lib::drawn::held_row;
 
-// A label's anchor point in CSS pixels, its alignment there (0 left or top, 0.5 centered), the room
-// it must fit in (no limit when zero), and whether its row shows.
+// A label's anchor point in CSS pixels, its alignment there (0 left or top, 0.5 centered), whether
+// it lies inside its row's marker, and whether its row shows. Before `fit` places a point's label,
+// `at` is the marker's center, `beside` the point beside the marker, and `room` the space inside
+// it, negative where the marker holds no label.
 struct Anchor {
     at: vec2f,
     align: vec2f,
+    beside: vec2f,
     room: vec2f,
+    inside: bool,
     shown: bool,
 }
 
-// The label anchor of drawn row `item`: centered on the row's center, except beside a point's
-// marker, inside a block or a sized marker, and beside a trace's last sample.
+// The label anchor of drawn row `item`: centered on the row's center, and beside a trace's last
+// sample. A point's label goes inside or beside its marker once `fit` knows the text's size.
 fn anchor(item: u32) -> Anchor {
-    var a = Anchor(vec2f(0.0), vec2f(0.5), vec2f(0.0), false);
+    var a = Anchor(vec2f(0.0), vec2f(0.5), vec2f(0.0), vec2f(-1.0), false, false);
     if PRIMITIVE != POINTS {
         let c = row_center(item);
         a.at = c.at;
@@ -40,17 +44,27 @@ fn anchor(item: u32) -> Anchor {
     }
     let p = point(held_row(item));
     let c = point_center(p);
-    a.shown = c.shown;
     let text = mark.label_size;
-    if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
-        // A block, or a marker with a width and height, shows its label inside if it fits.
-        a.at = c.at;
-        a.room = vec2f(2.0 * p.half.x - text, 2.0 * p.half.y);
-    } else {
-        a.at = c.at + vec2f(p.half.x + 0.4 * text, 0.0);
-        a.align = vec2f(0.0, 0.5);
-    }
+    let holds = (mark.marker == MARKER_BLOCK) | ((mark.flags & SIZED) != 0u);
+    a.at = c.at;
+    a.shown = c.shown;
+    a.beside = c.at + vec2f(p.half.x + 0.4 * text, 0.0);
+    a.room = select(vec2f(-1.0), vec2f(2.0 * p.half.x - text, 2.0 * p.half.y), holds);
     return a;
+}
+
+// Anchor `a` placed for text of size `extent`. A block, or a marker with a width and height, holds
+// the text inside where it fits with half its size to spare across. Other text shows beside a
+// point's marker.
+fn fit(a: Anchor, extent: vec2f) -> Anchor {
+    if PRIMITIVE != POINTS {
+        return a;
+    }
+    var f = a;
+    f.inside = all(extent <= a.room);
+    f.at = select(a.beside, a.at, f.inside);
+    f.align = select(vec2f(0.0, 0.5), vec2f(0.5), f.inside);
+    return f;
 }
 
 // A run of text placed on screen: the text's box and its quad, which extends over the distance
@@ -250,11 +264,6 @@ fn label_box(a: Anchor, extent: vec2f) -> Text {
     return t;
 }
 
-// Whether text of extent `extent` fits `room`. A room of zero width fits any text.
-fn fits(extent: vec2f, room: vec2f) -> bool {
-    return room.x <= 0.0 || all(extent <= room);
-}
-
 // Whether a box overlaps the view.
 fn in_view(lo: vec2f, hi: vec2f) -> bool {
     return all(hi > vec2f(0.0)) && all(lo < eye.size);
@@ -263,11 +272,11 @@ fn in_view(lo: vec2f, hi: vec2f) -> bool {
 // Labels beside their rows compete for space. Each label writes its claim key into the cells its
 // box covers, and each cell keeps the largest key. A label shows only if it keeps every cell it
 // covers, so where labels would overlap, the label of the row drawn on top shows. The claims depend
-// on this frame alone. A label inside its row, such as a block's label, does not compete.
+// on this frame alone. A label inside its row's marker, such as a block's label, does not compete.
 
 // Whether the label anchored at `a` competes for space with other labels.
 fn claims_room(a: Anchor) -> bool {
-    return a.room.x <= 0.0;
+    return !a.inside;
 }
 
 // The box a label claims: its runs' box (of size `extent`) once all are set (`ready`), else space
