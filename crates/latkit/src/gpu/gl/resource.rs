@@ -74,38 +74,24 @@ impl Drop for BufferData {
     }
 }
 
-/// A buffer mapped for reading whose fence signaled, waiting to copy its bytes while the GPU is
-/// quiet (see `Device::settle_quiet`).
-pub(super) struct Read {
-    buffer: Buffer,
-    generation: u64,
-    range: Range<u64>,
-    callback: BufferMapCallback,
-    queued: web_time::Instant,
-}
-
-impl Read {
-    /// When its fence signaled.
-    pub(super) fn queued(&self) -> web_time::Instant {
-        self.queued
-    }
-
-    /// Copies the bytes and completes the mapping, or fails it if the buffer was unmapped or
-    /// destroyed since, or its context lost.
-    pub(super) fn copy(self, state: &State) {
-        let data = &self.buffer.0;
-        if data.destroyed.get() || data.generation.get() != self.generation || state.gl.is_context_lost() {
-            (self.callback)(Err(wgpu::BufferAsyncError));
-            return;
-        }
-        let mut bytes = vec![0; (self.range.end - self.range.start) as usize];
-        state.gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&data.raw));
-        state.gl.get_buffer_sub_data_with_f64_and_u8_array(Gl::COPY_READ_BUFFER, self.range.start as f64, &mut bytes);
-        *data.mapped.borrow_mut() = Some((self.range, wgpu::MapMode::Read, Rc::new(bytes)));
-        (self.callback)(Ok(()));
+impl Buffer {
+    /// Copies bytes `range` of the buffer, which the GPU finished writing.
+    ///
+    /// The browser keeps a copy of a buffer made for reading, taken once a fence follows a write,
+    /// and reads it without asking the GPU process: a read after the fence returns at once, however
+    /// much work was issued since. Writing the buffer again discards that copy, and Chrome warns,
+    /// unless its storage was given anew, so the storage starts over once the bytes are read.
+    fn read(&self, state: &State, range: &Range<u64>) -> Vec<u8> {
+        let mut bytes = vec![0; (range.end - range.start) as usize];
+        state.gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&self.0.raw));
+        state.gl.get_buffer_sub_data_with_f64_and_u8_array(Gl::COPY_READ_BUFFER, range.start as f64, &mut bytes);
+        state.gl.buffer_data_with_f64(Gl::COPY_READ_BUFFER, self.0.size as f64, Gl::STREAM_READ);
+        bytes
     }
 }
 impl BufferInterface for Buffer {
+    /// Maps the buffer once the GPU finishes the work issued so far: for reading, with the bytes
+    /// it wrote (see [`Buffer::read`]).
     fn map_async(&self, mode: wgpu::MapMode, range: Range<u64>, callback: BufferMapCallback) {
         assert!(range.end <= self.0.size);
         let this = self.clone();
@@ -119,16 +105,12 @@ impl BufferInterface for Buffer {
                 callback(Err(wgpu::BufferAsyncError));
                 return;
             }
-            if mode == wgpu::MapMode::Write {
-                *this.0.mapped.borrow_mut() =
-                    Some((range.clone(), mode, Rc::new(vec![0; (range.end - range.start) as usize])));
-                callback(Ok(()));
-                return;
-            }
-            // Copying the bytes is a synchronous query, made while the GPU is quiet.
-            let queued = web_time::Instant::now();
-            state.reads.borrow_mut().push(Read { buffer: this, generation, range, callback, queued });
-            super::device::Device::settle_quiet(state);
+            let bytes = match mode {
+                wgpu::MapMode::Write => vec![0; (range.end - range.start) as usize],
+                wgpu::MapMode::Read => this.read(state, &range),
+            };
+            *this.0.mapped.borrow_mut() = Some((range, mode, Rc::new(bytes)));
+            callback(Ok(()));
         });
     }
     fn get_mapped_range(&self, sub_range: Range<u64>) -> Result<DispatchBufferMappedRange, wgpu::MapRangeError> {

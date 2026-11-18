@@ -35,15 +35,12 @@ pub(super) struct State {
     scopes: RefCell<Vec<Option<Scope>>>,
     lost: RefCell<Option<BoxDeviceLostCallback>>,
     handler: RefCell<Option<Arc<dyn wgpu::UncapturedErrorHandler>>>,
-    /// Readbacks whose fences signaled, waiting for the GPU to be quiet before they copy (see
-    /// [`Device::settle_quiet`]).
-    pub(super) reads: RefCell<Vec<super::resource::Read>>,
     /// Whether resources were made outside an error scope since errors were last read, and since
     /// when.
     pending_errors: Cell<bool>,
     errors_since: Cell<Option<web_time::Instant>>,
-    /// Whether a fence waits to settle readbacks and errors.
-    settling: Cell<bool>,
+    /// Whether a fence waits to read errors (see [`Device::check_quiet`]).
+    checking: Cell<bool>,
     listener: RefCell<Option<LossListener>>,
     lost_reason: Cell<Option<wgpu::DeviceLostReason>>,
 }
@@ -66,10 +63,8 @@ pub(super) struct Device(pub(super) Rc<State>);
 /// `FIRST_VERTEX_CONVENTION_WEBGL` of `WEBGL_provoking_vertex`.
 const FIRST_VERTEX: u32 = 0x8E4D;
 
-/// The longest a readback waits for the GPU to be quiet before it copies anyway, as under GPU-bound
-/// animation, which leaves no quiet moment.
-const READS_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
-/// The longest errors raised outside a scope wait for the GPU to be quiet before they are read.
+/// The longest errors raised outside a scope wait for the GPU to be quiet before they are read, as
+/// under GPU-bound animation, which leaves no quiet moment.
 const ERRORS_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Device {
@@ -99,10 +94,9 @@ impl Device {
             scopes: RefCell::default(),
             lost: RefCell::default(),
             handler: RefCell::default(),
-            reads: RefCell::default(),
             pending_errors: Cell::new(false),
             errors_since: Cell::new(None),
-            settling: Cell::new(false),
+            checking: Cell::new(false),
             listener: RefCell::default(),
             lost_reason: Cell::new(None),
         });
@@ -128,8 +122,6 @@ impl Device {
         self.0.lost_reason.set(Some(reason));
         self.0.programs.borrow_mut().clear();
         self.0.stages.borrow_mut().clear();
-        // A lost context copies nothing: each waiting readback fails.
-        Self::settle_reads(&self.0);
         let callback = self.0.lost.borrow_mut().take();
         if let Some(callback) = callback {
             callback(reason, "WebGL2 device lost".into());
@@ -184,54 +176,43 @@ impl Device {
     }
 
     /// Notes a resource made outside an error scope. Its errors are read once the GPU is quiet
-    /// after it (see [`Device::settle_quiet`]).
+    /// after it (see [`Device::check_quiet`]).
     pub(super) fn changed(&self) {
         if !self.0.pending_errors.replace(true) {
             self.0.errors_since.set(Some(web_time::Instant::now()));
         }
-        Self::settle_later(&self.0);
+        Self::check_later(&self.0);
     }
 
-    /// Copies waiting readbacks and reads errors now if the GPU is quiet, else later.
+    /// Reads errors raised outside a scope now if the GPU is quiet, else later.
     ///
-    /// The browser's GPU process answers a synchronous query, such as reading a buffer or its
-    /// errors, only after running every command issued before it, and while it builds shaders for
-    /// a first draw it answers nothing. Asked then, a query blocks the page: for a frame's GPU work,
-    /// or for up to seconds on opening. So queries are made only while the GPU is quiet (see
-    /// [`Waits::quiet`]), which the poller sees between frames. GPU-bound animation leaves no
-    /// quiet moment, so a readback waits at most [`READS_WAIT`] and errors [`ERRORS_WAIT`].
-    pub(super) fn settle_quiet(state: &Rc<State>) {
-        let waited = |since: Option<web_time::Instant>, most| since.is_some_and(|at| at.elapsed() >= most);
-        let oldest = state.reads.borrow().first().map(super::resource::Read::queued);
-        if oldest.is_none() && !state.pending_errors.get() {
+    /// Reading errors is a synchronous query: the browser's GPU process answers it only after
+    /// running every command issued before it, and while it builds shaders for a first draw it
+    /// answers nothing. Asked then, it blocks the page: for a frame's GPU work, or for up to
+    /// seconds on opening. So errors are read only while the GPU is quiet (see [`Waits::quiet`]),
+    /// which the poller sees between frames, and under GPU-bound animation, which leaves no quiet
+    /// moment, after at most [`ERRORS_WAIT`]. Readbacks need no such wait (see `Buffer::read`).
+    fn check_quiet(state: &Rc<State>) {
+        if !state.pending_errors.get() {
             return;
         }
-        let overdue = waited(oldest, READS_WAIT) || waited(state.errors_since.get(), ERRORS_WAIT);
+        let overdue = state.errors_since.get().is_some_and(|at| at.elapsed() >= ERRORS_WAIT);
         if !state.waits.quiet() && !overdue {
-            Self::settle_later(state);
+            Self::check_later(state);
             return;
         }
-        Self::settle_reads(state);
         Self(state.clone()).check_errors();
     }
 
-    /// Settles once the GPU finishes the work issued so far, if it is quiet then.
-    fn settle_later(state: &Rc<State>) {
-        if state.settling.replace(true) {
+    /// Reads errors once the GPU finishes the work issued so far, if it is quiet then.
+    fn check_later(state: &Rc<State>) {
+        if state.checking.replace(true) {
             return;
         }
         Waits::fence(state, |state, _| {
-            state.settling.set(false);
-            Self::settle_quiet(state);
+            state.checking.set(false);
+            Self::check_quiet(state);
         });
-    }
-
-    /// Copies every waiting readback, or fails each on a lost context.
-    fn settle_reads(state: &Rc<State>) {
-        let reads = std::mem::take(&mut *state.reads.borrow_mut());
-        for read in reads {
-            read.copy(state);
-        }
     }
 
     fn pipeline(&self, desc: &wgpu::RenderPipelineDescriptor<'_>) -> Result<Rc<Program>, String> {

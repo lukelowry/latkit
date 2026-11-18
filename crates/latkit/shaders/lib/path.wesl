@@ -8,7 +8,10 @@
 //
 // As in `lib/read.wesl`, paths read every word they might need and select the answer, with no early
 // return and no short-circuit test (`&&`, `||`) around a read: the D3D compiler behind WebGL takes
-// several times longer on code that branches around reads.
+// several times longer on code that branches around reads. That compiler also inlines every call,
+// so a segment reads its points at one call (`path_points`) and projects them at one (`on_screen`),
+// each in a loop: a pipeline compiles a path's geometry and its projection once, however many
+// points it takes.
 
 import package::lib::types::{
     NONE, VISIBLE, PLACED, DASH, ENDS_COLOR, GEODESIC, MARK_EDGES, PATH_ENDS, PATH_BENDS, PATH_TRACE,
@@ -41,6 +44,18 @@ fn has_end_vertices() -> bool {
 fn clips_outlines() -> bool {
     if has_end_vertices() { return true; }
     return PATH == PATH_POLES;
+}
+
+// Whether the pipeline joins each segment with the ones before and after it, which only strokes do
+// (`joined`). Elsewhere the points beside a segment are never read or projected.
+@if(joined)
+fn joins() -> bool {
+    return true;
+}
+
+@if(!joined)
+fn joins() -> bool {
+    return false;
 }
 
 // One segment of a row's path. `along` is the distance along the path where it starts, in position
@@ -337,23 +352,6 @@ fn between(a: Vertex, b: Vertex, t: f32) -> PathPoint {
     return p;
 }
 
-// Point `i` of an edge's path of `count` segments, as a segment list numbers them: its first end,
-// its bends, then its second end. Without bends, it runs between its ends in its own segments. A
-// fan stays at its vertex in position units, so a row that fans repeats its first and last points.
-// An end reads only its own vertex. Each kind of point is built in one place, which keeps compiled
-// shaders small.
-fn end_point(row: u32, count: u32, i: u32) -> PathPoint {
-    let e = edge_at(row_at(row));
-    let a = end_vertex(0u, e.a);
-    let b = end_vertex(1u, e.b);
-    let bends = bends_of(row);
-    let fanned = fans(lane_of(row));
-    let last = own_segments(bends, count, fanned);
-    var p = edge_point(a, b, bends, last, select(i, min(max(i, 1u) - 1u, last), fanned));
-    p.shown = p.shown & (e.a != NONE) & (e.b != NONE) & !same_vertex(e.a, e.b);
-    return p;
-}
-
 // The segments of an edge's own path, without its fans: one past its bends, or of `count` listed.
 fn own_segments(bends: Points, count: u32, fanned: bool) -> u32 {
     let own = select(count, max(count, 3u) - 2u, fanned);
@@ -450,11 +448,10 @@ fn pole_point(row: u32, i: u32) -> PathPoint {
     return p;
 }
 
-// Point `i` of held row `row`'s path of `count` segments, for any path kind.
-fn path_point(row: u32, count: u32, i: u32) -> PathPoint {
+// Point `i` of held row `row`'s path, for a path that does not run between an edge's ends: those
+// read their points through `edge_path`.
+fn path_point(row: u32, i: u32) -> PathPoint {
     switch PATH {
-        case PATH_ENDS: { return end_point(row, count, i); }
-        case PATH_BENDS: { return end_point(row, count, i); }
         case PATH_TRACE: { return trace_point(row, i); }
         case PATH_GEOMETRY: { return geometry_point(row, i); }
         case PATH_POLES: { return pole_point(row, i); }
@@ -504,6 +501,42 @@ fn piece_of(e: EdgePath, index: u32) -> vec2u {
     return vec2u(select(index, clamp(index, 1u, e.last) - 1u, e.fanned), fan);
 }
 
+// Point `i` of segment `s`'s row path: through its edge path `e` for an edge, else from its row.
+fn path_at(s: Segment, e: EdgePath, i: u32) -> PathPoint {
+    if has_end_vertices() { return edge_path_point(e, i); }
+    return path_point(s.row, i);
+}
+
+// Points of a row's path that a segment reads (see `path_points`). Those not read stay hidden.
+struct PathPoints {
+    a: PathPoint,
+    b: PathPoint,
+    before: PathPoint,
+    after: PathPoint,
+}
+
+// Points `at` of segment `s`'s row path of `count` segments, through edge path `e` for an edge:
+// `a` and `b` at `at.x` and `at.y`, then `before` at `at.z` and `after` at `at.w` unless they are
+// NONE. Every point is read at one call in a loop. The D3D compiler behind WebGL inlines every
+// call, so a call per point would compile a path's whole geometry once for each, and a loop whose
+// count it can work out it unrolls into as many copies. The count is at most one past the path's
+// segments, which only the row knows, so the loop stays a loop.
+fn path_points(s: Segment, count: u32, e: EdgePath, at: vec4u) -> PathPoints {
+    var out: PathPoints;
+    let wanted = 2u + select(0u, 1u, at.z != NONE) + select(0u, 1u, at.w != NONE);
+    let n = min(wanted, count + 1u);
+    for (var j = 0u; j < n; j++) {
+        // In order: `a`, `b`, `before` where read, then `after`.
+        let k = select(j, 3u, (j == 2u) & (at.z == NONE));
+        let p = path_at(s, e, select(select(select(at.x, at.y, k == 1u), at.z, k == 2u), at.w, k == 3u));
+        if k == 0u { out.a = p; }
+        if k == 1u { out.b = p; }
+        if k == 2u { out.before = p; }
+        if k == 3u { out.after = p; }
+    }
+    return out;
+}
+
 // Segment `s`'s two end points in position units. An edge reads its shared state once for both
 // positions. A fan stays at its vertex: it turns only on screen.
 fn segment_ends(s: Segment) -> PathEnds {
@@ -512,14 +545,16 @@ fn segment_ends(s: Segment) -> PathEnds {
         return PathEnds(sample_point(samples[0]), sample_point(samples[1]));
     }
     let count = path_count(s.item);
+    var e: EdgePath;
+    var at = vec4u(s.index, s.index + 1u, NONE, NONE);
     if has_end_vertices() {
-        let e = edge_path(s, count);
+        e = edge_path(s, count);
         let piece = piece_of(e, s.index);
-        let a = select(piece.x, piece.x + 1u, piece.y == 2u);
-        let b = select(piece.x + 1u, piece.x, piece.y == 1u);
-        return PathEnds(edge_path_point(e, a), edge_path_point(e, b));
+        at.x = select(piece.x, piece.x + 1u, piece.y == 2u);
+        at.y = select(piece.x + 1u, piece.x, piece.y == 1u);
     }
-    return PathEnds(path_point(s.row, count, s.index), path_point(s.row, count, s.index + 1u));
+    let points = path_points(s, count, e, at);
+    return PathEnds(points.a, points.b);
 }
 
 // Segment `s`'s points: the own segment of its row's path it draws, or for a fan draws beside
@@ -560,27 +595,26 @@ fn segment_points(s: Segment) -> SegmentPoints {
             let samples = trace_pair(s.row, s.index);
             out.ends = PathEnds(sample_point(samples[0]), sample_point(samples[1]));
         }
-    } else if has_end_vertices() {
-        let e = edge_path(s, count);
-        let piece = piece_of(e, s.index);
-        i = piece.x;
-        last = e.last;
-        @if(joined) {
-            out.before = edge_path_point(e, max(i, 1u) - 1u);
-            out.after = edge_path_point(e, i + 2u);
-        }
-        out.ends = PathEnds(edge_path_point(e, i), edge_path_point(e, i + 1u));
-        out.fan = piece.y;
-        out.lane = e.lane;
-        out.vertex_a = vertex_shape(e.a);
-        out.vertex_b = vertex_shape(e.b);
-        out.width = e.width;
     } else {
-        @if(joined) {
-            out.before = path_point(s.row, count, max(i, 1u) - 1u);
-            out.after = path_point(s.row, count, i + 2u);
+        var e: EdgePath;
+        if has_end_vertices() {
+            e = edge_path(s, count);
+            let piece = piece_of(e, s.index);
+            i = piece.x;
+            last = e.last;
+            out.fan = piece.y;
+            out.lane = e.lane;
+            out.vertex_a = vertex_shape(e.a);
+            out.vertex_b = vertex_shape(e.b);
+            out.width = e.width;
         }
-        out.ends = PathEnds(path_point(s.row, count, i), path_point(s.row, count, i + 1u));
+        // The points beside the segment, where the path runs on through its ends.
+        let before = select(NONE, i - 1u, joins() & (i > 0u));
+        let after = select(NONE, i + 2u, joins() & (i + 1u < last));
+        let points = path_points(s, count, e, vec4u(i, i + 1u, before, after));
+        out.ends = PathEnds(points.a, points.b);
+        out.before = points.before;
+        out.after = points.after;
     }
     out.first = i == 0u;
     out.last = i + 1u >= last;
@@ -590,7 +624,7 @@ fn segment_points(s: Segment) -> SegmentPoints {
 }
 
 // The joint at screen point `at`, between the segment from `before` and the one to `after`; z is 1
-// where a point shows (see `point_screen`). Both segments meeting at a point compute it from the
+// where a point shows (see `screen_point`). Both segments meeting at a point compute it from the
 // same three points, so they split its pixels along the same line. `miter` is how far, per pixel a
 // parallel edge runs beside the path, the point moves: along the line halving the turn, so the two
 // segments of a parallel edge still meet. A sharp turn moves it at most four times as far.
@@ -633,17 +667,23 @@ fn beside(d: vec2f) -> vec2f {
     return vec2f(-d.y, d.x);
 }
 
-// Point `p` on screen in CSS pixels, with z 1 where it shows in front of the near plane, else 0. It
-// projects as `on_screen` projects a segment's ends, so segments meeting at a point find it at the
-// same place.
-fn point_screen(p: PathPoint) -> vec3f {
-    let c = path_clip(p);
-    return vec3f(to_screen(c), select(0.0, 1.0, p.shown & (c.w > 0.0) & (c.z <= c.w)));
+// Where a path point lies: in the world, and in clip space. A trace's points lie on the plot.
+struct Placed {
+    world: vec3f,
+    clip: vec4f,
 }
 
-fn path_clip(p: PathPoint) -> vec4f {
-    if PATH == PATH_TRACE { return plot_clip(p.hi, p.lo); }
-    return clip_of(world(p.hi, p.lo, p.z));
+fn place(p: PathPoint) -> Placed {
+    if PATH == PATH_TRACE { return Placed(vec3f(0.0), plot_clip(p.hi, p.lo)); }
+    let w = world(p.hi, p.lo, p.z);
+    return Placed(w, clip_of(w));
+}
+
+// Point `p`, placed at clip position `c`, on screen in CSS pixels, with z 1 where it shows in front
+// of the near plane, else 0. Every point projects alike, so segments meeting at a point find it at
+// the same place.
+fn screen_point(p: PathPoint, c: vec4f) -> vec3f {
+    return vec3f(to_screen(c), select(0.0, 1.0, p.shown & (c.w > 0.0) & (c.z <= c.w)));
 }
 
 // A row's lane in its family of parallel edges, the edges joining the same two vertices: its offset
@@ -738,18 +778,52 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
     if p.fan == 1u { out.ends.b = p.ends.a; }
     if p.fan == 2u { out.ends.a = p.ends.b; }
     if !p.ends.a.shown | !p.ends.b.shown { return out; }
+    // The points the segment projects, each placed at one call in a loop, as `path_points` reads
+    // them: its ends, then where a stroke joins its neighbors (`joined`) the points beside them,
+    // then where a parallel edge runs beside a longer path its vertices' centers. A path of one
+    // segment joins nothing and runs between its ends.
+    let single = p.first & p.last;
+    let neighbors = joins() & !single;
+    let centers = has_end_vertices() & (p.lane.offset != 0.0) & !single;
+    let n = 2u + select(0u, 2u, neighbors) + select(0u, 2u, centers);
+    var wa = vec3f(0.0);
+    var wb = vec3f(0.0);
+    var ca = vec4f(0.0);
+    var cb = vec4f(0.0);
+    var before = vec3f(0.0);
+    var after = vec3f(0.0);
+    var vertex_a = vec3f(0.0);
+    var vertex_b = vec3f(0.0);
+    for (var j = 0u; j < n; j++) {
+        // 0 and 1: the ends; 2 and 3: the points beside them; 4 and 5: the vertices.
+        let k = select(j, j + 2u, (j >= 2u) & !neighbors);
+        var q = p.ends.a;
+        if k == 1u { q = p.ends.b; }
+        if k == 2u { q = p.before; }
+        if k == 3u { q = p.after; }
+        if k == 4u { q = p.vertex_a; }
+        if k == 5u { q = p.vertex_b; }
+        let at = place(q);
+        let on = screen_point(q, at.clip);
+        if k == 0u {
+            wa = at.world;
+            ca = at.clip;
+        }
+        if k == 1u {
+            wb = at.world;
+            cb = at.clip;
+        }
+        if k == 2u { before = on; }
+        if k == 3u { after = on; }
+        if k == 4u { vertex_a = on; }
+        if k == 5u { vertex_b = on; }
+    }
     var cut = vec2f(0.0, 1.0);
+    out.ca = ca;
+    out.cb = cb;
     if PATH == PATH_TRACE {
-        out.ca = plot_clip(p.ends.a.hi, p.ends.a.lo);
-        out.cb = plot_clip(p.ends.b.hi, p.ends.b.lo);
         out.shown = true;
     } else {
-        let wa = world(p.ends.a.hi, p.ends.a.lo, p.ends.a.z);
-        let wb = world(p.ends.b.hi, p.ends.b.lo, p.ends.b.z);
-        let ca = clip_of(wa);
-        let cb = clip_of(wb);
-        out.ca = ca;
-        out.cb = cb;
         // Most segments are wholly in front. Only a segment crossing the near plane needs a
         // division and endpoint interpolation, including when one end lies behind the eye.
         if (ca.z > ca.w) | (cb.z > cb.w) {
@@ -760,21 +834,10 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
         // A segment reaching past the globe's edge still draws. The globe's depth clips it there.
         out.shown = (shows(wa) | shows(wb)) & (cut.x < cut.y);
     }
-    // The own segment on screen, and its joints. An end cut at the near plane joins nothing. A path
-    // of one segment has no joint, so it projects nothing more, and neither does anything but a
-    // stroke (`joined`).
+    // The own segment on screen, and its joints. An end cut at the near plane joins nothing.
     let sa = to_screen(out.ca);
     let sb = to_screen(out.cb);
     let front = vec2f(select(0.0, 1.0, cut.x == 0.0), select(0.0, 1.0, cut.y == 1.0));
-    var before = vec3f(0.0);
-    var after = vec3f(0.0);
-    let single = p.first & p.last;
-    @if(joined) {
-        if !single {
-            before = point_screen(p.before);
-            after = point_screen(p.after);
-        }
-    }
     var start = joint(before, vec3f(sa, front.x), vec3f(sb, front.y));
     var end = joint(vec3f(sa, front.x), vec3f(sb, front.y), after);
     let dir = normalize(sb - sa + vec2f(1e-6, 0.0));
@@ -787,11 +850,7 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
         var o = 0.0;
         if p.lane.offset != 0.0 {
             // A path of one segment runs between its vertices' centers. A longer one projects them.
-            var centers = vec4f(sa, sb);
-            if !single {
-                centers = vec4f(point_screen(p.vertex_a).xy, point_screen(p.vertex_b).xy);
-            }
-            let step = lane_step(p, centers.xy, centers.zw);
+            let step = lane_step(p, select(sa, vertex_a.xy, centers), select(sb, vertex_b.xy, centers));
             o = p.lane.offset * step;
             out.shown = out.shown & !lane_thinned(p.lane, step * p.lane.step);
         }
