@@ -680,10 +680,18 @@ fn prune(source: &str) -> String {
 }
 
 /// Asserts that no struct or array constructor in `module` takes a boolean `&` or `|`, even through
-/// a `let`, which Metal may write inline. Metal writes these constructors as brace initializers,
-/// where C++ evaluates `bool & bool` to an int that may not narrow back to bool, so the pipeline
-/// fails to compile on Apple GPUs. A `select` stays a bool.
+/// a `let` or as a value a `select` picks, which Metal may write inline. Metal writes these
+/// constructors as brace initializers, where C++ evaluates `bool & bool` to an int that may not
+/// narrow back to bool, and a `select` between that int and a bool is an int too, so the pipeline
+/// fails to compile on Apple GPUs. A `select` of bools stays a bool.
 fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
+    fn combined(function: &naga::Function, e: naga::Handle<naga::Expression>) -> bool {
+        match function.expressions[e] {
+            naga::Expression::Binary { op: naga::BinaryOperator::And | naga::BinaryOperator::InclusiveOr, .. } => true,
+            naga::Expression::Select { accept, reject, .. } => combined(function, accept) || combined(function, reject),
+            _ => false,
+        }
+    }
     let functions = module
         .functions
         .iter()
@@ -696,14 +704,10 @@ fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
                 continue;
             }
             for &component in components {
-                let combined = matches!(
-                    function.expressions[component],
-                    naga::Expression::Binary { op: naga::BinaryOperator::And | naga::BinaryOperator::InclusiveOr, .. }
-                );
                 let boolean =
                     matches!(types[component].ty.inner_with(&module.types), TypeInner::Scalar(naga::Scalar::BOOL));
                 assert!(
-                    !(combined && boolean),
+                    !(boolean && combined(function, component)),
                     "{name}: {} builds a struct or array from a boolean `&` or `|`, which Metal can't compile. Use `select`.",
                     function.name.as_deref().unwrap_or("an entry point"),
                 );

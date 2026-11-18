@@ -483,9 +483,9 @@ fn edge_path(s: Segment, count: u32) -> EdgePath {
     let bends = bends_of(s.row);
     let l = lane_of(s.row);
     let fanned = fans(l);
-    // A select, not `&`: Metal writes the struct below as a brace initializer (see `segment_of` in
+    // Selects, not `&`: Metal writes the struct below as a brace initializer (see `segment_of` in
     // `draw/strokes.wesl`).
-    let drawn = select(false, (e.a != NONE) & (e.b != NONE), !same_vertex(e.a, e.b));
+    let drawn = select(false, select(false, e.a != NONE, e.b != NONE), !same_vertex(e.a, e.b));
     return EdgePath(a, b, bends, own_segments(bends, count, fanned), l, fanned, drawn, max(edge_width(e), 0.75));
 }
 
@@ -597,10 +597,10 @@ fn joint(before: vec3f, at: vec3f, after: vec3f) -> Joint {
     let u = into / max(lengths.x, 1e-6);
     let v = onward / max(lengths.y, 1e-6);
     let straight = 1.0 + dot(u, v);
-    // A select, not `&`: Metal writes the struct below as a brace initializer (see `segment_of` in
+    // Selects, not `&`: Metal writes the struct below as a brace initializer (see `segment_of` in
     // `draw/strokes.wesl`).
     let shown = min(before.z, min(at.z, after.z)) > 0.0;
-    let through = select(false, all(lengths > vec2f(1e-3)) & (straight > 1e-3), shown);
+    let through = select(false, select(false, all(lengths > vec2f(1e-3)), straight > 1e-3), shown);
     let sum = u + v;
     let reach = max(length(sum), 1e-6);
     let miter = beside(sum / reach) / max(0.5 * reach, 0.25);
