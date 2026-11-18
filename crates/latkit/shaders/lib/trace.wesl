@@ -49,3 +49,15 @@ fn trace_pair(row: u32, point: u32) -> array<vec3u, 2> {
     let base = trace_cursor(row);
     return array<vec3u, 2>(trace_read(base, point), trace_read(base, point + 1u));
 }
+
+// The points before, at the ends of, and after segment `point`, sharing one lookup. Before the first
+// point the index wraps past the plan and reads missing.
+fn trace_around(row: u32, point: u32) -> array<vec3u, 4> {
+    let base = trace_cursor(row);
+    return array<vec3u, 4>(
+        trace_read(base, point - 1u),
+        trace_read(base, point),
+        trace_read(base, point + 1u),
+        trace_read(base, point + 2u)
+    );
+}

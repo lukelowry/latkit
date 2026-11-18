@@ -40,7 +40,7 @@ fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
     ))
     .expect("valid");
     let scene = Scene::new(plane())
-        .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE))
+        .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE.alpha(0.5)))
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(2.0));
     let mut view = view(&gpu, scene, &data);
     // The two edges bow half a lane each way. A lane is 0.12 of their 80-unit length, so each is
@@ -50,6 +50,12 @@ fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
         let pixels = frame(&gpu, &mut view);
         assert!(lit(at(&pixels, C, C - off)) && lit(at(&pixels, C, C + off)), "two lanes at zoom {zoom}");
         assert!(!lit(at(&pixels, C, C)), "apart at zoom {zoom}: {:?}", at(&pixels, C, C));
+        // Each lane draws as one stroke: half white where it covers a pixel fully, and no brighter
+        // where its pieces meet. Every column along the upper lane has such a pixel.
+        for x in C - 24..=C + 24 {
+            let peak = (C - 24..C).map(|y| at(&pixels, x, y)[0]).max().unwrap_or(0);
+            assert!((120..=136).contains(&peak), "column {x} at zoom {zoom} peaks at {peak}");
+        }
     }
     // A vertex that moves takes its lanes along without their pieces being listed again: each
     // frame draws the instances it drew before and reads no count back.

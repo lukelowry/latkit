@@ -2,8 +2,10 @@
 // (straight, through the bends of a geometry column, or along a great circle on the earth, bowed
 // into its lane), through a line's samples across the axis, or through a geometry column's points
 // (a net's star, or a path field). Draws, probes, bounds, and labels all
-// read segments through `segment_ends` and `segment_screen`. A pipeline's `PATH` selects one kind
-// of path, so each pipeline compiles only that kind.
+// read segments through `segment_ends` and `segment_screen`. A draw also reads the points beside
+// each segment (`segment_points`), so the segments meeting where a path runs on share the pixels
+// there (`Joints`). A pipeline's `PATH` selects one kind of path, so each pipeline compiles only
+// that kind.
 //
 // As in `lib/read.wesl`, paths read every word they might need and select the answer, with no early
 // return and no short-circuit test (`&&`, `||`) around a read: the D3D compiler behind WebGL takes
@@ -18,7 +20,7 @@ import package::lib::bind::{frame, eye, mark, focused};
 import package::lib::state::{row_at, edge_at, line_at, end_vertex, same_vertex, Vertex};
 import package::lib::project::{world, clip_of, plot_clip, shows, to_screen, geographic, PROJECTION};
 import package::lib::read::{missing_bits, bits_value, points_of, point_bits, Points};
-import package::lib::trace::{trace_sample, trace_pair};
+import package::lib::trace::{trace_sample, trace_pair, trace_around};
 import package::lib::focus::{faded, growth};
 import package::lib::mark::{px, px_per_length};
 import package::lib::points::vertex_half;
@@ -469,6 +471,48 @@ fn path_point(row: u32, count: u32, i: u32) -> PathPoint {
     }
 }
 
+// An edge's path, read once for every point a segment takes from it: its ends, its bends, its last
+// point, its bow, and whether its lane draws.
+struct EdgePath {
+    a: Vertex,
+    b: Vertex,
+    bends: Points,
+    last: u32,
+    bow: f32,
+    drawn: bool,
+}
+
+fn edge_path(s: Segment, count: u32) -> EdgePath {
+    let e = edge_at(row_at(s.row));
+    let a = end_vertex(0u, e.a);
+    let b = end_vertex(1u, e.b);
+    let bends = bends_of(s.row);
+    let l = lane_of(s.row);
+    var drawn = (e.a != NONE) & (e.b != NONE) & !same_vertex(e.a, e.b);
+    // A list keeps every lane of a family that is not packed, and on a plane the lanes of a
+    // packed one that a band of zooms draws, so some kept lanes lie less than a pixel apart
+    // now and are left out here. A geographic list of a packed family keeps exactly the lanes
+    // it draws. A kept lane off screen needs no test: its quads lie off screen.
+    var thins = !lane_packed(l);
+    if !geographic() {
+        thins = thins | (frame.lane_scale > 0.0);
+    }
+    if thins & (bends.count == 0u) & (l.offset != 0.0) {
+        let ca = clip_of(world(a.hi, a.lo, a.elevation));
+        let cb = clip_of(world(b.hi, b.lo, b.elevation));
+        drawn = drawn & !lane_thinned(ca, cb, l, 1.0);
+    }
+    let last = select(bends.count + 1u, count, bends.count == 0u);
+    return EdgePath(a, b, bends, last, l.offset * frame.bow, drawn);
+}
+
+// Point `i` of edge path `e`.
+fn edge_path_point(e: EdgePath, i: u32) -> PathPoint {
+    var p = edge_point(e.a, e.b, e.bends, e.last, e.bow, i);
+    p.shown = p.shown & e.drawn;
+    return p;
+}
+
 // Segment `s`'s two end points. An edge reads its shared state once for both positions.
 fn segment_ends(s: Segment) -> PathEnds {
     if PATH == PATH_TRACE {
@@ -477,33 +521,120 @@ fn segment_ends(s: Segment) -> PathEnds {
     }
     let count = path_count(s.item);
     if has_end_vertices() {
-        let e = edge_at(row_at(s.row));
-        let a = end_vertex(0u, e.a);
-        let b = end_vertex(1u, e.b);
-        let bends = bends_of(s.row);
-        let l = lane_of(s.row);
-        let last = select(bends.count + 1u, count, bends.count == 0u);
-        var drawn = (e.a != NONE) & (e.b != NONE) & !same_vertex(e.a, e.b);
-        // A list keeps every lane of a family that is not packed, and on a plane the lanes of a
-        // packed one that a band of zooms draws, so some kept lanes lie less than a pixel apart
-        // now and are left out here. A geographic list of a packed family keeps exactly the lanes
-        // it draws. A kept lane off screen needs no test: its quads lie off screen.
-        var thins = !lane_packed(l);
-        if !geographic() {
-            thins = thins | (frame.lane_scale > 0.0);
-        }
-        if thins & (bends.count == 0u) & (l.offset != 0.0) {
-            let ca = clip_of(world(a.hi, a.lo, a.elevation));
-            let cb = clip_of(world(b.hi, b.lo, b.elevation));
-            drawn = drawn & !lane_thinned(ca, cb, l, 1.0);
-        }
-        let bow = l.offset * frame.bow;
-        var ends = PathEnds(edge_point(a, b, bends, last, bow, s.index), edge_point(a, b, bends, last, bow, s.index + 1u));
-        ends.a.shown = ends.a.shown & drawn;
-        ends.b.shown = ends.b.shown & drawn;
-        return ends;
+        let e = edge_path(s, count);
+        return PathEnds(edge_path_point(e, s.index), edge_path_point(e, s.index + 1u));
     }
     return PathEnds(path_point(s.row, count, s.index), path_point(s.row, count, s.index + 1u));
+}
+
+// A segment's ends and the path points beside them: the one before `a` and the one after `b`. Each
+// is hidden where the path does not run on through that end: at its first or last point, or at a
+// break.
+struct SegmentPoints {
+    before: PathPoint,
+    ends: PathEnds,
+    after: PathPoint,
+}
+
+// Segment `s`'s ends and the points beside them, from one read of its row's path. Like every path
+// read, it reads whatever it might need and hides what lies past the path.
+fn segment_points(s: Segment) -> SegmentPoints {
+    let count = path_count(s.item);
+    let before = max(s.index, 1u) - 1u;
+    let after = s.index + 2u;
+    var out: SegmentPoints;
+    if PATH == PATH_TRACE {
+        let samples = trace_around(s.row, s.index);
+        out = SegmentPoints(
+            sample_point(samples[0]),
+            PathEnds(sample_point(samples[1]), sample_point(samples[2])),
+            sample_point(samples[3])
+        );
+    } else if has_end_vertices() {
+        let e = edge_path(s, count);
+        out = SegmentPoints(
+            edge_path_point(e, before),
+            PathEnds(edge_path_point(e, s.index), edge_path_point(e, s.index + 1u)),
+            edge_path_point(e, after)
+        );
+    } else {
+        out = SegmentPoints(
+            path_point(s.row, count, before),
+            PathEnds(path_point(s.row, count, s.index), path_point(s.row, count, s.index + 1u)),
+            path_point(s.row, count, after)
+        );
+    }
+    out.before.shown = out.before.shown & (s.index > 0u);
+    out.after.shown = out.after.shown & (after <= count);
+    return out;
+}
+
+// Where a segment meets the ones before and after it, on screen. Where a path runs on through a
+// point, the two segments meeting there split the pixels around it along the line through it that
+// halves the angle between them, and each draws only its own side (`owns` in `lib/stroke.wesl`).
+// The path covers each pixel once, as one stroke does. On that line both segments lie equally far,
+// so the stroke's edge, glow, dashes, and comets carry on across it.
+struct Joints {
+    // The split lines' normals at `a` and at `b`, pointing along the path.
+    split: vec4f,
+    // At each end, tan of half the angle the path turns there.
+    turn: vec2f,
+    // At each end, the shorter of the two segments meeting there, in CSS pixels.
+    room: vec2f,
+    // Whether the path runs on through each end: a point lies beyond it, all three points show in
+    // front of the near plane, and the path does not turn back on itself there.
+    through: vec2<bool>,
+}
+
+struct Joint {
+    normal: vec2f,
+    turn: f32,
+    room: f32,
+    through: bool,
+}
+
+// The joint at screen point `at`, between the segment from `before` and the one to `after`; z is 1
+// where a point shows (see `point_screen`). Both segments meeting at a point compute it from the
+// same three points, so they split its pixels along the same line.
+fn joint(before: vec3f, at: vec3f, after: vec3f) -> Joint {
+    let into = at.xy - before.xy;
+    let onward = after.xy - at.xy;
+    let lengths = vec2f(length(into), length(onward));
+    let u = into / max(lengths.x, 1e-6);
+    let v = onward / max(lengths.y, 1e-6);
+    let straight = 1.0 + dot(u, v);
+    // A select, not `&`: Metal writes the struct below as a brace initializer (see `segment_of` in
+    // `draw/strokes.wesl`).
+    let shown = min(before.z, min(at.z, after.z)) > 0.0;
+    let through = select(false, all(lengths > vec2f(1e-3)) & (straight > 1e-3), shown);
+    return Joint(u + v, abs(u.x * v.y - u.y * v.x) / max(straight, 1e-3), min(lengths.x, lengths.y), through);
+}
+
+// The joints at the two ends of the segment `points` holds.
+fn segment_joints(points: SegmentPoints) -> Joints {
+    let a = point_screen(points.ends.a);
+    let b = point_screen(points.ends.b);
+    let start = joint(point_screen(points.before), a, b);
+    let end = joint(a, b, point_screen(points.after));
+    return Joints(
+        vec4f(start.normal, end.normal),
+        vec2f(start.turn, end.turn),
+        vec2f(start.room, end.room),
+        vec2<bool>(start.through, end.through)
+    );
+}
+
+// Point `p` on screen in CSS pixels, with z 1 where it shows in front of the near plane, else 0. It
+// projects as `on_screen` projects a segment's ends, so segments meeting at a point find it at the
+// same place.
+fn point_screen(p: PathPoint) -> vec3f {
+    let c = path_clip(p);
+    return vec3f(to_screen(c), select(0.0, 1.0, p.shown & (c.w > 0.0) & (c.z <= c.w)));
+}
+
+fn path_clip(p: PathPoint) -> vec4f {
+    if PATH == PATH_TRACE { return plot_clip(p.hi, p.lo); }
+    return clip_of(world(p.hi, p.lo, p.z));
 }
 
 // Whether segment `s` ends a part of its row's path: the path's last segment, or one before a
@@ -566,7 +697,11 @@ fn in_front(ca: vec4f, cb: vec4f) -> vec2f {
 
 // Segment `s` on screen: the part in front of the near plane, with `kept` giving the drawn part.
 fn segment_screen(s: Segment) -> OnScreen {
-    let ends = segment_ends(s);
+    return on_screen(segment_ends(s));
+}
+
+// The segment between `ends` on screen (see `segment_screen`).
+fn on_screen(ends: PathEnds) -> OnScreen {
     var out: OnScreen;
     out.ends = ends;
     if !ends.a.shown | !ends.b.shown { return out; }
