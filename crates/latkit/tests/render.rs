@@ -1232,21 +1232,7 @@ fn comets_scene(units: bool, speed: Option<f64>) -> Scene {
 
 /// The x of each comet head along pixel row `y`: the reddest pixel of each run of red.
 fn heads(pixels: &[[u8; 4]], y: u32) -> Vec<u32> {
-    let red = |x: u32| at(pixels, x, y)[0];
-    let mut heads = Vec::new();
-    let mut x = 0;
-    while x < SIZE {
-        if red(x) <= 60 {
-            x += 1;
-            continue;
-        }
-        let start = x;
-        while x < SIZE && red(x) > 60 {
-            x += 1;
-        }
-        heads.extend((start..x).max_by_key(|&x| red(x)));
-    }
-    heads
+    common::heads_along(pixels, [0.0, y as f32], [(SIZE - 1) as f32, y as f32])
 }
 
 #[test]
@@ -1258,6 +1244,8 @@ fn comets_run_wider_than_their_line() {
     // Comets never settle, so render a few frames instead of waiting.
     let pixels = (0..3).map(|_| step(&gpu, &mut view)).last().expect("frames");
     assert!(view.needs_render(), "comets travel every frame");
+    // A frame where only comets moved starts from the still, which holds the backdrop and the line.
+    assert_eq!(view.stats().draws, 2, "such a frame draws the still and the comets");
     let beside = red(&pixels, c + 2);
     assert!(beside > 0 && beside < 60, "comets reach past the line, spaced apart: {beside} of 90 pixels");
     assert_eq!(red(&pixels, c + 6), 0, "and no further than their width");

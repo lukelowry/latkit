@@ -4,7 +4,7 @@
 // marker's opaque pixels before any pixel blends, keeping their depth, so the nearest marker shows.
 // The custom variants call an application's `marker`, and the shaded variants its `shade`.
 
-import package::lib::types::{STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON};
+import package::lib::types::{STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON, DRAW_OPAQUE};
 import package::lib::bind::{mark, ramp, program, focused};
 import package::lib::state::row_inputs;
 import package::lib::hooks::{MarkerColor, MarkerFragment};
@@ -124,7 +124,7 @@ fn colored(v: Varyings) -> MarkerColor {
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let c = premultiplied(colored(v));
-    if (mark.opaque != 0u) & (c.a < OPAQUE) {
+    if (mark.draw == DRAW_OPAQUE) & (c.a < OPAQUE) {
         discard;
     }
     return output(c);

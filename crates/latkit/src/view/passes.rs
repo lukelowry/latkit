@@ -44,15 +44,15 @@ fn overlap(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     [x, y, right.saturating_sub(x), bottom.saturating_sub(y)]
 }
 
-/// Begins the main render pass: cleared to `background`, drawn into `view` and resolved into
-/// `resolve` when multisampling, with depth stored only when `probing` reads it.
+/// Begins a render pass: cleared to `background`, drawn into `view` and resolved into `resolve`
+/// when multisampling, with depth as `depth_ops` say.
 fn main_pass<'e>(
     encoder: &'e mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
     resolve: Option<&wgpu::TextureView>,
     depth: &wgpu::TextureView,
     background: [f64; 4],
-    probing: bool,
+    depth_ops: wgpu::Operations<f32>,
 ) -> wgpu::RenderPass<'e> {
     let [r, g, b, a] = background;
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -68,16 +68,22 @@ fn main_pass<'e>(
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
             view: depth,
-            depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Clear(0.0),
-                store: if probing { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
-            }),
+            depth_ops: Some(depth_ops),
             stencil_ops: None,
         }),
         timestamp_writes: None,
         occlusion_query_set: None,
         multiview_mask: None,
     })
+}
+
+/// Depth that starts cleared, or as the pass before left it when `kept`, and is stored for what
+/// reads it later when `stored`.
+fn depth_ops(kept: bool, stored: bool) -> wgpu::Operations<f32> {
+    wgpu::Operations {
+        load: if kept { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) },
+        store: if stored { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+    }
 }
 
 /// The draws a frame recorded and the instances they draw. For a draw whose segment list counts its
@@ -116,8 +122,11 @@ struct Marks<'a> {
     samples: u32,
     groups: &'a super::resources::Groups,
     passes: &'a [(Shader, wgpu::BindGroup)],
-    /// The number of marks, after whose uniforms come their copies for opaque draws.
+    /// The number of marks, after whose uniforms come their copies for opaque draws, then for
+    /// comets draws.
     count: usize,
+    /// Whether depth varies, so opaque pixels draw first.
+    layered: bool,
 }
 
 impl Marks<'_> {
@@ -129,6 +138,21 @@ impl Marks<'_> {
         pass.set_bind_group(2, group, &[]);
         pass.set_pipeline(&inner.pipelines.render(self.device, variant));
         drawn.draw(pass, 3, 1);
+    }
+
+    /// Draws the still over the whole target. It reads neither shared group, so the empty group
+    /// stands in for both, and the shared groups are set again after it.
+    fn still(&self, pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, inner: &mut Inner) {
+        let group = &self.passes.iter().find(|(shader, _)| *shader == Shader::Still).expect("listed").1;
+        pass.set_bind_group(0, &inner.pipelines.empty, &[]);
+        pass.set_bind_group(1, &inner.pipelines.empty, &[]);
+        pass.set_bind_group(2, group, &[]);
+        pass.set_pipeline(
+            &inner.pipelines.render(self.device, Variant::draw(Shader::Still, self.format, self.samples)),
+        );
+        drawn.draw(pass, 3, 1);
+        pass.set_bind_group(0, &self.groups.view, &[]);
+        pass.set_bind_group(1, &self.groups.mark, &[0]);
     }
 
     fn opaque(
@@ -145,8 +169,62 @@ impl Marks<'_> {
         }
     }
 
-    /// Draws mark `i`: every instance, only the rows its focus lights, glowing, or every
-    /// instance's opaque pixels.
+    /// Draws the rows of marks `range` in order, each followed by its comets when `comets` says
+    /// they draw apart. Where depth varies, areas drew whole with the opaque pixels.
+    fn rows(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        marks: &[super::marks::Shown],
+        range: Range<usize>,
+        comets: bool,
+    ) {
+        for i in range {
+            let shown = &marks[i];
+            if !shown.drawable() || shown.instances() == 0 {
+                continue;
+            }
+            if !(self.layered && shown.kind().opaque_whole()) {
+                self.draw(pass, drawn, inner, i, shown, Draw::Rows);
+            }
+            if comets && shown.mark.flows() {
+                self.draw(pass, drawn, inner, i, shown, Draw::Comets);
+            }
+        }
+    }
+
+    /// Draws depth again at one sample a pixel into `targets`, over the scissor rectangle `read` a
+    /// probe reads, where a frame multisamples: the backdrop's, and where depth varies, that of the
+    /// opaque pixels of `marks` within `clip`.
+    #[expect(clippy::too_many_arguments, reason = "a pass over the frame's shared state")]
+    fn replay(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        (color, depth): &(wgpu::TextureView, wgpu::TextureView),
+        read: [u32; 4],
+        clip: Option<[u32; 4]>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        marks: &[super::marks::Shown],
+    ) {
+        let mut pass = main_pass(encoder, color, None, depth, [0.0; 4], depth_ops(false, true));
+        let replayed = Marks { samples: 1, ..*self };
+        let shows = |[_, _, w, h]: [u32; 4]| w > 0 && h > 0;
+        if shows(read) {
+            let [x, y, w, h] = read;
+            pass.set_scissor_rect(x, y, w, h);
+            replayed.backdrop(&mut pass, drawn, inner);
+            let [x, y, w, h] = clip.map_or(read, |clip| overlap(clip, read));
+            if self.layered && shows([x, y, w, h]) {
+                pass.set_scissor_rect(x, y, w, h);
+                replayed.opaque(&mut pass, drawn, inner, marks);
+            }
+        }
+    }
+
+    /// Draws mark `i`: every instance, only the rows its focus lights, glowing, every instance's
+    /// opaque pixels, or every instance's comets.
     fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -170,8 +248,13 @@ impl Marks<'_> {
         let Some(pipeline) = pipeline else { return };
         let corners = shown.kind().primitive().corners();
         let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
-        // An opaque draw shares the rows' program and binds the copy of the uniform that says so.
-        let at = if draw == Draw::Opaque { self.count + i } else { i };
+        // An opaque draw and a comets draw share the rows' program and bind the copy of the uniform
+        // that says which they are.
+        let at = match draw {
+            Draw::Opaque => self.count + i,
+            Draw::Comets => 2 * self.count + i,
+            Draw::Rows | Draw::Lit => i,
+        };
         pass.set_bind_group(1, &self.groups.mark, &[offset(at)]);
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(2, group, &[]);
@@ -192,10 +275,13 @@ struct Work {
     resolved: Vec<usize>,
     /// Marks whose ease pass writes their shown state from their frozen and settled words.
     eased: Vec<usize>,
+    /// Marks whose segment lists build, and those whose lists only measure their distances along
+    /// again on screen.
     segments: Vec<usize>,
+    lengths: Vec<usize>,
     measured: Vec<usize>,
     /// Marks whose comets carry their travel over to rows a transition moved. `travelled` lists
-    /// marks whose comets move this frame.
+    /// marks whose rows' travel catches up this frame.
     carried: Vec<usize>,
     travelled: Vec<usize>,
     /// Marks whose drawn rows' words are rebuilt from their runs.
@@ -223,8 +309,27 @@ fn listed(shown: &super::marks::Shown) -> Vec<u32> {
     blocks
 }
 
+/// The shaders whose pass groups a frame binds, each group built once per resource generation: the
+/// backdrop, text, and overlay, the still when the view keeps one, and each mark's.
+fn pass_shaders(marks: &[super::marks::Shown], space: &crate::Space, still: bool) -> Vec<Shader> {
+    let mut shaders = vec![Shader::Backdrop, Shader::Glyphs, Shader::Overlay];
+    if still {
+        shaders.push(Shader::Still);
+    }
+    for shown in marks {
+        let variants = MarkVariants::shown(shown, space);
+        for draw in [Draw::Rows, Draw::Lit] {
+            let shader = variants.shader(draw);
+            if !shaders.contains(&shader) {
+                shaders.push(shader);
+            }
+        }
+    }
+    shaders
+}
+
 /// Uniform `index`'s dynamic offset in the marks' uniforms: mark `index`'s, or past the last mark,
-/// the copy for an opaque draw.
+/// the copies for its opaque draw, then for its comets.
 pub(super) fn offset(index: usize) -> u32 {
     (index as u64 * MARK_STRIDE) as u32
 }
@@ -344,25 +449,30 @@ impl View {
             resolved,
             eased,
             segments,
+            lengths,
             measured,
             carried,
             travelled,
             expanded,
             ordered,
         } = self.work(measure, travel, input);
-        let all = [&frozen, &work, &resolved, &eased, &segments, &measured, &carried, &travelled, &expanded, &ordered];
+        let all = [
+            &frozen, &work, &resolved, &eased, &segments, &lengths, &measured, &carried, &travelled, &expanded,
+            &ordered,
+        ];
         if all.iter().all(|marks| marks.is_empty()) {
             return None;
         }
         self.start_domains(&work);
         inner.arena.written();
+        // Comets catch up first, while their rows still hold the flows they traveled at.
+        self.state_rows(encoder, inner, "travel", &travelled);
         self.state_rows(encoder, inner, "freeze", &frozen);
         self.state_rows(encoder, inner, "carry", &carried);
         self.state_rows(encoder, inner, "evaluate", &work);
         self.state_rows(encoder, inner, "ends", &resolved);
         self.state_rows(encoder, inner, "ease", &eased);
-        self.state_rows(encoder, inner, "travel", &travelled);
-        self.record_lists(encoder, inner, &expanded, &segments, &ordered);
+        self.record_lists(encoder, inner, &expanded, [&segments, &lengths], &ordered);
         let resources = self.resources.as_mut().expect("frame resources");
         let extent_words = self.marks.len() as u32 * wgsl::EXTENT_WORDS;
         let groups = resources.groups(&gpu.0, inner);
@@ -420,8 +530,8 @@ impl View {
     }
 
     /// Chooses the marks each raster step covers this frame: freezing, evaluation, endpoint
-    /// resolution, easing, segment counting, measuring, comet carry, run expansion,
-    /// height order sorting, and with `travel`, comet travel.
+    /// resolution, easing, segment counting and lengths, measuring, comet carry, run expansion,
+    /// height order sorting, and with `travel`, writing how far comets have traveled.
     fn work(&mut self, measure: bool, travel: bool, input: bool) -> Work {
         let frozen = (0..self.marks.len()).filter(|&i| self.marks[i].remap != wgsl::NONE).collect();
         for shown in &mut self.marks {
@@ -456,6 +566,7 @@ impl View {
             }
         }
         let segments = self.segments_due();
+        let lengths = self.lengths_due(&segments);
         let measured = (0..self.marks.len())
             .filter(|&i| measure && self.marks[i].drawable() && self.marks[i].measured())
             .collect();
@@ -465,7 +576,19 @@ impl View {
         let expanded = self.drawn_rows_due();
         // After the versions above move and the segment lists are stamped.
         let ordered = self.height_orders_due(input);
-        Work { frozen, evaluated: work, resolved, eased, segments, measured, carried, travelled, expanded, ordered }
+        Work {
+            frozen,
+            evaluated: work,
+            resolved,
+            eased,
+            segments,
+            lengths,
+            measured,
+            carried,
+            travelled,
+            expanded,
+            ordered,
+        }
     }
 
     /// Writes the blocks buffer, which each mark's uniform points into. For each mark, it lists the
@@ -548,12 +671,14 @@ impl View {
     }
 
     /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark
-    /// in scene order, and the lit rows. Once the text pipelines are ready, it also builds the
-    /// distance fields of text set this frame, and draws the labels and the overlay's
+    /// in scene order with its comets, and the lit rows. Once the text pipelines are ready, it also
+    /// builds the distance fields of text set this frame, and draws the labels and the overlay's
     /// `[under, sprites]` sprites, the first `under` before the marks. `depth` is the area where
     /// a probe or query of this frame reads depth, if any does: depth is then stored, and where the
     /// frame multisamples, drawn again over that area at one sample a pixel, which WebGL2 can
-    /// read. While the camera is unplaced, it only clears.
+    /// read. In a frame where only comets moved, what comes before the first mark's comets is the
+    /// still: the first such frame draws it in a pass of its own, and the frames after start from
+    /// it (see `still_until`). While the camera is unplaced, it only clears.
     pub(super) fn draw(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -574,24 +699,20 @@ impl View {
             if self.signal.transparent() { [0.0; 4] } else { self.scene.theme.background.to_array().map(f64::from) };
         let clip = self.drawn_area().map(|area| scissor(area, frame)).filter(|s| s[2] > 0 && s[3] > 0);
         let samples = self.samples(frame.pixel_ratio);
+        let (unplaced, layered) = (self.unplaced(), self.layered());
+        // While comets alone move, the view keeps a still. A frame where only they moved draws them
+        // apart, from the first mark with comets.
+        let kept = self.still_until().filter(|_| !unplaced);
+        let first = kept.filter(|_| self.comets_only);
         let resources = self.resources.as_mut().expect("created before passes");
         let read = depth.map(|area| scissor(area, frame));
         let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
+        let still = resources.still(device, kept.is_some());
         let groups = resources.groups(&gpu.0, inner);
-        // The pass groups of the shaders this frame draws with, each built once per resource
-        // generation: the backdrop, text, and overlay, and each mark's.
-        let mut shaders = vec![Shader::Backdrop, Shader::Glyphs, Shader::Overlay];
-        for shown in &self.marks {
-            let variants = MarkVariants::shown(shown, &self.scene.space);
-            for draw in [Draw::Rows, Draw::Lit] {
-                let shader = variants.shader(draw);
-                if !shaders.contains(&shader) {
-                    shaders.push(shader);
-                }
-            }
-        }
-        let passes: Vec<(Shader, wgpu::BindGroup)> =
-            shaders.into_iter().map(|shader| (shader, resources.pass(device, inner, shader))).collect();
+        let passes: Vec<(Shader, wgpu::BindGroup)> = pass_shaders(&self.marks, &self.scene.space, still.is_some())
+            .into_iter()
+            .map(|shader| (shader, resources.pass(device, inner, shader)))
+            .collect();
         let pick_targets = read.filter(|_| samples > 1).map(|read| (resources.pick_targets(device), read));
         let group = |shader: Shader| &passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         let (view, resolve) = match &color {
@@ -606,41 +727,18 @@ impl View {
             groups: &groups,
             passes: &passes,
             count: self.marks.len(),
+            layered,
         };
-        if let Some(((pick_color, pick_depth), read)) = &pick_targets {
-            let mut pass = main_pass(encoder, pick_color, None, pick_depth, [0.0; 4], true);
-            let marks = Marks { samples: 1, ..marks };
-            let shows = |[_, _, w, h]: [u32; 4]| w > 0 && h > 0;
-            if !self.unplaced() && shows(*read) {
-                let [x, y, w, h] = *read;
-                pass.set_scissor_rect(x, y, w, h);
-                marks.backdrop(&mut pass, drawn, inner);
-                let [x, y, w, h] = clip.map_or(*read, |clip| overlap(clip, *read));
-                if self.layered() && shows([x, y, w, h]) {
-                    pass.set_scissor_rect(x, y, w, h);
-                    marks.opaque(&mut pass, drawn, inner, &self.marks);
-                }
-            }
+        // Until a fit places the camera, the replayed depth only clears.
+        if let Some((targets, read)) = &pick_targets {
+            let read = if unplaced { [0; 4] } else { *read };
+            marks.replay(encoder, targets, read, clip, drawn, inner, &self.marks);
         }
-        let mut pass = main_pass(encoder, view, resolve, &depth, background, read.is_some());
-        // Until a fit places the camera, frames show only the background.
-        if self.unplaced() {
-            return;
-        }
-        marks.backdrop(&mut pass, drawn, inner);
         let overlay = |pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, inner: &mut Inner, sprites: Range<u32>| {
             pass.set_pipeline(&inner.pipelines.render(device, Variant::draw(Shader::Overlay, frame.format, samples)));
             pass.set_bind_group(2, group(Shader::Overlay), &[]);
             drawn.draw_range(pass, 4, sprites);
         };
-        if under > 0 {
-            overlay(&mut pass, drawn, inner, 0..under);
-        }
-
-        // Marks and their labels draw only where no guide on a side takes room.
-        if let Some([x, y, w, h]) = clip {
-            pass.set_scissor_rect(x, y, w, h);
-        }
         // Where depth varies, opaque pixels draw first and keep their depth: those of points and
         // strokes, and areas whole. Every other pixel then blends over them in mark order,
         // only in front of what is drawn: antialiased edges, marks too thin to cover a pixel, and
@@ -648,16 +746,51 @@ impl View {
         // different heights, they blend lowest first, which is farthest first where they overlap.
         // So the nearest opaque pixel shows whatever the order of the marks, a partly covered pixel
         // blends over what lies behind it, never over the background, and a nearer thin row blends
-        // over the rows behind it.
-        let layered = self.layered();
-        if layered {
-            marks.opaque(&mut pass, drawn, inner, &self.marks);
-        }
-        for (i, shown) in self.marks.iter().enumerate() {
-            if !shown.drawable() || shown.instances() == 0 || (layered && shown.kind().opaque_whole()) {
-                continue;
+        // over the rows behind it. Rows paint their comets with their lines. Marks and their labels
+        // draw only where no guide on a side takes room.
+        let start = |pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, inner: &mut Inner, rows_of: usize| {
+            marks.backdrop(pass, drawn, inner);
+            if under > 0 {
+                overlay(pass, drawn, inner, 0..under);
             }
-            marks.draw(&mut pass, drawn, inner, i, shown, Draw::Rows);
+            if let Some([x, y, w, h]) = clip {
+                pass.set_scissor_rect(x, y, w, h);
+            }
+            if layered {
+                marks.opaque(pass, drawn, inner, &self.marks);
+            }
+            marks.rows(pass, drawn, inner, &self.marks, 0..rows_of, false);
+        };
+        // A frame where only comets moved draws marks' comets apart, each over its rows, on its own
+        // lines and in front of what is drawn. What it draws up to the first mark's comets is the
+        // still, depth included: the first such frame after a change draws it in a pass of its
+        // own, and the frames after start from it. Until a fit places the camera, frames show only
+        // the background.
+        let from = first.zip(still.as_ref());
+        if let Some((first, (still, fresh))) = from
+            && (*fresh || !self.still_drawn)
+        {
+            let (target, resolved) = color.as_ref().map_or((still, None), |color| (color, Some(still)));
+            let mut pass = main_pass(encoder, target, resolved, &depth, background, depth_ops(false, true));
+            start(&mut pass, drawn, inner, first + 1);
+        }
+        self.still_drawn = from.is_some();
+        let from = from.map(|(first, _)| first);
+        // Depth is kept for the next frame that starts from the still, and for probes.
+        let ops = depth_ops(from.is_some(), from.is_some() || read.is_some());
+        let mut pass = main_pass(encoder, view, resolve, &depth, background, ops);
+        if unplaced {
+            return;
+        }
+        if let Some(first) = from {
+            marks.still(&mut pass, drawn, inner);
+            if let Some([x, y, w, h]) = clip {
+                pass.set_scissor_rect(x, y, w, h);
+            }
+            marks.draw(&mut pass, drawn, inner, first, &self.marks[first], Draw::Comets);
+            marks.rows(&mut pass, drawn, inner, &self.marks, first + 1..self.marks.len(), true);
+        } else {
+            start(&mut pass, drawn, inner, self.marks.len());
         }
         // Lit rows draw again, glowing, over every mark but labels, and where depth varies, over all
         // but the opaque rows nearer than them. They draw once their pipelines have compiled.

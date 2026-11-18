@@ -166,6 +166,31 @@ pub fn at(pixels: &[[u8; 4]], x: u32, y: u32) -> [u8; 4] {
     pixels[(y * SIZE + x) as usize]
 }
 
+/// Where comet heads lie on the screen line from `a` to `b`, in pixels from `a`: the reddest pixel
+/// of each run of red, stepping a pixel at a time.
+pub fn heads_along(pixels: &[[u8; 4]], a: [f32; 2], b: [f32; 2]) -> Vec<u32> {
+    let steps = (b[0] - a[0]).hypot(b[1] - a[1]).round() as u32;
+    let red = |i: u32| {
+        let t = i as f32 / steps.max(1) as f32;
+        let [x, y] = [0, 1].map(|k| (a[k] + (b[k] - a[k]) * t).round().clamp(0.0, (SIZE - 1) as f32) as u32);
+        at(pixels, x, y)[0]
+    };
+    let mut heads = Vec::new();
+    let mut i = 0;
+    while i <= steps {
+        if red(i) <= 60 {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i <= steps && red(i) > 60 {
+            i += 1;
+        }
+        heads.extend((start..i).max_by_key(|&i| red(i)));
+    }
+    heads
+}
+
 pub fn close(a: [u8; 4], b: [u8; 4]) -> bool {
     a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3)
 }

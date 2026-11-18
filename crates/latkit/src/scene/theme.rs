@@ -187,7 +187,8 @@ pub struct FocusTheme {
 }
 
 /// How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
-/// tail that thins and fades.
+/// tail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a
+/// thin rim of the background color ahead of its head, which parts it from the line.
 ///
 /// `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
 /// In position units (degrees on the earth), comets scale with the zoom and stay in place along

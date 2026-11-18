@@ -286,6 +286,9 @@ pub(crate) fn mark(
         if shown.geodesic {
             mark.flags |= wgsl::GEODESIC;
         }
+        if shown.along_units {
+            mark.flags |= wgsl::ALONG_UNITS;
+        }
     }
     mark
 }

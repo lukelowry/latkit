@@ -874,7 +874,7 @@ impl View {
 
     /// Whether a touch or pen is pressed while long presses open menus, so frames keep running to
     /// detect a long press.
-    pub(super) fn holding(&self) -> bool {
+    pub(crate) fn holding(&self) -> bool {
         matches!(self.gestures.now, Gesture::Press { released: false, trigger, .. }
             if matches!(trigger.device, Device::Touch | Device::Pen))
             && !self.scene.controls.press.is_zero()

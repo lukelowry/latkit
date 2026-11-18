@@ -390,6 +390,13 @@ rows pick, select, and drag. These options control the view itself.
   options that read `elapsed`. `system` follows the user's reduced-motion setting, `full` animates
   everything, and `reduced` animates only motion the user drives. Defaults to `system`.
 
+{#controls-fps .member}
+**`fps`**`?: number` [¶](#controls-fps){.headerlink}
+: The most frames a second a view in a canvas draws while the only thing moving is motion that
+  never settles: comets, an orbit, and options that read `elapsed`. Any other change draws on the
+  next display frame, and that motion with it. Lower it to spend less GPU time and send fewer
+  frames to a remote screen. Defaults to 60.
+
 {#controls-reach .member}
 **`reach`**`?:` [`Reach`](#reach) [¶](#controls-reach){.headerlink}
 : How far the camera may go from what fits have framed. Defaults to `fit`.
@@ -893,7 +900,8 @@ Defaults for areas.
 `interface FlowTheme`
 
 How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
-tail that thins and fades.
+tail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a
+thin rim of the background color ahead of its head, which parts it from the line.
 
 `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
 In position units (degrees on the earth), comets scale with the zoom and stay in place along

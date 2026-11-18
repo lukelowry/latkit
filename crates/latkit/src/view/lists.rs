@@ -27,14 +27,17 @@ use crate::{Mark, Space};
 
 /// A listed mark's segment list (see `Shown::listed`), used when its rows have different numbers
 /// of segments, or for areas, of triangles: where it lies, a stamp of its last build's inputs (the
-/// list, the paths, and for great circles where the vertices are drawn), and its count. Each entry
-/// is a segment's row and distance along its path, or an area's row and prepared corner address.
-/// A curved mark's count is read back,
-/// one readback at a time, and its list grows to fit what was found.
+/// list, the paths, and for great circles where the vertices are drawn), a stamp of what its
+/// distances along were last measured from, and its count. Each entry is a segment's row and
+/// distance along its path, or an area's row and prepared corner address. Distances along are in
+/// position units for comets spaced in them, and otherwise in CSS pixels on screen, measured again
+/// as the projection changes. A curved mark's count is read back, one readback at a time, and its
+/// list grows to fit what was found.
 #[derive(Default)]
 pub(crate) struct Segments {
     pub(crate) list: Option<List>,
     pub(crate) built: u64,
+    measured: u64,
     pub(crate) found: Derived<u32>,
 }
 
@@ -193,17 +196,18 @@ impl List {
 }
 
 impl View {
-    /// Builds only invalidated lists. Every intermediate stays on the GPU, and persistent lists
-    /// are updated by ordered copies from shared scratch, avoiding sampled/attached aliases.
+    /// Builds only invalidated lists, and measures again the distances along of the segment lists of
+    /// `lengths`. Every intermediate stays on the GPU, and persistent lists are updated by ordered
+    /// copies from shared scratch, avoiding sampled/attached aliases.
     pub(super) fn record_lists(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         expanded: &[usize],
-        segments: &[usize],
+        [segments, lengths]: [&[usize]; 2],
         ordered: &[usize],
     ) {
-        if expanded.is_empty() && segments.is_empty() && ordered.is_empty() {
+        if expanded.is_empty() && segments.is_empty() && lengths.is_empty() && ordered.is_empty() {
             return;
         }
         let gpu = self.gpu.clone();
@@ -250,6 +254,10 @@ impl View {
                     areas: shown.kind() == MarkKind::Areas,
                 },
             );
+        }
+        for &i in lengths {
+            let list = self.marks[i].segments.list.expect("segment list");
+            inner.listing.measure(&mut raster, &input(i), list.kept, list.entries);
         }
         for &i in ordered {
             let order = &self.marks[i].height_order;
@@ -413,14 +421,57 @@ impl View {
                 (generation(c.drawing.geometry), generation(c.drawing.lane), ends)
             });
             let drawn = shown.drawing().map(|d| d.made);
-            let stamp =
-                stamp_of((list.header, list.items, list.kept, tables, generation, arcs, drawn, measured, shown.fans));
+            let units = shown.along_units;
+            let stamp = stamp_of((
+                list.header,
+                list.items,
+                list.kept,
+                tables,
+                generation,
+                arcs,
+                drawn,
+                measured,
+                shown.fans,
+                units,
+            ));
             if stamp != shown.segments.built {
                 shown.segments.built = stamp;
                 due.push(i);
             }
         }
         due
+    }
+
+    /// The marks whose segment lists measure their distances along again, as the projection
+    /// changed: those that dash, or carry comets spaced in CSS pixels, which measure on screen.
+    /// A list `built` this frame measures as it builds.
+    pub(super) fn lengths_due(&mut self, built: &[usize]) -> Vec<usize> {
+        let screen = self.screen_stamp();
+        let mut due = Vec::new();
+        for (i, shown) in self.marks.iter_mut().enumerate() {
+            if shown.segments.list.is_none() || !shown.drawable() || !shown.measures_paths() || shown.along_units {
+                continue;
+            }
+            let stamp = stamp_of((shown.segments.built, screen));
+            if stamp != shown.segments.measured {
+                shown.segments.measured = stamp;
+                if !built.contains(&i) {
+                    due.push(i);
+                }
+            }
+        }
+        due
+    }
+
+    /// A stamp of what the lengths of segments on screen depend on: the projection and the view's
+    /// size, and where depth varies, the camera's center, which brings rows nearer or farther. On a
+    /// map seen straight down, panning changes no length.
+    fn screen_stamp(&self) -> u64 {
+        let projected = self.projected();
+        let matrix = projected.clip_from_world.to_cols_array().map(|v| (v as f32).to_bits());
+        let center = self.deep().then(|| projected.center.map(f64::to_bits));
+        let shape = [projected.globe, projected.parallax, self.size[0], self.size[1]].map(f64::to_bits);
+        stamp_of((matrix, shape, center))
     }
 
     /// Reads curved marks' counts without blocking. Great-circle reservations grow when needed;

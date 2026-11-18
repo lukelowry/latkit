@@ -44,6 +44,16 @@ fn to_linear(c: vec3f) -> vec3f {
     return select(pow((c + 0.055) / 1.055, vec3f(2.4)), c / 12.92, c <= vec3f(0.04045));
 }
 
+// The relative luminance of a color in linear light, and the contrast ratio between two, as WCAG
+// defines them (see `legible` in `src/expr/ramp.rs`).
+fn luminance(linear: vec3f) -> f32 {
+    return dot(linear, vec3f(0.2126, 0.7152, 0.0722));
+}
+
+fn contrast(a: f32, b: f32) -> f32 {
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05);
+}
+
 // A premultiplied fragment color prepared for the target. sRGB values convert to linear when the
 // target stores linear color.
 fn output(premultiplied: vec4f) -> vec4f {

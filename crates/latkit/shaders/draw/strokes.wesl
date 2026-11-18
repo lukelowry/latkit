@@ -2,11 +2,13 @@
 // covers the stroke, or its comets where they are wider, any arrowhead, and one pixel of
 // antialiased edge. Where a path runs on through a segment's end, its quad stops a pixel past the
 // line splitting that end with the next segment. The last segment of each part of a path draws the
-// arrowhead. The focus variant
-// redraws the lit rows' segments over everything, with quads enlarged for their glow. The shaded
-// variants call an application's `shade` for each pixel.
+// arrowhead. In a frame where only comets moved, a mark's comets draw after its rows with the same
+// quads, through the copy of its uniform for `DRAW_COMETS`, so they meet the depth its rows drew
+// exactly. The focus variant
+// redraws the lit rows' segments over everything, comets included, with quads enlarged for their
+// glow. The shaded variants call an application's `shade` for each pixel.
 
-import package::lib::types::{ARROWS, PATH_TRACE};
+import package::lib::types::{ARROWS, PATH_TRACE, ALONG_UNITS, DRAW_OPAQUE, DRAW_COMETS};
 import package::lib::path::PATH;
 import package::lib::bind::{frame, mark, eye};
 import package::lib::project::{to_clip, nearer, culled};
@@ -18,7 +20,7 @@ import package::lib::marker::glow;
 import package::lib::shade::shade_fragment;
 import package::lib::focus::focus_of;
 import package::lib::mark::{coverage, fringe, px_per_length};
-import package::lib::stroke::{Stroke, gap, stroke_paint, painted, stroke_distance, owns};
+import package::lib::stroke::{Stroke, gap, stroke_paint, painted, stroke_distance, owns, rims, COMET_RIM};
 import package::lib::daylight::daylight;
 import package::lib::color::{output, OPAQUE};
 import package::lib::lists::list_total;
@@ -37,8 +39,8 @@ struct Varyings {
     @location(1) color: vec4f,
     // Width, distance along at `a` and at `b` in CSS pixels, and flow.
     @location(2) @interpolate(flat) style: vec4f,
-    // x: bit 0 is an arrowhead, bit 1 dashes, bits 2 and 3 a shared end at `a` and at `b`. y: focus
-    // bits for the glow. z: the held row, whose inputs a shade reads.
+    // x: bit 0 is an arrowhead, bit 1 dashes, bits 2 and 3 a shared end at `a` and at `b`, bit 4
+    // comets with a rim. y: focus bits for the glow. z: the held row, whose inputs a shade reads.
     @location(3) @interpolate(flat) bits: vec3u,
     // Distance along at `a` and at `b` in position units, and how far the row's comets have
     // traveled.
@@ -90,7 +92,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let normal = vec2f(-dir.y, dir.x);
     let arrow = (PATH != PATH_TRACE) & ((mark.flags & ARROWS) != 0u) & ends_part(s);
     let head = select(0.0, frame.arrow + width, arrow);
-    let comets = select(0.0, 0.5 * frame.flow_width, PAINTED & (style.flow != 0.0) & (frame.flow.a > 0.0));
+    let flows = PAINTED & (style.flow != 0.0) & (frame.flow.a > 0.0);
+    let comets = select(0.0, 0.5 * max(frame.flow_width, width) + COMET_RIM, flows);
     // How far the stroke, its comets, and any glow reach from its middle. An arrowhead reaches
     // further.
     let across = max(0.5 * width, comets) + select(0.0, frame.glow, lit) + fringe();
@@ -115,31 +118,35 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     let light = daylight(mix(path_position(ends.a).xy, path_position(ends.b).xy, f));
     out.color = vec4f(color.rgb * light, color.a);
-    // In position units, a segment's distance along starts where its list says (0 without a list),
-    // and its ends stop short where the stroke does. A fan has no length there, so it takes its
-    // length on screen, up to where its path starts or on from where it ends. On screen, a trace
-    // measures along x, a listed path converts its distance along to pixels, and any other segment
-    // starts at 0.
+    // A segment's distance along starts where its list says (0 without a list), and its drawn part
+    // covers part of the path's segment it draws or runs beside: in position units, `kept` of its
+    // length between its points, else in CSS pixels, `visible` of its `chord` on screen, which is
+    // what its list measured. A fan stands for an end of that segment (see `on_screen`). The list
+    // gives a fan no length, so a fan into the last vertex, listed after its path, starts a segment
+    // back. A trace measures along x on screen. Comets in position units place themselves by
+    // `along`, and everything else by `phase`, in CSS pixels: where the mark measures in units, a
+    // dash converts `along` at the camera's center.
     var along = vec2f(0.0);
     var phase = vec2f(0.0);
     if PAINTED {
         if style.dash | (style.flow != 0.0) {
             let pixels = length(b - a);
-            let fan = pixels / max(px_per_length(), 1e-12);
-            let fanned = select(vec2f(-fan, 0.0), vec2f(0.0, fan), on.fan == 2u);
-            along = s.along + path_length(ends.a, ends.b) * on.kept + select(vec2f(0.0), fanned, on.fan != 0u);
-            phase = vec2f(0.0, pixels);
+            let units = (mark.flags & ALONG_UNITS) != 0u;
+            let span = select(on.chord, path_length(ends.a, ends.b), units);
+            along = s.along - select(0.0, span, on.fan == 2u) + span * select(on.visible, on.kept, units);
+            phase = select(along, along * px_per_length(), units);
             if PATH == PATH_TRACE {
                 phase = vec2f(a.x, a.x + pixels);
-            } else if mark.per_row == NONE {
-                phase = along * px_per_length();
             }
         }
     }
     out.style = vec4f(width, phase, select(0.0, style.flow, PAINTED));
-    out.comet = vec3f(along, select(0.0, style.travel, PAINTED));
+    // Comets move on from where their row's travel was last written, at its flow.
+    out.comet = vec3f(along, select(0.0, style.travel + style.flow * frame.flow_time, PAINTED));
     out.split = joints.split;
-    out.bits.x = u32(arrow) | (u32(PAINTED & style.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u);
+    let rim = flows & rims(color.rgb);
+    out.bits.x = u32(arrow) | (u32(PAINTED & style.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u)
+        | (u32(rim) << 4u);
     if lit { out.bits.y = focus_of(s.row); }
     out.bits.z = s.row;
     return out;
@@ -159,17 +166,21 @@ fn segment_of(v: Varyings) -> Stroke {
     let arrow = select(false, (v.bits.x & 1u) != 0u, PATH != PATH_TRACE);
     let shares = vec2<bool>((v.bits.x & 4u) != 0u, (v.bits.x & 8u) != 0u);
     if !PAINTED {
-        return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color, 0.0, 0.0, false, arrow, v.split, shares);
+        return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color, 0.0, 0.0, false, arrow, v.split, shares, false);
     }
     let dash = (v.bits.x & 2u) != 0u;
-    return Stroke(v.ends.xy, v.ends.zw, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, arrow, v.split, shares);
+    let rim = (v.bits.x & 16u) != 0u;
+    return Stroke(v.ends.xy, v.ends.zw, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, arrow, v.split, shares, rim);
 }
 
 // Where depth varies, a mark draws twice with this one program: first the pixels an opaque row's
-// line covers fully, outside dash gaps, keeping their depth, through the copy of its uniform whose
-// `opaque` is set, then every pixel. Antialiased edges, lines too thin to cover a pixel, and
+// line covers fully, outside dash gaps, keeping their depth, through the copy of its uniform for
+// `DRAW_OPAQUE`, then every pixel. Antialiased edges, lines too thin to cover a pixel, and
 // translucent rows (dimmed by a selection, fading, or of a translucent color) draw in the second
-// pass, over the opaque pixels.
+// pass, over the opaque pixels. Rows paint their comets with their lines, except in a frame where
+// only comets moved, which draws them apart, after the rows, through the copy for `DRAW_COMETS`:
+// on its own lines' depth, and wherever nothing nearer was drawn. The lit draw paints rows and
+// comets at once.
 fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
     let s = segment_of(v);
     let p = pixel(v);
@@ -181,21 +192,25 @@ fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
     // The opaque test, color, and focus glow all use this same distance. Evaluating it once
     // avoids repeating the segment projection and arrowhead geometry for each covered pixel.
     let d = stroke_distance(p, s);
+    // Rows paint their own comets, unless the frame draws them apart (see `comets_apart`).
+    let comets = !LIT_DRAW & (mark.draw == DRAW_COMETS);
+    let color = stroke_paint(d, s, !comets, LIT_DRAW | comets | (frame.comets_apart == 0u));
+    if comets & (color.a <= 0.0) {
+        discard;
+    }
     @if(!shaded) {
         if LIT_DRAW {
-            let color = stroke_paint(d, s);
             let straight = vec4f(color.rgb / max(color.a, 1e-6), color.a);
             return output(glow(MarkerColor(straight, d.x), v.bits.y));
         }
         if opaque & ((s.color.a < OPAQUE) | (coverage(d.x) < 1.0) | gap(d, s)) {
             discard;
         }
-        return output(painted(stroke_paint(d, s)));
+        return output(painted(color));
     }
     @if(shaded) {
         // The shade sees the painted color, straight, and may change its alpha, which the opaque
         // test then reads.
-        let color = stroke_paint(d, s);
         let straight = shade(stroke_fragment(vec4f(color.rgb / max(color.a, 1e-6), color.a), v, s));
         if LIT_DRAW {
             return output(glow(MarkerColor(straight, d.x), v.bits.y));
@@ -218,5 +233,5 @@ fn stroke_fragment(color: vec4f, v: Varyings, s: Stroke) -> ShadeFragment {
 
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return fragment_color(v, !LIT_DRAW & (mark.opaque != 0u));
+    return fragment_color(v, !LIT_DRAW & (mark.draw == DRAW_OPAQUE));
 }

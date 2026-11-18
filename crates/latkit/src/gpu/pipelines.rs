@@ -44,12 +44,13 @@ pub(crate) enum Urgency {
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Draw passes share a shader's program and differ in their fixed depth state. An opaque draw binds
-/// the copy of its mark's uniform that sets `opaque`.
+/// the copy of its mark's uniform that sets `opaque`, and a comets draw the copy that sets `comets`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Draw {
     Rows,
     Lit,
     Opaque,
+    Comets,
 }
 
 /// Fixed geometry projection; shared expression kernels can still read any view.
@@ -516,7 +517,7 @@ pub(crate) struct Pipelines {
 /// The primitive topology of a render shader.
 fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
     match shader {
-        Shader::Backdrop => wgpu::PrimitiveTopology::TriangleList,
+        Shader::Backdrop | Shader::Still => wgpu::PrimitiveTopology::TriangleList,
         _ => wgpu::PrimitiveTopology::TriangleStrip,
     }
 }
@@ -544,11 +545,12 @@ fn opaque(shader: Shader, draw: Draw) -> bool {
 /// A render shader's depth state, with reversed depth. The backdrop writes the globe's depth,
 /// and the opaque draws write that of the opaque pixels of points and strokes. The rows of
 /// points, strokes, and areas draw only in front of what is drawn, so where depth varies they skip
-/// the pixels the opaque draws drew, their own included. Lit rows draw where nothing nearer was
-/// drawn, and the overlay and glyphs ignore depth.
+/// the pixels the opaque draws drew, their own included. Lit rows and comets draw where nothing
+/// nearer was drawn, so comets show on their own lines, and the still, the overlay, and glyphs
+/// ignore depth.
 fn depth(shader: Shader, draw: Draw) -> wgpu::DepthStencilState {
     let compare = match shader {
-        Shader::Backdrop | Shader::Overlay | Shader::Glyphs => wgpu::CompareFunction::Always,
+        Shader::Backdrop | Shader::Still | Shader::Overlay | Shader::Glyphs => wgpu::CompareFunction::Always,
         shader if layered(shader) && draw != Draw::Rows => wgpu::CompareFunction::GreaterEqual,
         shader if layered(shader) => wgpu::CompareFunction::Greater,
         Shader::Areas | Shader::AreasShaded => wgpu::CompareFunction::Greater,

@@ -5,6 +5,13 @@
 import package::lib::bind::frame;
 import package::lib::mark::coverage;
 import package::lib::types::FLOW_UNITS;
+import package::lib::color::{to_linear, luminance, contrast};
+
+// The least contrast a comet keeps with its stroke, as WCAG measures it: its minimum for graphics.
+// A comet whose color has less takes a rim of the background color, `COMET_RIM` CSS pixels wide,
+// ahead of its head, which parts it from the line.
+const COMET_CONTRAST: f32 = 3.0;
+const COMET_RIM: f32 = 1.0;
 
 struct Stroke {
     a: vec2f,
@@ -27,6 +34,14 @@ struct Stroke {
     // whether it shares each end that way (see `Joints` in `lib/path.wesl`).
     split: vec4f,
     shares: vec2<bool>,
+    // Whether its comets take a rim (see `COMET_CONTRAST`).
+    rim: bool,
+}
+
+// Whether comets on a stroke of color `line` (straight) take a rim: the flow color contrasts too
+// little with it.
+fn rims(line: vec3f) -> bool {
+    return contrast(luminance(to_linear(frame.flow.rgb)), luminance(to_linear(line))) < COMET_CONTRAST;
 }
 
 // Whether segment `s` draws its line at pixel `p`. Past an end it shares, the segment beyond draws
@@ -90,12 +105,13 @@ fn covered(d: vec3f, s: Stroke) -> f32 {
     return select(coverage(d.x), 0.0, gap(d, s));
 }
 
-// Coverage of the pixel at `d` by comets. Comets are `frame.flow_spacing` apart, offset by stroke
-// `s`'s travel. Each has a round head `frame.flow_width` wide (at least the stroke's width),
-// brightest at its middle, and a tail `frame.flow_length` long that thins and fades.
-fn comet(d: vec3f, s: Stroke) -> f32 {
+// Coverage of the pixel at `d` by comets (x), and by their rims (y). Comets are
+// `frame.flow_spacing` apart, offset by stroke `s`'s travel. Each has a round head
+// `frame.flow_width` wide (at least the stroke's width), brightest at its middle, and a tail
+// `frame.flow_length` long that thins and fades. A rim rings the front of the head.
+fn comet(d: vec3f, s: Stroke) -> vec2f {
     if s.flow == 0.0 || frame.flow.a <= 0.0 {
-        return 0.0;
+        return vec2f(0.0);
     }
     // The pixel's distance along the line in the comet unit, and CSS pixels per comet unit: CSS
     // pixels, or position units (`FLOW_UNITS`).
@@ -115,19 +131,22 @@ fn comet(d: vec3f, s: Stroke) -> f32 {
     let fade = select(saturate(1.0 - trail / max(frame.flow_length, 1e-6)), 1.0, cap);
     let reach = 0.5 * max(frame.flow_width, s.width) * mix(0.4, 1.0, fade);
     let distance = select(across, length(vec2f(lead * px, across)), cap);
-    return fade * fade * (1.0 - smoothstep(0.35 * reach, reach, distance));
+    let head = 1.0 - smoothstep(0.35 * reach, reach, distance);
+    let rim = saturate(1.0 - smoothstep(reach, reach + COMET_RIM, distance) - head);
+    return fade * fade * vec2f(head, select(0.0, rim, s.rim & cap));
 }
 
-// Premultiplied stroke color. Drawing uses it directly; glow also reads its straight color.
-fn stroke_paint(d: vec3f, s: Stroke) -> vec4f {
-    let line = s.color.a * covered(d, s);
-    if s.flow == 0.0 || frame.flow.a <= 0.0 {
-        return vec4f(s.color.rgb * line, line);
+// Premultiplied color of stroke `s` at the pixel at `d`: its line, where `line` says, then any rim
+// over it in the background color, and the comets over both, where `comets` says. Rows paint both,
+// except in a frame where only comets moved, whose comets draw in a draw of their own.
+fn stroke_paint(d: vec3f, s: Stroke, line: bool, comets: bool) -> vec4f {
+    var paint = select(vec4f(0.0), vec4f(s.color.rgb, 1.0) * (s.color.a * covered(d, s)), line);
+    if !comets || s.flow == 0.0 || frame.flow.a <= 0.0 {
+        return paint;
     }
-    let head = comet(d, s) * frame.flow.a * s.color.a;
-    let alpha = head + line * (1.0 - head);
-    let color = frame.flow.rgb * head + s.color.rgb * line * (1.0 - head);
-    return vec4f(color, alpha);
+    let c = comet(d, s) * (frame.flow.a * s.color.a);
+    paint = vec4f(frame.background.rgb, 1.0) * c.y + paint * (1.0 - c.y);
+    return vec4f(frame.flow.rgb, 1.0) * c.x + paint * (1.0 - c.x);
 }
 
 // Preserve the straight-color path's attenuation at vanishing alpha without dividing each RGB

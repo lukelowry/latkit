@@ -3,7 +3,8 @@
 //! Draw: for each kind of mark, its draw pipelines and the raster passes it needs (for a stroke
 //! mark, those for the path it follows), and each mark's channel pipeline for what its channels
 //! read. Where depth can vary, a mark's opaque draw shares its rows' program, so it costs no
-//! compile. Text: labels, glyphs, the distance fields text is set in, and the overlay. Changes: the
+//! compile, as its comets' draw does. Text: labels, glyphs, the distance fields text is set in, and
+//! the overlay. Changes: the
 //! passes that transitions and comet carry use. Lit: the lit rows' draws. Layers: the height sorts
 //! frames use where depth varies. Fit: the passes measuring rows' extents for a
 //! fit. Input: each kind of mark's probe program, which answers hover, picks, box selection, and
@@ -55,7 +56,8 @@ pub(super) const DIGIT_PASSES: [Variant; 4] = [
 /// Eases a mark in transition from its frozen words toward its settled ones.
 pub(super) const EASE: Variant = Variant::raster(Shader::State, "ease");
 
-/// Moves comets along their rows at this frame's flow.
+/// Writes how far comets have traveled into their rows, before their flows change or their rows
+/// move, and every so often (see `View::comets_travel`).
 pub(super) const TRAVEL: Variant = Variant::raster(Shader::State, "travel");
 
 /// Carries comets' travel over to the rows a transition moved.
@@ -110,7 +112,7 @@ impl MarkVariants {
     pub(super) fn shader(&self, draw: Draw) -> Shader {
         let (every, focus) = self.kind.shaders(self.hooks.marker.is_some(), self.hooks.shade.is_some());
         match draw {
-            Draw::Rows | Draw::Opaque => every,
+            Draw::Rows | Draw::Opaque | Draw::Comets => every,
             Draw::Lit => focus,
         }
     }
@@ -471,8 +473,10 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     if written || labeled {
         stages.add_all(Stage::Text, FIELDS.map(Asked::Shader));
     }
+    // Comets travel, and frames where only they move start from the still.
     if any(&Mark::flows) {
         stages.add(Stage::Draw, Asked::Shader(TRAVEL));
+        stages.add(Stage::Draw, draw(Shader::Still));
         stages.add(Stage::Changes, Asked::Shader(CARRY));
     }
     if any(&|m| MarkVariants::of(m, &scene.space).listed()) {
@@ -503,6 +507,10 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, &scene.space);
     stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
+    // Comets draw over their rows with the rows' program.
+    if mark.flows() {
+        stages.add(Stage::Draw, variants.draw(Draw::Comets, format, samples));
+    }
     stages.add(Stage::Lit, variants.draw(Draw::Lit, format, samples));
     // Depth varies only where the camera can tilt or the globe shows: on a plane or the earth.
     if matches!(scene.space, Space::Plane(_) | Space::Earth(_)) {

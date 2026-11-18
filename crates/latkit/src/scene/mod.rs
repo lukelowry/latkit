@@ -266,6 +266,11 @@ impl Scene {
             let reason = "comet spacing and length must use the same unit, which each row's flow also uses";
             failures.push(Error::invalid(reason).at("length").at("flow").at("theme"));
         }
+        let fps = &mut self.controls.fps;
+        if !(fps.is_finite() && *fps > 0.0) {
+            *fps = crate::Controls::default().fps;
+            failures.push(Error::invalid("frames a second must be a positive number").at("fps").at("controls"));
+        }
         for (i, mark) in self.marks.iter_mut().enumerate() {
             let style = mark.style_mut();
             if style.legend.is_some() && style.color.as_ref().and_then(crate::Expr::colormap_of).is_none() {

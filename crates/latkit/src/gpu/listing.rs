@@ -69,14 +69,31 @@ impl Listing {
         self.scan.record(raster, At::new(&self.packed, 0), At::new(&self.scanned, 0), items);
         self.scanned.copy_to(raster.encoder, 0, input.lists, counts, (items + 1).next_multiple_of(4));
         if input.measured {
-            render(raster, input, "segments", &self.scanned, &self.work, kept, kept * 4);
-            self.lengths.record(raster, At::new(&self.work, 0), At::new(&self.scanned, 0), kept);
-            render(raster, input, "pack_segments", &self.scanned, &self.packed, kept, words);
+            self.lengths_along(raster, input, kept, words);
         } else {
             let entry = if areas { "area_segments" } else { "segments_unmeasured" };
             render(raster, input, entry, &self.scanned, &self.packed, kept, words);
         }
         self.packed.copy_to(raster.encoder, 0, input.lists, destination, words);
+    }
+
+    /// Measures again the distance along of each of a built segment list's `kept` entries, and
+    /// writes the entries at `destination`, without counting the list again.
+    pub(crate) fn measure(&mut self, raster: &mut Raster<'_>, input: &Inputs<'_>, kept: u32, destination: u32) {
+        let words = (kept * 2).next_multiple_of(4);
+        self.work.ensure(raster.device, u64::from(kept * 4));
+        self.scanned.ensure(raster.device, u64::from(kept * 4));
+        self.packed.ensure(raster.device, u64::from(words));
+        self.lengths_along(raster, input, kept, words);
+        self.packed.copy_to(raster.encoder, 0, input.lists, destination, words);
+    }
+
+    /// Writes `kept` entries into `packed`: each segment's row and the distance along its row's path
+    /// where it starts, the sum of the lengths of the segments before it.
+    fn lengths_along(&mut self, raster: &mut Raster<'_>, input: &Inputs<'_>, kept: u32, words: u32) {
+        render(raster, input, "segments", &self.scanned, &self.work, kept, kept * 4);
+        self.lengths.record(raster, At::new(&self.work, 0), At::new(&self.scanned, 0), kept);
+        render(raster, input, "pack_segments", &self.scanned, &self.packed, kept, words);
     }
 
     /// Writes the order the mark's first `count` instances draw in, lowest first, at `destination`

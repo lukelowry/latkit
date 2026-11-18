@@ -5,7 +5,7 @@
 //!
 //! Every shader's pass group (group 2) uses the same bindings: 0 the arena pages (the data, and the
 //! marks' per-row words), 2 extents, 4 domains, 5 probe words and query results, 6 depth,
-//! 7 sprites, 8 the text atlas, 9 lists, 12 remap words, 13 labels, 15 icons, 16 the row blocks
+//! 7 sprites, 8 the text atlas, 9 lists, 10 the still, 12 remap words, 13 labels, 15 icons, 16 the row blocks
 //! each mark evaluates. Raster operations bind their own small immutable uniform.
 
 use std::collections::HashMap;
@@ -31,10 +31,12 @@ pub(crate) struct Groups {
 }
 
 /// The textures a frame draws into, with their views: multisampled color (resolved into the
-/// target) when it multisamples, and depth.
+/// target) when it multisamples, and depth. While comets move, the still: what frames draw before
+/// the first mark's comets, at one sample a pixel (see `View::still_until`).
 struct Targets {
     color: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth: (wgpu::Texture, wgpu::TextureView),
+    still: Option<(wgpu::Texture, wgpu::TextureView)>,
     size: [u32; 2],
     format: wgpu::TextureFormat,
     samples: u32,
@@ -42,8 +44,8 @@ struct Targets {
 
 impl Targets {
     fn retire(self, retired: &Retired) {
-        if let Some((color, _)) = self.color {
-            retired.retire(color);
+        for (texture, _) in [self.color, self.still].into_iter().flatten() {
+            retired.retire(texture);
         }
         retired.retire(self.depth.0);
     }
@@ -145,13 +147,13 @@ impl Resources {
         self.remap.write_padded(queue, 0, words);
     }
 
-    /// Makes room for every mark's uniforms (two each: see `View::mark_uniforms`), domains, and
+    /// Makes room for every mark's uniforms (three each: see `View::mark_uniforms`), domains, and
     /// extents.
     pub(crate) fn fit(&mut self, device: &wgpu::Device, marks: u64, domains: u64) {
         let count = marks + 1;
         let mut replaced = self.domains.ensure(device, (domains * 2).max(4));
         replaced |= self.extents.ensure(device, u64::from(wgsl::EXTENT_WORDS) * count);
-        replaced |= self.marks.ensure(device, MARK_STRIDE * 2 * count);
+        replaced |= self.marks.ensure(device, MARK_STRIDE * 3 * count);
         if replaced {
             self.generation += 1;
         }
@@ -370,6 +372,9 @@ impl Resources {
                         &self.targets.as_ref().expect("a frame drew before probing").depth.1,
                     ),
                     7 => self.sprites.binding(),
+                    10 => wgpu::BindingResource::TextureView(
+                        &self.targets.as_ref().and_then(|t| t.still.as_ref()).expect("a still to draw").1,
+                    ),
                     8 => wgpu::BindingResource::TextureView(&inner.atlas.view),
                     9 => self.lists.binding(),
                     12 => self.remap.binding(),
@@ -422,7 +427,7 @@ impl Resources {
                     | if samples == 1 { wgpu::TextureUsages::TEXTURE_BINDING } else { wgpu::TextureUsages::empty() },
             );
             // A canvas being resized changes size every frame, so the old textures go at once.
-            if let Some(old) = self.targets.replace(Targets { color, depth, size, format, samples }) {
+            if let Some(old) = self.targets.replace(Targets { color, depth, still: None, size, format, samples }) {
                 old.retire(&self.retired);
             }
             // Depth drawn at one sample is read where it was drawn, so the replayed copy goes.
@@ -463,7 +468,8 @@ impl Resources {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             );
             let color = Some(make("latkit pick target", format, wgpu::TextureUsages::RENDER_ATTACHMENT));
-            if let Some(old) = self.pick_targets.replace(Targets { color, depth, size, format, samples: 1 }) {
+            let replayed = Targets { color, depth, still: None, size, format, samples: 1 };
+            if let Some(old) = self.pick_targets.replace(replayed) {
                 old.retire(&self.retired);
             }
         }
@@ -482,6 +488,40 @@ impl Resources {
     /// Samples per pixel of the frame's targets.
     pub(crate) fn samples(&self) -> u32 {
         self.targets.as_ref().map_or(1, |t| t.samples)
+    }
+
+    /// The still, at the size and format of the frame's targets, when `kept`, and whether it was
+    /// just made, so holds nothing yet. Without `kept`, it goes.
+    pub(crate) fn still(&mut self, device: &wgpu::Device, kept: bool) -> Option<(wgpu::TextureView, bool)> {
+        let targets = self.targets.as_mut().expect("a draw target");
+        if !kept {
+            if let Some((texture, _)) = targets.still.take() {
+                self.retired.retire(texture);
+                self.generation += 1;
+            }
+            return None;
+        }
+        let fresh = targets.still.is_none();
+        if fresh {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("latkit still"),
+                size: wgpu::Extent3d {
+                    width: targets.size[0].max(1),
+                    height: targets.size[1].max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: targets.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            targets.still = Some((texture, view));
+            self.generation += 1;
+        }
+        targets.still.as_ref().map(|(_, view)| (view.clone(), fresh))
     }
 }
 

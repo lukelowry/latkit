@@ -421,11 +421,18 @@ struct Held {
     frames: Rc<RefCell<Frames>>,
     /// Whether the view draws even if nothing changed: it is new, or moved to another device.
     due: bool,
+    /// The animation frame time, in seconds, at which a canvas last drew the view.
+    drawn_at: f64,
     listeners: Vec<(u64, EventListener)>,
     next: u64,
     /// The playhead it follows, if any.
     playhead: Option<Playhead>,
 }
+
+/// How early, as a fraction of a frame at `Controls::fps`, a view whose only motion is its own
+/// draws again. Animation frames arrive a little early or late, so a display refreshing at that
+/// rate draws every one of them.
+const EARLY: f64 = 0.25;
 
 /// The most seconds of play one animation frame moves a playhead, so a page that stalls or is
 /// hidden resumes where it was.
@@ -633,6 +640,7 @@ impl PageView {
             view,
             frames: frames.clone(),
             due: true,
+            drawn_at: f64::NEG_INFINITY,
             listeners: Vec::new(),
             next: 0,
             playhead: None,
@@ -749,6 +757,17 @@ impl PageView {
     pub fn wants_frame(&self) -> bool {
         let held = self.0.borrow();
         !held.view.lent() && (held.view.wants_frame() || (held.due && !held.view.compiling()))
+    }
+
+    /// Whether a canvas draws it in the animation frame at `time`, in seconds: it is due, a touch is
+    /// held, or a new frame would differ, unless the only motion is its own and it drew less than a
+    /// frame at its scene's `controls.fps` ago.
+    fn draws_at(&self, time: f64) -> bool {
+        let held = self.0.borrow();
+        let view = &held.view;
+        let step = 1.0 / f64::from(view.scene().controls.fps);
+        let early = view.paced() && time - held.drawn_at < step * (1.0 - EARLY);
+        held.due || view.holding() || (view.needs_render() && !early)
     }
 
     /// Whether it could draw now: it is not lent to a shot, and its draw pipelines are not
@@ -1041,6 +1060,12 @@ impl Painted {
         if self.views.is_empty() || !(resized || self.wants_frame()) {
             return None;
         }
+        // A view whose only motion is its own draws at its scene's `controls.fps`. Until one is
+        // due, the canvas keeps showing its frame and the next animation frame looks again.
+        let draws: Vec<bool> = self.views.iter().map(|v| v.draws_at(time)).collect();
+        if !(resized || self.due || draws.contains(&true)) {
+            return None;
+        }
         let format = FORMAT;
         let ready: Vec<bool> = self.views.iter().map(|v| !v.lent() && v.ready(format, ratio)).collect();
         if !ready.contains(&true) {
@@ -1058,7 +1083,7 @@ impl Painted {
         if direct {
             let mut held = self.views[0].0.borrow_mut();
             held.view.render(encoder, &Frame { target: &target, format, size, pixel_ratio: ratio, time });
-            held.due = false;
+            (held.due, held.drawn_at) = (false, time);
         } else {
             // A panel texture replaced or no longer used is retired, so its memory goes after this
             // frame instead of whenever JavaScript collects it.
@@ -1083,11 +1108,11 @@ impl Painted {
                 }
                 let (panel, _) = self.textures[i].as_ref().expect("the panel texture exists");
                 let mut held = self.views[i].0.borrow_mut();
-                if ready[i] && (fresh || self.due || held.due || held.view.needs_render()) {
+                if ready[i] && (fresh || self.due || draws[i]) {
                     let target = panel.create_view(&wgpu::TextureViewDescriptor::default());
                     let frame = Frame { target: &target, format, size: rect.size, pixel_ratio: ratio, time };
                     held.view.render(encoder, &frame);
-                    held.due = false;
+                    (held.due, held.drawn_at) = (false, time);
                 } else if fresh {
                     // Until its view draws, a new panel shows the view's background.
                     let target = panel.create_view(&wgpu::TextureViewDescriptor::default());

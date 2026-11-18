@@ -52,6 +52,7 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::query_pack", variants: &[("main", &[])] },
     Entry { module: "raster::lists", variants: &[("main", &[])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
+    Entry { module: "draw::still", variants: &[("main", &[])] },
     Entry {
         module: "draw::points",
         variants: &[

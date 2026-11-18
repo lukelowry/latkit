@@ -2695,7 +2695,7 @@
           "description": "The width of a comet's head, in CSS pixels. A head is never narrower than its stroke."
         }
       },
-      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen."
+      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a\nthin rim of the background color ahead of its head, which parts it from the line.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen."
     },
     "Length": {
       "description": "A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
@@ -2797,6 +2797,11 @@
             "motion": {
               "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and\noptions that read `elapsed()`. `system` follows the user's reduced-motion setting, `full`\nanimates everything, and `reduced` animates only motion the user drives. Defaults to\n`system`.",
               "$ref": "#/$defs/Motion"
+            },
+            "fps": {
+              "description": "The most frames a second a view in a canvas draws while the only thing moving is motion\nthat never settles: comets, an orbit, and options that read `elapsed()`. Any other change\ndraws on the next display frame, and that motion with it. Lower it to spend less GPU time\nand send fewer frames to a remote screen. Defaults to 60.",
+              "type": "number",
+              "format": "float"
             },
             "reach": {
               "description": "How far the camera may go from what fits have framed. Defaults to `fit`.",
