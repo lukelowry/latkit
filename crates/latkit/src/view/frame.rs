@@ -259,9 +259,12 @@ impl View {
     fn lay_out(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
+        let fans =
+            matches!(self.scene.theme.edge.parallel, Some(crate::Parallel { converge: crate::Converge::Fan, .. }));
         for i in 0..self.marks.len() {
             let geodesic = self.geodesic(&self.marks[i]);
             self.marks[i].geodesic = geodesic;
+            self.marks[i].fans = fans;
         }
         self.resources.get_or_insert_with(|| Resources::new(device, gpu.0.queue.retired()));
         let fresh = self.fit_words(inner);

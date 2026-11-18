@@ -1,4 +1,4 @@
-//! Graphs. Edges between the same two vertices bow into lanes, edges bend through the points of a
+//! Graphs. Edges between the same two vertices run side by side, edges bend through the points of a
 //! path field, edges end in arrowheads, and great-circle edges settle while their vertices animate.
 //! Neighbors follow edges and nets.
 
@@ -28,7 +28,7 @@ fn nodes(x: Vec<f64>, y: Vec<f64>) -> Table {
 }
 
 #[test]
-fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
+fn edges_joining_the_same_vertices_run_side_by_side_a_step_apart_at_any_zoom() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(Patch::new().set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0])).set(
@@ -39,25 +39,32 @@ fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
         ),
     ))
     .expect("valid");
+    let fan = latkit::Parallel { gap: 3.0, converge: latkit::Converge::Fan };
+    let theme =
+        latkit::Theme { edge: latkit::EdgeTheme { parallel: Some(fan), ..plain_theme().edge }, ..plain_theme() };
     let scene = Scene::new(plane())
+        .theme(theme)
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE.alpha(0.5)))
-        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(2.0));
-    let mut view = view(&gpu, scene, &data);
-    // The two edges bow half a lane each way. A lane is 0.12 of their 80-unit length, so each is
-    // 4.8 units off center at the middle. Zooming scales that like the rest of the drawing.
-    for (zoom, off) in [(0.0, 5), (1.0, 10)] {
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    // A step is the width plus the gap, 5 pixels, so the two edges run 2.5 pixels either side of
+    // the middle, whatever the zoom.
+    for zoom in [0.0, 1.0] {
         view.set_camera(latkit::Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
         let pixels = frame(&gpu, &mut view);
-        assert!(lit(at(&pixels, C, C - off)) && lit(at(&pixels, C, C + off)), "two lanes at zoom {zoom}");
-        assert!(!lit(at(&pixels, C, C)), "apart at zoom {zoom}: {:?}", at(&pixels, C, C));
-        // Each lane draws as one stroke: half white where it covers a pixel fully, and no brighter
-        // where its pieces meet. Every column along the upper lane has such a pixel.
-        for x in C - 24..=C + 24 {
-            let peak = (C - 24..C).map(|y| at(&pixels, x, y)[0]).max().unwrap_or(0);
+        assert!(lit(at(&pixels, C, C - 3)) && lit(at(&pixels, C, C + 2)), "two lanes at zoom {zoom}");
+        assert!(!lit(at(&pixels, C, C)) && !lit(at(&pixels, C, C - 1)), "apart at zoom {zoom}");
+        // Each lane draws as one stroke, its fans included: half white where it covers a pixel
+        // fully, and no brighter where its pieces meet. Every column along the upper lane has such
+        // a pixel.
+        for x in C - 28..=C + 28 {
+            let peak = (C - 12..C).map(|y| at(&pixels, x, y)[0]).max().unwrap_or(0);
             assert!((120..=136).contains(&peak), "column {x} at zoom {zoom} peaks at {peak}");
         }
     }
-    // A vertex that moves takes its lanes along without their pieces being listed again: each
+    // A vertex that moves takes its lanes along without their segments being listed again: each
     // frame draws the instances it drew before and reads no count back.
     let (drawn, before) = (view.stats().instances, gpu.work());
     for y in [2.0, 4.0, 6.0] {
@@ -65,12 +72,12 @@ fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
         step(&gpu, &mut view);
         assert_eq!(view.stats().instances, drawn, "as many instances with the vertex at {y}");
     }
-    assert_eq!((gpu.work() - before).readbacks, 0, "no piece is counted again");
+    assert_eq!((gpu.work() - before).readbacks, 0, "no segment is counted again");
     assert_eq!(errors(&mut view), Vec::new());
 }
 
 #[test]
-fn a_theme_that_bows_nothing_draws_edges_joining_the_same_vertices_straight() {
+fn a_theme_without_parallel_edges_draws_edges_joining_the_same_vertices_over_one_another() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(Patch::new().set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0])).set(
@@ -81,7 +88,7 @@ fn a_theme_that_bows_nothing_draws_edges_joining_the_same_vertices_straight() {
         ),
     ))
     .expect("valid");
-    let straight = latkit::EdgeTheme { bow: 0.0, ..plain_theme().edge };
+    let straight = latkit::EdgeTheme { parallel: None, ..plain_theme().edge };
     let scene = Scene::new(plane())
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE))
         .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(2.0));
@@ -90,7 +97,7 @@ fn a_theme_that_bows_nothing_draws_edges_joining_the_same_vertices_straight() {
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert!(lit(at(&pixels, C, C)), "both run through the middle: {:?}", at(&pixels, C, C));
-    assert!(!lit(at(&pixels, C, C - 5)) && !lit(at(&pixels, C, C + 5)), "and neither bows");
+    assert!(!lit(at(&pixels, C, C - 5)) && !lit(at(&pixels, C, C + 5)), "and neither runs beside the other");
     // The backdrop, and one instance an edge and a vertex: no lane is derived or listed.
     assert_eq!(view.stats().instances, 5);
     assert_eq!(errors(&mut view), Vec::new());

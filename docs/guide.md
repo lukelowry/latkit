@@ -279,6 +279,10 @@ failure (see [Events](#events)), and the mark draws nothing.
 
 - `theme` is `'dark'`, `'light'`, or overrides of a base theme, grouped by what they style:
   `{ base: 'light', text: { size: 12 }, edge: { width: 2 } }`.
+- Edges joining the same two vertices run side by side, `edge.parallel.gap` pixels apart at any
+  zoom. `converge` sets how they meet their vertices: `'squeeze'` fits them within the smaller
+  vertex, `'fan'` angles them in to each vertex's center, and `'straight'` stops each at its
+  vertex's outline. `parallel: null` draws them over one another.
 - `controls` sets what the pointer and keys do. By default the pointer pans, zooms, turns, and
   hovers. `gestures` binds each input to what it does, as in
   `{ gestures: { wheel: 'pan', 'control+wheel': 'zoom', 'shift+primary': 'box' } }`. `'inspect'`

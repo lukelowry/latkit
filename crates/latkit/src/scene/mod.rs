@@ -36,8 +36,8 @@ pub use shade::Shade;
 pub(crate) use space::sun;
 pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space};
 pub use theme::{
-    AreaTheme, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, GridTheme, Length, LineTheme, PlotTheme, TextTheme, Theme,
-    VertexTheme,
+    AreaTheme, Converge, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, GridTheme, Length, LineTheme, Parallel,
+    PlotTheme, TextTheme, Theme, VertexTheme,
 };
 pub use vertices::Vertices;
 

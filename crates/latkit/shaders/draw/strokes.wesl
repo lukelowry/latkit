@@ -11,8 +11,7 @@ import package::lib::path::PATH;
 import package::lib::bind::{frame, mark, eye};
 import package::lib::project::{to_clip, nearer, culled};
 import package::lib::path::{
-    segment, segment_points, on_screen, segment_joints, Joints, stroke_style, ends_part, path_count,
-    path_length, path_position,
+    segment, segment_screen, stroke_style, ends_part, path_count, path_length, path_position,
 };
 import package::lib::hooks::{MarkerColor, ShadeFragment};
 import package::lib::marker::glow;
@@ -76,8 +75,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     var style = stroke_style(s.row);
     style.color.a *= s.presence;
     style.width *= s.growth;
-    let points = segment_points(s);
-    let on = on_screen(points.ends);
+    let on = segment_screen(s);
     let ends = on.ends;
     if !style.shown | !on.shown {
         out.clip = culled();
@@ -100,11 +98,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     // Where the path runs on through an end, this segment shares that end's pixels with the next
     // (see `Joints`), unless the turn there is too sharp for the two segments' lengths. Its quad then
     // stops a pixel past the split line, except behind an arrowhead's segment, where the head's base
-    // can reach. A path of one segment has no joint.
-    var joints: Joints;
-    if path_count(s.item) > 1u {
-        joints = segment_joints(points);
-    }
+    // can reach.
+    let joints = on.joints;
     let shares = joints.through & (joints.turn * across <= joints.room);
     let past = select(vec2f(reach), across * joints.turn + fringe(), shares & vec2<bool>(!arrow, true));
     let t = f32(corner & 1u);
@@ -121,14 +116,18 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let light = daylight(mix(path_position(ends.a).xy, path_position(ends.b).xy, f));
     out.color = vec4f(color.rgb * light, color.a);
     // In position units, a segment's distance along starts where its list says (0 without a list),
-    // and its ends stop short where the stroke does. On screen, a trace measures along x, a listed
-    // path converts its distance along to pixels, and any other segment starts at 0.
+    // and its ends stop short where the stroke does. A fan has no length there, so it takes its
+    // length on screen, up to where its path starts or on from where it ends. On screen, a trace
+    // measures along x, a listed path converts its distance along to pixels, and any other segment
+    // starts at 0.
     var along = vec2f(0.0);
     var phase = vec2f(0.0);
     if PAINTED {
         if style.dash | (style.flow != 0.0) {
-            along = s.along + path_length(ends.a, ends.b) * on.kept;
             let pixels = length(b - a);
+            let fan = pixels / max(px_per_length(), 1e-12);
+            let fanned = select(vec2f(-fan, 0.0), vec2f(0.0, fan), on.fan == 2u);
+            along = s.along + path_length(ends.a, ends.b) * on.kept + select(vec2f(0.0), fanned, on.fan != 0u);
             phase = vec2f(0.0, pixels);
             if PATH == PATH_TRACE {
                 phase = vec2f(a.x, a.x + pixels);

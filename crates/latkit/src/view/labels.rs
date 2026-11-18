@@ -411,7 +411,8 @@ impl View {
             frame.space,
             frame.globe.to_bits(),
             frame.mercator_y.to_bits(),
-            frame.bow.to_bits(),
+            frame.gap.to_bits(),
+            frame.converge,
         );
         let stamp = stamp_of((
             bytemuck::bytes_of(eye),

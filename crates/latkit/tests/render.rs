@@ -89,46 +89,6 @@ fn area_triangles_across_geometry_pieces_follow_geometry_and_color_edits() {
 }
 
 #[test]
-fn lane_plans_keep_exact_pixels_when_panning_and_crossing_zoom_bands() {
-    let Some(gpu) = gpu() else { return };
-    let data = Data::new("d");
-    let rows = 1024;
-    data.apply(
-        Patch::new()
-            .set(Table::new("Node", Ids::count(2)).field("x", vec![-55.0, 55.0]).field("y", vec![0.0, 0.0]))
-            .set(
-                Table::new("Link", Ids::count(rows))
-                    .reference("from", "Node", vec![0_u64; rows as usize])
-                    .reference("to", "Node", vec![1_u64; rows as usize])
-                    .field("red", (0..rows).map(|i| i % 3 == 0).collect::<Vec<_>>()),
-            ),
-    )
-    .unwrap();
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .ease(std::time::Duration::ZERO)
-        .draw(Edges::of("d", "Link").ends("from", "to").width(1.0).color(
-            latkit::when(field("red")).then(Color::rgba(1.0, 0.0, 0.0, 0.5)).otherwise(Color::rgba(0.0, 0.0, 1.0, 0.5)),
-        ))
-        .draw(Vertices::of("d", "Node").position(field("x"), field("y")).radius(2.0));
-    let mut moved = View::new(&gpu, scene.clone());
-    moved.set_sources([&data]).unwrap();
-    for (zoom, x, bearing) in
-        [(-0.9, 0.0, 0.0), (-0.1, 20.0, 30.0), (0.1, -20.0, -20.0), (0.8, 0.0, 0.0), (-0.5, 0.0, 0.0)]
-    {
-        let camera = Camera::Map { center: [x, 0.0, 0.0], zoom, pitch: 0.0, bearing };
-        moved.set_camera(camera);
-        let actual = frame(&gpu, &mut moved);
-        let mut fresh = View::new(&gpu, scene.clone());
-        fresh.set_sources([&data]).unwrap();
-        fresh.set_camera(camera);
-        let expected = frame(&gpu, &mut fresh);
-        assert!(actual.iter().zip(&expected).all(|(&a, &b)| close(a, b)), "zoom {zoom}, center {x}");
-        assert!(actual.iter().filter(|p| p[0] > 32 || p[2] > 32).count() > 200, "the lanes draw");
-    }
-}
-
-#[test]
 fn vertices_draw_at_their_positions_in_their_colors() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");

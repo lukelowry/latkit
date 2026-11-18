@@ -132,8 +132,8 @@ impl MarkVariants {
     }
 
     /// Whether a list may number its instances, for rows whose counts differ: edges between ends
-    /// (which may pass through bends, follow great circles, or bow into lanes), and every path
-    /// through geometry, including areas' triangles.
+    /// (which may pass through bends, follow great circles, or fan into their vertices), and every
+    /// path through geometry, including areas' triangles.
     fn listed(&self) -> bool {
         self.path == PATH_GEOMETRY || (self.kind == MarkKind::Edges && matches!(self.path, PATH_ENDS | PATH_BENDS))
     }

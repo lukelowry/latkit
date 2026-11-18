@@ -90,7 +90,7 @@ def prepare(source, job, indices):
     scenes = {
         "map.json": {
             "space": {"plane": {"grid": "off"}}, "ease": 0,
-            "theme": {**theme, "edge": {"color": None, "bow": 0}},
+            "theme": {**theme, "edge": {"color": None, "parallel": None}},
             "title": "ACTIVSg70k",
             "subtitle": f"A fault on bus {FAULT} at 1 s, cleared at 1.15 s",
             "marks": [

@@ -133,7 +133,7 @@ def prepare(source, job, frames):
     scenes = {
         "map.json": {
             "space": {"plane": {"grid": "off"}}, "ease": 0,
-            "theme": {**theme, "edge": {"color": None, "bow": 0}},
+            "theme": {**theme, "edge": {"color": None, "parallel": None}},
             "title": "ACTIVSg70k / Line opening",
             "subtitle": f"Little Rock - Newark, 765 kV / Opens at 1 s / Constant {SPEED:g}x speed",
             "marks": [

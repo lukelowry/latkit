@@ -2553,10 +2553,16 @@
           "format": "float",
           "description": "The edge width, in CSS pixels."
         },
-        "bow": {
-          "type": "number",
-          "format": "float",
-          "description": "How far edges joining the same two vertices bow apart. Each lane bows out\nby this fraction of the edge's length, measured at its middle. Parallel edges spread at most\neight lanes wide, and more lanes pack closer. Bows scale with the zoom. With 0 they run\nstraight, one over another."
+        "parallel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Parallel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How edges joining the same two vertices run side by side. `None` draws them over one\nanother."
         },
         "arrow": {
           "type": "number",
@@ -2565,6 +2571,42 @@
         }
       },
       "description": "Defaults for edges, and how parallel edges and arrowheads look."
+    },
+    "Parallel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gap": {
+          "type": "number",
+          "format": "float",
+          "description": "The space between neighboring edges, in CSS pixels. Defaults to 3."
+        },
+        "converge": {
+          "$ref": "#/$defs/Converge",
+          "description": "How they come together at the vertices they join. Defaults to `squeeze`."
+        }
+      },
+      "description": "How edges joining the same two vertices run side by side: each moved sideways from the path\nbetween its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.\nMore than eight edges pack closer, within eight steps, and where neighbors would lie less than a\npixel apart, only every second edge draws, or every fourth, and so on."
+    },
+    "Converge": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "squeeze",
+          "description": "They draw closer together where needed, so the family fits within the smaller of its two\nvertices, and each edge stays one straight line."
+        },
+        {
+          "type": "string",
+          "const": "fan",
+          "description": "They keep their spacing and angle in to each vertex's center near their ends."
+        },
+        {
+          "type": "string",
+          "const": "straight",
+          "description": "They keep their spacing and run straight to each vertex, stopping at its outline, or beside\nit where they pass it."
+        }
+      ],
+      "description": "How parallel edges come together at the vertices they join."
     },
     "LineTheme": {
       "type": "object",

@@ -164,6 +164,9 @@ pub(crate) struct Shown {
     pub(crate) height_order: super::lists::HeightOrder,
     /// Whether an edge mark follows great circles.
     pub(crate) geodesic: bool,
+    /// Whether the theme's parallel edges fan into their vertices, so a row off its family's middle
+    /// draws one more segment at each end.
+    pub(crate) fans: bool,
     /// What the lanes of an edge mark's table ask of its list, read when the lane column it draws
     /// was last replaced: `lanes_at` is that column's generation.
     pub(crate) lanes: crate::derive::Laned,
@@ -233,6 +236,7 @@ impl Shown {
             drawn_rows: super::lists::DrawnRows::default(),
             height_order: super::lists::HeightOrder::default(),
             geodesic: false,
+            fans: false,
             lanes: crate::derive::Laned::default(),
             lanes_at: 0,
             version: 0,
@@ -411,8 +415,8 @@ impl Shown {
     }
 
     /// Whether a list numbers its instances: strokes whose rows have different segment counts
-    /// (through a geometry column, along great circles, or bowed into lanes), and areas, whose rows
-    /// have different triangle counts.
+    /// (through a geometry column, along great circles, or fanning into their vertices), and areas,
+    /// whose rows have different triangle counts.
     pub(crate) fn listed(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
         match self.kind().primitive() {
@@ -422,11 +426,11 @@ impl Shown {
         }
     }
 
-    /// Whether its edges curve between their endpoints, along great circles or bowed into lanes.
-    /// The GPU counts each edge's pieces. For great circles, the total is read back to size the
-    /// segment list.
+    /// Whether its edges take more than one segment between their endpoints without bends: along
+    /// great circles, or where parallel edges fan into their vertices. The GPU counts each edge's
+    /// segments, and the total is read back to size the segment list.
     pub(crate) fn curved(&self) -> bool {
-        matches!(self.path(), wgsl::PATH_ENDS | wgsl::PATH_BENDS) && (self.geodesic || self.laned())
+        matches!(self.path(), wgsl::PATH_ENDS | wgsl::PATH_BENDS) && (self.geodesic || (self.fans && self.laned()))
     }
 
     /// Reads what its lanes ask of its list again once the lane column it draws is replaced. A
@@ -441,15 +445,15 @@ impl Shown {
         }
     }
 
-    /// Whether its edges bow into lanes among the edges joining the same two vertices. A theme that
-    /// bows nothing derives no lanes, so none of its marks are.
+    /// Whether its edges run in lanes beside the other edges joining the same two vertices. A theme
+    /// without parallel edges derives no lanes, so none of its marks are.
     pub(crate) fn laned(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
         compiled.drawing.lane != wgsl::NONE && self.tables.holds(compiled.drawing.lane)
     }
 
-    /// Instances its list needs space for: every path's segments plus each curve's pieces (those
-    /// of the rows its lanes bow, and along great circles, as last counted), or every area's
+    /// Instances its list needs space for: every path's segments plus the fans of rows off their
+    /// family's middle and the segments along great circles, as last counted, or every area's
     /// triangles.
     pub(crate) fn segment_capacity(&self) -> u32 {
         let rows = (self.rows + self.exits) as usize;
@@ -461,14 +465,8 @@ impl Shown {
         if self.path() == wgsl::PATH_GEOMETRY {
             return points.max(1) as u32;
         }
-        let bowed = self.lanes.bowed as usize * wgsl::BOW_PIECES as usize;
-        let pieces = if !self.curved() {
-            0
-        } else if self.geodesic {
-            (self.segments.found.value as usize).max(rows * 4 + bowed)
-        } else {
-            bowed
-        };
+        let fanned = if self.fans && self.laned() { 2 * self.lanes.aside as usize } else { 0 };
+        let pieces = if self.geodesic { (self.segments.found.value as usize).max(rows * 4 + fanned) } else { fanned };
         (points + rows + pieces).max(1) as u32
     }
 

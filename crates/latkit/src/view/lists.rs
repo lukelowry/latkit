@@ -390,40 +390,22 @@ impl View {
         due
     }
 
-    /// The marks whose segment lists rebuild this frame: those whose list, lists buffer, paths, or
-    /// drawing changed. A list also follows where the vertices its rows join are drawn, but only
-    /// where its pieces depend on that: along great circles, where a path's length is measured,
-    /// and in a family of lanes packed closer than a lane apart, which it thins to the lanes the
-    /// screen shows apart, so that one follows the camera too. Every other lane keeps all its
-    /// pieces and thins as it draws. So a color changing every frame rebuilds none, and neither
-    /// does a moving vertex or camera where no family is packed.
+    /// The marks whose segment lists rebuild this frame: those whose list, lists buffer, paths,
+    /// fans, or drawing changed. A list also follows where the vertices its rows join are drawn,
+    /// but only where its segments depend on that: along great circles, and where a path's length
+    /// is measured. Parallel edges move sideways as they draw, so neither the camera nor a moving
+    /// vertex rebuilds their list, and a color changing every frame rebuilds none.
     pub(super) fn segments_due(&mut self) -> Vec<usize> {
         let vertices: Vec<Option<Version>> =
             self.marks.iter_mut().map(|m| (m.kind() == MarkKind::Vertices).then(|| m.shape_version())).collect();
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
-        // Flat-plane lanes retain a conservative plan throughout a zoom octave. Draws test the
-        // exact current density. Other projections retain their full camera dependency.
-        let projected = self.projected();
-        let sight = projected.lane_band().map_or_else(
-            || {
-                stamp_of((
-                    projected.clip_from_world.to_cols_array().map(f64::to_bits),
-                    projected.center.map(f64::to_bits),
-                    self.size.map(f64::to_bits),
-                    projected.globe.to_bits(),
-                    self.scene.theme.edge.bow.to_bits(),
-                ))
-            },
-            |band| stamp_of((band.to_bits(), self.size.map(f64::to_bits), self.scene.theme.edge.bow.to_bits())),
-        );
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
-            let thinned = (shown.laned() && shown.lanes.packed).then_some(sight);
             let measured = shown.measures_paths();
-            let arcs = (shown.geodesic || thinned.is_some() || measured).then(|| {
+            let arcs = (shown.geodesic || measured).then(|| {
                 let ends: Vec<_> = shown.ends.iter().map(|end| end.mark.map(|m| (m, vertices[m]))).collect();
-                (ends, shown.places_drawn(), thinned)
+                (ends, shown.places_drawn())
             });
             let tables = shown.compiled.as_ref().map(|c| {
                 let generation = |column| (column, shown.tables.column_generation(column));
@@ -431,7 +413,8 @@ impl View {
                 (generation(c.drawing.geometry), generation(c.drawing.lane), ends)
             });
             let drawn = shown.drawing().map(|d| d.made);
-            let stamp = stamp_of((list.header, list.items, list.kept, tables, generation, arcs, drawn, measured));
+            let stamp =
+                stamp_of((list.header, list.items, list.kept, tables, generation, arcs, drawn, measured, shown.fans));
             if stamp != shown.segments.built {
                 shown.segments.built = stamp;
                 due.push(i);
@@ -441,8 +424,8 @@ impl View {
     }
 
     /// Reads curved marks' counts without blocking. Great-circle reservations grow when needed;
-    /// a current count also trims lane draws to the compacted prefix. A new list invalidates its
-    /// old count immediately, so no changed geometry is dropped while a readback is pending.
+    /// a current count also trims draws to the compacted prefix. A new list invalidates its old
+    /// count immediately, so no changed geometry is dropped while a readback is pending.
     pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner) {
         let gpu = self.gpu.clone();
         let Some(resources) = &self.resources else { return };
@@ -525,22 +508,19 @@ mod tests {
     }
 
     #[test]
-    fn lane_lists_follow_vertices_and_the_camera_only_where_a_family_is_packed() {
-        use crate::{EdgeTheme, Edges, Patch, Theme, Vertices};
+    fn only_fans_list_parallel_edges_and_no_camera_or_vertex_moves_their_list() {
+        use crate::{Converge, EdgeTheme, Edges, Parallel, Patch, Theme, Vertices};
         let Some(gpu) = crate::gpu::testing::gpu() else { return };
-        // Ten nodes in a row. `links` edges join the first two, and one edge joins each next pair.
-        let graph = |links: u64| {
-            let from = (0..links).map(|_| 0).chain(1..9).collect::<Vec<u64>>();
-            let to = (0..links).map(|_| 1).chain(2..10).collect::<Vec<u64>>();
-            let x: Vec<f64> = (0..10).map(|i| f64::from(i) * 4.0 - 18.0).collect();
-            let nodes = Table::new("Node", (0..10).collect::<Vec<u64>>()).field("x", x).field("y", vec![0.0; 10]);
-            let links = Table::new("Link", Ids::count(from.len() as u32)).reference("from", "Node", from);
-            let data = Data::new("d");
-            data.apply(Patch::new().set(nodes).set(links.reference("to", "Node", to))).unwrap();
-            data
-        };
-        let shown = |bow: f32, data: &Data| {
-            let theme = Theme { edge: EdgeTheme { bow, ..Theme::dark().edge }, ..Theme::dark() };
+        // Ten nodes in a row. Nine edges join the first two, and one edge joins each next pair.
+        let from = (0..9).map(|_| 0).chain(1..9).collect::<Vec<u64>>();
+        let to = (0..9).map(|_| 1).chain(2..10).collect::<Vec<u64>>();
+        let x: Vec<f64> = (0..10).map(|i| f64::from(i) * 4.0 - 18.0).collect();
+        let nodes = Table::new("Node", (0..10).collect::<Vec<u64>>()).field("x", x).field("y", vec![0.0; 10]);
+        let links = Table::new("Link", Ids::count(from.len() as u32)).reference("from", "Node", from);
+        let data = Data::new("d");
+        data.apply(Patch::new().set(nodes).set(links.reference("to", "Node", to))).unwrap();
+        let shown = |parallel: Option<Parallel>| {
+            let theme = Theme { edge: EdgeTheme { parallel, ..Theme::dark().edge }, ..Theme::dark() };
             let scene = Scene::new(Plane { grid: Grid::Off })
                 .theme(theme)
                 .ease(std::time::Duration::ZERO)
@@ -548,33 +528,29 @@ mod tests {
                 .draw(Edges::of("d", "Link").ends("from", "to"));
             let mut view = View::new(&gpu, scene);
             view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
-            view.set_sources([data]).unwrap();
+            view.set_sources([&data]).unwrap();
             view
         };
         let mut time = 0.0;
-        for (links, packed) in [(2, false), (9, true)] {
-            let data = graph(links);
-            let mut view = shown(0.12, &data);
-            let mut built = |view: &mut View| {
-                settle(&gpu, view, &mut time);
-                view.marks[1].segments.built
-            };
-            let first = built(&mut view);
-            let list = view.marks[1].segments.list.expect("lanes draw through a list");
-            assert!(list.kept < list.items * wgsl::BOW_PIECES, "room for the rows that bow, not for every row to");
-            data.apply(Table::new("Node", [1_u64]).field("y", vec![3.0])).unwrap();
-            let moved = built(&mut view);
-            view.set_camera(Camera::Map { center: [1.0, 0.0, 0.0], zoom: 0.0, pitch: 40.0, bearing: 0.0 });
-            let turned = built(&mut view);
-            if packed {
-                assert!(moved != first && turned != moved, "a packed family is thinned to what the screen shows");
-            } else {
-                assert_eq!([moved, turned], [first; 2], "lanes a lane apart keep their list wherever they lie");
-            }
-        }
-        // A theme that bows nothing has no lanes to list.
-        let data = graph(2);
-        let mut view = shown(0.0, &data);
+        let mut view = shown(Some(Parallel { converge: Converge::Fan, ..Parallel::default() }));
+        let mut built = |view: &mut View| {
+            settle(&gpu, view, &mut time);
+            view.marks[1].segments.built
+        };
+        let first = built(&mut view);
+        let list = view.marks[1].segments.list.expect("fans draw through a list");
+        assert!(list.kept < list.items * 3, "room for the fans of rows off the middle, not for every row's");
+        data.apply(Table::new("Node", [1_u64]).field("y", vec![3.0])).unwrap();
+        let moved = built(&mut view);
+        view.set_camera(Camera::Map { center: [1.0, 0.0, 0.0], zoom: 2.0, pitch: 40.0, bearing: 0.0 });
+        let turned = built(&mut view);
+        assert_eq!([moved, turned], [first; 2], "parallel edges keep their list wherever they lie");
+        // Squeezed or straight, every edge is one segment, so none needs a list.
+        let mut view = shown(Some(Parallel::default()));
+        settle(&gpu, &mut view, &mut time);
+        assert!(view.marks[1].segments.list.is_none() && view.marks[1].laned());
+        // Without parallel edges, no lanes are derived.
+        let mut view = shown(None);
         settle(&gpu, &mut view, &mut time);
         assert!(view.marks[1].segments.list.is_none() && !view.marks[1].laned());
     }

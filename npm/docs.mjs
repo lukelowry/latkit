@@ -824,6 +824,8 @@ const sections = {
         'TextTheme',
         'VertexTheme',
         'EdgeTheme',
+        'Parallel',
+        'Converge',
         'LineTheme',
         'AreaTheme',
         'FlowTheme',

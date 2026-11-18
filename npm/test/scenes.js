@@ -119,7 +119,7 @@ export default [
       { "vertices": ["grid", "Custom"], "marker": { "wgsl": { "source": "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }", "inputs": ["$load"] } } },
       { "edges": ["grid", "Branch"], "ends": ["from", "to"] }
     ],
-    "theme": { "edge": { "bow": 0.2, "arrow": 8 }, "text": { "halo": 2 }, "flow": { "spacing": { "units": 40 }, "length": { "units": 12 } } }
+    "theme": { "edge": { "parallel": { "gap": 4, "converge": "fan" }, "arrow": 8 }, "text": { "halo": 2 }, "flow": { "spacing": { "units": 40 }, "length": { "units": 12 } } }
   },
   {
     "space": "plane",

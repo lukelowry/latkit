@@ -24,7 +24,10 @@
     "edge": {
       "color": null,
       "width": 1.5,
-      "bow": 0.11999999731779099,
+      "parallel": {
+        "gap": 3.0,
+        "converge": "squeeze"
+      },
       "arrow": 7.0
     },
     "line": {
@@ -81,7 +84,10 @@
     "edge": {
       "color": null,
       "width": 1.5,
-      "bow": 0.11999999731779099,
+      "parallel": {
+        "gap": 3.0,
+        "converge": "squeeze"
+      },
       "arrow": 7.0
     },
     "line": {
