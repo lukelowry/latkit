@@ -28,15 +28,27 @@ impl Canvas {
         }
     }
 
-    /// Grows the canvas to hold `size`, a power of two at a time on each side that is too small.
+    /// Grows `gl`'s canvas to hold `size`, a power of two at a time on each side that is too small.
     /// It never shrinks. In Chrome, resizing a WebGL canvas waits until the GPU process finishes
     /// every shader compile it has queued, so the shared canvas starts at the screen's size and
     /// grows only for a view larger than that.
-    pub(crate) fn reserve(&self, size: [u32; 2]) {
+    pub(crate) fn reserve(&self, size: [u32; 2], gl: &web_sys::WebGl2RenderingContext) {
         let have = self.size();
         if size[0] > have[0] || size[1] > have[1] {
             let grow = |have: u32, want: u32| if want > have { want.next_power_of_two() } else { have };
-            self.resize([grow(have[0], size[0]), grow(have[1], size[1])]);
+            self.fit([grow(have[0], size[0]), grow(have[1], size[1])], gl);
+        }
+    }
+
+    /// Sizes `gl`'s canvas to `size`, or to the smaller drawing buffer the browser gives it. A
+    /// browser may give a buffer smaller than its canvas, as Chrome does past a number of pixels.
+    /// The canvas then takes the buffer's size, so blits to it and copies from it agree on where
+    /// each row lies.
+    fn fit(&self, size: [u32; 2], gl: &web_sys::WebGl2RenderingContext) {
+        self.resize(size);
+        let buffer = [gl.drawing_buffer_width(), gl.drawing_buffer_height()].map(|side| side.max(1) as u32);
+        if buffer != size {
+            self.resize(buffer);
         }
     }
 
@@ -172,9 +184,11 @@ impl Sink {
     }
 }
 
-/// The shared canvas a GPU draws through. Its WebGL2 device reports the context's loss.
+/// The shared canvas a GPU draws through, and its context. Its WebGL2 device reports the context's
+/// loss.
 pub(crate) struct Browser {
     canvas: Canvas,
+    gl: web_sys::WebGl2RenderingContext,
 }
 
 impl Browser {
@@ -218,14 +232,14 @@ impl Browser {
         .dyn_into::<web_sys::WebGl2RenderingContext>()
         .map_err(|_| Error::Unsupported("WebGL2 is unavailable".into()))?;
         // Size the canvas now, while the GPU process has nothing queued (see Canvas::reserve).
-        canvas.reserve(screen(&context));
-        let instance = super::gl::instance(context)?;
-        Ok((instance, Self { canvas }))
+        canvas.fit(screen(&context), &context);
+        let instance = super::gl::instance(context.clone())?;
+        Ok((instance, Self { canvas, gl: context }))
     }
 
     /// Makes room on the shared canvas for a view's texture of `size`, when the texture is made.
     pub(crate) fn reserve(&self, size: [u32; 2]) {
-        self.canvas.reserve(size);
+        self.canvas.reserve(size, &self.gl);
     }
 
     /// Blits the retained texture to the shared canvas, then copies its visible region into `sink`.

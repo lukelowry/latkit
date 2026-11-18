@@ -142,6 +142,7 @@ impl Command {
             Self::BufferCopy(from, start, to, end, size) => {
                 gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&from.0.raw));
                 gl.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&to.0.raw));
+                to.renew(Gl::COPY_WRITE_BUFFER);
                 gl.copy_buffer_sub_data_with_f64_and_f64_and_f64(
                     Gl::COPY_READ_BUFFER,
                     Gl::COPY_WRITE_BUFFER,
@@ -195,6 +196,7 @@ impl Command {
                 gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&fbo));
                 gl.read_buffer(Gl::COLOR_ATTACHMENT0);
                 gl.bind_buffer(Gl::PIXEL_PACK_BUFFER, Some(&to.0.raw));
+                to.renew(Gl::PIXEL_PACK_BUFFER);
                 let format = from.texture.0.format;
                 gl.pixel_storei(Gl::PACK_ALIGNMENT, 1);
                 gl.pixel_storei(Gl::PACK_ROW_LENGTH, layout.bytes_per_row.map_or(0, |b| b / format.bytes) as i32);

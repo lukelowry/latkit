@@ -91,7 +91,9 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let width = style.width;
     let dir = normalize(b - a + vec2f(1e-6, 0.0));
     let normal = vec2f(-dir.y, dir.x);
-    let arrow = (PATH != PATH_TRACE) & ((mark.flags & ARROWS) != 0u) & ends_part(s);
+    // A segment shorter than half a pixel on screen, such as one between vertices at one place,
+    // points nowhere, so it has no head.
+    let arrow = (PATH != PATH_TRACE) & ((mark.flags & ARROWS) != 0u) & ends_part(s) & (length(b - a) >= 0.5);
     let head = select(0.0, frame.arrow + width, arrow);
     let flows = PAINTED & (style.flow != 0.0) & (frame.flow.a > 0.0);
     let comets = select(0.0, 0.5 * max(frame.flow_width, width) + COMET_RIM, flows);

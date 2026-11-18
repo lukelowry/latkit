@@ -239,15 +239,17 @@ fn edges_along_great_circles_settle_while_their_vertices_pulse() {
 fn arrows_draw_heads_at_second_ends_clear_of_comets() {
     let Some(gpu) = gpu() else { return };
     // An edge 80 pixels long, one as long that bends 5 pixels before its end, so its arrowhead
-    // reaches back past the bend, and a stub 12 long, too short for a comet beside its arrowhead.
-    // Red comets 12 pixels apart move so slowly they stand still.
-    let (x, y) = (vec![-40.0, 40.0, -6.0, 6.0, -40.0, 40.0], vec![0.0, 0.0, 30.0, 30.0, -30.0, -30.0]);
+    // reaches back past the bend, a stub 12 long, too short for a comet beside its arrowhead, and
+    // an edge between two vertices at one place. Red comets 12 pixels apart move so slowly they
+    // stand still.
+    let x = vec![-40.0, 40.0, -6.0, 6.0, -40.0, 40.0, 0.0, 0.0];
+    let y = vec![0.0, 0.0, 30.0, 30.0, -30.0, -30.0, 55.0, 55.0];
     let draw = |arrows: bool| {
         let data = Data::new("graph");
-        let bends: Vec<Vec<[f64; 2]>> = vec![vec![], vec![], vec![[35.0, -30.0]]];
-        let links = Table::new("Link", Ids::count(3))
-            .reference("from", "Node", vec![1_u64, 3, 5])
-            .reference("to", "Node", vec![2_u64, 4, 6])
+        let bends: Vec<Vec<[f64; 2]>> = vec![vec![], vec![], vec![[35.0, -30.0]], vec![]];
+        let links = Table::new("Link", Ids::count(4))
+            .reference("from", "Node", vec![1_u64, 3, 5, 7])
+            .reference("to", "Node", vec![2_u64, 4, 6, 8])
             .field("bends", bends);
         data.apply(Patch::new().set(nodes(x.clone(), y.clone())).set(links)).expect("valid");
         let red = latkit::Color::rgb(1.0, 0.0, 0.0);
@@ -263,11 +265,16 @@ fn arrows_draw_heads_at_second_ends_clear_of_comets() {
         let pixels = common::rest(&gpu, &mut view);
         assert_eq!(errors(&mut view), Vec::new());
         let on = |i: usize| view.screen([x[i], y[i], 0.0]).expect("on screen").map(|v| v.round() as i32);
-        (pixels, [on(1), on(3), on(5)])
+        (pixels, [on(1), on(3), on(5), on(7)])
     };
     let lit_count = |pixels: &[[u8; 4]]| pixels.iter().filter(|&&p| lit(p)).count();
-    let (plain, (headed, [tip, stub, bent])) = (lit_count(&draw(false).0), draw(true));
+    let (plain, (headed, [tip, stub, bent, point])) = (lit_count(&draw(false).0), draw(true));
     assert!(lit_count(&headed) > plain + 20, "{plain} → {}", lit_count(&headed));
+    // An edge of no length points nowhere, so it draws no head around its vertex.
+    let around =
+        (-9..=9_i32).flat_map(|dx| (-9..=9_i32).map(move |dy| [dx, dy])).filter(|d| d[0].abs().max(d[1].abs()) >= 3);
+    let near = around.filter(|&[dx, dy]| lit(at(&headed, (point[0] + dx) as u32, (point[1] + dy) as u32))).count();
+    assert_eq!(near, 0, "nothing lit around an edge of no length");
     // Red pixels in the box `dx` pixels before a tip, and 6 either side of its edge.
     let red = |tip: [i32; 2], dx: std::ops::RangeInclusive<i32>| {
         let red = |p: [u8; 4]| p[0] > 100 && p[1] < p[0] / 2;

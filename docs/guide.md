@@ -56,13 +56,15 @@ grid.apply(new Patch().set('Bus', [101], { name: ['Northgate'] }).remove('Branch
 
 ### Record over time
 
-A field becomes sampled when you append its first frame. A view shows the axis coordinate
-`view.at`. Marks interpolate each sampled field between the frames on either side of `view.at`. A
+A field becomes sampled at its first append. Append no frames to declare a recording's fields
+before they arrive, so views that read them wait for frames rather than fail. A view shows the axis
+coordinate `view.at`. Marks interpolate each sampled field between the frames on either side of `view.at`. A
 field read with `field(name).step()` shows the last frame at or before it instead. Sampled values
 are stored as `f32` for drawing, and axis coordinates as `f64`.
 
 ```ts
 grid.axis('time', 's');
+grid.append('Bus', [], { vm: new Float32Array(0) }); // declared, no frames yet
 grid.append('Bus', 0.5, { vm: Float32Array.of(1.01, 0.99, 1.0) });
 grid.append('Bus', [1, 1.5], { vm: Float32Array.of(1, 1, 1, 0.98, 0.97, 0.99) });
 grid.append('Bus', 2, { vm: [1.02] }, { ids: [101] }); // one row; the rest hold
@@ -100,9 +102,10 @@ A line that traces a field fetches the spans in its plot window, at the detail i
 marks fetch the frames around `view.at`. While a span loads, the view draws the coarser span that
 covers it. While frames are still recorded, a `TileWriter` writes the same files as they arrive,
 holding only the spans in progress. Apply each patch of appends to it, `flush` it, then call
-`tiles.refresh()`: views keep what they drew and fetch only the last span of each level again. In
-Rust, `Snapshot::to_tiles` writes the files of a whole dataset. A server can also answer the files
-itself through `new Tiles(name, url, { fetch })`.
+`tiles.refresh()`: views keep what they drew and fetch only the last span of each level again.
+Flush it once before the first frames, after appending none, so views find the manifest from the
+start. In Rust, `Snapshot::to_tiles` writes the files of a whole dataset. A server can also answer
+the files itself through `new Tiles(name, url, { fetch })`.
 
 ### Stream
 

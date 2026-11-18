@@ -3,8 +3,10 @@
 //!
 //! An unpaged table's rows are paged as its data is, and its columns read the data's pages. A paged
 //! table's rows are paged by slot, one page of its order per slot. Its columns read pages packed in
-//! that order, cached on the GPU by what they were packed from. A reference column to a paged table
-//! holds the referenced rows' places in that table's order.
+//! that order, cached on the GPU by what they were packed from. Its sampled columns instead read the
+//! table's own frames through each held row's row in the table, so showing another frame packs
+//! nothing. A reference column to a paged table holds the referenced rows' places in that table's
+//! order.
 //!
 //! A column a line traces holds only what is in view: runs of entries, as raw frames while there
 //! are at most two per pixel column, otherwise as each pixel column's least and greatest value,
@@ -51,6 +53,10 @@ use crate::scene::mark::Style;
 use crate::{Name, Snapshot, Table};
 
 const WORDS: usize = wgsl::COLUMN_WORDS as usize;
+
+/// The derived column a paged table's held rows name their table rows in. Only latkit names
+/// derived columns.
+const HELD_ROWS: &str = "rows";
 
 /// The inputs one column's table was built from. When they change, the table is rebuilt.
 #[derive(Clone, PartialEq, Debug)]
@@ -1528,7 +1534,7 @@ impl<'g> Builder<'g> {
             }
             Some(Field::Sampled(samples, _)) => {
                 let frame = self.sampled(&mut d, column, samples, inputs.at);
-                self.cursors(samples, frame, table.len());
+                self.cursors(samples, frame, table.len().div_ceil(wgsl::PAGE_ROWS as usize), |_| true);
             }
             None => self.pages = None,
         }
@@ -1558,7 +1564,6 @@ impl<'g> Builder<'g> {
         inputs: &Inputs<'_>,
         d: &mut [u32; WORDS],
     ) {
-        let order = &drawing.order;
         let slots = drawing.slot_count();
         match field {
             Some(Field::Values(values, _)) if column.words == Words::Codes => {
@@ -1601,26 +1606,15 @@ impl<'g> Builder<'g> {
                     .collect();
                 self.trace(d, samples, &blocks, inputs.window);
             }
-            Some(Field::Sampled(samples, version)) => {
+            Some(Field::Sampled(samples, _)) => {
+                // Held rows read the table's own frames through each one's table row (`low`), so
+                // showing another frame packs nothing.
                 let frame = self.sampled(d, column, samples, inputs.at);
-                // A cursor per slot, reading the frame packed in the slot's rows.
-                for s in 0..slots {
-                    let at = self.cursor_words();
-                    let Some((base, page)) = slot_key(&packing, drawing, s) else { continue };
-                    for (k, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
-                        let Some(f) = f.filter(|&f| samples.held(0, f)) else { continue };
-                        let packing = Packing { reads: stamp_of((version, f)), ..base.clone() };
-                        let id = self.gpu.packed.page(&packing, order, None, page);
-                        let key = PageKey::of(id, Words::Values, false);
-                        let rows = drawing.rows(s);
-                        let counters = self.gpu.packed.counters();
-                        let content = || {
-                            counters.add(Count::Packed, rows.len() as u64);
-                            Content::Computed(packed::frame(samples, &rows, Some(f)))
-                        };
-                        self.cursor(at, k, key, 0, wgsl::PAGE_ROWS, content);
-                    }
-                }
+                let reads = drawing.reads();
+                self.cursors(samples, frame, reads.len(), |page| reads[page]);
+                d[wgsl::COLUMN_LOW as usize] = self.words.len() as u32;
+                let rows = Packing { field: HELD_ROWS.into(), words: Words::Rows, derived: true, reads: 0, ..packing };
+                self.held_pages(drawing, &rows, None, |_, rows| packed::rows(rows));
             }
             None => self.pages = None,
         }
@@ -1898,10 +1892,14 @@ impl<'g> Builder<'g> {
         self.plan = Some(Arc::new(plan));
     }
 
-    /// A cursor per page of `rows` rows, at `frame` and the frame after it.
-    fn cursors(&mut self, samples: &Samples, frame: Option<u64>, rows: usize) {
-        for block in 0..rows.div_ceil(wgsl::PAGE_ROWS as usize) {
+    /// A cursor for each of `pages` pages of rows, at `frame` and the frame after it. A page that
+    /// `read` rejects reads nothing.
+    fn cursors(&mut self, samples: &Samples, frame: Option<u64>, pages: usize, read: impl Fn(usize) -> bool) {
+        for block in 0..pages {
             let at = self.cursor_words();
+            if !read(block) {
+                continue;
+            }
             for (k, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
                 let Some((page, base)) = f.and_then(|f| samples.cursor(block, f)) else { continue };
                 let key = PageKey::of(page.id, Words::Values, false);

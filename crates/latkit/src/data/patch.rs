@@ -92,8 +92,9 @@ impl Patch {
     /// Records a frame of `table` at each axis coordinate in `at`. Each field gives a value per row
     /// per coordinate, frame-major: every row's value at the first coordinate, then at the next.
     ///
-    /// A field's first frame makes it sampled. Coordinates must be finite and must not decrease. At
-    /// equal coordinates, reads return the last frame.
+    /// A field's first append makes it sampled, even of no frames, which declares it so views can
+    /// read it before its frames arrive. Coordinates must be finite and must not decrease. At equal
+    /// coordinates, reads return the last frame.
     #[must_use]
     pub fn append<F, V>(
         mut self,

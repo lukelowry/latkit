@@ -24,6 +24,9 @@ use crate::{Error, Result};
 /// Words in a frame page, which holds entries of one row block, entry-major. An axis page takes at
 /// most as many words on the GPU, two per entry.
 pub(crate) const FRAME_PAGE_WORDS: usize = 1 << 16;
+/// Entries a new page of frames has room for: as many as a page of a full row block holds. Pages
+/// above frames fill eight times slower each level, and grow as they fill.
+const OPENED: usize = FRAME_PAGE_WORDS / PAGE_ROWS;
 /// Levels of detail that appends write above frames. Level `k` holds each row's least and greatest
 /// value over buckets of `8^k` frames. Inserted runs can go higher, up to [`MAX_LEVEL`].
 pub(crate) const LEVELS: u32 = 6;
@@ -163,15 +166,16 @@ impl<T: Clone> Log<T> {
         self.read(|items| items.last().cloned())
     }
 
-    /// Stops reading items before absolute index `start`. Shared storage is left to the other
-    /// versions. Once the forgotten prefix exceeds a quarter of the kept items (plus 16), this
-    /// version copies the items it keeps.
+    /// Stops reading items before absolute index `start`, and copies the items it keeps, so the
+    /// items before it no longer stay alive through this version. Shared storage is left to the
+    /// other versions.
     pub(crate) fn forget(&mut self, start: usize) {
-        self.start = start.clamp(self.start, self.end);
-        if self.start - self.base > (self.end - self.start) / 4 + 16 {
+        let start = start.clamp(self.start, self.end);
+        if start > self.start {
+            self.start = start;
             let kept = self.read(<[T]>::to_vec);
             self.items = Arc::new(RwLock::new(kept));
-            self.base = self.start;
+            self.base = start;
         }
     }
 }
@@ -406,10 +410,13 @@ fn forget_before<T: Copy>(log: &mut Log<Page<T>>, index: u64) {
 }
 
 /// Writes `entry`'s `items` after the last entry of `log`. They go into the last page if it can
-/// grow and has room within `limit` items, else into a new growable page.
-fn grow<T: Copy>(log: &mut Log<Page<T>>, entry: u64, items: &[T], limit: usize) {
+/// grow and has room within `limit` items, else into a new growable page with room for `entries`
+/// entries, which it fills without moving.
+fn grow<T: Copy>(log: &mut Log<Page<T>>, entry: u64, items: &[T], limit: usize, entries: usize) {
     if !log.last().is_some_and(|page| page.extend(entry, items, limit)) {
-        log.push(Page::new(entry, items.len(), items.to_vec(), true));
+        let mut stored = Vec::with_capacity((items.len() * entries).clamp(items.len(), limit));
+        stored.extend_from_slice(items);
+        log.push(Page::new(entry, items.len(), stored, true));
     }
 }
 
@@ -659,9 +666,9 @@ impl Samples {
             }
             for (b, block) in logs.blocks.iter_mut().enumerate().take(blocks) {
                 let slice = &frame_values[b * PAGE_ROWS..rows.min((b + 1) * PAGE_ROWS)];
-                grow(&mut block[0], frame, slice, FRAME_PAGE_WORDS);
+                grow(&mut block[0], frame, slice, FRAME_PAGE_WORDS, OPENED);
             }
-            grow(&mut logs.axes[0], frame, &[t], FRAME_PAGE_WORDS / 2);
+            grow(&mut logs.axes[0], frame, &[t], FRAME_PAGE_WORDS / 2, OPENED);
             self.end += 1;
             seal(&mut logs, frame);
         }
@@ -1280,7 +1287,7 @@ fn seal(logs: &mut Logs, frame: u64) {
         let first = below[0].0.coordinate(children.start, 0);
         let last = below[below.len() - 1].0.coordinate(children.end - 1, 1);
         let (Some(first), Some(last)) = (first, last) else { break };
-        grow(&mut logs.axes[level as usize], bucket, &[first, last], FRAME_PAGE_WORDS / 2);
+        grow(&mut logs.axes[level as usize], bucket, &[first, last], FRAME_PAGE_WORDS / 2, 1);
         for block in &mut logs.blocks {
             for side in 0..2 {
                 let from = &block[slot(level - 1, if level == 1 { 0 } else { side })];
@@ -1297,7 +1304,7 @@ fn seal(logs: &mut Logs, frame: u64) {
                         }
                     });
                 }
-                grow(&mut block[slot(level, side)], bucket, &sealed, FRAME_PAGE_WORDS);
+                grow(&mut block[slot(level, side)], bucket, &sealed, FRAME_PAGE_WORDS, 1);
             }
         }
     }
@@ -1390,6 +1397,7 @@ mod tests {
         let older = samples.clone();
         let pages = |s: &Samples| s.blocks[0][0].read(<[FramePage]>::len);
         let before = pages(&samples);
+        let first = samples.blocks[0][0].read(|pages| pages[0].kept());
         assert!(samples.forget(50.0));
         assert!(!samples.forget(50.0), "nothing more to forget");
         assert_eq!((samples.start(), samples.end()), (50, 100));
@@ -1398,6 +1406,8 @@ mod tests {
         assert_eq!(samples.span(), Some([50.0, 99.0]), "the span starts at the first kept frame, not its bucket");
         assert!(pages(&samples) < before, "whole pages before the first kept frame drop");
         assert_eq!(older.value(7, 10), Some(10.0), "an older version still reads them");
+        drop(older);
+        assert!(first.upgrade().is_none(), "once no version reads a forgotten page, its storage is freed");
         samples.append(&[100.0], &Values::from(vec![1.0_f32; rows]), rows).expect("frame");
         assert_eq!(samples.end(), 101);
         let run = Run { level: 0, entries: 10..11 };

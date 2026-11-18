@@ -442,7 +442,8 @@ writer.flush(write); // then tiles.refresh()
 **`flush`**`(write: (path: string, bytes: Uint8Array) => void): void` [¶](#tilewriter-flush){.headerlink}
 : Calls `write` with the spans in progress as they stand, then the base and the `frames.json`
   manifest, so [`Tiles`](#tiles) drawing the manifest find every frame appended so far. A span written
-  again as it grows replaces the one before.
+  again as it grows replaces the one before. Flushed before the first frames, after appends of
+  none, it lists their fields, so views find the manifest from the start.
 
 (source)=
 
@@ -653,7 +654,8 @@ const patch = new Patch('grid')
 {#patch-append .member}
 **`append`**`(table: string, at: number | readonly number[], fields: Readonly<Record<string,` [`Values`](#values)`>>, options?: { ids?:` [`RowIds`](#rowids) `}): this` [¶](#patch-append){.headerlink}
 : Records a frame of `table` at each axis coordinate in `at`. Each field gives one value per row
-  for each frame, frame by frame. A field becomes a sampled field at its first frame. Consecutive
+  for each frame, frame by frame. A field becomes a sampled field at its first append, even of no
+  frames, which declares it so views can read it before its frames arrive. Consecutive
   appends of typed float arrays to the same fields of every row are written as one change, so
   appending one frame per call costs no more than one call with every frame.
 

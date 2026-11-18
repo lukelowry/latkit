@@ -23,6 +23,8 @@ pub(super) struct BufferData {
     mapped: RefCell<Option<Mapping>>,
     generation: Cell<u64>,
     destroyed: Cell<bool>,
+    /// For a buffer made for reading, the fences made by its last write (see [`Buffer::renew`]).
+    written: Option<Cell<u64>>,
 }
 impl Buffer {
     pub(super) fn new(state: &Rc<State>, desc: &wgpu::BufferDescriptor<'_>) -> Self {
@@ -36,8 +38,12 @@ impl Buffer {
         }
         gl.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&raw));
         // Firefox stalls reading back a buffer not made for reading.
-        let hint = if desc.usage.contains(wgpu::BufferUsages::MAP_READ) { Gl::STREAM_READ } else { Gl::DYNAMIC_COPY };
-        gl.buffer_data_with_f64(Gl::COPY_WRITE_BUFFER, desc.size as f64, hint);
+        let read = desc.usage.contains(wgpu::BufferUsages::MAP_READ);
+        gl.buffer_data_with_f64(
+            Gl::COPY_WRITE_BUFFER,
+            desc.size as f64,
+            if read { Gl::STREAM_READ } else { Gl::DYNAMIC_COPY },
+        );
         let mapped =
             desc.mapped_at_creation.then(|| (0..desc.size, wgpu::MapMode::Write, Rc::new(vec![0; desc.size as usize])));
         Self(Rc::new(BufferData {
@@ -48,12 +54,29 @@ impl Buffer {
             mapped: RefCell::new(mapped),
             generation: Cell::new(0),
             destroyed: Cell::new(false),
+            written: read.then(|| Cell::new(state.waits.made())),
         }))
     }
     pub(super) fn write(&self, offset: u64, bytes: &[u8]) {
         assert!(!self.0.destroyed.get() && offset + bytes.len() as u64 <= self.0.size);
         self.0.gl.bind_buffer(Gl::COPY_WRITE_BUFFER, Some(&self.0.raw));
+        self.renew(Gl::COPY_WRITE_BUFFER);
         self.0.gl.buffer_sub_data_with_f64_and_u8_array(Gl::COPY_WRITE_BUFFER, offset as f64, bytes);
+    }
+
+    /// Readies the buffer, bound to `target`, for a write. A buffer made for reading gets new
+    /// storage at its first write since a fence, so bytes written before that fence are gone.
+    ///
+    /// The browser copies such a buffer at the first fence after a write, and keeps the copy until
+    /// the storage is given anew (see [`Buffer::read`]). A write after a fence would discard a copy,
+    /// read or not, and Chrome warns of it. The writes between two fences share one copy.
+    pub(super) fn renew(&self, target: u32) {
+        let Some(written) = &self.0.written else { return };
+        let Some(state) = self.0.state.upgrade() else { return };
+        let made = state.waits.made();
+        if written.replace(made) != made {
+            self.0.gl.buffer_data_with_f64(target, self.0.size as f64, Gl::STREAM_READ);
+        }
     }
 
     /// A browser mapping already owns CPU bytes. An exclusive internal readback can move
@@ -79,13 +102,11 @@ impl Buffer {
     ///
     /// The browser keeps a copy of a buffer made for reading, taken once a fence follows a write,
     /// and reads it without asking the GPU process: a read after the fence returns at once, however
-    /// much work was issued since. Writing the buffer again discards that copy, and Chrome warns,
-    /// unless its storage was given anew, so the storage starts over once the bytes are read.
+    /// much work was issued since. The next write gives the storage anew (see [`Buffer::renew`]).
     fn read(&self, state: &State, range: &Range<u64>) -> Vec<u8> {
         let mut bytes = vec![0; (range.end - range.start) as usize];
         state.gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&self.0.raw));
         state.gl.get_buffer_sub_data_with_f64_and_u8_array(Gl::COPY_READ_BUFFER, range.start as f64, &mut bytes);
-        state.gl.buffer_data_with_f64(Gl::COPY_READ_BUFFER, self.0.size as f64, Gl::STREAM_READ);
         bytes
     }
 }

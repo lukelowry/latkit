@@ -327,7 +327,8 @@ impl TileWriter {
 
     /// Writes the spans in progress as they stand, then the base and the manifest, so a reader
     /// finds every frame appended so far. A span written again as it grows replaces the one
-    /// before.
+    /// before. Flushed before the first frames, after appends of none, it lists their fields, so
+    /// views find the manifest from the start.
     pub fn flush(&mut self, mut write: impl FnMut(&str, &[u8]) -> Result<()>) -> Result<()> {
         for (place, streamed) in self.fields.iter().enumerate() {
             for (level, open) in streamed.levels.iter().enumerate() {
@@ -527,8 +528,9 @@ mod tests {
         grid.apply(Patch::new().axis("time", "s").replace(rows)).expect("rows");
         let mut writer = TileWriter::new(grid.snapshot(), 16).expect("a chunk of 16");
         let mut streamed = BTreeMap::new();
-        // 100 frames in uneven batches, as a recording arrives.
-        for frames in [0..1, 1..37, 37..100] {
+        // The field declared by an append of no frames, then 100 frames in uneven batches, as a
+        // recording arrives.
+        for frames in [0..0, 0..1, 1..37, 37..100] {
             let at: Vec<f64> = frames.clone().map(f64::from).collect();
             let values: Vec<f64> = frames.flat_map(|f| [f64::from(f % 7), f64::from(f % 5)]).collect();
             grid.apply(Patch::new().append("Bus", &at, [("vm", values.clone())])).expect("frames");
@@ -539,6 +541,22 @@ mod tests {
                     Ok(())
                 })
                 .expect("spans");
+            if at.is_empty() {
+                let mut manifest = Vec::new();
+                writer
+                    .flush(|path, bytes| {
+                        if path == MANIFEST {
+                            manifest = bytes.to_vec();
+                        }
+                        Ok(())
+                    })
+                    .expect("the manifest");
+                let listed = Manifest::from_bytes(&manifest).expect("a manifest").expect("valid").fields;
+                assert_eq!(listed.len(), 1, "the declared field is listed");
+                assert_eq!((&*listed[0].field, listed[0].frames.clone()), ("vm", 0..0), "with no frames");
+                let kind = grid.snapshot().table("Bus").and_then(|bus| bus.kind("vm"));
+                assert_eq!(kind, Some(crate::Kind::Sampled), "the dataset declares it too");
+            }
         }
         writer
             .flush(|path, bytes| {

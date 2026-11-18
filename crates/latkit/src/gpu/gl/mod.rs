@@ -98,18 +98,19 @@ fn show(
     if noticed_loss(state) {
         return Ok(());
     }
-    blit(texture, canvas)?;
+    blit(texture)?;
     waits::Waits::presented(state);
     let size = texture.0.size;
     sink.copy(canvas, [size.width, size.height])
 }
 
-fn blit(texture: &resource::Texture, canvas: &super::browser::Canvas) -> crate::Result<()> {
+fn blit(texture: &resource::Texture) -> crate::Result<()> {
     use web_sys::WebGl2RenderingContext as Gl;
     let gl = &texture.0.gl;
     let size = texture.0.size;
-    // The caller reserved room for the texture, so the canvas never resizes while presenting.
-    let extent = canvas.size();
+    // The caller reserved room for the texture, so the canvas never resizes while presenting. Rows
+    // count from the top of the drawing buffer, which the canvas matches (see `Canvas::fit`).
+    let extent = [gl.drawing_buffer_width(), gl.drawing_buffer_height()].map(|side| side.max(0) as u32);
     if size.width > extent[0] || size.height > extent[1] {
         return Err(crate::Error::Unsupported("the presentation texture is larger than the WebGL2 canvas".into()));
     }

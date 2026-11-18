@@ -57,6 +57,8 @@ pub(super) struct Waits {
     polling: Cell<bool>,
     /// The poller while it rests between program polls. A new fence wakes it.
     resting: RefCell<Option<Waker>>,
+    /// Fences made so far (see `Buffer::renew`).
+    made: Cell<u64>,
 }
 
 impl Waits {
@@ -67,8 +69,7 @@ impl Waits {
             let mut fenced = state.waits.fenced.borrow_mut();
             match state.waits.since.replace(Since::Nothing) {
                 Since::Work => {
-                    let fence = state.gl.fence_sync(Gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
-                    state.gl.flush();
+                    let fence = Self::make(state);
                     // A lost context makes no fence. The wait runs on the next poll, told it failed.
                     fenced.push(Fenced { failed: fence.is_none(), fence, then: vec![then] });
                 }
@@ -98,11 +99,23 @@ impl Waits {
 
     /// Fences the frame just blitted to the shared canvas, before the page copies it.
     pub(super) fn presented(state: &State) {
-        let fence = state.gl.fence_sync(Gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
-        state.gl.flush();
+        let fence = Self::make(state);
         if let Since::Presented(stale) = state.waits.since.replace(fence.map_or(Since::Work, Since::Presented)) {
             state.gl.delete_sync(Some(&stale));
         }
+    }
+
+    /// Fences the commands issued so far, and flushes them so the fence can signal.
+    fn make(state: &State) -> Option<WebGlSync> {
+        state.waits.made.set(state.waits.made.get() + 1);
+        let fence = state.gl.fence_sync(Gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
+        state.gl.flush();
+        fence
+    }
+
+    /// The number of fences made so far.
+    pub(super) fn made(&self) -> u64 {
+        self.made.get()
     }
 
     /// Polls `program` until it links, then wakes its waiters.

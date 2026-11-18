@@ -298,7 +298,8 @@ export class Patch {
 
   /**
    * Records a frame of `table` at each axis coordinate in `at`. Each field gives one value per row
-   * for each frame, frame by frame. A field becomes a sampled field at its first frame. Consecutive
+   * for each frame, frame by frame. A field becomes a sampled field at its first append, even of no
+   * frames, which declares it so views can read it before its frames arrive. Consecutive
    * appends of typed float arrays to the same fields of every row are written as one change, so
    * appending one frame per call costs no more than one call with every frame.
    */
