@@ -112,7 +112,7 @@ def prepare(work, frames):
     theme = {"background": "#0a111b", "text": {"color": "#d5e1ed", "font": "Segoe UI, sans-serif", "size": 17}}
     map_scene = {
         "space": {"plane": {"grid": "off"}}, "ease": 0,
-        "theme": {**theme, "edge": {"color": None, "bow": 0}},
+        "theme": {**theme, "edge": {"color": None, "parallel": None}},
         "title": "WECC 240 / FAULT RESPONSE",
         "subtitle": "JOHN DAY / Bus 4005 / Applied 1.00 s / Cleared 1.15 s",
         "marks": [

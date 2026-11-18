@@ -388,8 +388,8 @@ impl Picture {
                 .into(),
             ));
         }
-        let area = u64::from(width) * u64::from(height);
-        // Gaps get the first view's background, or stay clear in a transparent picture.
+        // Gaps get the first view's background, as a canvas's do, or stay clear in a transparent
+        // picture.
         let background = if shot.transparent { [0.0; 4] } else { views[0].scene().theme.background.to_array() };
         let layout = gpu.0.lock().pipelines.pass_layout(device, Shader::Compose);
         let uniform = |origin: [u32; 2]| {
@@ -433,9 +433,7 @@ impl Picture {
             textures.push(texture);
             uniforms.push(composing);
         }
-        let covered: u64 = rects.iter().map(|r| u64::from(r.size[0]) * u64::from(r.size[1])).sum();
-        let overlap = rects.iter().enumerate().any(|(i, a)| rects[i + 1..].iter().any(|b| a.overlaps(*b)));
-        let fill = (covered < area || overlap).then(|| {
+        let fill = crate::panels::gaps(&rects, shot.size).then(|| {
             let composing = uniform([0, 0]);
             let fill = group(&panels[0].target, &composing);
             uniforms.push(composing);

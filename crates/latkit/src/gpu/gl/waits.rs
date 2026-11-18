@@ -82,6 +82,13 @@ impl Waits {
         Self::poll(state);
     }
 
+    /// Whether every fence has settled and no work was given to the GPU since the newest: a
+    /// synchronous query, which the browser's GPU process answers after everything issued before
+    /// it, then answers at once.
+    pub(super) fn quiet(&self) -> bool {
+        self.fenced.borrow().is_empty() && matches!(*self.since.borrow(), Since::Nothing)
+    }
+
     /// Notes work given to the GPU: the next wait needs a fence of its own.
     pub(super) fn issued(state: &State) {
         if let Since::Presented(fence) = state.waits.since.replace(Since::Work) {

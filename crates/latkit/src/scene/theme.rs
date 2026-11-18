@@ -29,6 +29,9 @@ pub struct Theme {
     pub contrast: f32,
     /// The dash period: one dash and one gap of equal length.
     pub dash: f32,
+    /// The space between the view's edge, inside its insets, and the guides beside it: titles,
+    /// legends, and a plot's axes. Defaults to 1.5 times the text size.
+    pub padding: Option<f32>,
     /// How labels, axis ticks, and titles look.
     pub text: TextTheme,
     /// Defaults for vertices.
@@ -102,14 +105,47 @@ pub struct EdgeTheme {
     pub color: Option<Color>,
     /// The edge width, in CSS pixels.
     pub width: f32,
-    /// How far edges joining the same two vertices bow apart. Each lane bows out
-    /// by this fraction of the edge's length, measured at its middle. Parallel edges spread at most
-    /// eight lanes wide, and more lanes pack closer. Bows scale with the zoom. With 0 they run
-    /// straight, one over another.
-    pub bow: f32,
+    /// How edges joining the same two vertices run side by side. `None` draws them over one
+    /// another.
+    pub parallel: Option<Parallel>,
     /// How far an arrowhead extends beyond the edge's width. A head's length is this plus the
     /// width.
     pub arrow: f32,
+}
+
+/// How edges joining the same two vertices run side by side: each moved sideways from the path
+/// between its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.
+/// More than eight edges pack closer, within eight steps, and where neighbors would lie less than a
+/// pixel apart, only every second edge draws, or every fourth, and so on.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
+pub struct Parallel {
+    /// The space between neighboring edges, in CSS pixels. Defaults to 3.
+    pub gap: f32,
+    /// How they come together at the vertices they join. Defaults to `squeeze`.
+    pub converge: Converge,
+}
+
+impl Default for Parallel {
+    fn default() -> Parallel {
+        Parallel { gap: 3.0, converge: Converge::Squeeze }
+    }
+}
+
+/// How parallel edges come together at the vertices they join.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Converge {
+    /// They draw closer together where needed, so the family fits within the smaller of its two
+    /// vertices, and each edge stays one straight line.
+    #[default]
+    Squeeze,
+    /// They keep their spacing and angle in to each vertex's center near their ends.
+    Fan,
+    /// They keep their spacing and run straight to each vertex, stopping at its outline, or beside
+    /// it where they pass it.
+    Straight,
 }
 
 /// Defaults for lines.
@@ -283,6 +319,7 @@ impl Theme {
             missing: hex("#6b7480"),
             contrast: 1.0,
             dash: 8.0,
+            padding: None,
             text: TextTheme {
                 color: hex("#a8b2c2"),
                 font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),
@@ -290,7 +327,7 @@ impl Theme {
                 halo: 2.0,
             },
             vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0, corner: 6.0 },
-            edge: EdgeTheme { color: None, width: 1.5, bow: 0.12, arrow: 7.0 },
+            edge: EdgeTheme { color: None, width: 1.5, parallel: Some(Parallel::default()), arrow: 7.0 },
             line: LineTheme { color: hex("#7cc4ff"), width: 1.5 },
             area: AreaTheme { color: hex("#2b3d50") },
             focus: FocusTheme {
@@ -427,6 +464,10 @@ mod tests {
         );
         assert_eq!((theme.edge.color, theme.focus.selected), (None, None), "null clears a color");
         assert_eq!(theme.text, light.text);
+        let fan = self::theme(r#"{"edge": {"parallel": {"converge": "fan"}}}"#).edge.parallel;
+        assert_eq!(fan, Some(Parallel { converge: Converge::Fan, ..Parallel::default() }), "a nested group merges too");
+        let off = self::theme(r#"{"edge": {"parallel": null}}"#).edge.parallel;
+        assert_eq!(off, None, "null draws parallel edges over one another");
     }
 
     #[test]

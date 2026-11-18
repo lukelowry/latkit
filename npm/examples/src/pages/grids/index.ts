@@ -169,7 +169,6 @@ export default page({
           background: LOOK.background,
           area: { color: LOOK.fill },
           earth: { ground: LOOK.ground, atmosphere: '#5aa9ff99', night: 0.28 },
-          edge: { bow: 0.12 },
           flow: { color: '#d6e6ffa6', width: 3, length: 20, spacing: 72 },
         },
         marks,

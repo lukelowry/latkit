@@ -61,12 +61,8 @@ fn reduce(raster: &mut Raster<'_>, input: At<'_>, output: At<'_>, records: u32, 
         output.words,
         super::shaders::WordStep {
             source: input.at,
-            other: 0,
             destination: output.at,
-            count: records * 4,
-            layer: 0,
-            value: 0,
-            size: [0; 2],
+            ..super::shaders::WordStep::of(records * 4)
         },
         records.div_ceil(SCAN_BLOCK) * 4,
     );

@@ -1,7 +1,7 @@
 /** Canvases. A canvas shows views in one `<canvas>` or `OffscreenCanvas`. Views create them. */
 
 import type * as bindings from '../pkg/latkit.js';
-import { Handle, inner, rebind } from './internal.js';
+import { Handle, inner } from './internal.js';
 import { handleOf, type View } from './view.js';
 
 /** A region `[x, y, width, height]` in fractions of a canvas or picture, from its top left. */
@@ -19,8 +19,6 @@ export type Target = HTMLCanvasElement | OffscreenCanvas;
  */
 export class Canvas extends Handle {
   #views: View[] = [];
-  #target: Target;
-  #pixelRatio: number | undefined;
   #released: () => void;
 
   private constructor(
@@ -30,8 +28,6 @@ export class Canvas extends Handle {
     released: () => void,
   ) {
     super(device.canvas(target, ...encoded([]), pixelRatio), 'Canvas');
-    this.#target = target;
-    this.#pixelRatio = pixelRatio;
     this.#released = released;
   }
 
@@ -75,12 +71,11 @@ export class Canvas extends Handle {
   }
 
   /**
-   * Shows its views, already moved, on `device`, once its GPU's device is lost. The old canvas lets
-   * go of the target first, so the new one can draw there.
+   * Moves to `device`, after its views, once its GPU's device is lost. It stays the same canvas,
+   * with its input and last frame.
    */
   moved(device: bindings.Gpu): void {
-    inner<bindings.Canvas>(this).free();
-    rebind(this, device.canvas(this.#target, ...encoded(this.#views), this.#pixelRatio));
+    inner<bindings.Canvas>(this).moveTo(device);
   }
 
   protected override freeing(): void {

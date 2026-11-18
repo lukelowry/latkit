@@ -90,7 +90,7 @@ impl View {
     /// narrowed by the box fits have framed, as far as the scene's `controls.reach` says. Until a
     /// frame gives the view its size, only fits set limits.
     pub(super) fn limits(&self) -> Limits {
-        let area = self.area();
+        let area = self.edges();
         let room = self.sized().then(|| [area[2] - area[0], area[3] - area[1]]);
         Limits::new(&self.scene.space, room, self.rig.bounds, self.scene.controls.reach)
     }

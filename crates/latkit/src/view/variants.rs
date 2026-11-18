@@ -132,8 +132,8 @@ impl MarkVariants {
     }
 
     /// Whether a list may number its instances, for rows whose counts differ: edges between ends
-    /// (which may pass through bends, follow great circles, or bow into lanes), and every path
-    /// through geometry, including areas' triangles.
+    /// (which may pass through bends, follow great circles, or fan into their vertices), and every
+    /// path through geometry, including areas' triangles.
     fn listed(&self) -> bool {
         self.path == PATH_GEOMETRY || (self.kind == MarkKind::Edges && matches!(self.path, PATH_ENDS | PATH_BENDS))
     }
@@ -457,13 +457,14 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Words, "maximum")));
     }
     let controls = scene.controls;
-    // The overlay draws a plot's axes, the title, the legends, and the selection box and connection
-    // line that gestures draw.
+    // The overlay draws a plot's grid lines and axes, the title, the legends, and the selection box
+    // and connection line that gestures draw. Its lines and fills draw with the marks, so a plot
+    // never shows its traces without its axes. Its text draws once the text stage can.
     let legends = any(&|m| m.style().legend.is_some() && m.style().color.is_some());
     let written = matches!(scene.space, Space::Plot(_)) || scene.title.is_some() || legends;
     let draws = [Action::Box, Action::ZoomBox, Action::Connect].into_iter().any(|a| controls.gestures.any(a));
     if written || draws {
-        stages.add(Stage::Text, draw(Shader::Overlay));
+        stages.add(Stage::Draw, draw(Shader::Overlay));
     }
     // The distance fields of text a frame sets are built before the frame draws.
     let labeled = any(&|m| m.style().label.is_some());
@@ -769,7 +770,7 @@ mod tests {
         for need in &new {
             gpu.0.lock().pipelines.release(need);
         }
-        view.swap_when_ready();
+        view.swap_when_ready(true);
         assert!(view.incoming.is_none() && view.marks.len() == 2, "it draws once they land");
         assert!(matches!(view.camera, crate::Camera::Map { center: [5.0, ..], .. }), "with the camera set for it");
         assert!(view.ready_for(format, 1.0, true));

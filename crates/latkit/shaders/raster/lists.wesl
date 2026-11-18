@@ -7,7 +7,7 @@ import package::lib::types::{WordStep, NONE, POINTS, TRIANGLES, PATH_TRACE, RUN_
 import package::lib::words::{word_read, word_quad, word_index, fullscreen};
 import package::lib::lists::{list, list_start, list_total};
 import package::lib::read::{last_at_most, points_of, point_address};
-import package::lib::path::{row_segments, path_point, path_length, numbered_segment, segment_ends, PATH};
+import package::lib::path::{row_segments, path_length, path_segment, numbered_segment, segment_ends, PATH};
 import package::lib::drawn::held_row;
 import package::lib::state::{row_at, vertex_at};
 import package::lib::reduce::ordered;
@@ -117,12 +117,9 @@ fn segments(@builtin(position) position: vec4f) -> @location(0) vec4u {
     var length = 0.0;
     if PATH != PATH_TRACE {
         if mark.primitive != TRIANGLES {
-            let start = list_start(mark.list, lo);
-            let count = list_start(mark.list, lo + 1u) - start;
-            let row = held_row(lo);
-            let a = path_point(row, count, i - start);
-            let b = path_point(row, count, i - start + 1u);
-            if a.shown && b.shown { length = path_length(a, b); }
+            // Measured as every pass reads it, through `segment_ends`.
+            let ends = segment_ends(path_segment(lo, i - list_start(mark.list, lo), 0.0));
+            if ends.a.shown && ends.b.shown { length = path_length(ends.a, ends.b); }
         }
     }
     return vec4u(lo, bitcast<u32>(length), 0u, 0u);

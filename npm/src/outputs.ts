@@ -315,6 +315,10 @@ export type ViewEvent =
      * The axis coordinate shown changed: `view.at`. A press on a plot whose input scrubs, as
      * `controls.gestures` says, moved it.
      */ { type: 'at'; detail: number }
+  | /**
+     * Where marks draw changed: `view.area`, `[x, y, width, height]` in CSS pixels. The view's size,
+     * its insets, or its guides changed it.
+     */ { type: 'area'; detail: [number, number, number, number] }
   | /** The work the last frame waited on changed: `view.waiting`. Empty once frames are complete. */ {
       type: 'waiting';
       detail: Waiting;

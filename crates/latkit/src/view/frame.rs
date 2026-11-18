@@ -92,7 +92,7 @@ impl View {
         self.size = [f64::from(frame.size[0]) / ratio, f64::from(frame.size[1]) / ratio];
         let landed = self.signal.take();
         // A scene set since draws once the pipelines its frames draw with have landed.
-        self.swap_when_ready();
+        self.swap_when_ready(true);
         if !self.ready_for(frame.format, frame.pixel_ratio, input) {
             self.signal.leave(landed);
             return;
@@ -172,7 +172,7 @@ impl View {
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
         if let Some(probe) = probe {
-            let readback = self.probe(encoder, &mut inner);
+            let readback = self.probe(encoder, &mut inner, &probe);
             self.probing(probe, readback);
         }
         self.run_query(encoder, &mut inner);
@@ -230,6 +230,11 @@ impl View {
     /// without `input` (a picture's) requests no frame for probes and queries, which only input
     /// frames run.
     fn end(&mut self, started: Instant, input: bool) {
+        let area = self.area();
+        if area != self.told_area {
+            self.told_area = area;
+            self.events.tell(Event::Area(area));
+        }
         let waiting = self.under_way();
         if waiting != self.waiting {
             self.waiting = waiting;
@@ -254,9 +259,12 @@ impl View {
     fn lay_out(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
+        let fans =
+            matches!(self.scene.theme.edge.parallel, Some(crate::Parallel { converge: crate::Converge::Fan, .. }));
         for i in 0..self.marks.len() {
             let geodesic = self.geodesic(&self.marks[i]);
             self.marks[i].geodesic = geodesic;
+            self.marks[i].fans = fans;
         }
         self.resources.get_or_insert_with(|| Resources::new(device, gpu.0.queue.retired()));
         let fresh = self.fit_words(inner);
@@ -548,20 +556,30 @@ impl View {
             Camera::Plot { x, .. } => Some(x),
             Camera::Map { .. } => None,
         };
-        let area = self.area();
+        let area = self.edges();
         let columns = ((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32;
         Window { across, columns, most: self.trace_entries, steps: 0 }
     }
 
     /// What marks read of sampled fields, for time tiles to fetch: the plot window, its pixel
     /// columns, and the most entries a trace holds, the coordinate shown, and each field a mark's
-    /// program reads, with whether a line traces it.
+    /// program reads, with whether a line traces it. A line not compiled yet, as before its dataset
+    /// arrives, reads the field it traces. The marks of a scene set since count too, so tiles given
+    /// with it load what it draws.
     fn reading(&self) -> crate::tiles::Reading {
         let Window { across, columns, most, .. } = self.trace_window();
         let mut fields = Vec::new();
-        for shown in &self.marks {
-            let Some(compiled) = &shown.compiled else { continue };
+        let incoming = self.incoming.iter().flat_map(|incoming| self.incoming_marks(incoming));
+        for shown in self.marks.iter().chain(incoming) {
             let style = shown.mark.style();
+            let Some(compiled) = &shown.compiled else {
+                if let crate::Mark::Lines(lines) = &shown.mark
+                    && let Some(field) = &lines.trace
+                {
+                    fields.push((style.data.clone(), style.table.clone(), field.clone(), true));
+                }
+                continue;
+            };
             for column in compiled.program.columns.iter().filter(|c| !c.derived) {
                 let (data, table) = column.from.clone().unwrap_or_else(|| (style.data.clone(), style.table.clone()));
                 fields.push((data, table, column.name.clone(), column.trace));

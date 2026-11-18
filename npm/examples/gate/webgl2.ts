@@ -59,6 +59,9 @@ try {
         if (!gl) throw new Error('WebGL2 context creation failed');
         const context = gl;
         const programs = new Map<string, WebGLProgram>();
+        // Each program's step uniform size in bytes, as its block declares it, so the gate fills
+        // whatever fields the step has.
+        const steps = new Map<WebGLProgram, number>();
         const compile = (entry: Entry) => {
           const shader = context.createShader(
             entry.stage === 'Vertex' ? context.VERTEX_SHADER : context.FRAGMENT_SHADER,
@@ -97,12 +100,18 @@ try {
             const slots = locations(uniforms);
             for (const binding of uniforms) {
               const index = gl.getUniformBlockIndex(program, binding.name);
-              if (index !== gl.INVALID_INDEX)
-                gl.uniformBlockBinding(
-                  program,
-                  index,
-                  slots.indexOf(`${binding.group}:${binding.binding}`),
-                );
+              if (index === gl.INVALID_INDEX) continue;
+              gl.uniformBlockBinding(
+                program,
+                index,
+                slots.indexOf(`${binding.group}:${binding.binding}`),
+              );
+              const size = gl.getActiveUniformBlockParameter(
+                program,
+                index,
+                gl.UNIFORM_BLOCK_DATA_SIZE,
+              ) as number;
+              steps.set(program, Math.max(steps.get(program) ?? 0, size));
             }
             programs.set(`${name}:${entry.entry}`, program);
             console.log(`Compiled ${entry.file} in ${(performance.now() - started).toFixed(1)}ms`);
@@ -220,11 +229,11 @@ try {
             if (entry === 'scatter') context.scissor(0, 0, WIDTH, output.height);
             else context.scissor(x, y, Math.min(n / 4, WIDTH), Math.ceil(n / ROW));
             context.bindBuffer(context.UNIFORM_BUFFER, uniform);
-            context.bufferData(
-              context.UNIFORM_BUFFER,
-              new Uint32Array([0, 0, 0, count, layer, value, WIDTH, output.height]),
-              context.STREAM_DRAW,
-            );
+            // The step's leading fields: source, other, destination, count, layer, value, and
+            // the output's size. The rest stay zero.
+            const step = new Uint32Array(Math.max(8, (steps.get(program) ?? 32) / 4));
+            step.set([0, 0, 0, count, layer, value, WIDTH, output.height]);
+            context.bufferData(context.UNIFORM_BUFFER, step, context.STREAM_DRAW);
             if (entry === 'scatter') {
               context.drawArraysInstanced(context.POINTS, 0, 1, count);
               at = (layer + 1) * LAYER;

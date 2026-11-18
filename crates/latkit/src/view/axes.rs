@@ -207,6 +207,12 @@ impl View {
         if inner.atlas.evictions != evictions {
             sprites = self.written(inner).0;
         }
+        // Until the text stage can draw, the overlay draws its lines and fills alone. Each text is
+        // still set, so its field builds on the first frame text draws. Grid lines hold no text, so
+        // `under` stands.
+        if !self.can_use(super::variants::Stage::Text) {
+            sprites.retain(|sprite| sprite.kind != wgsl::SPRITE_TEXT);
+        }
         let theme = &self.scene.theme;
         let color = theme.focus.selected.unwrap_or(theme.focus.hover);
         let at = |p: [f32; 2]| [f64::from(p[0]), f64::from(p[1])];
@@ -235,7 +241,7 @@ impl View {
     fn axes_sprites(&self, inner: &mut Inner) -> (Vec<wgsl::Sprite>, u32) {
         let Space::Plot(plot) = &self.scene.space else { return (Vec::new(), 0) };
         let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return (Vec::new(), 0) };
-        self.axes(inner, plot, self.area(), x, y)
+        self.axes(inner, plot, self.edges(), x, y)
     }
 
     /// The plot's grid lines, then its axes and playhead, and the number of grid lines.

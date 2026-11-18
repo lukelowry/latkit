@@ -132,6 +132,17 @@ impl Stroke {
         self.width.as_ref().map_or(crate::Size::ANY, |size| size.px)
     }
 
+    /// The widest any row draws, in CSS pixels: the theme's `theme` CSS pixels when unset, a
+    /// number of CSS pixels within its bounds, and otherwise its upper bound, which may be infinite.
+    pub(crate) fn widest(&self, theme: f32) -> f32 {
+        let Some(size) = &self.width else { return theme };
+        let [least, most] = size.px;
+        match &*size.expr.0 {
+            crate::expr::Node::Number(px) if !size.units => (*px as f32).clamp(least, most),
+            _ => most,
+        }
+    }
+
     /// Compiles the dash, flow, and width channels. A width is in CSS pixels unless given in
     /// position units. The theme's width is in CSS pixels.
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords) -> Result<()> {

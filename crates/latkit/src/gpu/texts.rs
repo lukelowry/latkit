@@ -61,7 +61,7 @@ impl Texts {
                 variant,
                 shared: Some(shared(input)),
                 uniform: 19,
-                step: WordStep { value, ..step(rows) },
+                step: WordStep { value, ..WordStep::of(rows) },
                 bindings: &[
                     wgpu::BindGroupEntry { binding: 0, resource: input.pages.binding() },
                     wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
@@ -87,7 +87,7 @@ impl Texts {
             variant: Variant::raster(Shader::Claims, "claim"),
             shared: Some(shared(input)),
             uniform: 19,
-            step: WordStep { size: [grid.raw.width(), grid.raw.height()], ..step(rows) },
+            step: WordStep { size: [grid.raw.width(), grid.raw.height()], ..WordStep::of(rows) },
             bindings: &[wgpu::BindGroupEntry { binding: 18, resource: labels.binding() }],
             target: &grid.view,
             vertices: 6,
@@ -115,7 +115,7 @@ impl Texts {
                 step: WordStep {
                     size: [self.flags.texture().width(), self.flags.texture().height()],
                     layer,
-                    ..step(codes)
+                    ..WordStep::of(codes)
                 },
                 bindings: &[
                     wgpu::BindGroupEntry { binding: 13, resource: labels.binding() },
@@ -150,10 +150,6 @@ fn shared<'a>(input: &'a Inputs<'a>) -> Shared<'a> {
     Shared { view: input.view, mark: input.mark, offset: input.offset }
 }
 
-fn step(count: u32) -> WordStep {
-    WordStep { source: 0, other: 0, destination: 0, count, layer: 0, value: 0, size: [0; 2] }
-}
-
 fn render(
     raster: &mut Raster<'_>,
     entry: &'static str,
@@ -167,7 +163,7 @@ fn render(
         variant: Variant::raster(Shader::TextCodes, entry),
         shared: None,
         uniform: 19,
-        step: step(count),
+        step: WordStep::of(count),
         bindings: &[
             wgpu::BindGroupEntry { binding: 18, resource: source.binding() },
             wgpu::BindGroupEntry { binding: 20, resource: prefix.binding() },

@@ -70,6 +70,15 @@ grid.forget(1); // a rolling window
 view.at = 1.2;
 ```
 
+To play the axis, give views a `Playhead`. Views that follow one show the same coordinate in the
+same frame, and scrubbing any of them moves it:
+
+```ts
+const playhead = new Playhead({ span: [0, 10] });
+map.playhead = monitor.playhead = playhead;
+playhead.play(); // one axis unit per second
+```
+
 Each sampled field keeps levels of detail as it records. Level `k` holds each row's minimum and
 maximum over buckets of `8^k` frames. A line that traces a field on a plot reads the level whose
 buckets each fit in a pixel column, and draws each column's least and greatest value. A long
@@ -89,9 +98,10 @@ view.sources = [new Tiles('grid', 'history/frames.json')]; // in place of the da
 
 A line that traces a field fetches the spans in its plot window, at the detail it draws. Other
 marks fetch the frames around `view.at`. While a span loads, the view draws the coarser span that
-covers it. In Rust, `Snapshot::to_tiles` writes the same files. While frames are still recorded,
-rewrite the manifest and the spans past its old end, then call `tiles.refresh()`: views keep what
-they drew and fetch only the last span of each level again. A server can also answer the files
+covers it. While frames are still recorded, a `TileWriter` writes the same files as they arrive,
+holding only the spans in progress. Apply each patch of appends to it, `flush` it, then call
+`tiles.refresh()`: views keep what they drew and fetch only the last span of each level again. In
+Rust, `Snapshot::to_tiles` writes the files of a whole dataset. A server can also answer the files
 itself through `new Tiles(name, url, { fetch })`.
 
 ### Stream
@@ -269,6 +279,10 @@ failure (see [Events](#events)), and the mark draws nothing.
 
 - `theme` is `'dark'`, `'light'`, or overrides of a base theme, grouped by what they style:
   `{ base: 'light', text: { size: 12 }, edge: { width: 2 } }`.
+- Edges joining the same two vertices run side by side, `edge.parallel.gap` pixels apart at any
+  zoom. `converge` sets how they meet their vertices: `'squeeze'` fits them within the smaller
+  vertex, `'fan'` angles them in to each vertex's center, and `'straight'` stops each at its
+  vertex's outline. `parallel: null` draws them over one another.
 - `controls` sets what the pointer and keys do. By default the pointer pans, zooms, turns, and
   hovers. `gestures` binds each input to what it does, as in
   `{ gestures: { wheel: 'pan', 'control+wheel': 'zoom', 'shift+primary': 'box' } }`. `'inspect'`
@@ -314,6 +328,7 @@ view.fly({ center: [-97.7, 30.3], zoom: 8, pitch: 40, bearing: 0 }); // ease the
 view.camera = { x: [0, 60], y: null }; // a plot's camera: the axis range, values fitted
 view.insets = [48, 0, 0, 320]; // CSS pixels kept clear: top, right, bottom, left
 view.orbit = 6; // degrees a second
+view.on('area', ([x, y, width, height]) => place(timeline, x, width)); // where marks draw
 ```
 
 Camera moves stay within the camera's zoom and pan limits. A flat map shows one world. Its camera

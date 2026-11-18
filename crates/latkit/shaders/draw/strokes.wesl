@@ -1,6 +1,8 @@
 // Strokes: one instanced quad per segment of every row's path, for edges and lines alike. A quad
 // covers the stroke, or its comets where they are wider, any arrowhead, and one pixel of
-// antialiased edge. The last segment of each part of a path draws the arrowhead. The focus variant
+// antialiased edge. Where a path runs on through a segment's end, its quad stops a pixel past the
+// line splitting that end with the next segment. The last segment of each part of a path draws the
+// arrowhead. The focus variant
 // redraws the lit rows' segments over everything, with quads enlarged for their glow. The shaded
 // variants call an application's `shade` for each pixel.
 
@@ -16,7 +18,7 @@ import package::lib::marker::glow;
 import package::lib::shade::shade_fragment;
 import package::lib::focus::focus_of;
 import package::lib::mark::{coverage, fringe, px_per_length};
-import package::lib::stroke::{Stroke, gap, stroke_paint, painted, stroke_distance};
+import package::lib::stroke::{Stroke, gap, stroke_paint, painted, stroke_distance, owns};
 import package::lib::daylight::daylight;
 import package::lib::color::{output, OPAQUE};
 import package::lib::lists::list_total;
@@ -35,12 +37,15 @@ struct Varyings {
     @location(1) color: vec4f,
     // Width, distance along at `a` and at `b` in CSS pixels, and flow.
     @location(2) @interpolate(flat) style: vec4f,
-    // x: bit 0 is an arrowhead, bit 1 dashes. y: focus bits for the glow. z: the held row, whose
-    // inputs a shade reads.
+    // x: bit 0 is an arrowhead, bit 1 dashes, bits 2 and 3 a shared end at `a` and at `b`. y: focus
+    // bits for the glow. z: the held row, whose inputs a shade reads.
     @location(3) @interpolate(flat) bits: vec3u,
     // Distance along at `a` and at `b` in position units, and how far the row's comets have
     // traveled.
     @location(4) @interpolate(flat) comet: vec3f,
+    // The normals of the lines splitting the pixels at `a` and at `b` with the segments beyond (see
+    // `Joints`).
+    @location(5) @interpolate(flat) split: vec4f,
 }
 
 // Focused geometry stays specialized so normal draws do not pay for its extra list traversal.
@@ -86,10 +91,20 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let arrow = (PATH != PATH_TRACE) & ((mark.flags & ARROWS) != 0u) & ends_part(s);
     let head = select(0.0, frame.arrow + width, arrow);
     let comets = select(0.0, 0.5 * frame.flow_width, PAINTED & (style.flow != 0.0) & (frame.flow.a > 0.0));
-    let reach = max(0.5 * width, comets) + head + select(0.0, frame.glow, lit) + fringe();
+    // How far the stroke, its comets, and any glow reach from its middle. An arrowhead reaches
+    // further.
+    let across = max(0.5 * width, comets) + select(0.0, frame.glow, lit) + fringe();
+    let reach = across + head;
+    // Where the path runs on through an end, this segment shares that end's pixels with the next
+    // (see `Joints`), unless the turn there is too sharp for the two segments' lengths. Its quad then
+    // stops a pixel past the split line, except behind an arrowhead's segment, where the head's base
+    // can reach.
+    let joints = on.joints;
+    let shares = joints.through & (joints.turn * across <= joints.room);
+    let past = select(vec2f(reach), across * joints.turn + fringe(), shares & vec2<bool>(!arrow, true));
     let t = f32(corner & 1u);
     let side = f32(corner >> 1u) * 2.0 - 1.0;
-    let screen = mix(a - dir * reach, b + dir * reach, t) + normal * side * reach;
+    let screen = mix(a - dir * past.x, b + dir * past.y, t) + normal * side * reach;
     out.clip = nearer(to_clip(screen, select(ca, cb, t > 0.5)));
     out.ends = vec4f(a, b);
     // This corner's fraction along the whole segment, at the start or end of the drawn part.
@@ -101,14 +116,18 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let light = daylight(mix(path_position(ends.a).xy, path_position(ends.b).xy, f));
     out.color = vec4f(color.rgb * light, color.a);
     // In position units, a segment's distance along starts where its list says (0 without a list),
-    // and its ends stop short where the stroke does. On screen, a trace measures along x, a listed
-    // path converts its distance along to pixels, and any other segment starts at 0.
+    // and its ends stop short where the stroke does. A fan has no length there, so it takes its
+    // length on screen, up to where its path starts or on from where it ends. On screen, a trace
+    // measures along x, a listed path converts its distance along to pixels, and any other segment
+    // starts at 0.
     var along = vec2f(0.0);
     var phase = vec2f(0.0);
     if PAINTED {
         if style.dash | (style.flow != 0.0) {
-            along = s.along + path_length(ends.a, ends.b) * on.kept;
             let pixels = length(b - a);
+            let fan = pixels / max(px_per_length(), 1e-12);
+            let fanned = select(vec2f(-fan, 0.0), vec2f(0.0, fan), on.fan == 2u);
+            along = s.along + path_length(ends.a, ends.b) * on.kept + select(vec2f(0.0), fanned, on.fan != 0u);
             phase = vec2f(0.0, pixels);
             if PATH == PATH_TRACE {
                 phase = vec2f(a.x, a.x + pixels);
@@ -119,7 +138,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     out.style = vec4f(width, phase, select(0.0, style.flow, PAINTED));
     out.comet = vec3f(along, select(0.0, style.travel, PAINTED));
-    out.bits.x = u32(arrow) | (u32(PAINTED & style.dash) << 1u);
+    out.split = joints.split;
+    out.bits.x = u32(arrow) | (u32(PAINTED & style.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u);
     if lit { out.bits.y = focus_of(s.row); }
     out.bits.z = s.row;
     return out;
@@ -137,11 +157,12 @@ fn segment_of(v: Varyings) -> Stroke {
     // A select, not `&`: Metal can write this inline in the struct's brace initializer, where
     // C++'s int result of `bool & bool` does not narrow back to bool.
     let arrow = select(false, (v.bits.x & 1u) != 0u, PATH != PATH_TRACE);
+    let shares = vec2<bool>((v.bits.x & 4u) != 0u, (v.bits.x & 8u) != 0u);
     if !PAINTED {
-        return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color, 0.0, 0.0, false, arrow);
+        return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color, 0.0, 0.0, false, arrow, v.split, shares);
     }
     let dash = (v.bits.x & 2u) != 0u;
-    return Stroke(v.ends.xy, v.ends.zw, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, arrow);
+    return Stroke(v.ends.xy, v.ends.zw, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, arrow, v.split, shares);
 }
 
 // Where depth varies, a mark draws twice with this one program: first the pixels an opaque row's
@@ -151,9 +172,15 @@ fn segment_of(v: Varyings) -> Stroke {
 // pass, over the opaque pixels.
 fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
     let s = segment_of(v);
+    let p = pixel(v);
+    // Past a shared end, the segment beyond draws the line (see `owns`). Only an arrowhead is drawn
+    // whole, by its own segment.
+    if !s.arrow & !owns(p, s) {
+        discard;
+    }
     // The opaque test, color, and focus glow all use this same distance. Evaluating it once
     // avoids repeating the segment projection and arrowhead geometry for each covered pixel.
-    let d = stroke_distance(pixel(v), s);
+    let d = stroke_distance(p, s);
     @if(!shaded) {
         if LIT_DRAW {
             let color = stroke_paint(d, s);

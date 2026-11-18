@@ -73,7 +73,25 @@ impl Drop for BufferData {
         self.gl.delete_buffer(Some(&self.raw));
     }
 }
+
+impl Buffer {
+    /// Copies bytes `range` of the buffer, which the GPU finished writing.
+    ///
+    /// The browser keeps a copy of a buffer made for reading, taken once a fence follows a write,
+    /// and reads it without asking the GPU process: a read after the fence returns at once, however
+    /// much work was issued since. Writing the buffer again discards that copy, and Chrome warns,
+    /// unless its storage was given anew, so the storage starts over once the bytes are read.
+    fn read(&self, state: &State, range: &Range<u64>) -> Vec<u8> {
+        let mut bytes = vec![0; (range.end - range.start) as usize];
+        state.gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&self.0.raw));
+        state.gl.get_buffer_sub_data_with_f64_and_u8_array(Gl::COPY_READ_BUFFER, range.start as f64, &mut bytes);
+        state.gl.buffer_data_with_f64(Gl::COPY_READ_BUFFER, self.0.size as f64, Gl::STREAM_READ);
+        bytes
+    }
+}
 impl BufferInterface for Buffer {
+    /// Maps the buffer once the GPU finishes the work issued so far: for reading, with the bytes
+    /// it wrote (see [`Buffer::read`]).
     fn map_async(&self, mode: wgpu::MapMode, range: Range<u64>, callback: BufferMapCallback) {
         assert!(range.end <= self.0.size);
         let this = self.clone();
@@ -87,15 +105,10 @@ impl BufferInterface for Buffer {
                 callback(Err(wgpu::BufferAsyncError));
                 return;
             }
-            let mut bytes = vec![0; (range.end - range.start) as usize];
-            if mode == wgpu::MapMode::Read {
-                state.gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&this.0.raw));
-                state.gl.get_buffer_sub_data_with_f64_and_u8_array(
-                    Gl::COPY_READ_BUFFER,
-                    range.start as f64,
-                    &mut bytes,
-                );
-            }
+            let bytes = match mode {
+                wgpu::MapMode::Write => vec![0; (range.end - range.start) as usize],
+                wgpu::MapMode::Read => this.read(state, &range),
+            };
             *this.0.mapped.borrow_mut() = Some((range, mode, Rc::new(bytes)));
             callback(Ok(()));
         });

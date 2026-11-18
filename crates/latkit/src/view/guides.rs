@@ -26,7 +26,8 @@ use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
 use crate::{Axis, Color, ColormapKind, Place, Space, Theme};
 
-/// Ems between the view's edge, inside its insets, and the guides beside it.
+/// Ems between the view's edge, inside its insets, and the guides beside it, unless the theme sets
+/// its `padding`.
 const PAD: f64 = 1.5;
 /// Ems between guides, and between guides and the marks.
 const GAP: f64 = 0.75;
@@ -52,6 +53,12 @@ const ROW: f64 = 1.5;
 const SMALL: f64 = 0.9;
 const TITLE: f64 = 1.75;
 const SUBTITLE: f64 = 1.1;
+
+/// CSS pixels between the view's edge, inside its insets, and the guides beside it: the theme's
+/// `padding`, or `PAD` ems.
+fn padding(theme: &Theme) -> f64 {
+    theme.padding.map_or(PAD * f64::from(theme.text.size), |padding| f64::from(padding.max(0.0)))
+}
 
 /// The guides, laid out: the room each side takes from the marks, a plot's axes, and every guide
 /// in its box.
@@ -238,7 +245,7 @@ impl View {
     fn measure_guides(&self, inner: &mut Inner) -> (Guides, bool) {
         let theme = &self.scene.theme;
         let em = f64::from(theme.text.size);
-        let (pad, gap) = (PAD * em, GAP * em);
+        let (pad, gap) = (padding(theme), GAP * em);
         let mut m = Measure { inner, theme, ratio: f64::from(self.pixel_ratio), guessed: false };
         let plot = match &self.scene.space {
             Space::Plot(plot) => Some(plot),
@@ -267,7 +274,13 @@ impl View {
         let side_room = |lanes: &Lanes, side: usize| {
             let guides = if lanes.is_empty() { 0.0 } else { pad + thickness(lanes, side.is_multiple_of(2), gap) + gap };
             let edge = match plot {
-                Some(_) if lanes.is_empty() => (if axes.text[side] { PAD } else { BARE }) * em,
+                Some(_) if lanes.is_empty() => {
+                    if axes.text[side] {
+                        pad
+                    } else {
+                        BARE * em
+                    }
+                }
                 _ => 0.0,
             };
             guides + edge + axes.room[side]
@@ -305,7 +318,7 @@ impl View {
     /// corner's backdrop comes first.
     fn corners(&self, wanted: &[(Place, Wanted)], area: Area, m: &mut Measure<'_>) -> Vec<(Guide, Area)> {
         let em = f64::from(self.scene.theme.text.size);
-        let (pad, gap, inset) = (PAD * em, GAP * em, INSET * em);
+        let (pad, gap, inset) = (padding(&self.scene.theme), GAP * em, INSET * em);
         let inside = [area[0] + pad, area[1] + pad, area[2] - pad, area[3] - pad];
         let wide = (inside[2] - inside[0]).max(0.0);
         let (mut backdrops, mut shown) = (Vec::new(), Vec::new());

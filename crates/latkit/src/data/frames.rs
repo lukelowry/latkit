@@ -17,7 +17,7 @@ use std::ops::Range;
 
 use super::name::Name;
 use super::patch::{Op, Patch};
-use super::samples::Run;
+use super::samples::{LEVELS, Run, Samples};
 use super::snapshot::Snapshot;
 use super::table::Field;
 use crate::{Error, Result};
@@ -176,16 +176,288 @@ impl Snapshot {
                 if let Some(((level, index), tile)) = span {
                     write(&Manifest::span(URL, place, level, index), &tile.to_bytes())?;
                 }
-                let emptied = samples.emptied();
-                base.sampled(&table.name, name, |samples| {
-                    *samples = emptied;
-                    true
-                });
             }
         }
-        write(BASE, &base.to_bytes())?;
-        let manifest = Manifest { data: BASE.to_owned(), chunk, url: URL.to_owned(), fields };
-        write(MANIFEST, serde_json::to_string_pretty(&manifest).expect("JSON").as_bytes())
+        write_index(&mut base, chunk, fields, &mut write)
+    }
+}
+
+/// Writes `base` with each of `fields` holding its frame range but no entries, then the manifest
+/// listing them in spans of `chunk` entries. The manifest comes last, so a reader that finds it
+/// finds every file it names.
+fn write_index(
+    base: &mut Snapshot,
+    chunk: u32,
+    fields: Vec<Listed>,
+    write: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+) -> Result<()> {
+    for listed in &fields {
+        base.sampled(&listed.table, &listed.field, |samples| {
+            *samples = Samples::over(listed.frames.clone());
+            true
+        });
+    }
+    write(BASE, &base.to_bytes())?;
+    let manifest = Manifest { data: BASE.to_owned(), chunk, url: URL.to_owned(), fields };
+    write(MANIFEST, serde_json::to_string_pretty(&manifest).expect("JSON").as_bytes())
+}
+
+/// Writes a history as time tiles while it is recorded: the files [`Snapshot::to_tiles`] writes
+/// for the same frames. It holds only what is still to be written, each level's span and bucket in
+/// progress, so its memory stays the same however long the history grows.
+///
+/// It applies patches of [`append`](Patch::append)s of every row to the tables of its base, as a
+/// [`Data`](crate::Data) would. Levels of detail are built as appends build them. A span is written
+/// once it fills. [`flush`](TileWriter::flush) writes the spans in progress as they stand, then the
+/// base and the manifest, so a view drawing the manifest as [`Tiles`](crate::Tiles) finds every
+/// frame appended so far.
+///
+/// ```
+/// use latkit::{Data, Ids, Patch, Table, TileWriter};
+/// let grid = Data::new("grid");
+/// grid.apply(Patch::new().axis("time", "s").replace(Table::new("Bus", Ids::count(2))))?;
+/// let mut writer = TileWriter::new(grid.snapshot(), 256)?;
+/// let mut files = std::collections::BTreeMap::new();
+/// let mut write = |path: &str, bytes: &[u8]| {
+///     files.insert(path.to_owned(), bytes.to_vec());
+///     Ok::<(), latkit::Error>(())
+/// };
+/// writer.apply(Patch::new().append("Bus", [0.0, 0.5], [("vm", vec![1.0, 0.9, 1.01, 0.98])]), &mut write)?;
+/// writer.flush(&mut write)?;
+/// assert!(files.contains_key("frames.json"));
+/// # Ok::<(), latkit::Error>(())
+/// ```
+pub struct TileWriter {
+    base: Snapshot,
+    chunk: u32,
+    fields: Vec<Streamed>,
+}
+
+/// A sampled field as it streams: how the manifest lists it, its rows, the coordinate of its last
+/// frame, and each level from frames up.
+struct Streamed {
+    listed: Listed,
+    rows: usize,
+    last: Option<f64>,
+    levels: Vec<Level>,
+}
+
+/// One level of detail as it streams.
+#[derive(Default)]
+struct Level {
+    /// Above frames, the bucket in progress: the entries one level below folded into it, its first
+    /// and last coordinates, and each row's least and greatest value.
+    folded: u32,
+    first: f64,
+    last: f64,
+    low: Vec<f32>,
+    high: Vec<f32>,
+    /// The span in progress: its first entry, its entries' coordinates, and their values, the
+    /// least of each before the greatest above frames.
+    start: u64,
+    at: Vec<f64>,
+    values: [Vec<f32>; 2],
+}
+
+impl TileWriter {
+    /// A writer of the frames appended to the tables of `base`, in spans of `chunk` entries. Fails
+    /// unless `chunk` is a multiple of 8 from 8 to 2^20.
+    pub fn new(base: Snapshot, chunk: u32) -> Result<TileWriter> {
+        if !chunks(chunk) {
+            return Err(Error::invalid("a span must hold a multiple of 8 entries, from 8 to 2^20").at("chunk"));
+        }
+        Ok(TileWriter { base, chunk, fields: Vec::new() })
+    }
+
+    /// Appends the frames of `patch`, passing each span they fill to `write` with its path. Fails,
+    /// changing nothing, unless every operation appends frames to every row of a table of the base,
+    /// at finite coordinates that do not decrease.
+    pub fn apply(&mut self, patch: Patch, mut write: impl FnMut(&str, &[u8]) -> Result<()>) -> Result<()> {
+        if patch.data.as_ref().is_some_and(|data| data != self.base.name()) {
+            return Err(Error::invalid(format!("the patch is for another dataset than {}", self.base.name())));
+        }
+        // Check every append first, so a patch that fails changes nothing.
+        let mut lasts: Vec<((Name, Name), Option<f64>)> = Vec::new();
+        let mut appends = Vec::with_capacity(patch.ops.len());
+        for op in patch.ops {
+            let Op::Append { table, at, ids: None, fields } = op else {
+                return Err(Error::invalid("a tile writer takes appends of every row, and its base holds the rest"));
+            };
+            let held = self.base.table(&table).ok_or_else(|| Error::invalid("no such table").at(&table))?;
+            let rows = held.len();
+            for (name, values) in &fields {
+                if held.field_named(name).is_some_and(|field| !matches!(field, Field::Sampled(..))) {
+                    return Err(Error::invalid("not a sampled field").at(name).at(&table));
+                }
+                if at.len().checked_mul(rows) != Some(values.len()) {
+                    let counts = format!("{} values for {} frames of {rows} rows", values.len(), at.len());
+                    return Err(Error::invalid(counts).at(name).at(&table));
+                }
+                let key = (table.clone(), name.clone());
+                let i = lasts.iter().position(|(k, _)| *k == key).unwrap_or_else(|| {
+                    lasts.push((key, self.streamed(&table, name).and_then(|s| s.last)));
+                    lasts.len() - 1
+                });
+                for &t in &at {
+                    if !t.is_finite() || lasts[i].1.is_some_and(|last| t < last) {
+                        let why = "a frame's coordinate must be finite and not below the last one";
+                        return Err(Error::invalid(why).at(name).at(&table));
+                    }
+                    lasts[i].1 = Some(t);
+                }
+            }
+            appends.push((table, rows, at, fields));
+        }
+        for (table, rows, at, fields) in appends {
+            for (name, values) in fields {
+                let place = self.place(&table, &name, rows);
+                let streamed = &mut self.fields[place];
+                let mut frame = vec![0.0_f32; rows];
+                for (f, &t) in at.iter().enumerate() {
+                    for (row, value) in frame.iter_mut().enumerate() {
+                        let i = f * rows + row;
+                        *value = if values.is_valid(i) { values.number(i) as f32 } else { f32::NAN };
+                    }
+                    streamed.add(t, &frame, place, u64::from(self.chunk), &self.base, &mut write)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the spans in progress as they stand, then the base and the manifest, so a reader
+    /// finds every frame appended so far. A span written again as it grows replaces the one
+    /// before.
+    pub fn flush(&mut self, mut write: impl FnMut(&str, &[u8]) -> Result<()>) -> Result<()> {
+        for (place, streamed) in self.fields.iter().enumerate() {
+            for (level, open) in streamed.levels.iter().enumerate() {
+                if !open.at.is_empty() {
+                    streamed.write(level as u32, open, place, u64::from(self.chunk), &self.base, &mut write)?;
+                }
+            }
+        }
+        let fields = self.fields.iter().map(|streamed| streamed.listed.clone()).collect();
+        write_index(&mut self.base.clone(), self.chunk, fields, &mut write)
+    }
+
+    /// Field `field` of `table` as it streams, if frames were appended to it.
+    fn streamed(&self, table: &Name, field: &Name) -> Option<&Streamed> {
+        self.fields.iter().find(|s| s.listed.table == *table && s.listed.field == *field)
+    }
+
+    /// The index in the manifest of field `field` of `table`, with `rows` rows, listing it if new.
+    fn place(&mut self, table: &Name, field: &Name, rows: usize) -> usize {
+        if let Some(place) = self.fields.iter().position(|s| s.listed.table == *table && s.listed.field == *field) {
+            return place;
+        }
+        let listed = Listed { table: table.clone(), field: field.clone(), levels: 0, frames: 0..0 };
+        self.fields.push(Streamed { listed, rows, last: None, levels: Vec::new() });
+        self.fields.len() - 1
+    }
+}
+
+impl Streamed {
+    /// Adds the next frame, at coordinate `at` with one value per row, then folds it into the
+    /// buckets above, as appending a frame seals the buckets it completes.
+    fn add(
+        &mut self,
+        at: f64,
+        values: &[f32],
+        place: usize,
+        chunk: u64,
+        base: &Snapshot,
+        write: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let mut index = self.listed.frames.end;
+        self.listed.frames.end += 1;
+        self.last = Some(at);
+        self.put(0, index, &[at], values, values, place, chunk, base, write)?;
+        let (mut first, mut last, mut low, mut high) = (at, at, values.to_vec(), values.to_vec());
+        for level in 1..=LEVELS as usize {
+            if self.levels.len() <= level {
+                self.levels.resize_with(level + 1, Level::default);
+            }
+            let bucket = &mut self.levels[level];
+            if bucket.folded == 0 {
+                (bucket.first, bucket.low, bucket.high) = (first, vec![f32::NAN; self.rows], vec![f32::NAN; self.rows]);
+            }
+            bucket.last = last;
+            // `min` and `max` skip a missing value, as sealing does.
+            bucket.low.iter_mut().zip(&low).for_each(|(out, &v)| *out = out.min(v));
+            bucket.high.iter_mut().zip(&high).for_each(|(out, &v)| *out = out.max(v));
+            bucket.folded += 1;
+            if bucket.folded < 8 {
+                break;
+            }
+            bucket.folded = 0;
+            (first, last) = (bucket.first, bucket.last);
+            low = std::mem::take(&mut bucket.low);
+            high = std::mem::take(&mut bucket.high);
+            index /= 8;
+            self.put(level as u32, index, &[first, last], &low, &high, place, chunk, base, write)?;
+        }
+        Ok(())
+    }
+
+    /// Adds entry `index` of `level` to that level's span in progress, and writes the span once
+    /// it fills.
+    #[allow(clippy::too_many_arguments, reason = "one entry, and where its span goes")]
+    fn put(
+        &mut self,
+        level: u32,
+        index: u64,
+        at: &[f64],
+        low: &[f32],
+        high: &[f32],
+        place: usize,
+        chunk: u64,
+        base: &Snapshot,
+        write: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        if self.levels.len() <= level as usize {
+            self.levels.resize_with(level as usize + 1, Level::default);
+        }
+        self.listed.levels = self.listed.levels.max(level);
+        let open = &mut self.levels[level as usize];
+        if open.at.is_empty() {
+            open.start = index;
+        }
+        open.at.extend_from_slice(at);
+        open.values[0].extend_from_slice(low);
+        if level > 0 {
+            open.values[1].extend_from_slice(high);
+        }
+        if (index + 1).is_multiple_of(chunk) {
+            self.write(level, &self.levels[level as usize], place, chunk, base, write)?;
+            let open = &mut self.levels[level as usize];
+            open.at.clear();
+            open.values.iter_mut().for_each(Vec::clear);
+        }
+        Ok(())
+    }
+
+    /// Writes `open`, the span of `level` in progress, as the patch its tile holds.
+    fn write(
+        &self,
+        level: u32,
+        open: &Level,
+        place: usize,
+        chunk: u64,
+        base: &Snapshot,
+        write: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let values = [open.values[0].as_slice(), open.values[1].as_slice()].concat();
+        let op = Op::frames(
+            self.listed.table.clone(),
+            self.listed.field.clone(),
+            level,
+            open.start,
+            open.at.clone(),
+            values,
+        );
+        let mut tile = Patch::to(base.name().clone());
+        tile.ops.push(op);
+        write(&Manifest::span(URL, place, level, open.start / chunk), &tile.to_bytes())
     }
 }
 
@@ -246,5 +518,43 @@ mod tests {
         assert!(error.to_string().starts_with("frames.json.url"), "{error}");
         assert!(template("{level}/{index}.latk", 2).is_err(), "two fields need {{field}}");
         assert!(data.to_tiles(12, |_, _| Ok(())).is_err());
+    }
+
+    #[test]
+    fn a_writer_streams_the_tiles_a_snapshot_writes() {
+        let grid = Data::new("grid");
+        let rows = Table::new("Bus", Ids::count(2)).field("kv", vec![1.0, 2.0]);
+        grid.apply(Patch::new().axis("time", "s").replace(rows)).expect("rows");
+        let mut writer = TileWriter::new(grid.snapshot(), 16).expect("a chunk of 16");
+        let mut streamed = BTreeMap::new();
+        // 100 frames in uneven batches, as a recording arrives.
+        for frames in [0..1, 1..37, 37..100] {
+            let at: Vec<f64> = frames.clone().map(f64::from).collect();
+            let values: Vec<f64> = frames.flat_map(|f| [f64::from(f % 7), f64::from(f % 5)]).collect();
+            grid.apply(Patch::new().append("Bus", &at, [("vm", values.clone())])).expect("frames");
+            let patch = Patch::new().append("Bus", &at, [("vm", values)]);
+            writer
+                .apply(patch, |path, bytes| {
+                    streamed.insert(path.to_owned(), bytes.to_vec());
+                    Ok(())
+                })
+                .expect("spans");
+        }
+        writer
+            .flush(|path, bytes| {
+                streamed.insert(path.to_owned(), bytes.to_vec());
+                Ok(())
+            })
+            .expect("the spans in progress");
+        let mut whole = BTreeMap::new();
+        grid.snapshot()
+            .to_tiles(16, |path, bytes| {
+                whole.insert(path.to_owned(), bytes.to_vec());
+                Ok(())
+            })
+            .expect("tiles");
+        assert_eq!(streamed, whole, "the same files, byte for byte");
+        let back = Patch::new().append("Bus", [50.0], [("vm", vec![1.0, 1.0])]);
+        assert!(writer.apply(back, |_, _| Ok(())).is_err(), "a coordinate below the last");
     }
 }

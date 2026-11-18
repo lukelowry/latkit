@@ -7,7 +7,7 @@ use super::marks::Shown;
 use super::words::Kept;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
-use crate::{Color, Grid, Length, Scene, Space, Theme};
+use crate::{Color, Converge, Grid, Length, Scene, Space, Theme};
 
 fn matrix(m: DMat4) -> [[f32; 4]; 4] {
     m.to_cols_array_2d().map(|c| c.map(|v| v as f32))
@@ -62,14 +62,20 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
         Length::Px(_) => wgsl::FLOW_PX,
         Length::Units(_) => wgsl::FLOW_UNITS,
     };
-    frame.bow = theme.edge.bow;
+    // Without parallel edges no lanes are derived, so nothing reads the gap or how they converge.
+    let parallel = theme.edge.parallel.unwrap_or_default();
+    frame.gap = parallel.gap;
+    frame.converge = match parallel.converge {
+        Converge::Squeeze => wgsl::CONVERGE_SQUEEZE,
+        Converge::Fan => wgsl::CONVERGE_FAN,
+        Converge::Straight => wgsl::CONVERGE_STRAIGHT,
+    };
     // Hover is tracked either way. The controls only decide whether it glows.
     let glows = scene.controls.hover;
     frame.grow = if glows { theme.focus.grow } else { 1.0 };
     frame.arrow = theme.edge.arrow;
     frame.halo = theme.text.halo;
     frame.zoom = projected.zoom as f32;
-    frame.lane_scale = projected.lane_band().map_or(0.0, |band| (band - frame.zoom).exp2());
     frame.linear = u32::from(linear);
     frame.hover = if glows { theme.focus.hover.to_array() } else { [0.0; 4] };
     frame.selected = selected;

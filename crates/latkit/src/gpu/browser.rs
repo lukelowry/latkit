@@ -1,6 +1,7 @@
 //! A shared WebGL2 context. Views render into retained textures; presentation copies through the
 //! context's canvas into each public canvas, keeping all data and caches on one GPU context.
-use crate::{Error, Result};
+use crate::panels::Rect;
+use crate::{Color, Error, Result};
 use wasm_bindgen::{JsCast, JsValue};
 
 #[derive(Clone, Debug)]
@@ -101,15 +102,48 @@ impl Sink {
         }
     }
 
-    pub(crate) fn resize(&self, size: [u32; 2]) {
+    /// The canvas it paints.
+    fn canvas(&self) -> Canvas {
         match self {
             Self::Element(context) => Canvas::Element(context.canvas().expect("canvas context has a canvas")),
             Self::Offscreen(context) => Canvas::Offscreen(context.canvas()),
         }
-        .resize(size);
     }
 
+    /// The canvas's size in pixels.
+    pub(crate) fn size(&self) -> [u32; 2] {
+        self.canvas().size()
+    }
+
+    /// Paints each rectangle its color, in order, at the canvas's current size. The canvas is
+    /// opaque and frames show only their color, so alpha is dropped. It never resizes the canvas,
+    /// which would blank it.
+    pub(crate) fn fill(&self, fills: &[(Rect, Color)]) {
+        for &(Rect { origin, size }, color) in fills {
+            let [x, y, width, height] = [origin[0], origin[1], size[0], size[1]].map(f64::from);
+            let style = color.alpha(1.0).to_string();
+            // `copy` would clear everything outside the rectangle. The color is opaque, so
+            // `source-over` replaces exactly the rectangle.
+            match self {
+                Self::Element(context) => {
+                    let _ = context.set_global_composite_operation("source-over");
+                    context.set_fill_style_str(&style);
+                    context.fill_rect(x, y, width, height);
+                }
+                Self::Offscreen(context) => {
+                    let _ = context.set_global_composite_operation("source-over");
+                    context.set_fill_style_str(&style);
+                    context.fill_rect(x, y, width, height);
+                }
+            }
+        }
+    }
+
+    /// Sizes the canvas to `size` and copies `source`'s top left `size` into it. Sizing a canvas
+    /// blanks it, black here, so it happens only here, in the same call as the copy that repaints
+    /// it.
     pub(crate) fn copy(&self, source: &Canvas, size: [u32; 2]) -> Result<()> {
+        self.canvas().resize(size);
         let [width, height] = size.map(f64::from);
         let operation = match self {
             Self::Element(context) => context.set_global_composite_operation("copy"),

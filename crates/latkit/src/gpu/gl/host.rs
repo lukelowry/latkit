@@ -207,8 +207,6 @@ impl SurfaceOutputDetailInterface for Output {
 }
 impl Output {
     pub(super) fn present(&self) {
-        let size = self.texture.0.size;
-        self.sink.resize([size.width, size.height]);
         super::show(&self.device.0, &self.texture, &self.source, &self.sink).expect("WebGL2 surface presentation");
     }
 }

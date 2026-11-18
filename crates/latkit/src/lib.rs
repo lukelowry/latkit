@@ -59,7 +59,7 @@ mod wire;
 pub use data::Source;
 pub use data::{
     Data, DecodeLimits, Description, Envelope, EnvelopeRequest, FieldDescription, Id, Ids, Kind, Name, Patch, Row,
-    Rows, Snapshot, Table, TableDescription, Value, Values,
+    Rows, Snapshot, Table, TableDescription, TileWriter, Value, Values,
 };
 pub use data::{Order, Patches, Query, QueryResult, Reading};
 pub use error::{Error, Path, Result, Step};
@@ -78,10 +78,10 @@ pub use {
     gpu::{Budget, DeviceEvents, Gpu, work::Work},
     panels::Panels,
     scene::{
-        Action, AreaTheme, Areas, Axis, Controls, Direction, Earth, EarthTheme, EdgeTheme, Edges, FlowTheme,
+        Action, AreaTheme, Areas, Axis, Controls, Converge, Direction, Earth, EarthTheme, EdgeTheme, Edges, FlowTheme,
         FocusTheme, Gestures, Grid, GridTheme, Interpolation, Label, Layered, Layout, Legend, Length, LineTheme, Lines,
-        Mark, Marker, Motion, Place, Plane, Plot, PlotTheme, Projection, Reach, Route, Scene, Shade, Shape, Space,
-        Stress, TextTheme, Theme, Title, VertexTheme, Vertices,
+        Mark, Marker, Motion, Parallel, Place, Plane, Plot, PlotTheme, Projection, Reach, Route, Scene, Shade, Shape,
+        Space, Stress, TextTheme, Theme, Title, VertexTheme, Vertices,
     },
     shot::{Capture, Shot},
     tiles::{LayerDescription, Tiles, TilesDescription},

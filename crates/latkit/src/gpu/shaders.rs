@@ -162,6 +162,13 @@ impl Binding {
 
 include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 
+impl WordStep {
+    /// A step over `count` words or records, every other parameter zero.
+    pub(crate) fn of(count: u32) -> WordStep {
+        WordStep { count, ..bytemuck::Zeroable::zeroed() }
+    }
+}
+
 // Data, draw order, and mark evaluation all use the same number of rows per page.
 const _: () =
     assert!(1 << PAGE_BITS == PAGE_ROWS && PAGE_MASK + 1 == PAGE_ROWS && PAGE_ROWS as usize == crate::data::PAGE_ROWS);

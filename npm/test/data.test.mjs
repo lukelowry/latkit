@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const directory = process.env.LATKIT_TEST_PACKAGE ?? path.resolve(import.meta.dirname, '..');
-const { load, Data, Handle, Patch, reference, field } = await import(
+const { load, Data, Handle, Patch, TileWriter, reference, field } = await import(
   pathToFileURL(path.join(directory, 'dist/index.js')).href
 );
 // Node has no workers to start, so the jobs module, which reads GeoJSON, runs on this thread.
@@ -254,6 +254,28 @@ test('time tiles store runs of a sampled field with gaps between them', async ()
   assert.deepEqual(back.describe(), data.describe());
   assert.equal(back.get('Bus', 1, 'v', { at: 100.5 }), 1);
   data.destroy();
+  back.destroy();
+});
+
+test('a tile writer writes each span its appends fill, then the rest, which read back', async () => {
+  const base = new Data('grid').axis('time', 's').replace('Bus', [1, 2]);
+  const writer = new TileWriter(base, { chunk: 8 });
+  base.destroy();
+  const files = new Map();
+  const write = (path, bytes) => void files.set(path, bytes);
+  const at = Array.from({ length: 20 }, (_, i) => i);
+  writer.apply(new Patch().append('Bus', at, { vm: at.flatMap((t) => [t, -t]) }), write);
+  assert.deepEqual([...files.keys()].sort(), ['0/0/0.latk', '0/0/1.latk'], 'two full spans');
+  writer.flush(write);
+  const manifest = JSON.parse(new TextDecoder().decode(files.get('frames.json')));
+  assert.deepEqual(manifest.frames, [{ table: 'Bus', field: 'vm', levels: 1, frames: [0, 20] }]);
+  const back = new Data('grid').apply(await Patch.read(files.get('base.latk')));
+  for (const [path, bytes] of files)
+    if (path !== 'base.latk' && path.endsWith('.latk')) back.apply(await Patch.read(bytes));
+  assert.equal(back.get('Bus', 2, 'vm', { at: 13 }), -13);
+  const behind = new Patch().append('Bus', [3], { vm: [0, 0] });
+  assert.throws(() => writer.apply(behind, write), { code: 'invalid' }, 'a frame before the last');
+  writer.destroy();
   back.destroy();
 });
 

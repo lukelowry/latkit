@@ -24,6 +24,7 @@ export {
   Dataset,
   Snapshot,
   Table,
+  TileWriter,
   Tiles,
   type Envelope,
   type QueryResult,
@@ -44,6 +45,14 @@ export {
 export * from './scene.js';
 export { colormapCss, colormaps } from './colormap.js';
 export { Gpu } from './gpu.js';
-export { View, type Insets, type Point, type Position, type ViewEvents } from './view.js';
+export { Playhead } from './playhead.js';
+export {
+  View,
+  type Area,
+  type Insets,
+  type Point,
+  type Position,
+  type ViewEvents,
+} from './view.js';
 export type { Placed, Rect } from './canvas.js';
 export { Image, Shot, Video, type ImageFormat, type ShotOptions } from './shot.js';

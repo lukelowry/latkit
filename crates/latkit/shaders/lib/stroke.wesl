@@ -1,4 +1,6 @@
-// Strokes: antialiased segments with dashes, flowing comets, and arrowheads, in CSS pixels.
+// Strokes: antialiased segments of a path, with dashes, flowing comets, and arrowheads, in CSS
+// pixels. Where a path runs on through a segment's end, the segment draws only its own side of the
+// joint there, so a path draws as one stroke.
 
 import package::lib::bind::frame;
 import package::lib::mark::coverage;
@@ -21,6 +23,18 @@ struct Stroke {
     dash: bool,
     // Whether the segment ends in an arrowhead at `b`.
     arrow: bool,
+    // The normals of the lines splitting the pixels at `a` and at `b` with the segments beyond, and
+    // whether it shares each end that way (see `Joints` in `lib/path.wesl`).
+    split: vec4f,
+    shares: vec2<bool>,
+}
+
+// Whether segment `s` draws its line at pixel `p`. Past an end it shares, the segment beyond draws
+// it. A pixel on a split line belongs to the later segment.
+fn owns(p: vec2f, s: Stroke) -> bool {
+    let start = !s.shares.x | (dot(p - s.a, s.split.xy) >= 0.0);
+    let end = !s.shares.y | (dot(p - s.b, s.split.zw) < 0.0);
+    return start & end;
 }
 
 // Signed distance to the arrowhead at `b`, a triangle `frame.arrow + width` long along `dir`.
@@ -57,10 +71,11 @@ fn stroke_distance(p: vec2f, s: Stroke) -> vec3f {
     let end = select(s.b, s.b - dir * (frame.arrow + s.width) * 0.8, s.arrow && len > frame.arrow);
     let ae = end - s.a;
     let t = clamp(dot(p - s.a, ae) / max(dot(ae, ae), 1e-6), 0.0, 1.0);
-    var d = length(p - (s.a + ae * t)) - 0.5 * s.width;
-    if s.arrow {
-        d = min(d, head_distance(p, s.b, dir, s.width));
-    }
+    let line = length(p - (s.a + ae * t)) - 0.5 * s.width;
+    // The head is drawn whole: its base can reach back past a joint, where the segment before draws
+    // the line.
+    let head = head_distance(p, s.b, dir, s.width);
+    let d = select(head, min(line, head), owns(p, s));
     let along = clamp(dot(p - s.a, dir) / max(len, 1e-6), 0.0, 1.0);
     return vec3f(d, mix(s.phase.x, s.phase.y, along), along);
 }

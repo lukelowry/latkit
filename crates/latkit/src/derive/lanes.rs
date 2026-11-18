@@ -1,18 +1,18 @@
 //! Lanes of parallel edges.
 //!
-//! Edges joining the same two vertices form a family. Each edge row gets a lane within its family,
-//! so the strokes bow apart instead of drawing over each other. Lanes depend only on the table's
-//! endpoints, and strokes bow in world space, so lanes never change as the camera moves.
+//! Edges joining the same two vertices form a family of parallel edges. Each edge row gets a lane
+//! within its family, so the strokes run side by side instead of drawing over each other. Lanes
+//! depend only on the table's endpoints, and strokes move sideways on screen as they draw, so lanes
+//! never change as the camera moves.
 //!
 //! A row's lane and its family size share one 32-bit word: twice the lane plus `HALF` in the high
 //! 16 bits, the family size in the low 16. Lanes are recomputed only when the table's rows or
 //! endpoints change: on the frame for a table of up to [`ON_FRAME`] rows, else in a job. A table
-//! whose edges
-//! share no endpoints gets no lane field, and neither does any table while the theme's `bow` is 0:
-//! nothing bows then, so edges joining the same vertices draw straight, one over another.
+//! whose edges share no endpoints gets no lane field, and neither does any table while the theme
+//! has no `parallel` edges: edges joining the same vertices then draw one over another.
 //!
-//! A mark sizes and plans the list of its bowed pieces from [`Laned`]: how many rows bow, and
-//! whether any family is packed closer than a lane apart.
+//! A mark sizes its segment list from [`Laned`]: where parallel edges fan into their vertices, each
+//! row off its family's middle takes one more segment at each end.
 
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 
@@ -34,21 +34,16 @@ const MOST: u32 = (1 << 16) - 1;
 /// What a table's lanes ask of the list that draws them.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct Laned {
-    /// The rows that bow: those off the middle of a family of two or more.
-    pub(crate) bowed: u32,
-    /// Whether any family holds more than `FAMILY_LANES` rows, so its lanes lie closer than a lane
-    /// apart and a list keeps only those the screen shows apart.
-    pub(crate) packed: bool,
+    /// The rows off the middle of a family of two or more, which fan into their vertices where
+    /// parallel edges fan.
+    pub(crate) aside: u32,
 }
 
 impl Laned {
     /// What the lane words of a table's rows ask.
     fn of(words: &[u32]) -> Laned {
         let size = |word: u32| word & MOST;
-        Laned {
-            bowed: words.iter().filter(|&&word| size(word) >= 2 && word >> 16 != HALF).count() as u32,
-            packed: words.iter().any(|&word| size(word) as f32 > crate::gpu::shaders::FAMILY_LANES),
-        }
+        Laned { aside: words.iter().filter(|&&word| size(word) >= 2 && word >> 16 != HALF).count() as u32 }
     }
 }
 
@@ -73,8 +68,8 @@ impl Derive for Lanes {
     fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
         let mut changed = false;
         let mut drawn: FxHashSet<(Name, Name)> = FxHashSet::default();
-        let bows = input.scene.theme.edge.bow != 0.0;
-        for mark in input.scene.marks.iter().filter(|_| bows) {
+        let parallel = input.scene.theme.edge.parallel.is_some();
+        for mark in input.scene.marks.iter().filter(|_| parallel) {
             let Mark::Edges(edges) = mark else { continue };
             let Some((from, to)) = &edges.ends else { continue };
             let style = &edges.style;
@@ -172,7 +167,7 @@ pub(crate) fn words(from: &[u32], to: &[u32]) -> Option<Vec<u32>> {
 
 /// Each row's lane among the rows joining the same two vertices, and the size of that family, from
 /// the rows' endpoints ([`UNWIRED`] where a reference is unset). A lane is an offset from the
-/// family's middle, negated for rows running the other way, so every row of a family bows apart.
+/// family's middle, negated for rows running the other way, so every row of a family runs apart.
 /// A row with no parallel rows (including unset rows and self-loops) gets lane 0 in a family of 1.
 /// `None` when no two rows share endpoints. It counts each pair in one map, then assigns lanes only
 /// to shared pairs, so it allocates nothing per pair.
@@ -214,7 +209,7 @@ mod tests {
     use super::{HALF, Laned, UNWIRED, lanes, words};
 
     #[test]
-    fn edges_joining_the_same_vertices_bow_apart_in_either_direction() {
+    fn edges_joining_the_same_vertices_run_apart_in_either_direction() {
         // Rows 0, 1, and 3 join vertices 1 and 2, row 3 the other way; row 2 is alone.
         let lanes = lanes(&[1, 1, 4, 2, UNWIRED], &[2, 2, 5, 1, 0]).expect("rows share endpoints");
         assert_eq!(lanes, vec![(-1.0, 3), (0.0, 3), (0.0, 1), (-1.0, 3), (0.0, 1)]);
@@ -227,14 +222,11 @@ mod tests {
     }
 
     #[test]
-    fn lanes_ask_a_list_for_the_rows_that_bow_and_say_when_a_family_is_packed() {
+    fn lanes_count_the_rows_off_their_familys_middle() {
         // Three rows join one pair, two another, and one row is alone. The middle of the three and
-        // the row alone run straight.
+        // the row alone run along their paths.
         let few = words(&[1, 1, 1, 3, 3, 5], &[2, 2, 2, 4, 4, 6]).expect("rows share endpoints");
-        assert_eq!(Laned::of(&few), Laned { bowed: 4, packed: false });
-        // Nine rows join one pair: more than a family spreads a lane apart.
-        let many = words(&[1; 9], &[2; 9]).expect("rows share endpoints");
-        assert_eq!(Laned::of(&many), Laned { bowed: 8, packed: true });
+        assert_eq!(Laned::of(&few), Laned { aside: 4 });
     }
 
     #[test]

@@ -482,14 +482,6 @@ pub(crate) struct Projected {
 }
 
 impl Projected {
-    /// A conservative lane-density band on a flat plane. At zero tilt and ground-centered depth,
-    /// translation and rotation preserve screen distances, and a zoom octave changes them by two.
-    /// Other projections continue to plan against their exact camera.
-    pub(crate) fn lane_band(&self) -> Option<f32> {
-        (self.space == wgsl::SPACE_PLANE && self.parallax == 0.0 && self.center[2] == 0.0)
-            .then(|| (self.zoom as f32).ceil())
-    }
-
     /// How far the earth is morphed onto the globe: 1 for the globe projection, otherwise 0.
     pub(crate) fn globe_of(space: &Space) -> f64 {
         match space {

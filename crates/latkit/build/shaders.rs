@@ -65,13 +65,14 @@ const ENTRIES: &[Entry] = &[
             ("custom_shaded_focus", &["custom", "shaded", "focused"]),
         ],
     },
+    // Only strokes join their segments, so only they read the points beside each one.
     Entry {
         module: "draw::strokes",
         variants: &[
-            ("main", &[]),
-            ("focus", &["focused"]),
-            ("shaded", &["shaded"]),
-            ("shaded_focus", &["shaded", "focused"]),
+            ("main", &["joined"]),
+            ("focus", &["focused", "joined"]),
+            ("shaded", &["shaded", "joined"]),
+            ("shaded_focus", &["shaded", "focused", "joined"]),
         ],
     },
     Entry {
@@ -93,7 +94,7 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::fields", variants: &[("main", &[]), ("columns", &["columns"])] },
 ];
 
-const FEATURES: &[&str] = &["custom", "shaded", "focused", "columns", "scatter", "gather"];
+const FEATURES: &[&str] = &["custom", "shaded", "focused", "columns", "scatter", "gather", "joined"];
 
 /// The hooks a variant calls, by the feature that calls each: the function's name and a
 /// placeholder definition, appended to validate and translate the variant. The browser's copy
@@ -244,6 +245,7 @@ pub(crate) fn generate() {
             check_shared(&module, &bind_module, entry.module);
             check_targets(&module, entry.module);
             check_brace_bools(&module, &info, entry.module);
+            check_swizzle_indexes(&module, entry.module);
             let names = constant_names(&module);
             let constants = constants(&module, &names, &source);
             let file = format!("{}.{variant}", entry.module.replace("::", "."));
@@ -679,10 +681,18 @@ fn prune(source: &str) -> String {
 }
 
 /// Asserts that no struct or array constructor in `module` takes a boolean `&` or `|`, even through
-/// a `let`, which Metal may write inline. Metal writes these constructors as brace initializers,
-/// where C++ evaluates `bool & bool` to an int that may not narrow back to bool, so the pipeline
-/// fails to compile on Apple GPUs. A `select` stays a bool.
+/// a `let` or as a value a `select` picks, which Metal may write inline. Metal writes these
+/// constructors as brace initializers, where C++ evaluates `bool & bool` to an int that may not
+/// narrow back to bool, and a `select` between that int and a bool is an int too, so the pipeline
+/// fails to compile on Apple GPUs. A `select` of bools stays a bool.
 fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
+    fn combined(function: &naga::Function, e: naga::Handle<naga::Expression>) -> bool {
+        match function.expressions[e] {
+            naga::Expression::Binary { op: naga::BinaryOperator::And | naga::BinaryOperator::InclusiveOr, .. } => true,
+            naga::Expression::Select { accept, reject, .. } => combined(function, accept) || combined(function, reject),
+            _ => false,
+        }
+    }
     let functions = module
         .functions
         .iter()
@@ -695,18 +705,32 @@ fn check_brace_bools(module: &naga::Module, info: &ModuleInfo, name: &str) {
                 continue;
             }
             for &component in components {
-                let combined = matches!(
-                    function.expressions[component],
-                    naga::Expression::Binary { op: naga::BinaryOperator::And | naga::BinaryOperator::InclusiveOr, .. }
-                );
                 let boolean =
                     matches!(types[component].ty.inner_with(&module.types), TypeInner::Scalar(naga::Scalar::BOOL));
                 assert!(
-                    !(combined && boolean),
+                    !(boolean && combined(function, component)),
                     "{name}: {} builds a struct or array from a boolean `&` or `|`, which Metal can't compile. Use `select`.",
                     function.name.as_deref().unwrap_or("an entry point"),
                 );
             }
+        }
+    }
+}
+
+/// Asserts that no swizzle in `module` is indexed by a runtime value, even through a `let`, such as
+/// `let b = v.zw; b[i]`. ANGLE's translation for Direct3D reads such an index from the vector the
+/// swizzle came from, so it reads the wrong component. Index the vector itself, or pick a
+/// component with `select`.
+fn check_swizzle_indexes(module: &naga::Module, name: &str) {
+    let functions = module.functions.iter().map(|(_, f)| f).chain(module.entry_points.iter().map(|e| &e.function));
+    for function in functions {
+        for (_, expression) in function.expressions.iter() {
+            let naga::Expression::Access { base, .. } = *expression else { continue };
+            assert!(
+                !matches!(function.expressions[base], naga::Expression::Swizzle { .. }),
+                "{name}: {} indexes a swizzle by a runtime value, which ANGLE on Direct3D misreads",
+                function.name.as_deref().unwrap_or("an entry point"),
+            );
         }
     }
 }

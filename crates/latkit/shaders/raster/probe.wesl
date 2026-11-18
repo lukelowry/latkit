@@ -10,6 +10,20 @@ import package::lib::words::{word_quad, word_read, word_index, fullscreen};
 @vertex
 fn vertex(@builtin(vertex_index) v: u32) -> @builtin(position) vec4f { return fullscreen(v); }
 
+// The instances the step covers: every one, or for a hover over a trace, the segments of each row
+// within its reach.
+fn reached() -> u32 {
+    if params.reach.y == 0u { return instances(); }
+    return mark.rows * params.reach.y;
+}
+
+// The instance the step's `i`th record covers.
+fn reached_instance(i: u32) -> u32 {
+    let span = params.reach.y;
+    if span == 0u { return i; }
+    return (i / span) * mark.per_row + params.reach.x + i % span;
+}
+
 @fragment
 fn probe(@builtin(position) p: vec4f) -> @location(0) vec4u {
     // One geometry program serves hover, hits, row locations, and box selection.
@@ -41,9 +55,9 @@ fn probe(@builtin(position) p: vec4f) -> @location(0) vec4u {
             if word_read(source, mid + 1u) <= rank { lo = mid + 1u; } else { hi = mid; }
         }
         i = lo;
-    } else if i >= instances() { return vec4u(0u); }
+    } else if i >= reached() { return vec4u(0u); }
     // Every step uses exactly the same geometry and reach computation.
-    let s = seen(i, locating);
+    let s = seen(select(reached_instance(i), i, locating), locating);
     if locating {
         var at = s.a.xy;
         if PRIMITIVE == STROKES { at = select(0.5 * (s.a.xy + s.b.xy), s.b.xy, PATH == PATH_TRACE); }

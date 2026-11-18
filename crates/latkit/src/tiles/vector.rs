@@ -21,6 +21,8 @@ use std::sync::Arc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::TileKey;
+use super::retry::Retry;
+use super::sets::Updated;
 use super::tiling::{Decoding, Pieces, Requested, Tiling};
 use crate::data::{Field, Id, Keyed, Name, Op, Patch, Snapshot, Table, Values};
 use crate::derive::order::Order;
@@ -91,12 +93,14 @@ fn wanted(sight: &Sight<'_>, zooms: [u8; 2], bounds: [f64; 4]) -> Vec<TileKey> {
 
 /// Where a source's vector tiles come from once it opens.
 enum Opened {
-    /// An archive whose root directory lies past the first bytes and is being fetched.
-    Root(Header, Pending<Vec<u8>>),
+    /// An archive whose root directory lies past the first bytes and is being fetched, with the
+    /// retry of its last fetch if that failed.
+    Root(Header, Pending<Vec<u8>>, Option<Retry>),
     Template(Template),
     Archive(Header, Directory),
-    /// The source could not be opened, with the reason.
-    Failed(Error),
+    /// The source could not be opened, with the reason. An archive whose root directory failed
+    /// to fetch fetches it again after its retry. A corrupt one waits for a refresh.
+    Failed(Error, Option<(Header, Retry)>),
 }
 
 /// One source's vector tiles, shared by every set drawing them: where they are, and what was
@@ -104,9 +108,10 @@ enum Opened {
 pub(crate) struct Fetched {
     url: Arc<str>,
     opened: Opened,
-    /// Leaf directories, and those being fetched.
+    /// Leaf directories, those being fetched, and when those that failed are fetched again.
     leaves: FxHashMap<(u64, u64), Directory>,
     leaf_fetches: FxHashMap<(u64, u64), Pending<Vec<u8>>>,
+    leaf_retries: FxHashMap<(u64, u64), Retry>,
     pub(super) tiling: Tiling<TileKey>,
 }
 
@@ -123,7 +128,7 @@ impl Fetched {
         let (offset, length) = header.root;
         let opened = match bytes.get(offset as usize..(offset + length) as usize) {
             Some(root) => archive(header, root).ok_or_else(|| corrupt(url))?,
-            None => Opened::Root(header, jobs.fetch(&Request::range(url.clone(), offset..offset + length))),
+            None => root_fetch(url, header, None, jobs),
         };
         Ok(Fetched::opened(url, opened))
     }
@@ -134,6 +139,7 @@ impl Fetched {
             opened,
             leaves: FxHashMap::default(),
             leaf_fetches: FxHashMap::default(),
+            leaf_retries: FxHashMap::default(),
             tiling: Tiling::default(),
         }
     }
@@ -148,20 +154,30 @@ impl Fetched {
         match &self.opened {
             Opened::Template(t) => Some(([t.min_zoom, t.max_zoom], t.bounds)),
             Opened::Archive(h, _) => Some(([h.min_zoom, h.max_zoom], h.bounds)),
-            Opened::Root(..) | Opened::Failed(_) => None,
+            Opened::Root(..) | Opened::Failed(..) => None,
         }
     }
 
     /// Opens the archive once its root directory arrives, and takes leaf directories that arrived.
+    /// A directory whose fetch failed is fetched again after its retry, and one cancelled at once.
     /// Returns the reason the source could not be opened, if it could not.
-    fn settle(&mut self) -> Option<Error> {
-        if let Opened::Root(header, pending) = &self.opened {
-            let header = *header;
-            if let Some(landed) = pending.take() {
-                let opened =
-                    landed.and_then(|bytes| archive(header, &bytes).ok_or_else(|| Error::invalid(corrupt(&self.url))));
-                self.opened = opened.unwrap_or_else(Opened::Failed);
+    fn settle(&mut self, jobs: &Jobs<'_>) -> Option<Error> {
+        match &self.opened {
+            Opened::Root(header, pending, last) => {
+                let (header, last) = (*header, *last);
+                if let Some(landed) = pending.take() {
+                    self.opened = match landed {
+                        Ok(bytes) => archive(header, &bytes)
+                            .unwrap_or_else(|| Opened::Failed(Error::invalid(corrupt(&self.url)), None)),
+                        Err(Error::Cancelled) => root_fetch(&self.url, header, last, jobs),
+                        Err(error) => Opened::Failed(error, Some((header, Retry::after(last, jobs.waker())))),
+                    };
+                }
             }
+            Opened::Failed(_, Some((header, retry))) if retry.due() => {
+                self.opened = root_fetch(&self.url, *header, Some(*retry), jobs);
+            }
+            _ => {}
         }
         let landed: Vec<_> =
             self.leaf_fetches.iter().filter_map(|(at, pending)| pending.take().map(|r| (*at, r))).collect();
@@ -175,12 +191,19 @@ impl Fetched {
             match leaf {
                 Ok(leaf) => {
                     self.leaves.insert(at, leaf);
+                    self.leaf_retries.remove(&at);
+                    self.tiling.recovered();
                 }
-                Err(error) => self.tiling.fail(error),
+                Err(Error::Cancelled) => {}
+                Err(error) => {
+                    let retry = Retry::after(self.leaf_retries.get(&at).copied(), jobs.waker());
+                    self.leaf_retries.insert(at, retry);
+                    self.tiling.fail(error);
+                }
             }
         }
         match &self.opened {
-            Opened::Failed(error) => Some(error.clone()),
+            Opened::Failed(error, _) => Some(error.clone()),
             _ => None,
         }
     }
@@ -248,8 +271,7 @@ impl Drawing {
     }
 
     /// Updates `data` to what `sight` shows and set `set`'s scene draws of dataset `name`, from
-    /// what `fetched` holds. Returns whether it changed, whether any wanted tile still shows a
-    /// placeholder, and a failure to report.
+    /// what `fetched` holds, and says what it found.
     #[expect(clippy::too_many_arguments, reason = "a set's update reads the view, the frame, and the source")]
     pub(crate) fn update(
         &mut self,
@@ -260,22 +282,25 @@ impl Drawing {
         sight: Option<&Sight<'_>>,
         fetched: &mut Fetched,
         jobs: &Jobs<'_>,
-    ) -> (bool, bool, Option<Error>) {
+    ) -> Updated {
         let tables = decoded_tables(input.scene, name);
         if tables.is_empty() {
-            return (false, false, None);
+            return Updated::default();
         }
-        let failure = fetched.settle();
+        let failure = fetched.settle(jobs);
         let Some((zooms, bounds)) = fetched.zooms() else {
-            return (false, matches!(fetched.opened, Opened::Root(..)), failure);
+            let opening = matches!(fetched.opened, Opened::Root(..));
+            return Updated { standing_in: opening, bare: opening, failure, ..Updated::default() };
         };
         let stamp = stamp_of(&tables);
         let wanted = sight.map(|s| wanted(s, zooms, bounds)).unwrap_or_default();
-        let Fetched { url, opened, leaves, leaf_fetches, tiling } = fetched;
-        let mut pieces = Find { url, opened, leaves, leaf_fetches, tables: &tables };
+        let Fetched { url, opened, leaves, leaf_fetches, leaf_retries, tiling } = fetched;
+        let mut pieces = Find { url, opened, leaves, leaf_fetches, leaf_retries, tables: &tables };
         let drawn = tiling.update(set, &wanted, stamp, &mut pieces, jobs);
-        let changed = self.draw(&drawn.keys, stamp, tiling, input, data);
-        (changed, drawn.standing_in, failure.or(drawn.failure))
+        let mut updated =
+            Updated { changed: self.draw(&drawn.keys, stamp, tiling, input, data), failure, ..Updated::default() };
+        updated.add(&drawn);
+        updated
     }
 
     /// Draws tiles `drawn`, decoded for `stamp`. A tile new to the tables appends its rows after
@@ -430,6 +455,7 @@ struct Find<'a> {
     opened: &'a Opened,
     leaves: &'a FxHashMap<(u64, u64), Directory>,
     leaf_fetches: &'a mut FxHashMap<(u64, u64), Pending<Vec<u8>>>,
+    leaf_retries: &'a FxHashMap<(u64, u64), Retry>,
     tables: &'a [Decoded],
 }
 
@@ -445,6 +471,12 @@ impl Pieces<TileKey> for Find<'_> {
                         Some(Entry::Leaf(offset, length)) => {
                             let at = (header.leaves + offset, length);
                             let Some(leaf) = self.leaves.get(&at) else {
+                                // Under a leaf that failed, the tile fails with it until the leaf's retry.
+                                if let Some(&retry) = self.leaf_retries.get(&at)
+                                    && !retry.due()
+                                {
+                                    return Requested::Failed(retry);
+                                }
                                 let url = self.url.clone();
                                 self.leaf_fetches
                                     .entry(at)
@@ -463,7 +495,7 @@ impl Pieces<TileKey> for Find<'_> {
                 // The archive has no such tile, so it draws nothing.
                 Requested::Missing
             }
-            Opened::Root(..) | Opened::Failed(_) => Requested::Wait,
+            Opened::Root(..) | Opened::Failed(..) => Requested::Wait,
         }
     }
 
@@ -476,6 +508,13 @@ impl Pieces<TileKey> for Find<'_> {
 fn archive(header: Header, bytes: &[u8]) -> Option<Opened> {
     let root = pmtiles::inflated(bytes, header.gzip_directories).and_then(|b| Directory::decode(&b))?;
     Some(Opened::Archive(header, root))
+}
+
+/// Fetches the root directory of the archive at `url` with `header`, after a fetch that failed
+/// with retry `last` if any.
+fn root_fetch(url: &Arc<str>, header: Header, last: Option<Retry>, jobs: &Jobs<'_>) -> Opened {
+    let (offset, length) = header.root;
+    Opened::Root(header, jobs.fetch(&Request::range(url.clone(), offset..offset + length)), last)
 }
 
 fn corrupt(url: &str) -> String {

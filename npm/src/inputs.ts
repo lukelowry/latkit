@@ -412,6 +412,18 @@ export type Controls =
       reach?: Reach;
     };
 
+/** How parallel edges come together at the vertices they join. */
+export type Converge =
+  /**
+   * They draw closer together where needed, so the family fits within the smaller of its two
+   * vertices, and each edge stays one straight line.
+   */ | 'squeeze'
+  | /** They keep their spacing and angle in to each vertex's center near their ends. */ 'fan'
+  | /**
+     * They keep their spacing and run straight to each vertex, stopping at its outline, or beside it
+     * where they pass it.
+     */ 'straight';
+
 /** A custom colormap: its kind, its colors, and for a categorical map, its category names. */
 export interface CustomColormap {
   /** How the colors map values. */
@@ -484,12 +496,8 @@ export interface EdgeTheme {
   color?: Color | null;
   /** The edge width, in CSS pixels. */
   width?: number;
-  /**
-   * How far edges joining the same two vertices bow apart. Each lane bows out by this fraction of
-   * the edge's length, measured at its middle. Parallel edges spread at most eight lanes wide, and
-   * more lanes pack closer. Bows scale with the zoom. With 0 they run straight, one over another.
-   */
-  bow?: number;
+  /** How edges joining the same two vertices run side by side. `null` draws them over one another. */
+  parallel?: Parallel | null;
   /** How far an arrowhead extends beyond the edge's width. A head's length is this plus the width. */
   arrow?: number;
 }
@@ -985,6 +993,19 @@ export type Motion =
 export type Order = /** Smallest first. */ 'ascending' | /** Largest first. */ 'descending';
 
 /**
+ * How edges joining the same two vertices run side by side: each moved sideways from the path
+ * between its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.
+ * More than eight edges pack closer, within eight steps, and where neighbors would lie less than a
+ * pixel apart, only every second edge draws, or every fourth, and so on.
+ */
+export interface Parallel {
+  /** The space between neighboring edges, in CSS pixels. Defaults to 3. */
+  gap?: number;
+  /** How they come together at the vertices they join. Defaults to `squeeze`. */
+  converge?: Converge;
+}
+
+/**
  * Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the
  * marks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's
  * background. Either way, the pointer reaches no row under it. A title and legends in one place
@@ -1278,6 +1299,11 @@ export type Theme =
       contrast?: number;
       /** The dash period: one dash and one gap of equal length. */
       dash?: number;
+      /**
+       * The space between the view's edge, inside its insets, and the guides beside it: titles, legends,
+       * and a plot's axes. Defaults to 1.5 times the text size.
+       */
+      padding?: number | null;
       /** How labels, axis ticks, and titles look. */
       text?: TextTheme;
       /** Defaults for vertices. */

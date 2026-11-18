@@ -119,8 +119,13 @@ pub struct View {
     scene_failures_due: bool,
     /// The failures the last `Failures` event reported.
     told_failures: Vec<Error>,
+    /// The area the last `Area` event reported.
+    told_area: [f32; 4],
     /// The sources the application gave, each a named dataset.
     sources: Vec<Source>,
+    /// Sources given since, while the tiles among them that the view does not draw yet load. The
+    /// view draws `sources` until each of those can draw.
+    incoming_sources: Option<Vec<Source>>,
     /// The version of each dataset the view draws, sorted by name: a given snapshot, the latest
     /// version of a `Data` as of the last refresh, or the tiles loaded so far.
     snapshots: Vec<Snapshot>,
@@ -266,7 +271,9 @@ impl View {
             scene_failures: Vec::new(),
             scene_failures_due: false,
             told_failures: Vec::new(),
+            told_area: [0.0; 4],
             sources: Vec::new(),
+            incoming_sources: None,
             snapshots: Vec::new(),
             choices: crate::derive::tiled::Choices::default(),
             drawings: crate::data::Keyed::default(),
@@ -335,13 +342,14 @@ impl View {
     pub fn move_to(&mut self, gpu: &Gpu) {
         let identity = Identity { id: self.id, signal: self.signal.clone(), job_errors: self.job_errors.clone() };
         let mut moved = View::made(gpu, self.scene().clone(), identity);
-        moved.use_sources(self.sources.clone());
+        moved.use_sources(self.sources.clone(), &mut gpu.0.lock());
         // The same scene and data, so what was derived from them alone still holds, layouts too.
         moved.scene_version = self.scene_version;
         moved.derived.carry(&mut self.derived);
         moved.scene_failures = std::mem::take(&mut self.scene_failures);
         // Failures already told are told again only when they change.
         moved.told_failures = std::mem::take(&mut self.told_failures);
+        moved.told_area = self.told_area;
         // The camera where it was placed, and the fit not yet applied, which keeps its pitch and
         // bearing.
         if self.placed {
@@ -356,6 +364,10 @@ impl View {
         moved.clock = std::mem::take(&mut self.clock);
         moved.effect_time = self.effect_time;
         moved.stats = std::mem::take(&mut self.stats);
+        // Sources given since load again on `gpu`, while the moved view draws those it drew.
+        if let Some(sources) = self.incoming_sources.take() {
+            moved.give_sources(sources);
+        }
         moved.set_at(self.at);
         moved.set_insets(self.insets);
         moved.set_orbit(self.orbit());
@@ -389,12 +401,20 @@ impl View {
     /// fits.
     ///
     /// The view goes on drawing, and answering for, the scene before until the pipelines this
-    /// scene's frames draw with have compiled, then draws it from the next frame. They compile after
+    /// scene's frames draw with have compiled, and the tiles of sources given since can draw (see
+    /// [`set_sources`](View::set_sources)), then draws it from the next frame. They compile after
     /// those of the scene before, so a scene set before the view's first frame draws second. Fits and
     /// cameras asked for meanwhile apply to this scene. A view's first scene draws at once.
+    ///
+    /// Like every setter, given the scene it already has, with the same failures, it changes
+    /// nothing: no swap, no wait, no event, and no frame.
     pub fn set_scene(&mut self, mut scene: Scene) {
         let mut failures = std::mem::take(&mut scene.unread);
         failures.extend(scene.sanitize());
+        let last = self.incoming.as_ref().map_or(&self.scene_failures, |incoming| &incoming.failures);
+        if scene == *self.scene() && failures == *last {
+            return;
+        }
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
@@ -403,9 +423,9 @@ impl View {
             replaced.release(&mut inner);
         }
         drop(inner);
-        self.swap_when_ready();
-        // Until it draws, the view waits on its pipelines, so `done` waits for it.
-        if self.incoming.is_some() && !self.waiting.compiling {
+        // Until it draws, the view waits on its pipelines, so `done` waits for it. A scene ready to
+        // draw waits only for the next frame, which takes it with any sources given since.
+        if self.swap_when_ready(false) && !self.waiting.compiling {
             self.waiting.compiling = true;
             self.events.tell(Event::Waiting(self.waiting));
         }
@@ -447,12 +467,21 @@ impl View {
         })
     }
 
-    /// Draws the incoming scene from the next frame once it can: the pipelines its frames draw with
-    /// have landed, or the browser refused one, which the view then reports. It asks for them first,
-    /// after those of the scene drawn, for each target its frames draw into. A view's first scene,
-    /// or one set before any frame on the GPU, swaps in at once.
-    fn swap_when_ready(&mut self) {
-        let Some(incoming) = &self.incoming else { return };
+    /// Draws the incoming scene and sources once they can, together, as a frame starts
+    /// (`starting`). So a scene and the sources given with it between two frames swap on one
+    /// frame, whichever was set first. Sources can once the tiles among them that the view did not
+    /// draw can draw (see [`set_sources`](View::set_sources)). A scene can once the pipelines its
+    /// frames draw with have landed, or the browser refused one, which the view then reports. It
+    /// asks for them first, after those of the scene drawn, for each target its frames draw into.
+    /// A view's first scene, or one set before any frame on the GPU, swaps in at once. Returns
+    /// whether the scene waits on its pipelines or sources.
+    fn swap_when_ready(&mut self, starting: bool) -> bool {
+        if starting && self.incoming_sources.is_some() && self.derived.tiles.loaded() {
+            let sources = self.incoming_sources.take().expect("checked");
+            let gpu = self.gpu.clone();
+            self.use_sources(sources, &mut gpu.0.lock());
+        }
+        let Some(incoming) = &self.incoming else { return false };
         let gpu = self.gpu.clone();
         // While it waits, the compiles that had landed when it last checked.
         let waiting = if let Some(most) = gpu.samples().filter(|_| self.scene_version > 0) {
@@ -471,10 +500,16 @@ impl View {
         };
         if let Some(landed) = waiting {
             self.compiling = Some(landed);
-        } else {
+            return true;
+        }
+        if self.incoming_sources.is_some() {
+            return true;
+        }
+        if starting || self.stats.frames == 0 {
             let incoming = self.incoming.take().expect("checked");
             self.swap(incoming);
         }
+        false
     }
 
     /// Draws `incoming`'s scene from the next frame. Each changed mark takes over the rows of the
@@ -578,6 +613,11 @@ impl View {
     /// whose dataset no longer fits it draws nothing, and the next frame reports why unless a new
     /// scene replaces that mark first. So the sources and the scene can be set in either order.
     /// Errors if two sources share a name.
+    ///
+    /// Tiles the view does not draw yet load while it goes on drawing the sources before, as a
+    /// scene waits for its pipelines. Once each can draw (its base landed, and every piece in view
+    /// draws at least a placeholder, or failed), all the sources swap in on one frame, with a scene
+    /// set since. A view that has not drawn yet takes them at once.
     pub fn set_sources<S: Into<Source>>(&mut self, sources: impl IntoIterator<Item = S>) -> Result<()> {
         let sources: Vec<Source> = sources.into_iter().map(Into::into).collect();
         for (i, source) in sources.iter().enumerate() {
@@ -585,14 +625,27 @@ impl View {
                 return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
             }
         }
-        self.use_sources(sources);
+        self.give_sources(sources);
         Ok(())
     }
 
-    /// Replaces the view's sources with `sources`, whose names differ.
-    fn use_sources(&mut self, sources: Vec<Source>) {
+    /// Takes `sources`, whose names differ: at once, or once the tiles among them that the view
+    /// does not draw yet can draw.
+    fn give_sources(&mut self, sources: Vec<Source>) {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
+        let tiles = sources.iter().filter_map(|source| if let Source::Tiles(t) = source { Some(t) } else { None });
+        if self.stats.frames > 0 && self.derived.tiles.load(tiles, &mut inner.tiles) {
+            self.incoming_sources = Some(sources);
+            self.wake();
+        } else {
+            self.incoming_sources = None;
+            self.use_sources(sources, &mut inner);
+        }
+    }
+
+    /// Replaces the view's sources with `sources`, whose names differ.
+    fn use_sources(&mut self, sources: Vec<Source>, inner: &mut crate::gpu::Inner) {
         // Forget datasets no source provides any more, and those whose source switched to or from
         // tiles: the view draws the new source from scratch.
         let tiled = |source: &Source| matches!(source, Source::Tiles(_));
@@ -604,7 +657,7 @@ impl View {
             .collect();
         let forgot = !gone.is_empty();
         for name in gone {
-            self.forget(&name, &mut inner);
+            self.forget(&name, inner);
         }
         for old in &self.sources {
             if let Source::Data(data) = old {
@@ -615,14 +668,13 @@ impl View {
             match source {
                 Source::Data(data) => {
                     data.watchers().watch(self.id, &self.waker);
-                    self.take_newer(data.snapshot(), &mut inner);
+                    self.take_newer(data.snapshot(), inner);
                 }
-                Source::Snapshot(snapshot) => self.take_newer(snapshot.clone(), &mut inner),
+                Source::Snapshot(snapshot) => self.take_newer(snapshot.clone(), inner),
                 Source::Tiles(tiles) => self.derived.tiles.set(tiles.clone(), &mut inner.tiles),
             }
         }
         self.sources = sources;
-        drop(inner);
         // Marks that lost their tables need the program laid out again.
         if forgot {
             self.invalidate();
@@ -631,9 +683,10 @@ impl View {
         }
     }
 
-    /// The sources the view draws.
+    /// The sources last given. Until the tiles among them that the view did not draw can draw, the
+    /// view draws the sources before.
     pub fn sources(&self) -> &[Source] {
-        &self.sources
+        self.incoming_sources.as_deref().unwrap_or(&self.sources)
     }
 
     /// The version of dataset `name` the view draws: the latest version it took of a
@@ -652,8 +705,18 @@ impl View {
     /// but tiles still arrive.
     fn refresh(&mut self, inner: &mut crate::gpu::Inner) {
         self.update_tiles(inner);
+        let mut compiled = false;
         for data in self.derived.tiles.take_changed() {
-            self.take_data(data, inner);
+            compiled |= self.take_data(data, inner);
+        }
+        // Marks compiled against the tiles' data may read fields the tiles did not know of, so the
+        // tiles update again for them: what they fetch, and whether they are complete, follows the
+        // marks the frame draws.
+        if compiled {
+            self.update_tiles(inner);
+            for data in self.derived.tiles.take_changed() {
+                self.take_data(data, inner);
+            }
         }
         if self.signal.holding() {
             return;
@@ -674,8 +737,9 @@ impl View {
 
     /// Takes a new version of a dataset, with the GPU's state locked. Marks whose schema it changed
     /// recompile, as do failed marks that read it. Failures stay until the data fits again, and the
-    /// next frame reports them. A caller outside a frame requests a frame to draw the data.
-    fn take_data(&mut self, data: Snapshot, inner: &mut crate::gpu::Inner) {
+    /// next frame reports them. A caller outside a frame requests a frame to draw the data. Returns
+    /// whether a mark compiled.
+    fn take_data(&mut self, data: Snapshot, inner: &mut crate::gpu::Inner) -> bool {
         let at = match self.snapshots.binary_search_by(|d| d.name().cmp(data.name())) {
             Ok(i) => {
                 self.snapshots[i] = data;
@@ -687,8 +751,10 @@ impl View {
             }
         };
         let context = Context { theme: &self.scene.theme, space: &self.scene.space, layout: &self.scene.layout };
+        let mut compiled = false;
         for (i, shown) in self.marks.iter_mut().enumerate() {
             if shown.stale(&self.snapshots[at]) {
+                compiled = true;
                 if let Some(staged) = self.staged.get_mut(&shown.mark.style().data) {
                     staged.forget(i, inner);
                 }
@@ -704,6 +770,7 @@ impl View {
             let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
             for shown in incoming.fresh.iter_mut().flatten() {
                 if shown.stale(&self.snapshots[at]) {
+                    compiled = true;
                     shown.compile(&self.snapshots, context, inner);
                 }
             }
@@ -711,6 +778,7 @@ impl View {
         // Rows may have moved under the focus.
         self.focus.dirty = true;
         self.fitting.plot_due = true;
+        compiled
     }
 
     /// Stops drawing dataset `name` until a source provides it again, and releases the GPU tables
@@ -772,11 +840,19 @@ impl View {
     /// or half a view at the widest fit's zoom for a smaller box. The view learns its size from its
     /// first frame. When its size, insets, or space change, the next frame moves the camera back
     /// within the limits and emits a [`Camera`](Event::Camera) event.
+    ///
+    /// Given the camera already placed, while no flight or fit moves it, it changes nothing: a plot
+    /// camera that fits its values keeps fitting them as before.
     pub fn set_camera(&mut self, camera: Camera) {
         if let Some(incoming) = &mut self.incoming {
             if camera.fits(&incoming.scene.space) {
                 incoming.camera = Some(camera);
             }
+            return;
+        }
+        // A reveal waits only behind an asked fit, so none waits either.
+        let still = self.placed && !self.rig.easing() && self.fitting.asked().is_none();
+        if still && camera == self.camera {
             return;
         }
         if camera.fits(&self.scene.space) {
@@ -1176,6 +1252,8 @@ impl View {
             || self.guides.retry
             || self.signal.landed()
             || self.derived.tiles.pending()
+            // Sources given since swap in on the next frame once their tiles can draw.
+            || (self.incoming_sources.is_some() && self.derived.tiles.loaded())
             || self.rig.easing()
             || (self.rig.orbit != 0.0 && moves)
             || self.measure_due()
@@ -1271,9 +1349,22 @@ impl View {
         self.wake();
     }
 
-    /// The part of the view the camera frames, in CSS pixels: inside the insets and the room the
-    /// guides on its sides take, a plot's axes among them. At least one pixel each way.
-    fn area(&self) -> Area {
+    /// Where marks draw, in CSS pixels from the view's top left: `[x, y, width, height]`, inside
+    /// the insets and the room the guides on its sides take, a plot's axes among them. The camera
+    /// frames it, and a page lines up what it shows over the data with it. It changes with the
+    /// view's size, its insets, and its guides, and an [`Area`](Event::Area) event reports each
+    /// change. Zero until the first frame gives the view a size.
+    pub fn area(&self) -> [f32; 4] {
+        if !self.sized() {
+            return [0.0; 4];
+        }
+        let [left, top, right, bottom] = self.edges();
+        [left, top, right - left, bottom - top].map(|v| v as f32)
+    }
+
+    /// The edges of the [`area`](View::area): left, top, right, and bottom. At least one pixel
+    /// apart each way.
+    fn edges(&self) -> Area {
         let [w, h] = self.size;
         let [top, right, bottom, left]: [f64; 4] =
             std::array::from_fn(|i| f64::from(self.insets[i]) + self.guides.room[i]);
@@ -1297,7 +1388,7 @@ impl View {
         if room.iter().all(|&r| r <= 0.0) {
             return None;
         }
-        let area = self.area();
+        let area = self.edges();
         let [w, h] = self.size;
         Some([
             if room[3] > 0.0 { area[0] } else { 0.0 },
@@ -1337,7 +1428,7 @@ impl View {
             camera => camera,
         };
         let space = &self.scene.space;
-        Projected::new(space, &camera, self.size, self.area(), Projected::globe_of(space))
+        Projected::new(space, &camera, self.size, self.edges(), Projected::globe_of(space))
     }
 }
 

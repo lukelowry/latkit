@@ -673,6 +673,11 @@ Lengths are in CSS pixels, except comet lengths given in position units.
 **`dash`**`?: number` [¶](#theme-dash){.headerlink}
 : The dash period: one dash and one gap of equal length.
 
+{#theme-padding .member}
+**`padding`**`?: number | null` [¶](#theme-padding){.headerlink}
+: The space between the view's edge, inside its insets, and the guides beside it: titles, legends,
+  and a plot's axes. Defaults to 1.5 times the text size.
+
 {#theme-text .member}
 **`text`**`?:` [`TextTheme`](#texttheme) [¶](#theme-text){.headerlink}
 : How labels, axis ticks, and titles look.
@@ -799,15 +804,56 @@ Defaults for edges, and how parallel edges and arrowheads look.
 **`width`**`?: number` [¶](#edgetheme-width){.headerlink}
 : The edge width, in CSS pixels.
 
-{#edgetheme-bow .member}
-**`bow`**`?: number` [¶](#edgetheme-bow){.headerlink}
-: How far edges joining the same two vertices bow apart. Each lane bows out by this fraction of
-  the edge's length, measured at its middle. Parallel edges spread at most eight lanes wide, and
-  more lanes pack closer. Bows scale with the zoom. With 0 they run straight, one over another.
+{#edgetheme-parallel .member}
+**`parallel`**`?:` [`Parallel`](#parallel) `| null` [¶](#edgetheme-parallel){.headerlink}
+: How edges joining the same two vertices run side by side. `null` draws them over one another.
 
 {#edgetheme-arrow .member}
 **`arrow`**`?: number` [¶](#edgetheme-arrow){.headerlink}
 : How far an arrowhead extends beyond the edge's width. A head's length is this plus the width.
+
+(parallel)=
+
+### `Parallel`
+
+{.signature}
+`interface Parallel`
+
+How edges joining the same two vertices run side by side: each moved sideways from the path
+between its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.
+More than eight edges pack closer, within eight steps, and where neighbors would lie less than a
+pixel apart, only every second edge draws, or every fourth, and so on.
+
+{#parallel-gap .member}
+**`gap`**`?: number` [¶](#parallel-gap){.headerlink}
+: The space between neighboring edges, in CSS pixels. Defaults to 3.
+
+{#parallel-converge .member}
+**`converge`**`?:` [`Converge`](#converge) [¶](#parallel-converge){.headerlink}
+: How they come together at the vertices they join. Defaults to `squeeze`.
+
+(converge)=
+
+### `Converge`
+
+{.signature}
+`type Converge = 'squeeze' | 'fan' | 'straight'`
+
+How parallel edges come together at the vertices they join.
+
+{#converge-squeeze .member}
+**`'squeeze'`** [¶](#converge-squeeze){.headerlink}
+: They draw closer together where needed, so the family fits within the smaller of its two
+  vertices, and each edge stays one straight line.
+
+{#converge-fan .member}
+**`'fan'`** [¶](#converge-fan){.headerlink}
+: They keep their spacing and angle in to each vertex's center near their ends.
+
+{#converge-straight .member}
+**`'straight'`** [¶](#converge-straight){.headerlink}
+: They keep their spacing and run straight to each vertex, stopping at its outline, or beside it
+  where they pass it.
 
 (linetheme)=
 
@@ -2049,7 +2095,7 @@ View events and hits, dataset descriptions and values, and frame statistics.
 ### `ViewEvent`
 
 {.signature}
-`type ViewEvent = { type: 'click'; detail: { … } } | { type: 'open'; detail: { … } } | { type: 'menu'; detail: { … } } | { type: 'drag'; detail: { … } } | { type: 'connect'; detail: { … } } | { type: 'delete'; detail: { … } } | { type: 'hovered'; detail: { … } } | { type: 'selection'; detail: { … } } | { type: 'camera'; detail:` [`Camera`](#camera) `} | { type: 'at'; detail: number } | { type: 'waiting'; detail:` [`Waiting`](#waiting) `} | { type: 'failures'; detail:` [`Failure`](#failure)`[] } | { type: 'error'; detail:` [`Failure`](#failure) `}`
+`type ViewEvent = { type: 'click'; detail: { … } } | { type: 'open'; detail: { … } } | { type: 'menu'; detail: { … } } | { type: 'drag'; detail: { … } } | { type: 'connect'; detail: { … } } | { type: 'delete'; detail: { … } } | { type: 'hovered'; detail: { … } } | { type: 'selection'; detail: { … } } | { type: 'camera'; detail:` [`Camera`](#camera) `} | { type: 'at'; detail: number } | { type: 'area'; detail: [number, number, number, number] } | { type: 'waiting'; detail:` [`Waiting`](#waiting) `} | { type: 'failures'; detail:` [`Failure`](#failure)`[] } | { type: 'error'; detail:` [`Failure`](#failure) `}`
 
 Something that happened in a view, as [`view.on`](#view-on) reports it.
 
@@ -2185,6 +2231,11 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 **`'at'`**`: number` [¶](#viewevent-at){.headerlink}
 : The axis coordinate shown changed: [`view.at`](#view-at). A press on a plot whose input scrubs, as
   [`controls.gestures`](#controls-gestures) says, moved it.
+
+{#viewevent-area .member}
+**`'area'`**`: [number, number, number, number]` [¶](#viewevent-area){.headerlink}
+: Where marks draw changed: [`view.area`](#view-area), `[x, y, width, height]` in CSS pixels. The view's size,
+  its insets, or its guides changed it.
 
 {#viewevent-waiting .member}
 **`'waiting'`**`:` [`Waiting`](#waiting) [¶](#viewevent-waiting){.headerlink}

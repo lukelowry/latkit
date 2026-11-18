@@ -21,6 +21,11 @@ struct WordStep {
     layer: u32,
     value: u32,
     size: vec2u,
+    // The segments of each row a probe of a trace reaches: the first, and how many. Every
+    // instance when the count is 0.
+    reach: vec2u,
+    // Whole 16-byte rows, as a uniform block takes.
+    padding: vec2u,
 }
 
 // The pages one gather pass copies into a layer. Each is a source word, a destination word, and a
@@ -217,13 +222,17 @@ const EDGE_FLAGS: u32 = 6u;
 
 // Largest arc a geodesic segment spans, in degrees.
 const GEODESIC_STEP: f32 = 2.0;
-// Most segments a path between two ends uses, along a great circle or bowed into a lane.
+// Most segments a path between two ends uses: along a great circle, plus a fan at each end.
 const MAX_PIECES: u32 = 64u;
-// Fewest segments a path bowed into a lane uses.
-const BOW_PIECES: u32 = 16u;
-// Widest spread, in lanes, of a family of edges joining the same two vertices. Larger families pack
-// their lanes closer.
+// Widest spread, in steps, of a family of parallel edges: edges joining the same two vertices.
+// Larger families pack closer.
 const FAMILY_LANES: f32 = 8.0;
+// How parallel edges come together at their vertices: the theme's `edge.parallel.converge`.
+const CONVERGE_SQUEEZE: u32 = 0u;
+const CONVERGE_FAN: u32 = 1u;
+const CONVERGE_STRAIGHT: u32 = 2u;
+// The share of the smaller vertex, across its edges, that a squeezed family of parallel edges fills.
+const SQUEEZE_FILL: f32 = 0.8;
 
 // Line state words.
 const LINE_WORDS: u32 = 5u;
@@ -462,16 +471,15 @@ struct Frame {
     flow_width: f32,
     flow_unit: u32,
     flow_step: f32,
-    // How far a lane bows at its middle, as a fraction of its edge's length.
-    bow: f32,
+    // The space between neighboring parallel edges, in CSS pixels.
+    gap: f32,
     // Scale factor for a hovered vertex sized in CSS pixels.
     grow: f32,
     arrow: f32,
     halo: f32,
     zoom: f32,
-    // A flat plane plans lanes at the upper zoom of an octave, then draws their exact density.
-    // Zero means the projection needs an exact camera plan.
-    lane_scale: f32,
+    // How parallel edges come together at their vertices: a `CONVERGE_` code.
+    converge: u32,
     // The grid on a plane or the earth: its kind, how far its finer step has faded in (0 to 1),
     // and the width of a line in CSS pixels. `grid_step` holds the two steps its lines lie at, the
     // finer then the coarser, in position units. `grid_phase` holds the camera's center as a

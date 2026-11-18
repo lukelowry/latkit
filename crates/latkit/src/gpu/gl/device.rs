@@ -35,8 +35,12 @@ pub(super) struct State {
     scopes: RefCell<Vec<Option<Scope>>>,
     lost: RefCell<Option<BoxDeviceLostCallback>>,
     handler: RefCell<Option<Arc<dyn wgpu::UncapturedErrorHandler>>>,
+    /// Whether resources were made outside an error scope since errors were last read, and since
+    /// when.
     pending_errors: Cell<bool>,
-    checking_errors: Cell<bool>,
+    errors_since: Cell<Option<web_time::Instant>>,
+    /// Whether a fence waits to read errors (see [`Device::check_quiet`]).
+    checking: Cell<bool>,
     listener: RefCell<Option<LossListener>>,
     lost_reason: Cell<Option<wgpu::DeviceLostReason>>,
 }
@@ -58,6 +62,10 @@ pub(super) struct Device(pub(super) Rc<State>);
 
 /// `FIRST_VERTEX_CONVENTION_WEBGL` of `WEBGL_provoking_vertex`.
 const FIRST_VERTEX: u32 = 0x8E4D;
+
+/// The longest errors raised outside a scope wait for the GPU to be quiet before they are read, as
+/// under GPU-bound animation, which leaves no quiet moment.
+const ERRORS_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Device {
     pub(super) fn new(gl: Gl) -> Result<Self, JsValue> {
@@ -87,7 +95,8 @@ impl Device {
             lost: RefCell::default(),
             handler: RefCell::default(),
             pending_errors: Cell::new(false),
-            checking_errors: Cell::new(false),
+            errors_since: Cell::new(None),
+            checking: Cell::new(false),
             listener: RefCell::default(),
             lost_reason: Cell::new(None),
         });
@@ -154,6 +163,7 @@ impl Device {
         if !self.0.pending_errors.replace(false) {
             return;
         }
+        self.0.errors_since.set(None);
         loop {
             match self.0.gl.get_error() {
                 Gl::NO_ERROR | Gl::CONTEXT_LOST_WEBGL => break,
@@ -165,23 +175,43 @@ impl Device {
         }
     }
 
-    // Error queries synchronously cross the browser's GPU process. Coalesce unscoped work
-    // and wait for its fence before querying; scope boundaries still capture errors exactly.
-    // The fence follows the next task's submission, so the query never waits behind the frame
-    // that made these resources: its draws run only when it submits.
+    /// Notes a resource made outside an error scope. Its errors are read once the GPU is quiet
+    /// after it (see [`Device::check_quiet`]).
     pub(super) fn changed(&self) {
-        self.0.pending_errors.set(true);
-        if self.0.checking_errors.replace(true) {
+        if !self.0.pending_errors.replace(true) {
+            self.0.errors_since.set(Some(web_time::Instant::now()));
+        }
+        Self::check_later(&self.0);
+    }
+
+    /// Reads errors raised outside a scope now if the GPU is quiet, else later.
+    ///
+    /// Reading errors is a synchronous query: the browser's GPU process answers it only after
+    /// running every command issued before it, and while it builds shaders for a first draw it
+    /// answers nothing. Asked then, it blocks the page: for a frame's GPU work, or for up to
+    /// seconds on opening. So errors are read only while the GPU is quiet (see [`Waits::quiet`]),
+    /// which the poller sees between frames, and under GPU-bound animation, which leaves no quiet
+    /// moment, after at most [`ERRORS_WAIT`]. Readbacks need no such wait (see `Buffer::read`).
+    fn check_quiet(state: &Rc<State>) {
+        if !state.pending_errors.get() {
             return;
         }
-        let weak = Rc::downgrade(&self.0);
-        wasm_bindgen_futures::spawn_local(async move {
-            super::turn().await;
-            let Some(state) = weak.upgrade() else { return };
-            Waits::fence(&state, |state, _| {
-                Self(state.clone()).check_errors();
-                state.checking_errors.set(false);
-            });
+        let overdue = state.errors_since.get().is_some_and(|at| at.elapsed() >= ERRORS_WAIT);
+        if !state.waits.quiet() && !overdue {
+            Self::check_later(state);
+            return;
+        }
+        Self(state.clone()).check_errors();
+    }
+
+    /// Reads errors once the GPU finishes the work issued so far, if it is quiet then.
+    fn check_later(state: &Rc<State>) {
+        if state.checking.replace(true) {
+            return;
+        }
+        Waits::fence(state, |state, _| {
+            state.checking.set(false);
+            Self::check_quiet(state);
         });
     }
 

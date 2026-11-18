@@ -319,8 +319,8 @@ window need, and views on one GPU share them. The first bytes at `url` decide th
   [`Patch.frames()`](#patch-frames) patch of `chunk` entries of one level. `url` names `{level}` and
   `{index}`, and `{field}`, the field's index in `frames`, when several fields are listed. A span
   holds every row of its table, so choose `chunk` to keep a span near 1 MiB, and give a plot of a
-  few rows of a large table its own manifest of those rows. A server that records more frames
-  rewrites the manifest and the spans past the old end, then the app calls `refresh()`.
+  few rows of a large table its own manifest of those rows. While frames are recorded, a
+  [`TileWriter`](#tilewriter) writes the files as they arrive, then the app calls `refresh()`.
 - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
@@ -330,7 +330,9 @@ window need, and views on one GPU share them. The first bytes at `url` decide th
 A GPU keeps what it fetched and decoded while the `Tiles` object lives, so a view that stops
 drawing the tiles and starts again fetches nothing twice. Every `Tiles` on a GPU shares its
 [`budget.tiles`](#budget-tiles) bytes. Past them, the pieces no view draws are dropped, least recently drawn
-first.
+first. A file that fails to fetch draws nothing and is fetched again on its own: a second later,
+then twice as long after each further failure, at most a minute. Each view reports the failure
+once in an `error` event.
 
 ```{rubric} Constructor
 ```
@@ -362,8 +364,8 @@ first.
 : Fetches the index again, as when a running simulation records more frames, and redraws what
   changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
   earlier frames filled. They fetch the last span of each level again, which shows what it held
-  until the new one arrives, and every span that failed. A manifest that names another base,
-  `chunk`, or `url` starts over, as vector tiles always do.
+  until the new one arrives. Every file that failed is fetched again at once. A manifest that
+  names another base, `chunk`, or `url` starts over, as vector tiles always do.
 
 {#tiles-describe .member}
 **`describe`**`(wait?:` [`Wait`](#wait)`): Promise<`[`TilesDescription`](#tilesdescription)`>` [¶](#tiles-describe){.headerlink}
@@ -389,9 +391,58 @@ How [`Tiles`](#tiles) fetch their files.
 **`fetch`**`?: (url: string, range?: [start: number, end: number]) => Promise<`[`ByteSource`](#bytesource)`>` [¶](#tilesoptions-fetch){.headerlink}
 : Fetches a file in place of the browser, such as with credentials or from the app's own store:
   the index at `url`, the pieces at URLs resolved against it, and bytes `[start, end)` of an
-  archive. A 404 or 204 `Response` is a missing piece. latkit calls it after the frame that needs
-  the file, so it may change views and datasets. Tiles at one URL with different `fetch`
-  functions share nothing.
+  archive. A 404 or 204 `Response` is a missing piece. A rejection with an `AbortError`, as from
+  an aborted `fetch`, is no failure: the file is fetched again when next needed. latkit calls it
+  after the frame that needs the file, so it may change views and datasets. Tiles at one URL with
+  different `fetch` functions share nothing.
+
+(tilewriter)=
+
+### `TileWriter`
+
+{.signature}
+`class TileWriter extends` [`Handle`](#handle)
+
+Writes a history as time tiles while it is recorded: the files `latkit tile` writes for the same
+frames, which [`Tiles`](#tiles) draw. It holds only what is still to be written, each level's span and
+bucket in progress, so its memory stays the same however long the history grows. Levels of detail
+are built as appends to a [`Data`](#data) build them.
+
+```ts
+const writer = new TileWriter(new Data('grid').axis('time', 's').replace('Bus', ids));
+const files = new Map<string, Uint8Array>();
+const write = (path: string, bytes: Uint8Array) => void files.set(path, bytes);
+writer.apply(new Patch().append('Bus', at, { vm }), write);
+writer.flush(write); // then tiles.refresh()
+```
+
+```{rubric} Constructor
+```
+
+{#tilewriter-new .member}
+**`new TileWriter`**`(base:` [`Data`](#data) `|` [`Snapshot`](#snapshot)`, options?: { chunk?: number })` [¶](#tilewriter-new){.headerlink}
+: A writer of the frames appended to the tables of `base`, the dataset without its frames: at
+  least its axis and the tables' rows, as it is now.
+
+  {#tilewriter-new-chunk .member}
+  **`chunk`**`?: number` [¶](#tilewriter-new-chunk){.headerlink}
+  : The entries a span holds: frames, or buckets of frames at coarser levels. A multiple of 8
+    from 8 to 2^20. Defaults to 256, as `latkit tile` writes them.
+
+```{rubric} Methods
+```
+
+{#tilewriter-apply .member}
+**`apply`**`(patch:` [`Patch`](#patch) `| Uint8Array, write: (path: string, bytes: Uint8Array) => void): this` [¶](#tilewriter-apply){.headerlink}
+: Appends the frames of `patch`, calling `write` with the path and bytes of each span they fill.
+  Every change must append frames to every row of a table of the base, at coordinates that do not
+  decrease, or it throws an `invalid` error and changes nothing.
+
+{#tilewriter-flush .member}
+**`flush`**`(write: (path: string, bytes: Uint8Array) => void): void` [¶](#tilewriter-flush){.headerlink}
+: Calls `write` with the spans in progress as they stand, then the base and the `frames.json`
+  manifest, so [`Tiles`](#tiles) drawing the manifest find every frame appended so far. A span written
+  again as it grows replaces the one before.
 
 (source)=
 
@@ -1182,7 +1233,7 @@ categorical map gives one solid band per category.
 
 ## Views
 
-Views, which draw scenes on canvases, and the GPU they draw with.
+Views, which draw scenes on canvases, the playheads they follow, and the GPU they draw with.
 
 (view)=
 
@@ -1232,13 +1283,21 @@ const view = await View.create(canvas, {
 : Datasets the view draws besides those its scene uses. A source replaces a scene dataset with
   the same name. A mark whose table is written `[data, table]` draws the source named `data`. The
   view draws a [`Data`](#data) at its latest version from the frame after each change, a [`Snapshot`](#snapshot) as it
-  is, and [`Tiles`](#tiles) as the pieces it needs. A mark whose dataset no longer fits it draws nothing.
-  It is listed in `failures`, and the next frame emits an `error` event.
+  is, and [`Tiles`](#tiles) as the pieces it needs. `Tiles` the view does not draw yet load while it goes
+  on drawing the sources before, which all swap on one frame once each new `Tiles` can draw, as
+  a scene waits for its shaders. A mark whose dataset no longer fits it draws nothing. It is
+  listed in `failures`, and the next frame emits an `error` event.
 
 {#view-at .member}
 **`at`**`: number` [¶](#view-at){.headerlink}
 : The axis coordinate shown, such as a time. Marks read sampled fields at it, interpolating
-  between the frame at or before it and the next, unless an expression uses `step()`.
+  between the frame at or before it and the next, unless an expression uses `step()`. Setting it
+  on a view that follows a playhead moves the playhead.
+
+{#view-playhead .member}
+**`playhead`**`:` [`Playhead`](#playhead) `| null` [¶](#view-playhead){.headerlink}
+: The playhead the view follows, or `null`. The view shows the playhead's coordinate as its `at`
+  from the frame it moves in, and scrubbing the view moves the playhead.
 
 {#view-camera .member}
 **`camera`**`:` [`Camera`](#camera) [¶](#view-camera){.headerlink}
@@ -1257,6 +1316,12 @@ const view = await View.create(canvas, {
 **`insets`**`:` [`Insets`](#insets) [¶](#view-insets){.headerlink}
 : CSS pixels kept clear at the top, right, bottom, and left, such as where page panels cover the
   view. The camera centers and fits within the rest.
+
+{#view-area .member}
+`readonly` **`area`**`:` [`Area`](#area) [¶](#view-area){.headerlink}
+: Where marks draw: inside the insets and the room that titles, legends, and a plot's axes take.
+  Line up what the page shows over the data with it, such as a timeline under a plot. An `area`
+  event reports each change. All zero until the view first draws.
 
 {#view-orbit .member}
 **`orbit`**`: number` [¶](#view-orbit){.headerlink}
@@ -1304,7 +1369,7 @@ const view = await View.create(canvas, {
 ```
 
 {#view-create .member}
-`static` **`create`**`(canvas: HTMLCanvasElement | OffscreenCanvas | null, scene:` [`Scene`](#scene)`, options?: { region?:` [`Rect`](#rect)`; camera?: Partial<`[`Camera`](#camera)`>; sources?: readonly` [`Source`](#source)`[]; gpu?:` [`Gpu`](#gpu)`; pixelRatio?: number } &` [`Wait`](#wait)`): Promise<View>` [¶](#view-create){.headerlink}
+`static` **`create`**`(canvas: HTMLCanvasElement | OffscreenCanvas | null, scene:` [`Scene`](#scene)`, options?: { region?:` [`Rect`](#rect)`; camera?: Partial<`[`Camera`](#camera)`>; sources?: readonly` [`Source`](#source)`[]; playhead?:` [`Playhead`](#playhead)`; gpu?:` [`Gpu`](#gpu)`; pixelRatio?: number } &` [`Wait`](#wait)`): Promise<View>` [¶](#view-create){.headerlink}
 : Creates a view that draws `scene` on `canvas`, in `options.region`, over any views already
   there. The view loads every dataset its scene uses. Unless given a camera, it frames everything
   when it first draws. Creating the default GPU waits within `options`.
@@ -1324,6 +1389,10 @@ const view = await View.create(canvas, {
   {#view-create-sources .member}
   **`sources`**`?: readonly` [`Source`](#source)`[]` [¶](#view-create-sources){.headerlink}
   : Datasets to draw besides those the scene uses. See [`View.sources`](#view-sources).
+
+  {#view-create-playhead .member}
+  **`playhead`**`?:` [`Playhead`](#playhead) [¶](#view-create-playhead){.headerlink}
+  : The playhead the view follows. See [`View.playhead`](#view-playhead).
 
   {#view-create-gpu .member}
   **`gpu`**`?:` [`Gpu`](#gpu) [¶](#view-create-gpu){.headerlink}
@@ -1428,8 +1497,8 @@ A region `[x, y, width, height]` in fractions of a canvas or picture, from its t
 
 The events a view emits, mapping each type to its detail. Intents (`click`, `open`, `menu`,
 `drag`, `connect`, `delete`) are emitted once each, in the order the user acted. Changes
-(`hovered`, `selection`, `camera`, `at`, `waiting`, `failures`) are named after the property that
-changed and carry only its latest value. An `error` event says the view can't draw, and its
+(`hovered`, `selection`, `camera`, `at`, `area`, `waiting`, `failures`) are named after the
+property that changed and carry only its latest value. An `error` event says the view can't draw, and its
 detail is a [`LatkitError`](#latkiterror). Setters emit nothing, so events report only what the application
 did not do itself. Views share their selection, hover, and time through these events:
 
@@ -1450,6 +1519,15 @@ for (const [from, to] of [[map, monitor], [monitor, map]]) {
 
 CSS pixels kept clear at the top, right, bottom, and left.
 
+(area)=
+
+### `Area`
+
+{.signature}
+`type Area = [x: number, y: number, width: number, height: number]`
+
+A box in CSS pixels from the view's top left corner.
+
 (point)=
 
 ### `Point`
@@ -1468,6 +1546,85 @@ A point on screen, in CSS pixels from the view's top left corner.
 
 A position in the space's coordinates: x, y, and elevation. On the earth, x and y are longitude
 and latitude; on a plot, the axis coordinate and the value.
+
+(playhead)=
+
+### `Playhead`
+
+{.signature}
+`class Playhead extends` [`Handle`](#handle)
+
+A playhead views follow: the axis coordinate they show, such as a time, which moves on its own
+while it plays. Views that follow it show the same coordinate in the same frame, and the page
+runs nothing per frame to move them. Scrubbing a view that follows it moves it, and every other
+view that follows it.
+
+```ts
+const playhead = new Playhead({ span: [0, duration] });
+monitor.playhead = map.playhead = playhead;
+playhead.on('at', (at) => (scrubber.value = String(at)));
+playhead.play(); // one axis unit per second
+```
+
+```{rubric} Constructor
+```
+
+{#playhead-new .member}
+**`new Playhead`**`(options?: { at?: number; span?: readonly [number, number] | null; loop?: boolean })` [¶](#playhead-new){.headerlink}
+: A paused playhead, which plays forward at one axis unit per second once it plays.
+
+  {#playhead-new-at .member}
+  **`at`**`?: number` [¶](#playhead-new-at){.headerlink}
+  : The axis coordinate it starts at. Defaults to 0.
+
+  {#playhead-new-span .member}
+  **`span`**`?: readonly [number, number] | null` [¶](#playhead-new-span){.headerlink}
+  : The coordinates it stays between. Defaults to none.
+
+  {#playhead-new-loop .member}
+  **`loop`**`?: boolean` [¶](#playhead-new-loop){.headerlink}
+  : Whether it wraps to the other end of its span instead of stopping. Defaults to false.
+
+```{rubric} Properties
+```
+
+{#playhead-at .member}
+**`at`**`: number` [¶](#playhead-at){.headerlink}
+: The axis coordinate it is at. Setting it moves every view that follows it at once.
+
+{#playhead-rate .member}
+`readonly` **`rate`**`: number` [¶](#playhead-rate){.headerlink}
+: Axis units per second it moves while it plays, backward when negative.
+
+{#playhead-playing .member}
+`readonly` **`playing`**`: boolean` [¶](#playhead-playing){.headerlink}
+: Whether it plays.
+
+{#playhead-span .member}
+**`span`**`: readonly [number, number] | null` [¶](#playhead-span){.headerlink}
+: The coordinates it stays between, lowest first, or `null` to move anywhere.
+
+{#playhead-loop .member}
+**`loop`**`: boolean` [¶](#playhead-loop){.headerlink}
+: Whether it wraps to the other end of its span instead of stopping.
+
+```{rubric} Methods
+```
+
+{#playhead-play .member}
+**`play`**`(rate?: number): void` [¶](#playhead-play){.headerlink}
+: Plays at `rate` axis units per second from the next frame, backward when negative. At the end of
+  its span it stops, or wraps to the other end when it loops. A frame moves it at most a quarter
+  second's worth, so a page that stalls or is hidden resumes where it was.
+
+{#playhead-pause .member}
+**`pause`**`(): void` [¶](#playhead-pause){.headerlink}
+: Stops it where it is.
+
+{#playhead-on .member}
+**`on`**`(type: 'at', listener: (at: number) => void): () => void` [¶](#playhead-on){.headerlink}
+: Calls `listener` with the coordinate whenever it moves: at most once per frame while it plays,
+  and whenever it is set or scrubbed. Returns a function that stops it.
 
 (gpu)=
 

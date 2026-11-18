@@ -14,6 +14,7 @@ use std::task::Waker;
 use rustc_hash::FxHashMap;
 
 use super::index::Index;
+use super::retry::Retry;
 use super::tiling::Kept;
 use super::{Refreshes, Shared, Tiles, frames, vector};
 use crate::derive::Jobs;
@@ -30,7 +31,7 @@ pub(crate) struct Cache {
 /// One tile source: its open state, the sets drawing it, the tiles naming it, and the waker that
 /// wakes the sets as the source's work finishes. It fetches with the tiles' own fetch when they
 /// have one. `refreshed` is the refresh of the tiles it holds, and `refreshing` the index fetched
-/// again for a newer one.
+/// again for a newer one. `retry` is when it opens again after its index failed to fetch.
 pub(crate) struct Fetched {
     pub(crate) state: State,
     sets: Arc<Watchers>,
@@ -39,6 +40,7 @@ pub(crate) struct Fetched {
     fetch: Option<super::Fetch>,
     refreshed: u64,
     refreshing: Option<Pending<Vec<u8>>>,
+    retry: Option<Retry>,
 }
 
 /// A source's open state.
@@ -46,7 +48,7 @@ pub(crate) enum State {
     /// Its first bytes are being fetched. They determine what it holds.
     Opening(Pending<Vec<u8>>),
     Open(Holds),
-    /// It could not be opened, with the reason.
+    /// It could not be opened, with the reason. See [`Fetched`] for when it opens again.
     Failed(Error),
 }
 
@@ -81,9 +83,13 @@ impl Cache {
                 let fetch = tiles.fetch.clone();
                 let state = start(url, &jobs.waking(&waker).fetching(fetch.as_ref()));
                 let refreshed = tiles.refreshed();
-                entry.insert(Fetched { state, sets, named: Vec::new(), waker, fetch, refreshed, refreshing: None })
+                let named = Vec::new();
+                entry.insert(Fetched { state, sets, named, waker, fetch, refreshed, refreshing: None, retry: None })
             }
         };
+        if matches!(fetched.state, State::Failed(_)) && fetched.retry.is_some_and(Retry::due) {
+            fetched.state = start(url, &fetched.jobs(jobs));
+        }
         fetched.sets.watch(set, jobs.waker());
         if !fetched.named.iter().any(|named| std::ptr::eq(named.as_ptr(), Arc::as_ptr(&tiles.refreshes))) {
             fetched.named.push(Arc::downgrade(&tiles.refreshes));
@@ -205,9 +211,21 @@ impl Fetched {
         let Some(landed) = pending.take() else { return };
         let (waker, fetch) = (self.waker.clone(), self.fetch.clone());
         let jobs = jobs.waking(&waker).fetching(fetch.as_ref());
-        self.state = match landed.and_then(|bytes| opened(url, Index::read(url, &bytes)?, &bytes, &jobs)) {
-            Ok(holds) => State::Open(holds),
-            Err(error) => State::Failed(error),
+        // An index that failed to fetch is fetched again after its retry, and a cancelled one at
+        // once. One that can't be read waits for a refresh.
+        self.state = match landed {
+            Err(Error::Cancelled) => start(url, &jobs),
+            Err(error) => {
+                self.retry = Some(Retry::after(self.retry, &waker));
+                State::Failed(error)
+            }
+            Ok(bytes) => match Index::read(url, &bytes).and_then(|index| opened(url, index, &bytes, &jobs)) {
+                Ok(holds) => {
+                    self.retry = None;
+                    State::Open(holds)
+                }
+                Err(error) => State::Failed(error),
+            },
         };
     }
 }

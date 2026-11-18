@@ -707,6 +707,7 @@ const API = [
   'colormap',
   'gpu',
   'view',
+  'playhead',
   'canvas',
   'shot',
 ];
@@ -728,6 +729,7 @@ const sections = {
         'Snapshot',
         'Tiles',
         'TilesOptions',
+        'TileWriter',
         'Source',
         'Table',
         'TableInput',
@@ -774,8 +776,8 @@ const sections = {
     ],
     [
       'Views',
-      'Views, which draw scenes on canvases, and the GPU they draw with.',
-      ['View', 'Rect', 'ViewEvents', 'Insets', 'Point', 'Position', 'Gpu'],
+      'Views, which draw scenes on canvases, the playheads they follow, and the GPU they draw with.',
+      ['View', 'Rect', 'ViewEvents', 'Insets', 'Area', 'Point', 'Position', 'Playhead', 'Gpu'],
     ],
     [
       'Pictures and video',
@@ -822,6 +824,8 @@ const sections = {
         'TextTheme',
         'VertexTheme',
         'EdgeTheme',
+        'Parallel',
+        'Converge',
         'LineTheme',
         'AreaTheme',
         'FlowTheme',

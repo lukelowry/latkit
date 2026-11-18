@@ -33,6 +33,13 @@ impl Canvas {
         Ok(self.0.set_layout(layout(views, at)?)?)
     }
 
+    /// Moves the canvas to `gpu`, after its views, as when its device is lost. It keeps its element,
+    /// input, and last frame.
+    #[wasm_bindgen(js_name = moveTo)]
+    pub fn move_to(&self, gpu: &crate::gpu::Gpu) -> Result<(), Error> {
+        Ok(self.0.move_to(&gpu.0)?)
+    }
+
     /// The canvas's size in CSS pixels, `[width, height]`.
     #[wasm_bindgen(getter, js_name = cssSize)]
     pub fn css_size(&self) -> Vec<f32> {
