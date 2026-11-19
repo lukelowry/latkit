@@ -132,7 +132,9 @@ fn ci(job: &str) -> Result {
 }
 
 fn rust() -> Result {
-    let gpu = [("LATKIT_REQUIRE_GPU", "1")];
+    // Lavapipe, CI's Vulkan on the CPU, crashed with tests' devices working on several threads at
+    // once, so the tests run one at a time.
+    let gpu = [("LATKIT_REQUIRE_GPU", "1"), ("RUST_TEST_THREADS", "1")];
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"])?;
     // The npm package's browser build, which the native lint does not compile.
