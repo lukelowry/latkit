@@ -81,6 +81,8 @@ pub(super) struct Waits {
     resting: RefCell<Option<Waker>>,
     /// Fences made so far (see `Buffer::renew`).
     made: Cell<u64>,
+    /// The fence on the frame presented last, until the GPU finishes it (see [`Waits::behind`]).
+    shown: RefCell<Option<WebGlSync>>,
 }
 
 impl Waits {
@@ -149,12 +151,30 @@ impl Waits {
         }
     }
 
-    /// Fences the frame just blitted to the shared canvas, before the page copies it.
+    /// Fences the frame just blitted to the shared canvas, before the page copies it: once for the
+    /// waits after it, and once for [`Waits::behind`], which the fence for the waits flushes.
     pub(super) fn presented(state: &State) {
+        if let Some(stale) = state.waits.shown.replace(state.gl.fence_sync(Gl::SYNC_GPU_COMMANDS_COMPLETE, 0)) {
+            state.gl.delete_sync(Some(&stale));
+        }
         let fence = Self::make(state);
         if let Since::Presented(stale) = state.waits.since.replace(fence.map_or(Since::Work, Since::Presented)) {
             state.gl.delete_sync(Some(&stale));
         }
+    }
+
+    /// Whether the GPU has not yet finished the frame presented last. A read of results waits
+    /// behind every command issued before it, so a read waiting meanwhile holds the next frame
+    /// back (see `web::tick`). A lost context has finished.
+    pub(super) fn behind(state: &State) -> bool {
+        let mut shown = state.waits.shown.borrow_mut();
+        let Some(fence) = shown.as_ref() else { return false };
+        // Without the flush flag, Firefox does not promise a polled fence ever signals.
+        if state.gl.client_wait_sync_with_u32(fence, Gl::SYNC_FLUSH_COMMANDS_BIT, 0) == Gl::TIMEOUT_EXPIRED {
+            return true;
+        }
+        state.gl.delete_sync(shown.take().as_ref());
+        false
     }
 
     /// Fences the commands issued so far, and flushes them so the fence can signal.
@@ -174,6 +194,15 @@ impl Waits {
     pub(super) fn link(state: &Rc<State>, program: &Rc<Program>) {
         state.waits.linking.borrow_mut().push(Rc::downgrade(program));
         Self::poll(state);
+    }
+
+    /// Runs the waits of the fences that settled now, rather than at the poller's next look. A
+    /// frame does this before it gives the GPU more work, which a read would otherwise wait behind.
+    /// What waits for the GPU to catch up stays with the poller, which fences for it.
+    pub(super) fn settle(state: &Rc<State>) {
+        if !super::noticed_loss(state) {
+            state.waits.settle_fences(state);
+        }
     }
 
     /// Starts the poller unless it runs, and wakes it if it rests.

@@ -241,6 +241,17 @@ impl<T: Copy> Page<T> {
         self.first + u64::from(self.len())
     }
 
+    /// Whether `entry`'s `len` items would fit in place (see [`Page::extend`]).
+    fn takes(&self, entry: u64, len: usize, limit: usize) -> bool {
+        let at = entry.checked_sub(self.first).map_or(usize::MAX, |e| e as usize * self.per as usize);
+        entry == self.end()
+            && self.store.grows
+            && self.cap == u32::MAX
+            && len == self.per as usize
+            && at.saturating_add(len) <= limit
+            && self.read(<[T]>::len) == at
+    }
+
     /// Appends `entry`'s `items` in place, returning whether it did. Succeeds only if the page
     /// grows, this version reads all of it and nothing newer is stored past it, `entry` directly
     /// follows the last entry, and the page stays within `limit` items.
@@ -737,14 +748,25 @@ impl Samples {
         let mut logs = self.logs(blocks);
         let filling = self.filling.clone();
         let mut filling = filling.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut frame_values = vec![0.0_f32; rows];
+        // The values as `f32`, NaN where missing: as stored when they are, else converted at once.
+        let converted: Vec<f32>;
+        let floats = if let Some(floats) = values.floats() {
+            floats
+        } else {
+            converted = values.map_numbers(|value| value.map_or(f32::NAN, |x| x as f32));
+            &converted
+        };
         for (f, &t) in at.iter().enumerate() {
             let frame = self.end;
-            for (row, value) in frame_values.iter_mut().enumerate() {
-                let i = f * rows + row;
-                *value = if values.is_valid(i) { values.number(i) as f32 } else { f32::NAN };
-            }
+            let frame_values = &floats[f * rows..(f + 1) * rows];
             let block = |b: usize| frame_values.get(b * PAGE_ROWS..rows.min((b + 1) * PAGE_ROWS)).unwrap_or(&[]);
+            // Every row block opens its next page in the same frame: make room for them all at once.
+            let opens = |log: &Vec<Log<FramePage>>| {
+                !log[0].last().is_some_and(|p| p.takes(frame, block(0).len(), FRAME_PAGE_WORDS))
+            };
+            if blocks > 1 && logs.blocks.first().is_some_and(opens) {
+                crate::room::make_room(blocks * FRAME_PAGE_WORDS * size_of::<f32>());
+            }
             for (b, log) in logs.blocks.iter_mut().enumerate().take(blocks) {
                 grow(&mut log[0], frame, block(b), FRAME_PAGE_WORDS, OPENED);
             }
@@ -771,10 +793,10 @@ impl Samples {
         }
         let mut dense =
             Vec::with_capacity(at.len().checked_mul(total).ok_or_else(|| Error::invalid("too many values"))?);
+        let floats = values.map_numbers(|value| value.map_or(f32::NAN, |x| x as f32));
         for f in 0..at.len() {
             for (k, &row) in rows.iter().enumerate() {
-                let i = f * given + k;
-                frame[row] = if values.is_valid(i) { values.number(i) as f32 } else { f32::NAN };
+                frame[row] = floats[f * given + k];
             }
             dense.extend_from_slice(&frame);
         }

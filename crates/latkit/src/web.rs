@@ -21,6 +21,8 @@ use web_sys::{
     WheelEvent,
 };
 
+pub use crate::room::keep_room;
+
 use crate::gpu::FORMAT;
 use crate::panels::{self, Rect};
 use crate::shot::Views;
@@ -219,6 +221,18 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     for playhead in &playheads {
         playhead.play_to(now / 1000.0);
     }
+    // A read of the GPU's results waits behind every command given the GPU before it. So while
+    // one waits and the GPU has not finished the frame shown last, canvases draw nothing: the
+    // read then answers at once, rather than behind a frame given meanwhile, holding the page. A
+    // harness that steps frames waits for the GPU itself.
+    let reading = gpu.0.lock().readbacks.mapping() > 0;
+    if reading && !frames.borrow().stepped && crate::gpu::gl::behind(gpu.device()) {
+        for view in &views {
+            view.dispatch();
+        }
+        schedule(frames);
+        return;
+    }
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
     let shown: Vec<_> = canvases
         .iter()
@@ -245,6 +259,7 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     for canvas in &canvases {
         canvas.borrow_mut().show_cursor();
     }
+    crate::room::keep_room();
     let mapping = gpu.0.lock().readbacks.mapping() > 0;
     let again = mapping
         || !frames.borrow().listeners.is_empty()

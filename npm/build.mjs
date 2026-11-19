@@ -17,7 +17,7 @@ const output = path.join(root, 'target/npm');
  * page downloads. A build over either fails CI, and a release its package step, so growth is a
  * choice. */
 const BUDGET = {
-  'pkg/latkit_bg.wasm': { raw: 3_670_000, brotli: 1_200_000 },
+  'pkg/latkit_bg.wasm': { raw: 3_680_000, brotli: 1_200_000 },
   'pkg/latkit_jobs_bg.wasm': { raw: 648_000, brotli: 208_000 },
   'pkg/latkit_wgsl_bg.wasm': { raw: 1_320_000, brotli: 345_000 },
 };

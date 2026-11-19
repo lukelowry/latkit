@@ -38,7 +38,9 @@ impl Data {
 
     /// Applies the patch in `bytes`: every change, or none if any is invalid.
     pub fn apply(&self, bytes: &[u8]) -> Result<(), Error> {
-        Ok(self.0.apply(latkit::Patch::from_bytes(bytes)?)?)
+        let applied = self.0.apply(latkit::Patch::from_bytes(bytes)?);
+        latkit::web::keep_room();
+        Ok(applied?)
     }
 
     /// Writes number `columns`, named `names`, for rows `ids` of `table`, or for rows `0..count`
@@ -59,7 +61,9 @@ impl Data {
             rows = rows.field(name, convert::numbers(&column)?);
         }
         let patch = latkit::Patch::new();
-        Ok(self.0.apply(if replace { patch.replace(rows) } else { patch.set(rows) })?)
+        let applied = self.0.apply(if replace { patch.replace(rows) } else { patch.set(rows) });
+        latkit::web::keep_room();
+        Ok(applied?)
     }
 
     /// The current version, taken in O(1) and sharing every page.

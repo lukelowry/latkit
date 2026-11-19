@@ -50,6 +50,11 @@ fn noticed_loss(state: &std::rc::Rc<device::State>) -> bool {
     lost
 }
 
+/// Whether the GPU of `device`, latkit's WebGL2 device, has not finished the frame presented last.
+pub(crate) fn behind(device: &wgpu::Device) -> bool {
+    device.as_custom::<device::Device>().is_some_and(|device| waits::Waits::behind(&device.0))
+}
+
 pub(crate) fn take_read(buffer: &wgpu::Buffer, size: u64) -> Option<Vec<u8>> {
     buffer.as_custom::<resource::Buffer>()?.take_read(size)
 }

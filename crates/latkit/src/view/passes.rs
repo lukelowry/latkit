@@ -128,7 +128,7 @@ struct Marks<'a> {
     count: usize,
     /// Whether depth varies, so opaque pixels draw first.
     layered: bool,
-    /// Where each mark's records start in the screen store, for a stroke or point mark this frame
+    /// Where each mark's records start in the screen store, for a recorded stroke mark this frame
     /// draws, for its draws and for its lit draw (see [`View::place`]).
     firsts: &'a [Vec<Option<u32>>; 2],
 }
