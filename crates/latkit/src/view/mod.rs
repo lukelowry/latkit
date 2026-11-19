@@ -25,6 +25,7 @@ mod query;
 mod resources;
 mod rig;
 mod state;
+mod still;
 mod sync;
 mod timer;
 mod transition;
@@ -170,15 +171,8 @@ pub struct View {
     /// How far comets show, from 0 while the camera moves to 1 once it rests (see
     /// `View::comets_travel`).
     comets_shown: f64,
-    /// Whether this frame shows nothing new but comets moving, whether it draws marks' comets apart
-    /// from their rows, over the still, and whether the still holds what frames draw up to the
-    /// first mark's comets now. A frame where more changed draws whole, and leaves the still
-    /// behind. `comet_frames` counts frames where only comets moved, in a row up to this one and
-    /// in the run before (see `View::comets_travel`).
-    comets_only: bool,
-    comets_apart: bool,
-    still_drawn: bool,
-    comet_frames: [u32; 2],
+    /// What the still holds, and whether this frame starts from it (see `View::choose_still`).
+    still: still::Still,
     events: Events,
     /// The signal that finished work wakes, and a waker for it. Readbacks, jobs, and fetches keep
     /// clones of the waker.
@@ -222,6 +216,9 @@ pub struct View {
     queries: query::Queries,
     /// The number of words the marks' segment lists use at the start of the lists buffer.
     list_words: u32,
+    /// The height order sorting in the background, and its scratch (see `lists::Sort`).
+    sort: Option<lists::Sort>,
+    background: Option<crate::gpu::listing::Background>,
     labels: labels::Labels,
     gestures: Gestures,
     /// The pointer over the view: its point, pressed modifier keys, and device. `None` once it
@@ -312,10 +309,7 @@ impl View {
             comet_clock: 0.0,
             travel_written: 0.0,
             comets_shown: 1.0,
-            comets_only: false,
-            comets_apart: false,
-            still_drawn: false,
-            comet_frames: [0; 2],
+            still: still::Still::default(),
             events: Events::default(),
             waker: Waker::from(signal.clone()),
             compile_waker: signal.compilation(),
@@ -340,6 +334,8 @@ impl View {
             probing: Probing::default(),
             queries: query::Queries::default(),
             list_words: 0,
+            sort: None,
+            background: None,
             labels: labels::Labels::default(),
             gestures: Gestures::default(),
             pointer: None,
@@ -1265,22 +1261,6 @@ impl View {
         (comets || other) && !self.changes()
     }
 
-    /// Whether the only difference a new frame would show is comets moving along their lines, so it
-    /// may start from the still (see `still_until` and `View::comets_travel`).
-    pub(crate) fn comets_only(&self) -> bool {
-        let (comets, other) = self.own_motion();
-        comets && !other && !self.changes()
-    }
-
-    /// The first mark whose comets draw, while comets alone move: what frames draw up to its comets
-    /// is the still, which a frame that draws comets apart starts from (see `View::draw`).
-    pub(super) fn still_until(&self) -> Option<usize> {
-        match self.own_motion() {
-            (true, false) => self.marks.iter().position(|m| m.drawable() && m.instances() > 0 && m.mark.flows()),
-            _ => None,
-        }
-    }
-
     /// The motion the view makes on its own, once it draws and while motion is enabled: whether
     /// comets travel, and whether anything else moves: an orbit, or options or shades that read
     /// `elapsed()`. Under reduced motion, all of them hold still.
@@ -1328,8 +1308,9 @@ impl View {
             // A mark evaluates once its columns are synced. Until then, the pages they wait for
             // wake the view.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
-            // Heights that changed within `lists::RESORT` of the last sort sort in a later frame.
+            // Heights that changed sort in later frames, a few passes each.
             || self.marks.iter().any(|m| m.height_order.stale())
+            || self.sorting()
             || self.gpu.0.lock().arena.uploading()
             || self.room != frame::Room::Found
     }

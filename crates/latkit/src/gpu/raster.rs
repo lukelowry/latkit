@@ -686,7 +686,17 @@ pub(super) mod tests {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             let mut raster = Raster { device, queue, pipelines: &mut fixture.pipelines, encoder: &mut encoder };
             raster.fill(&input, At::new(&output, 0), room, 0xfedc_ba98);
-            order.record(&mut raster, (At::new(&input, 4), At::new(&output, 4)), n, n, bits);
+            let sides = (At::new(&input, 4), At::new(&output, 4));
+            if (n, bits) == (65_539, 20) {
+                // A pass at a time, a submission each, as a sort spread over frames runs.
+                let mut sorting = order.begin(&mut raster, n, n, bits);
+                while !order.advance(&mut raster, sides, &mut sorting, 1) {
+                    let next = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    queue.submit([std::mem::replace(&mut *raster.encoder, next).finish()]);
+                }
+            } else {
+                order.record(&mut raster, sides, n, n, bits);
+            }
             let read =
                 Readback::words(&fixture.readbacks, device, &mut encoder, &output, 0, room, std::task::Waker::noop());
             queue.submit([encoder.finish()]);

@@ -10,9 +10,9 @@
 //! Labels compete for screen space. When the camera, a labeled mark's places, or a run table
 //! changes, the claim pass writes each label's claim into the screen cells of its room: the cells
 //! its text covers, or inside a marker, the marker's. Until its text is set, a label claims the
-//! cells a short text would cover. Each cell keeps the claim of the row drawn on top. A label shows
-//! only if it kept every cell of its room, so labels never overlap, nor show over a marker drawn
-//! over their own. Only labels that keep their cells need texts, so however large the data, the
+//! cells a short text would cover. Each cell keeps the claim of the row drawn on top, and the guides
+//! in the corners claim their backdrops' cells last. A label shows only if it kept every cell of its
+//! room, so labels never overlap, nor show over a marker drawn over their own or under a guide. Only labels that keep their cells need texts, so however large the data, the
 //! texts in view are only as many as fit on the screen. The claims depend on that frame alone.
 //!
 //! The texts pass then finds the texts those labels need. Each label near the view whose text the
@@ -423,6 +423,7 @@ impl View {
             self.scene_version,
             &self.focus.hovered,
             frame.grow.to_bits(),
+            self.guides.backdrops().map(|area| area.map(f64::to_bits)).collect::<Vec<_>>(),
         ));
         let claim = self.labels.claimed != Some(stamp);
         let gather = self.labels.gathered.due(stamp) && !self.labels.gathered.busy() && !self.fitting.framing();
@@ -465,6 +466,18 @@ impl View {
                     resources.cells(),
                     rows,
                     index == 0,
+                );
+            }
+            // Then each corner's guides claim their backdrop's cells for no label.
+            let last = labeled.last().expect("a labeled mark").0;
+            for area in self.guides.backdrops() {
+                let cells = guide_cells(eye.size, area);
+                crate::gpu::texts::Texts::claim_box(
+                    &mut raster,
+                    &input(last),
+                    resources.labels(),
+                    resources.cells(),
+                    cells,
                 );
             }
             self.labels.claimed = Some(stamp);
@@ -542,4 +555,15 @@ impl View {
             drawn.draw(pass, 4, shown.rows.min(grid[0] * grid[1]) * per);
         }
     }
+}
+
+/// The first and last claim cells that `area` covers in a view `size` CSS pixels wide and tall,
+/// as `lib/label.wesl` measures a label's box.
+fn guide_cells(size: [f32; 2], area: super::camera::Area) -> [[u32; 2]; 2] {
+    let cell = |at: f64, axis: usize| {
+        let side = size[axis];
+        let cells = ((side + 2.0 * wgsl::LABEL_MARGIN * side) / wgsl::LABEL_CELL).ceil().max(1.0);
+        ((at as f32 + wgsl::LABEL_MARGIN * side) / wgsl::LABEL_CELL).floor().clamp(0.0, cells - 1.0) as u32
+    };
+    [[cell(area[0], 0), cell(area[1], 1)], [cell(area[2], 0), cell(area[3], 1)]]
 }

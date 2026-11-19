@@ -124,7 +124,7 @@
             "null"
           ],
           "format": "double",
-          "description": "Lights the earth by the sun's position this many seconds after the Unix epoch, plus the\nview's axis coordinate when it has one. The night side darkens the ground and everything on\nit, down to the theme's `earth.night` brightness. When unset, the earth is lit evenly."
+          "description": "Lights the earth by the sun's position this many seconds after the Unix epoch, plus the\nview's axis coordinate when it has one. The night side darkens the ground and everything on\nit, down to the theme's `earth.night` brightness. The sun moves in steps of 4 seconds, too\nsmall to see. When unset, the earth is lit evenly."
         },
         "atmosphere": {
           "type": "boolean",
@@ -1825,7 +1825,7 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible. A block, or a marker with a\nwidth and height, holds its label inside where the text fits, and otherwise the label shows\nbeside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or\ndarker as it needs, and its halo is that color.\n\nLabels never overlap. Where they would, the row drawn on top keeps its label (so `priority`\ndecides), and a dense view labels as many rows as fit. A label inside a marker takes the\nmarker's room, so where such markers overlap, only the top one's label shows. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible. A block, or a marker with a\nwidth and height, holds its label inside where the text fits, and otherwise the label shows\nbeside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or\ndarker as it needs, and its halo is that color.\n\nLabels never overlap. Where they would, the row drawn on top keeps its label (so `priority`\ndecides), and a dense view labels as many rows as fit. A label inside a marker takes the\nmarker's room, so where such markers overlap, only the top one's label shows. No label shows under\na title or legend in a corner. A row whose text is missing or empty has no label, so a `when`\nthat returns the field or missing labels only some rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
     },
     "Legend": {
       "anyOf": [

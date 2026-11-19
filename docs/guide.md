@@ -217,7 +217,8 @@ row as a net: a star from the center of the vertex rows whose `reference` names 
 
 `label` shows a text field beside each row, inside a block where the text fits, or along a stroke,
 when the row is visible. Labels never overlap. Where two would, the row drawn on top keeps its
-label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit.
+label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit,
+and no label shows under a title or legend in a corner.
 A row whose text is missing has no label, so a `when` that picks between the field and `null`
 labels only some rows, as in the scene above. A number label is written on the GPU each frame, so it
 can follow a sampled field: `label: { text: field('vm'), precision: 3, unit: ' pu' }`.

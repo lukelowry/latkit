@@ -180,6 +180,10 @@ pub(crate) struct Shown {
     /// moves no label.
     pub(crate) version: u64,
     pub(crate) place_version: u64,
+    /// A stamp of what it drew from last frame, and whether its focus words changed this frame (see
+    /// `View::choose_still`).
+    pub(crate) drawn: u64,
+    pub(crate) focused: bool,
     /// Revision of existing vertices' source positions, excluding proven append-only changes.
     pub(crate) shape: super::lists::Shape,
     /// The rows its focus draw lights.
@@ -245,6 +249,8 @@ impl Shown {
             lanes_at: 0,
             version: 0,
             place_version: 0,
+            drawn: 0,
+            focused: false,
             shape: super::lists::Shape::default(),
             lit: super::focus::Lit::default(),
             failures: Vec::new(),

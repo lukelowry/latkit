@@ -63,7 +63,8 @@ pub struct Earth {
     pub grid: Grid,
     /// Lights the earth by the sun's position this many seconds after the Unix epoch, plus the
     /// view's axis coordinate when it has one. The night side darkens the ground and everything on
-    /// it, down to the theme's `earth.night` brightness. When unset, the earth is lit evenly.
+    /// it, down to the theme's `earth.night` brightness. The sun moves in steps of 4 seconds, too
+    /// small to see. When unset, the earth is lit evenly.
     pub daylight: Option<f64>,
     /// Whether air glows around the globe, in the theme's `earth.atmosphere` color, brighter on the
     /// day side. Defaults to `false`.

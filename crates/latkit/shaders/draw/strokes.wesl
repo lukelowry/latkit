@@ -1,11 +1,11 @@
 // Strokes: one instanced quad per segment of every row's path, for edges and lines alike. A quad
-// covers the stroke, or its comets where they are wider, any arrowhead, and one pixel of
-// antialiased edge. Where a path runs on through a segment's end, its quad stops a pixel past the
-// line splitting that end with the next segment. The last segment of each part of a path draws the
-// arrowhead. In a frame that draws comets apart, a mark's comets draw after its rows with the same
-// quads, through the copy of its uniform for `DRAW_COMETS`, so they meet the depth its rows drew
-// exactly. The focus variant redraws the lit rows' segments over everything, comets included, with
-// quads enlarged for their glow. The shaded variants call an application's `shade` for each pixel.
+// covers the stroke, any arrowhead, and one pixel of antialiased edge. Where a path runs on through
+// a segment's end, its quad stops a pixel past the line splitting that end with the next segment.
+// The last segment of each part of a path draws the arrowhead. A mark's comets draw after its rows,
+// through the copy of its uniform for `DRAW_COMETS`, each segment's quad spanning only the comets on
+// it this frame, so comets cost the pixels they cover. A segment no comet reaches draws nothing.
+// The focus variant redraws the lit rows' segments over everything, comets included, with quads
+// enlarged for their glow. The shaded variants call an application's `shade` for each pixel.
 
 import package::lib::types::{ARROWS, PATH_TRACE, ALONG_UNITS, DRAW_OPAQUE, DRAW_COMETS};
 import package::lib::path::PATH;
@@ -20,7 +20,7 @@ import package::lib::marker::glow;
 import package::lib::shade::shade_fragment;
 import package::lib::focus::focus_of;
 import package::lib::mark::{coverage, fringe, px_per_length};
-import package::lib::stroke::{Stroke, gap, stroke_paint, painted, stroke_distance, owns, rims, COMET_RIM};
+import package::lib::stroke::{Stroke, gap, stroke_paint, painted, stroke_distance, owns, rims, comets_on, COMET_RIM};
 import package::lib::daylight::daylight;
 import package::lib::color::{output, OPAQUE};
 import package::lib::lists::list_total;
@@ -94,33 +94,18 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     // A segment shorter than half a pixel on screen, such as one between vertices at one place,
     // points nowhere, so it has no head.
     let arrow = (PATH != PATH_TRACE) & ((mark.flags & ARROWS) != 0u) & ends_part(s) & (length(b - a) >= 0.5);
-    let head = select(0.0, frame.arrow + width, arrow);
     let flows = PAINTED & (style.flow != 0.0) & (frame.flow.a > 0.0);
-    let comets = select(0.0, 0.5 * max(frame.flow_width, width) + COMET_RIM, flows);
-    // How far the stroke, its comets, and any glow reach from its middle. An arrowhead reaches
-    // further.
-    let across = max(0.5 * width, comets) + select(0.0, frame.glow, lit) + fringe();
-    let reach = across + head;
-    // Where the path runs on through an end, this segment shares that end's pixels with the next
-    // (see `Joints`), unless the turn there is too sharp for the two segments' lengths. Its quad then
-    // stops a pixel past the split line, except behind an arrowhead's segment, where the head's base
-    // can reach.
-    let joints = on.joints;
-    let shares = joints.through & (joints.turn * across <= joints.room);
-    let past = select(vec2f(reach), across * joints.turn + fringe(), shares & vec2<bool>(!arrow, true));
-    let t = f32(corner & 1u);
-    let side = f32(corner >> 1u) * 2.0 - 1.0;
-    let screen = mix(a - dir * past.x, b + dir * past.y, t) + normal * side * reach;
-    out.clip = nearer(to_clip(screen, select(ca, cb, t > 0.5)));
-    out.ends = vec4f(a, b);
-    // This corner's fraction along the whole segment, at the start or end of the drawn part.
-    let f = mix(on.kept.x, on.kept.y, t);
-    var color = style.color;
-    if style.blends {
-        color *= mix(ends.a.color, ends.b.color, f);
+    // The comets draw paints only comets, and the lit draw paints them with its rows. Rows paint none.
+    let comets_draw = !LIT_DRAW & (mark.draw == DRAW_COMETS);
+    if comets_draw & !flows {
+        out.clip = culled();
+        return out;
     }
-    let light = daylight(mix(path_position(ends.a).xy, path_position(ends.b).xy, f));
-    out.color = vec4f(color.rgb * light, color.a);
+    let comets = select(0.0, 0.5 * max(frame.flow_width, width) + COMET_RIM, flows & (lit | comets_draw));
+    // How far the stroke, its comets, and any glow reach from its middle. An arrowhead reaches
+    // further, but comets never cover one.
+    let across = select(max(0.5 * width, comets), comets, comets_draw) + select(0.0, frame.glow, lit) + fringe();
+    let reach = across + select(0.0, frame.arrow + width, arrow & !comets_draw);
     // A segment's distance along ends where its list says, so it starts its own length before (at 0
     // without a list), and its drawn part covers part of the path's segment it draws or runs
     // beside: in position units, `kept` of its length between its points, else in CSS pixels,
@@ -153,9 +138,53 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
             }
         }
     }
-    out.style = vec4f(width, phase, select(0.0, style.flow, PAINTED));
     // Comets move on from where their row's travel was last written, at its flow.
-    out.comet = vec4f(along, select(0.0, style.travel + style.flow * frame.flow_time, PAINTED), tip);
+    let travel = select(0.0, style.travel + style.flow * frame.flow_time, PAINTED);
+    // Where the path runs on through an end, this segment shares that end's pixels with the next
+    // (see `Joints`), unless the turn there is too sharp for the two segments' lengths. Its quad then
+    // stops a pixel past the split line, except behind an arrowhead's segment, where the head's base
+    // can reach. The comets draw's quad spans only the comets on the segment, as fractions of it: it
+    // reaches past an end as the rows' does only where a comet does.
+    let joints = on.joints;
+    let shares = joints.through & (joints.turn * across <= joints.room);
+    let past = select(vec2f(reach), across * joints.turn + fringe(), shares & vec2<bool>(arrow & !comets_draw, true));
+    var span = vec2f(0.0, 1.0);
+    if comets_draw {
+        let units = (mark.flags & ALONG_UNITS) != 0u;
+        let c = select(phase, along, units);
+        let px = select(1.0, length(b - a) / max(abs(c.y - c.x), 1e-12), units);
+        let on_it = comets_on(c, px, travel, style.flow, comets + fringe());
+        if on_it.z == 0.0 {
+            out.clip = culled();
+            return out;
+        }
+        span = on_it.xy;
+    }
+    let t = f32(corner & 1u);
+    let side = f32(corner >> 1u) * 2.0 - 1.0;
+    let start = a - dir * past.x;
+    let end_a = select(mix(a, b, span.x), start, span.x <= 0.0);
+    let end_b = select(mix(a, b, span.y), b + dir * past.y, span.y >= 1.0);
+    let line = mix(end_a, end_b, t);
+    let screen = line + normal * side * reach;
+    // A comets quad takes the depth the rows' quad has where its corner lies, so comets meet their
+    // own line's depth, and stand a hair in front of it against rounding.
+    let u = dot(line - start, dir) / max(length(b - a) + past.x + past.y, 1e-6);
+    let w = mix(ca.w, cb.w, u);
+    let depth = mix(ca.z / ca.w, cb.z / cb.w, u) * w;
+    let at = select(select(ca, cb, t > 0.5), vec4f(0.0, 0.0, min(depth * 1.0005, w), w), comets_draw);
+    out.clip = nearer(to_clip(screen, at));
+    out.ends = vec4f(a, b);
+    // This corner's fraction along the whole segment, at the start or end of the drawn part.
+    let f = mix(on.kept.x, on.kept.y, mix(span.x, span.y, t));
+    var color = style.color;
+    if style.blends {
+        color *= mix(ends.a.color, ends.b.color, f);
+    }
+    let light = daylight(mix(path_position(ends.a).xy, path_position(ends.b).xy, f));
+    out.color = vec4f(color.rgb * light, color.a);
+    out.style = vec4f(width, phase, select(0.0, style.flow, PAINTED));
+    out.comet = vec4f(along, travel, tip);
     out.split = joints.split;
     let rim = flows & rims(color.rgb);
     out.bits.x = u32(arrow) | (u32(PAINTED & style.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u)
@@ -190,9 +219,9 @@ fn segment_of(v: Varyings) -> Stroke {
 // line covers fully, outside dash gaps, keeping their depth, through the copy of its uniform for
 // `DRAW_OPAQUE`, then every pixel. Antialiased edges, lines too thin to cover a pixel, and
 // translucent rows (dimmed by a selection, fading, or of a translucent color) draw in the second
-// pass, over the opaque pixels. Rows paint their comets with their lines, except in a frame that
-// draws them apart, after the rows, through the copy for `DRAW_COMETS`: on their own lines' depth,
-// and wherever nothing nearer was drawn. The lit draw paints rows and comets at once.
+// pass, over the opaque pixels. Comets draw after the rows, through the copy for `DRAW_COMETS`: on
+// their own lines' depth, and wherever nothing nearer was drawn. The lit draw paints rows and
+// comets at once.
 fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
     let s = segment_of(v);
     let p = pixel(v);
@@ -204,9 +233,8 @@ fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
     // The opaque test, color, and focus glow all use this same distance. Evaluating it once
     // avoids repeating the segment projection and arrowhead geometry for each covered pixel.
     let d = stroke_distance(p, s);
-    // Rows paint their own comets, unless the frame draws them apart (see `comets_apart`).
     let comets = !LIT_DRAW & (mark.draw == DRAW_COMETS);
-    let color = stroke_paint(d, s, !comets, LIT_DRAW | comets | (frame.comets_apart == 0u));
+    let color = stroke_paint(d, s, !comets, LIT_DRAW | comets);
     if comets & (color.a <= 0.0) {
         discard;
     }

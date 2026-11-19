@@ -154,9 +154,31 @@ fn comet(d: vec3f, s: Stroke) -> vec2f {
     return fade * fade * clear * vec2f(head, select(0.0, rim, s.rim & cap));
 }
 
+// Which part of a segment comets cover this frame, as fractions of it from `a` to `b` (x and y), and
+// whether any does (z), as `comet` draws them. The segment runs from `c.x` to `c.y` along its path,
+// in the comet unit, at `px` CSS pixels a unit. Comet heads stand `flow_spacing` apart from where a
+// row's comets have traveled, `travel`, each with a tail `flow_length` behind it, in the direction
+// `flow` runs, and a head reaching `front` CSS pixels ahead. Neither reaches past half the spacing.
+fn comets_on(c: vec2f, px: f32, travel: f32, flow: f32, front: f32) -> vec3f {
+    let spacing = max(frame.flow_spacing, 1e-6);
+    let tail = min(frame.flow_length, 0.5 * spacing);
+    let ahead = min(front / max(px, 1e-12), 0.5 * spacing);
+    // How far a comet reaches below its head along the path, and above it.
+    let below = select(ahead, tail, flow > 0.0);
+    let above = select(tail, ahead, flow > 0.0);
+    let low = min(c.x, c.y);
+    let high = max(c.x, c.y);
+    let first = ceil((low - above - travel) / spacing);
+    let last = floor((high + below - travel) / spacing);
+    let covered = vec2f(max(low, travel + first * spacing - below), min(high, travel + last * spacing + above));
+    let length = c.y - c.x;
+    let t = (covered - c.x) / select(length, 1e-12, abs(length) < 1e-12);
+    return vec3f(min(t.x, t.y), max(t.x, t.y), select(0.0, 1.0, first <= last));
+}
+
 // Premultiplied color of stroke `s` at the pixel at `d`: its line, where `line` says, then any rim
-// over it in the background color, and the comets over both, where `comets` says. Rows paint both,
-// except in a frame that draws comets apart, in a draw of their own.
+// over it in the background color, and the comets over both, where `comets` says. Rows paint the
+// line, and the comets draw the comets. The lit draw paints both.
 fn stroke_paint(d: vec3f, s: Stroke, line: bool, comets: bool) -> vec4f {
     var paint = select(vec4f(0.0), vec4f(s.color.rgb, 1.0) * (s.color.a * covered(d, s)), line);
     if !comets || s.flow == 0.0 || frame.flow.a <= 0.0 {

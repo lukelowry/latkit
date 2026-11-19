@@ -149,8 +149,7 @@ impl View {
         let probe = self.probe_point(answers);
         let query = self.lay_out_lists(answers, self.sorted());
         let projected = self.projected();
-        let srgb = frame.format.is_srgb();
-        let mut uniform = uniforms::frame(&self.scene, &projected, srgb, elapsed, self.at);
+        let mut uniform = uniforms::frame(&self.scene, &projected, frame.format.is_srgb(), elapsed, self.at);
         let catch_up = self.comets_travel(&mut uniform, step, input);
         if self.signal.transparent() {
             uniform.background[3] = 0.0;
@@ -167,8 +166,10 @@ impl View {
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
-        self.write_uniforms(&uniform, &eye, &sprites);
-        if let Some(readback) = self.prepare_rows(encoder, &mut inner, measure.is_some(), catch_up, input) {
+        let (work, marks) =
+            self.choose_still([measure.is_some(), catch_up, input], &uniform, &eye, &sprites[..under as usize]);
+        self.write_uniforms(&uniform, &eye, &sprites, &marks);
+        if let Some(readback) = self.prepare_rows(encoder, &mut inner, work) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);
@@ -213,24 +214,19 @@ impl View {
         self.tell_raised();
     }
 
-    /// Takes what landed since the last frame, once it has decided whether this frame shows nothing
-    /// new but comets moving. A scene set since swaps in once the pipelines its frames draw with
-    /// have landed, and draws whole. Returns whether work landed.
+    /// Takes what landed since the last frame. A scene set since swaps in once the pipelines its
+    /// frames draw with have landed. Returns whether work landed.
     fn take_landed(&mut self) -> bool {
-        let comets_only = self.comets_only();
-        let version = self.scene_version;
         let landed = self.signal.take();
         self.swap_when_ready(true);
-        self.comets_only = comets_only && version == self.scene_version;
         landed
     }
 
     /// Moves comets on by `step` seconds, and gives shaders in `uniform` how long they have traveled
     /// since their rows' travel was written: comets stand at that travel plus their flow times that
-    /// time, so frames move them with no pass over their rows. Also says whether this frame draws
-    /// them apart from their rows (see `View::draw`). Returns whether this frame writes the travel
-    /// first, which the travel pass does at the flows the rows still hold: before anything rewrites
-    /// the rows comets ride, and every [`REWRITE`] seconds.
+    /// time, so frames move them with no pass over their rows. Returns whether this frame writes the
+    /// travel first, which the travel pass does at the flows the rows still hold: before anything
+    /// rewrites the rows comets ride, and every [`REWRITE`] seconds.
     ///
     /// In a frame the user steers (`input`), comets rest while the camera moves by anything but an
     /// orbit: they fade out over [`FADE`] seconds as they slow to a stop, and once the camera has
@@ -250,19 +246,6 @@ impl View {
             self.travel_written = self.comet_clock;
         }
         (uniform.flow_step, uniform.flow_time) = if catch_up { (since as f32, 0.0) } else { (0.0, since as f32) };
-        // Drawing comets apart costs a frame that draws the still first, which only frames where
-        // only comets moved repay, one after another. So a lone such frame between changes, as
-        // a feed at half the display's rate makes, draws whole. A run of them draws apart from its
-        // second frame, or from its first when the run before had more than one.
-        let alone = self.comets_only && !self.unplaced() && self.still_until().is_some();
-        let [run, before] = &mut self.comet_frames;
-        if alone {
-            *run += 1;
-        } else if *run > 0 {
-            (*before, *run) = (*run, 0);
-        }
-        self.comets_apart = alone && (*run > 1 || *before > 1);
-        uniform.comets_apart = u32::from(self.comets_apart);
         catch_up
     }
 
@@ -560,16 +543,14 @@ impl View {
     }
 
     /// Writes the frame's uniform, its eye, every mark's uniform, and the overlay's sprites.
-    fn write_uniforms(&mut self, frame: &wgsl::Frame, eye: &wgsl::Eye, sprites: &[wgsl::Sprite]) {
+    fn write_uniforms(&mut self, frame: &wgsl::Frame, eye: &wgsl::Eye, sprites: &[wgsl::Sprite], marks: &[u8]) {
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        self.reveal();
-        let marks = self.mark_uniforms();
         let resources = self.resources.as_mut().expect("created");
         queue.write_buffer(&resources.frame, 0, bytemuck::bytes_of(frame));
         queue.write_buffer(resources.eye(), 0, bytemuck::bytes_of(eye));
         if !marks.is_empty() {
-            queue.write_buffer(resources.marks(), 0, &marks);
+            queue.write_buffer(resources.marks(), 0, marks);
         }
         resources.fit_sprites(device, sprites.len());
         if !sprites.is_empty() {

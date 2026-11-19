@@ -15,9 +15,9 @@ use crate::{Expr, Format};
 ///
 /// Labels never overlap. Where they would, the row drawn on top keeps its label (so `priority`
 /// decides), and a dense view labels as many rows as fit. A label inside a marker takes the
-/// marker's room, so where such markers overlap, only the top one's label shows. A row whose text
-/// is missing or empty has no label, so a `when` that returns the field or missing labels only
-/// some rows.
+/// marker's room, so where such markers overlap, only the top one's label shows. No label shows under
+/// a title or legend in a corner. A row whose text is missing or empty has no label, so a `when`
+/// that returns the field or missing labels only some rows.
 ///
 /// ```
 /// # use latkit::{field, when, zoom, Expr, Label, Vertices};

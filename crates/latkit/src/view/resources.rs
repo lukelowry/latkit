@@ -31,8 +31,8 @@ pub(crate) struct Groups {
 }
 
 /// The textures a frame draws into, with their views: multisampled color (resolved into the
-/// target) when it multisamples, and depth. While comets move, the still: what frames draw before
-/// the first mark's comets, at one sample a pixel (see `View::still_until`).
+/// target) when it multisamples, and depth. While frames start from it, the still: what they draw
+/// up to a cut in the marks, at one sample a pixel (see `View::choose_still`).
 struct Targets {
     color: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth: (wgpu::Texture, wgpu::TextureView),

@@ -187,6 +187,7 @@ impl View {
                     .collect();
                 if fresh || !pages.is_empty() {
                     shown.dirty_rows(shown.channels_reading(Deps::FOCUS), (!fresh).then_some(&pages[..]));
+                    shown.focused = true;
                 }
             }
         }

@@ -946,6 +946,11 @@ impl Tables {
         self.frozen.as_ref().map(|_| self.current.len() as u32)
     }
 
+    /// How many times tables were swapped in, or rewritten in place.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Publication that last replaced `column`, or 0 when the column is absent.
     pub(crate) fn column_generation(&self, column: u32) -> u64 {
         self.current.get(column as usize).map_or(0, |t| t.generation)

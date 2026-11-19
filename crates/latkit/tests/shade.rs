@@ -1,7 +1,7 @@
 //! A shade colors each pixel of a mark before it blends, on vertices, edges, and areas alike, and
 //! on a custom marker's pixels too. It reads the mark's color, where the pixel is, its row's inputs,
-//! the time, and the pointer. A shade that reads the time draws every frame, and one that reads the
-//! pointer draws as it moves. A shade that does not compile is its mark's failure, and the mark
+//! the time, and the pointer. A shade that reads the time draws every frame, over a still of the
+//! marks before it, and one that reads the pointer draws as it moves. A shade that does not compile is its mark's failure, and the mark
 //! draws nothing.
 
 #![cfg(feature = "gpu")]
@@ -123,7 +123,11 @@ fn a_shade_reading_the_time_draws_every_frame() {
     let data = data();
     let pulse = Shade::new("fn shade(f: ShadeFragment) -> vec4f { return vec4f(fract(f.elapsed), 0.0, 0.0, 1.0); }");
     let vertices = Vertices::of("d", "Node").position(field("x"), field("y")).radius(10.0);
-    let mut view = view(&gpu, Scene::new(plane()).draw(vertices.clone().shade(pulse)), &data);
+    let scene = Scene::new(plane())
+        .draw(Areas::of("d", "Zone").color(RED))
+        .draw(Edges::of("d", "Link").ends("from", "to").width(6.0).color(RED))
+        .draw(vertices.clone().shade(pulse));
+    let mut view = view(&gpu, scene, &data);
     let before = step(&gpu, &mut view);
     let mut after = before.clone();
     for _ in 0..8 {
@@ -132,6 +136,9 @@ fn a_shade_reading_the_time_draws_every_frame() {
     assert!(view.needs_render(), "it keeps drawing");
     let [a, b] = [at(&before, C - 50, C)[0], at(&after, C - 50, C)[0]];
     assert_ne!(a, b, "in the time's color");
+    // The marks before it are unchanged, so each frame starts from a still that holds them.
+    assert_eq!(view.stats().draws, 3, "the backdrop's depth, the still, and the vertices");
+    assert!(red(at(&after, C, C + 45)) && red(at(&after, C, C)), "the area and the edge show from the still");
 
     let mut still = view_of(&gpu, vertices.shade(Shade::new(SWAP)), &data);
     frame(&gpu, &mut still);

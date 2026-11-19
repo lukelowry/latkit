@@ -1,5 +1,5 @@
-// The still: what a view draws before its first mark's comets, as the last frame that drew it left
-// it. A frame that draws comets apart starts from it, and draws only the comets and what follows.
+// The still: what a view draws up to a cut in its marks, as the frame that drew it left it. A frame
+// that starts from it draws only what follows the cut (see `view/still.rs`).
 
 import package::lib::words::fullscreen;
 

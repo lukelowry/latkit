@@ -1,8 +1,9 @@
 //! Labels show beside their rows once the host rasterizes their text, or inside a sized shape where
-//! they fit, in a color that reads on it. Where labels would overlap, the label of the row drawn on top shows. An empty text gives no
-//! label. Only labels that show near the view have their text rasterized, so a dense view settles.
-//! A conditional text labels only the rows it names, a number label writes its value, and a label
-//! keeps showing while its mark gains texts.
+//! they fit, in a color that reads on it. Where labels would overlap, the label of the row drawn on
+//! top shows, and none shows under a legend in a corner. An empty text gives no label. Only labels
+//! that show near the view have their text rasterized, so a dense view settles. A conditional text
+//! labels only the rows it names, a number label writes its value, and a label keeps showing while
+//! its mark gains texts.
 
 #![cfg(feature = "gpu")]
 
@@ -14,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::{SETTLE, SIZE, at, camera, errors, frame, gpu, haloless, plain_theme, plane, step};
 use latkit::Ids;
 use latkit::host::{Host, Raster, TextRun};
-use latkit::{Color, Data, Edges, Expr, Label, Patch, Scene, Table, Vertices, View, field, when};
+use latkit::{Color, Data, Edges, Expr, Label, Legend, Patch, Scene, Table, Vertices, View, field, when};
 
 /// A host that rasterizes text as a solid box, 0.6 × size wide per character and `size` tall.
 struct Boxes;
@@ -312,6 +313,32 @@ fn where_labels_would_overlap_the_row_drawn_on_top_shows_its_label() {
     assert!(first[0] > 200 && first[2] < 60, "the first label: {first:?}");
     let after = at(&pixels, c + 44, c);
     assert!(after[2] < 60, "no second label past the first: {after:?}");
+}
+
+#[test]
+fn no_label_shows_under_a_legend_in_a_corner() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    // One row low on the right, where a legend in the bottom-right corner covers it.
+    let data = Data::new("d");
+    let row = Table::new("V", Ids::count(1)).field("x", vec![20.0]).field("y", vec![-40.0]).field("v", vec![0.5]);
+    data.apply(row.field("name", vec!["abcdef"])).expect("valid");
+    let pixels = |legend: bool, labeled: bool| {
+        let color = field("v").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
+        let mut mark = Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).color(color);
+        if legend {
+            mark = mark.legend(Legend::new("v"));
+        }
+        if labeled {
+            mark = mark.label(Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0)));
+        }
+        let mut view = View::new(&gpu, Scene::new(plane()).theme(haloless()).draw(mark));
+        view.set_camera(camera());
+        view.set_sources([&data]).expect("a source");
+        frame(&gpu, &mut view)
+    };
+    assert!(pixels(false, true) != pixels(false, false), "without a legend, the label shows");
+    assert!(pixels(true, true) == pixels(true, false), "under the legend, it shows nowhere");
 }
 
 #[test]
