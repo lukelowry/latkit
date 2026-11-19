@@ -331,8 +331,9 @@ A GPU keeps what it fetched and decoded while the `Tiles` object lives, so a vie
 drawing the tiles and starts again fetches nothing twice. Every `Tiles` on a GPU shares its
 [`budget.tiles`](#budget-tiles) bytes. Past them, the pieces no view draws are dropped, least recently drawn
 first. A file that fails to fetch draws nothing and is fetched again on its own: a second later,
-then twice as long after each further failure, at most a minute. Each view reports the failure
-once in an `error` event.
+then twice as long after each further failure, at most a minute. Each view drawing the tiles
+lists the failure in its `failures` until the file arrives, so a `failures` event tells both
+when it fails and when it recovers.
 
 ```{rubric} Constructor
 ```
@@ -365,7 +366,9 @@ once in an `error` event.
   changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
   earlier frames filled. They fetch the last span of each level again, which shows what it held
   until the new one arrives. Every file that failed is fetched again at once. A manifest that
-  names another base, `chunk`, or `url` starts over, as vector tiles always do.
+  names another base, `chunk`, or `url` starts over, as vector tiles always do. Refresh as often
+  as the data changes: a file being fetched lands first, then is fetched once more however often
+  the tiles were refreshed meanwhile.
 
 {#tiles-describe .member}
 **`describe`**`(wait?:` [`Wait`](#wait)`): Promise<`[`TilesDescription`](#tilesdescription)`>` [¶](#tiles-describe){.headerlink}
@@ -1356,8 +1359,10 @@ const view = await View.create(canvas, {
 `readonly` **`failures`**`: readonly` [`LatkitError`](#latkiterror)`[]` [¶](#view-failures){.headerlink}
 : An error for each option that draws as if unset, and each mark that draws nothing: the scene's
   JSON can't be read there, the scene can't use it, or the data doesn't fit it, such as a missing
-  field or table. Each error's `path` names the option, such as `marks[2].color`. The `failures`
-  event reports changes, and a picture of the view draws the same.
+  field or table. Each error's `path` names the option, such as `marks[2].color`. Then an error
+  for each [`Tiles`](#tiles) source drawn that could not be fetched, or whose piece the view wants
+  could not be, until the fetch succeeds. The `failures` event reports changes, and a picture of
+  the view draws the same.
 
 {#view-stats .member}
 `readonly` **`stats`**`:` [`Stats`](#stats) [¶](#view-stats){.headerlink}
