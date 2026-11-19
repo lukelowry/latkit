@@ -2,7 +2,7 @@
 'latkit': minor
 ---
 
-Frames place each line segment and point once, the page no longer waits on the GPU, and thin lines stay solid.
+Frames place each line segment and point once, a hover draws only the rows it lights, and thin lines stay solid.
 
 - Changed: each frame works out where every segment and point it draws lies on screen once, before drawing. The opaque, rows, comets, and lit draws of a mark all read that, rather than each corner of each draw working it out again. Large maps take about a quarter less GPU time a frame.
 - Changed: hovering a row no longer draws every mark again. The frame starts from the kept image of the marks, and only the hovered row and the rows it lights draw over it. On a grid of 900,000 lines and buses on an integrated GPU, a hover takes one frame of about 3 ms of GPU time, rather than frames of 36 ms and 18 ms.
