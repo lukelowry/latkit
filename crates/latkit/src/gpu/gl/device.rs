@@ -505,10 +505,7 @@ impl DeviceInterface for Device {
     }
     unsafe fn start_graphics_debugger_capture(&self) {}
     unsafe fn stop_graphics_debugger_capture(&self) {}
-    /// Runs the waits whose fences settled (see [`Waits::settle`]). It never blocks: a browser
-    /// signals fences between its own tasks.
     fn poll(&self, _poll_type: wgpu_types::PollType<u64>) -> Result<wgpu::PollStatus, wgpu::PollError> {
-        Waits::settle(&self.0);
         Ok(wgpu::PollStatus::QueueEmpty)
     }
     fn get_internal_counters(&self) -> wgpu::InternalCounters {

@@ -112,8 +112,7 @@ impl View {
         if let Some(timer) = &mut self.timer {
             timer.begin(encoder);
         }
-        // Runs the callbacks of finished readbacks, before this frame gives the GPU work that a
-        // browser's read would wait behind.
+        // Runs the callbacks of finished readbacks. A no-op in browsers, which run them themselves.
         let _ = device.poll(wgpu::PollType::Poll);
         // The guides take their room before fits frame what they leave.
         let mut inner = gpu.0.lock();
