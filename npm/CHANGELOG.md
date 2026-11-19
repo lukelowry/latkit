@@ -1,5 +1,68 @@
 # latkit
 
+## 0.12.0
+
+### Minor Changes
+
+- f397d72: Comets keep their spacing on screen, cost little while only they move, rest while the camera moves, and keep clear of arrowheads.
+
+  - Fixed: comets and dashes in CSS pixels bunched on fanned edges and spread out on north–south edges away from the equator. They keep the theme's spacing on screen along every path, through fans, on a flat map, a tilted one, and the globe.
+  - Fixed: comets covered the arrowheads of short or bent edges. They fade out before the head, and a stub too short for one carries none.
+  - Changed: comets move without a pass over their rows each frame.
+  - Changed: comets draw on their own, after their strokes, and only around each comet, so their cost follows the comets on screen rather than the length of the strokes they ride.
+  - Changed: while the camera moves by a gesture, a flight, a fit, or a camera set from code, comets fade out and hold still, and they fade back in once it rests for 0.15 s. Orbits, pictures, videos, and reduced motion keep them moving.
+  - Changed: a comet with less than 3:1 contrast to its stroke takes a 1-pixel rim of the background color.
+  - Added: `controls.fps` (Rust: `Controls::fps`), the most frames a second a canvas draws while only endless motion moves: comets, an orbit, or options that read `elapsed()`. Defaults to 60.
+
+- f397d72: Frames draw only the marks that change, and rows whose heights change every frame stay smooth.
+
+  - Changed: in a run of frames where only some marks change, as a shade reading the time or a layer of streaming rows does, or where only comets move, each frame starts from a kept image of the marks before the first that changed and draws only the rest. A lone such frame between changes draws whole.
+  - Changed: under `daylight`, the sun moves in steps of 4 seconds of the view's axis, too small to see, so a view playing through time keeps its kept image for a step rather than drawing every mark each frame.
+  - Changed: where heights change every frame, as a sampled field raising rows during playback, the sort that draws raised rows nearest last spreads over frames under a fixed budget, and frames draw in the last finished order meanwhile. A small table still sorts every frame. A change after heights rested sorts at once, and once they rest, the sort under way finishes in that frame.
+
+- f397d72: A label too large for its marker shows beside it, text inside a shape or block reads on its color, and no label shows under a legend.
+
+  - Fixed: a label on a block, or on a marker with a width and height, vanished when its text did not fit inside. It now shows beside the marker and competes for room like a point's label.
+  - Changed: text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or darker as it needs, and its halo is that color.
+  - Fixed: where markers holding labels overlapped, every label inside them showed, over each other and over the markers drawn above. A label inside a marker now takes the marker's room, so only the top one's label shows.
+  - Fixed: labels showed over a title or legend in a corner. A corner's guides now take their room from labels, so none shows under them.
+
+- f397d72: A recording plays along as its frames arrive, and keeps on the GPU and in memory only the frames it holds.
+
+  - Added: `playhead.live` (Rust: `Playhead::set_live`). The playhead plays along the end of its span as the page extends it with arriving data, trailing the end at the rate the end moves, so data that arrives in uneven chunks plays at an even pace. It eases to a stop when no more arrives.
+  - Fixed: frames a dataset forgot stayed cached on the GPU until the page pool reached its budget, 1 GiB by default. They are now freed, so a recording keeps only what it holds.
+  - Fixed: after `forget`, up to 16 pages of each row block and level of detail stayed in memory per sampled field, so a rolling window of a large recording grew memory far past the frames it kept. Forgotten frames are now freed once no version reads them.
+  - Changed: a table drawn in priority order or by tiles reads sampled fields on the GPU through its rows, as any other table does. Showing another frame no longer gathers each row's value on the CPU, which took about 40 ms a frame for 165,000 rows.
+  - Changed: appending frames opens each page of a row block's frames at its full size, so it fills without moving.
+  - Fixed: after `forget`, `describe().span` could start a coarse bucket before the first frame kept, and move back as buckets filled. It now starts at the first frame kept.
+  - Fixed: a time tiles index not there yet, as before a recording's first frames, failed as "not TileJSON". It now fails as not found, and is fetched again after its retry.
+  - Fixed: Chrome warned "READ-usage buffer was written, then fenced, but written again before being read back" while labels settled or the pointer moved. A readback buffer now gets new storage at its next write rather than after each read, which also spares the browser a copy of it.
+
+- f397d72: Frames place each segment of a path once, a hover draws only the rows it lights, and thin lines stay solid.
+
+  - Changed: each frame works out where every segment of the edges and lines it draws lies on screen once, before drawing, and the opaque, rows, comets, and lit draws of a mark all read that, rather than each corner of each draw working it out again. A trace's segment and a point cost less to place than to store, so their draws place them. On an integrated GPU, a plot of 2,000 traces takes 39 ms of GPU time a frame rather than 50 ms.
+  - Changed: in a browser, a render pass reuses the WebGL framebuffer that holds its targets rather than making one.
+  - Changed: hovering a row no longer draws every mark again. The frame starts from the kept image of the marks, and only the hovered row and the rows it lights draw over it. On a grid of 900,000 lines and buses on an integrated GPU, a hover takes one frame of about 3 ms of GPU time, rather than frames of 36 ms and 18 ms.
+  - Changed: a hovered marker grows under its label rather than pushing the label outward, so a hover lays out no labels.
+  - Changed: on a globe, a frame that starts from the kept image of the marks draws only the globe's depth under it, not the whole backdrop again.
+  - Changed: in a browser, latkit checks for WebGL errors once the GPU has caught up with the work given it, so the check answers at once rather than holding the page behind the next frame. While frames keep the GPU busy, it waits at most a second. Waits on the GPU poll every task for their first 3 ms, then back off to every 4 ms, rather than polling every task for as long as they wait.
+  - Changed: appending frames to a sampled field folds each frame into the levels of detail as it goes, so sealing a bucket no longer reads its frames again. On a 165,000-row field, appends no longer take 20 to 35 ms on every 8th and 64th frame.
+  - Fixed: hovering or selecting a row threw away the kept image of the marks, a texture the size of the canvas, and made it again the frame after. Its texture now stays through such frames, and goes after 120 frames in a row without it.
+  - Fixed: lines thinner than a screen pixel, such as 1 px traces at a browser zoom of 50%, looked dotted along diagonals. They now draw a pixel wide, as bright as their width's share of it.
+
+### Patch Changes
+
+- f397d72: Views show only their own pixels, and arrowheads point somewhere.
+
+  - Fixed: where the browser gave the shared canvas a smaller drawing buffer than it asked for, as Chrome does on large high-density screens, the bottom rows of each view showed another view's pixels. The shared canvas now starts at the screen's size rather than the next power of two, and takes the size of the buffer it gets.
+  - Fixed: an arrowhead on an edge between two vertices at one place drew as a translucent square around them. An edge with no length on screen now has no head.
+
+- f397d72: A live monitor no longer pauses for reads of GPU results or for memory, and takes in its frames faster.
+
+  - Changed: in a browser, a frame first takes the reads of GPU results whose work the GPU finished, and while a read waits and the GPU has not finished the frame shown last, canvases hold the next frame. A read then never waits behind a frame given the GPU after it. In a live monitor on an integrated GPU, reads take at most 3 ms rather than up to 21 ms.
+  - Changed: appending frames to a sampled field reads `f32` values as they are stored, and converts other values once per append rather than one at a time. Appends take about a third less time.
+  - Fixed: a recording whose memory keeps growing paused for 100 to 250 ms whenever its row blocks opened new pages together, as each page grew the WebAssembly memory on its own. Appends make room for those pages at once, and once the memory holds 64 MB or more, latkit keeps an eighth of it free ahead.
+
 ## 0.11.0
 
 ### Minor Changes
