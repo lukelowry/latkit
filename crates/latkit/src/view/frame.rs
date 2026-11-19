@@ -11,7 +11,7 @@
 use web_time::Instant;
 
 use super::drawing::Drawn;
-use super::marks::Holding;
+use super::marks::{Holding, Shown};
 use super::resources::{MARK_STRIDE, Resources};
 use super::sync::{Inputs, Rebuilt, Rows, Source, Window};
 use super::transition::{bound, holds_alike, in_place, moved};
@@ -38,7 +38,16 @@ pub(super) enum Room {
 }
 
 /// The most seconds comets travel in one frame, so after a pause they resume instead of jumping.
-const TRAVEL: f64 = 0.1;
+pub(super) const TRAVEL: f64 = 0.1;
+
+/// The longest comets move on from their rows' travel before it is written again. Shaders multiply
+/// each row's flow by the time since, which stays short enough to keep comets precise.
+const REWRITE: f64 = 60.0;
+
+/// Seconds the camera holds still before comets come back, and seconds comets take to fade out or
+/// in (see `View::comets_travel`).
+const REST: f64 = 0.15;
+const FADE: f64 = 0.12;
 
 impl View {
     /// Records `frame` of the scene into `encoder`. The caller submits it. Until the view is
@@ -90,9 +99,7 @@ impl View {
         self.pixel_ratio = frame.pixel_ratio.max(0.01);
         let ratio = f64::from(self.pixel_ratio);
         self.size = [f64::from(frame.size[0]) / ratio, f64::from(frame.size[1]) / ratio];
-        let landed = self.signal.take();
-        // A scene set since draws once the pipelines its frames draw with have landed.
-        self.swap_when_ready(true);
+        let landed = self.take_landed();
         if !self.ready_for(frame.format, frame.pixel_ratio, input) {
             self.signal.leave(landed);
             return;
@@ -105,7 +112,8 @@ impl View {
         if let Some(timer) = &mut self.timer {
             timer.begin(encoder);
         }
-        // Runs the callbacks of finished readbacks. A no-op in browsers, which run them themselves.
+        // Runs the callbacks of finished readbacks, before this frame gives the GPU work that a
+        // browser's read would wait behind.
         let _ = device.poll(wgpu::PollType::Poll);
         // The guides take their room before fits frame what they leave.
         let mut inner = gpu.0.lock();
@@ -130,7 +138,7 @@ impl View {
         let fresh = self.lay_out(encoder, &mut inner);
         // A legend over a field's whole history shows the domain the layout just wrote.
         self.lay_out_guides(&mut inner);
-        let (elapsed, travel) = self.effect_clock();
+        let (elapsed, step) = self.effect_clock();
         self.write_focus(queue, inner.arena.words(), fresh);
         if let Some(rows) = self.focus.take_lit() {
             self.resources.as_mut().expect("created").write_lit(device, queue, &rows);
@@ -142,9 +150,8 @@ impl View {
         let probe = self.probe_point(answers);
         let query = self.lay_out_lists(answers, self.sorted());
         let projected = self.projected();
-        let srgb = frame.format.is_srgb();
-        let mut uniform = uniforms::frame(&self.scene, &projected, srgb, elapsed, self.at);
-        uniform.flow_step = travel as f32;
+        let mut uniform = uniforms::frame(&self.scene, &projected, frame.format.is_srgb(), elapsed, self.at);
+        let catch_up = self.comets_travel(&mut uniform, step, input);
         if self.signal.transparent() {
             uniform.background[3] = 0.0;
         }
@@ -160,8 +167,10 @@ impl View {
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
-        self.write_uniforms(&uniform, &eye, &sprites);
-        if let Some(readback) = self.prepare_rows(encoder, &mut inner, measure.is_some(), travel > 0.0, input) {
+        let (work, marks) =
+            self.choose_still([measure.is_some(), catch_up, input], &uniform, &eye, &sprites[..under as usize]);
+        self.write_uniforms(&uniform, &eye, &sprites, &marks);
+        if let Some(readback) = self.prepare_rows(encoder, &mut inner, work) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);
@@ -204,6 +213,41 @@ impl View {
             self.gpu.raise(error);
         }
         self.tell_raised();
+    }
+
+    /// Takes what landed since the last frame. A scene set since swaps in once the pipelines its
+    /// frames draw with have landed. Returns whether work landed.
+    fn take_landed(&mut self) -> bool {
+        let landed = self.signal.take();
+        self.swap_when_ready(true);
+        landed
+    }
+
+    /// Moves comets on by `step` seconds, and gives shaders in `uniform` how long they have traveled
+    /// since their rows' travel was written: comets stand at that travel plus their flow times that
+    /// time, so frames move them with no pass over their rows. Returns whether this frame writes the
+    /// travel first, which the travel pass does at the flows the rows still hold: before anything
+    /// rewrites the rows comets ride, and every [`REWRITE`] seconds.
+    ///
+    /// In a frame the user steers (`input`), comets rest while the camera moves by anything but an
+    /// orbit: they fade out over [`FADE`] seconds as they slow to a stop, and once the camera has
+    /// held still for [`REST`] seconds, they fade back in and travel on. Hidden, they cost a frame
+    /// nothing. Pictures and videos, and reduced motion, keep them.
+    fn comets_travel(&mut self, uniform: &mut wgsl::Frame, step: f64, input: bool) -> bool {
+        let fades = input && self.moves();
+        let resting = fades && self.rig.moved_at.is_some_and(|at| self.clock.now() - at < REST);
+        let most = if fades { step / FADE } else { 1.0 };
+        let toward = if resting { 0.0 } else { 1.0 };
+        self.comets_shown += (toward - self.comets_shown).clamp(-most, most);
+        uniform.flow[3] *= self.comets_shown as f32;
+        self.comet_clock += step * self.comets_shown;
+        let since = self.comet_clock - self.travel_written;
+        let catch_up = since > 0.0 && (since >= REWRITE || self.marks.iter().any(Shown::rewrites_comets));
+        if catch_up {
+            self.travel_written = self.comet_clock;
+        }
+        (uniform.flow_step, uniform.flow_time) = if catch_up { (since as f32, 0.0) } else { (0.0, since as f32) };
+        catch_up
     }
 
     /// The effect time for this frame, and the seconds comets travel to reach it. Channels reading
@@ -261,10 +305,14 @@ impl View {
         let device = &gpu.0.device;
         let fans =
             matches!(self.scene.theme.edge.parallel, Some(crate::Parallel { converge: crate::Converge::Fan, .. }));
+        // Comets in position units place themselves along a path in those units. Everything else
+        // measures along it in CSS pixels on screen.
+        let units = matches!(self.scene.theme.flow.spacing, crate::Length::Units(_));
         for i in 0..self.marks.len() {
             let geodesic = self.geodesic(&self.marks[i]);
-            self.marks[i].geodesic = geodesic;
-            self.marks[i].fans = fans;
+            let shown = &mut self.marks[i];
+            (shown.geodesic, shown.fans) = (geodesic, fans);
+            shown.along_units = units && shown.mark.flows();
         }
         self.resources.get_or_insert_with(|| Resources::new(device, gpu.0.queue.retired()));
         let fresh = self.fit_words(inner);
@@ -496,16 +544,14 @@ impl View {
     }
 
     /// Writes the frame's uniform, its eye, every mark's uniform, and the overlay's sprites.
-    fn write_uniforms(&mut self, frame: &wgsl::Frame, eye: &wgsl::Eye, sprites: &[wgsl::Sprite]) {
+    fn write_uniforms(&mut self, frame: &wgsl::Frame, eye: &wgsl::Eye, sprites: &[wgsl::Sprite], marks: &[u8]) {
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        self.reveal();
-        let marks = self.mark_uniforms();
         let resources = self.resources.as_mut().expect("created");
         queue.write_buffer(&resources.frame, 0, bytemuck::bytes_of(frame));
         queue.write_buffer(resources.eye(), 0, bytemuck::bytes_of(eye));
         if !marks.is_empty() {
-            queue.write_buffer(resources.marks(), 0, &marks);
+            queue.write_buffer(resources.marks(), 0, marks);
         }
         resources.fit_sprites(device, sprites.len());
         if !sprites.is_empty() {
@@ -528,11 +574,12 @@ impl View {
         }
     }
 
-    /// Every mark's uniform at its dynamic offset, then each one's copy for its opaque draw (see
-    /// [`passes::offset`](super::passes::offset)).
+    /// Every mark's uniform at its dynamic offset, then each one's copy for its opaque draw, then,
+    /// where any mark has comets, for its comets' draw (see [`passes::offset`](super::passes::offset)).
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
         let count = self.marks.len();
-        let mut marks = vec![0_u8; 2 * count * MARK_STRIDE as usize];
+        let blocks = if self.marks.iter().any(|shown| shown.mark.flows()) { 3 } else { 2 };
+        let mut marks = vec![0_u8; blocks * count * MARK_STRIDE as usize];
         let mut write = |at: usize, uniform: &wgsl::Mark| {
             let at = at * MARK_STRIDE as usize;
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(uniform));
@@ -543,8 +590,12 @@ impl View {
                 uniform.focus = wgsl::NONE;
             }
             write(i, &uniform);
-            uniform.opaque = 1;
+            uniform.draw = wgsl::DRAW_OPAQUE;
             write(count + i, &uniform);
+            if blocks == 3 {
+                uniform.draw = wgsl::DRAW_COMETS;
+                write(2 * count + i, &uniform);
+            }
         }
         marks
     }

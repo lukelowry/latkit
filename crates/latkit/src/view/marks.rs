@@ -167,6 +167,9 @@ pub(crate) struct Shown {
     /// Whether the theme's parallel edges fan into their vertices, so a row off its family's middle
     /// draws one more segment at each end.
     pub(crate) fans: bool,
+    /// Whether it measures distance along its paths in position units, for comets spaced in them,
+    /// rather than in CSS pixels on screen.
+    pub(crate) along_units: bool,
     /// What the lanes of an edge mark's table ask of its list, read when the lane column it draws
     /// was last replaced: `lanes_at` is that column's generation.
     pub(crate) lanes: crate::derive::Laned,
@@ -177,6 +180,10 @@ pub(crate) struct Shown {
     /// moves no label.
     pub(crate) version: u64,
     pub(crate) place_version: u64,
+    /// A stamp of what it drew from last frame, and whether focus words its rows draw with changed
+    /// this frame: the selection's, not the hover's (see `View::choose_still`).
+    pub(crate) drawn: u64,
+    pub(crate) focused: bool,
     /// Revision of existing vertices' source positions, excluding proven append-only changes.
     pub(crate) shape: super::lists::Shape,
     /// The rows its focus draw lights.
@@ -237,10 +244,13 @@ impl Shown {
             height_order: super::lists::HeightOrder::default(),
             geodesic: false,
             fans: false,
+            along_units: false,
             lanes: crate::derive::Laned::default(),
             lanes_at: 0,
             version: 0,
             place_version: 0,
+            drawn: 0,
+            focused: false,
             shape: super::lists::Shape::default(),
             lit: super::focus::Lit::default(),
             failures: Vec::new(),
@@ -473,14 +483,25 @@ impl Shown {
     /// A bit mask of the channels that place its rows and labels: row position, size, and
     /// visibility, and label text.
     pub(crate) fn placing_channels(&self) -> u32 {
+        self.channels_named(&["position", "radius", "width", "height", "elevation", "visible", "text"])
+    }
+
+    /// A bit mask of its channels named any of `names`.
+    fn channels_named(&self, names: &[&str]) -> u32 {
         let Some(compiled) = &self.compiled else { return 0 };
-        let shaping = ["position", "radius", "width", "height", "elevation", "visible", "text"];
         compiled
             .program
             .channels
             .iter()
             .enumerate()
-            .fold(0, |mask, (k, c)| if shaping.contains(&&*c.name) { mask | 1 << k } else { mask })
+            .fold(0, |mask, (k, c)| if names.contains(&&*c.name) { mask | 1 << k } else { mask })
+    }
+
+    /// Whether this frame rewrites the rows its comets ride: their flow evaluates, or a transition
+    /// moves them. Their travel catches up first, at the flows it was made at.
+    pub(crate) fn rewrites_comets(&self) -> bool {
+        let flows = self.dirty & self.channels_named(&["flow"]) != 0;
+        self.mark.flows() && (flows || self.remap != wgsl::NONE || self.carry)
     }
 
     /// A version of where its rows are drawn: `place_version`, or while a transition runs,

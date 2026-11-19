@@ -330,6 +330,16 @@ const STATUS: u32 = 16u;
 const LABELED: u32 = 32u;
 const STEP_BEFORE: u32 = 64u;
 const STEP_AFTER: u32 = 128u;
+// Distances along the mark's paths are in position units, for comets spaced in them. Otherwise
+// they are in CSS pixels on screen.
+const ALONG_UNITS: u32 = 256u;
+
+// The draws that bind a copy of a mark's uniform. ROWS: its rows, and every pass but the draws.
+// OPAQUE: only the pixels its rows cover fully, which draw first where depth varies. COMETS: only
+// its comets, over its rows.
+const DRAW_ROWS: u32 = 0u;
+const DRAW_OPAQUE: u32 = 1u;
+const DRAW_COMETS: u32 = 2u;
 
 // The last word of a trace point's record. Its low bits are the rows in the value page it reads.
 // TRACE_COUNT: where the number of entries it reads starts, at most TRACE_MOST, one after the
@@ -464,13 +474,15 @@ struct Frame {
     glow: f32,
     dim: f32,
     dash: f32,
-    // Comets: spacing and tail length in `flow_unit`, head width in CSS pixels, and the seconds
-    // they travel this frame.
+    // Comets: spacing and tail length in `flow_unit`, and head width in CSS pixels. `flow_step` is
+    // the seconds the travel pass adds to rows' travel this frame, and `flow_time` the seconds
+    // comets have moved on since their rows' travel was written.
     flow_spacing: f32,
     flow_length: f32,
     flow_width: f32,
     flow_unit: u32,
     flow_step: f32,
+    flow_time: f32,
     // The space between neighboring parallel edges, in CSS pixels.
     gap: f32,
     // Scale factor for a hovered vertex sized in CSS pixels.
@@ -636,9 +648,8 @@ struct Mark {
     // stroke's width.
     size_min: f32,
     size_max: f32,
-    // 1 in the copy of the mark's uniform that its opaque draw binds: that draw keeps only the
-    // pixels its rows cover fully, which draw first where depth varies.
-    opaque: u32,
+    // The draw that binds this copy of the mark's uniform: a `DRAW_` code.
+    draw: u32,
 }
 
 // An overlay sprite in CSS pixels: a line, box, fill, or run of text, drawn over the marks.

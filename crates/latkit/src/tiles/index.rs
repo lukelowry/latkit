@@ -39,9 +39,12 @@ impl Index {
     }
 
     /// Reads the index in the first `bytes` fetched from `url`: a manifest of time tiles, else a
-    /// PMTiles header, else a TileJSON document. Errors if they are none of these, are malformed,
-    /// or hold image tiles.
+    /// PMTiles header, else a TileJSON document. Errors with `Io` if there is none (no bytes, as
+    /// for a 404), and with `Invalid` if they are none of these, are malformed, or hold image tiles.
     pub(crate) fn read(url: &str, bytes: &[u8]) -> Result<Index> {
+        if bytes.is_empty() {
+            return Err(Error::Io(format!("{url} was not found").into()));
+        }
         match Manifest::from_bytes(bytes) {
             Some(manifest) => manifest.map(Index::Frames),
             None if pmtiles::is_archive(bytes) => {

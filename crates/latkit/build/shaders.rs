@@ -51,7 +51,10 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::boxed", variants: &[("main", &[])] },
     Entry { module: "raster::query_pack", variants: &[("main", &[])] },
     Entry { module: "raster::lists", variants: &[("main", &[])] },
+    // Records where each segment of a stroke mark lies on screen, and each its lit draw draws.
+    Entry { module: "raster::screen", variants: &[("main", &["joined"])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
+    Entry { module: "draw::still", variants: &[("main", &[])] },
     Entry {
         module: "draw::points",
         variants: &[
@@ -735,15 +738,18 @@ fn check_swizzle_indexes(module: &naga::Module, name: &str) {
     }
 }
 
-/// Asserts that each fragment entry of `module` writes at most one color target. ANGLE on D3D11
-/// builds a pixel shader for the first target when a program links, and one for more targets on
-/// the browser's GPU thread when a frame first draws with it, stalling the page.
+/// Asserts that each fragment entry of `module` writes at most one color target, but the screen
+/// pass's, which writes a record's four. ANGLE on D3D11 builds a pixel shader for the first target
+/// when a program links, and one for more targets on the browser's GPU thread when a frame first
+/// draws with it, stalling the page. The screen pass's fragment only copies its point's outputs, so
+/// that build takes a moment.
 fn check_targets(module: &naga::Module, name: &str) {
+    let most = if name == "raster::screen" { 4 } else { 1 };
     for entry in module.entry_points.iter().filter(|e| e.stage == naga::ShaderStage::Fragment) {
         let Some(result) = &entry.function.result else { continue };
         if let TypeInner::Struct { members, .. } = &module.types[result.ty].inner {
             let targets = members.iter().filter(|m| matches!(m.binding, Some(naga::Binding::Location { .. }))).count();
-            assert!(targets <= 1, "{name}.{} writes {targets} color targets; raster shaders write one", entry.name);
+            assert!(targets <= most, "{name}.{} writes {targets} color targets; it may write {most}", entry.name);
         }
     }
 }
@@ -796,6 +802,10 @@ fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
         return false;
     }
     let path = value("PATH");
+    // A trace's draws place its segments themselves, so no screen pass writes their records.
+    if module == "raster::screen" && path == Some(type_constant(types, "PATH_TRACE")) {
+        return false;
+    }
     if module == "draw::areas" {
         return path.is_none_or(|path| path == type_constant(types, "PATH_GEOMETRY"));
     }

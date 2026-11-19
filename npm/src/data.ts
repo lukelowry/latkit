@@ -378,7 +378,8 @@ export class TileWriter extends Handle {
   /**
    * Calls `write` with the spans in progress as they stand, then the base and the `frames.json`
    * manifest, so `Tiles` drawing the manifest find every frame appended so far. A span written
-   * again as it grows replaces the one before.
+   * again as it grows replaces the one before. Flushed before the first frames, after appends of
+   * none, it lists their fields, so views find the manifest from the start.
    */
   flush(write: (path: string, bytes: Uint8Array) => void): void {
     inner<bindings.TileWriter>(this).flush(write);

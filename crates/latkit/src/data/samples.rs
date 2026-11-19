@@ -14,7 +14,7 @@
 //! row block's values together.
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 
 use super::column::{PAGE_BITS, PAGE_MASK, PAGE_ROWS};
 use super::name::PageId;
@@ -24,6 +24,9 @@ use crate::{Error, Result};
 /// Words in a frame page, which holds entries of one row block, entry-major. An axis page takes at
 /// most as many words on the GPU, two per entry.
 pub(crate) const FRAME_PAGE_WORDS: usize = 1 << 16;
+/// Entries a new page of frames has room for: as many as a page of a full row block holds. Pages
+/// above frames fill eight times slower each level, and grow as they fill.
+const OPENED: usize = FRAME_PAGE_WORDS / PAGE_ROWS;
 /// Levels of detail that appends write above frames. Level `k` holds each row's least and greatest
 /// value over buckets of `8^k` frames. Inserted runs can go higher, up to [`MAX_LEVEL`].
 pub(crate) const LEVELS: u32 = 6;
@@ -163,15 +166,16 @@ impl<T: Clone> Log<T> {
         self.read(|items| items.last().cloned())
     }
 
-    /// Stops reading items before absolute index `start`. Shared storage is left to the other
-    /// versions. Once the forgotten prefix exceeds a quarter of the kept items (plus 16), this
-    /// version copies the items it keeps.
+    /// Stops reading items before absolute index `start`, and copies the items it keeps, so the
+    /// items before it no longer stay alive through this version. Shared storage is left to the
+    /// other versions.
     pub(crate) fn forget(&mut self, start: usize) {
-        self.start = start.clamp(self.start, self.end);
-        if self.start - self.base > (self.end - self.start) / 4 + 16 {
+        let start = start.clamp(self.start, self.end);
+        if start > self.start {
+            self.start = start;
             let kept = self.read(<[T]>::to_vec);
             self.items = Arc::new(RwLock::new(kept));
-            self.base = self.start;
+            self.base = start;
         }
     }
 }
@@ -237,6 +241,17 @@ impl<T: Copy> Page<T> {
         self.first + u64::from(self.len())
     }
 
+    /// Whether `entry`'s `len` items would fit in place (see [`Page::extend`]).
+    fn takes(&self, entry: u64, len: usize, limit: usize) -> bool {
+        let at = entry.checked_sub(self.first).map_or(usize::MAX, |e| e as usize * self.per as usize);
+        entry == self.end()
+            && self.store.grows
+            && self.cap == u32::MAX
+            && len == self.per as usize
+            && at.saturating_add(len) <= limit
+            && self.read(<[T]>::len) == at
+    }
+
     /// Appends `entry`'s `items` in place, returning whether it did. Succeeds only if the page
     /// grows, this version reads all of it and nothing newer is stored past it, `entry` directly
     /// follows the last entry, and the page stays within `limit` items.
@@ -257,6 +272,15 @@ impl<T: Copy> Page<T> {
     /// A handle to the same page that reads only its first `len` entries.
     fn capped(&self, len: u32) -> Page<T> {
         Page { cap: len, ..self.clone() }
+    }
+}
+
+impl<T: Send + Sync + 'static> Page<T> {
+    /// A handle that tells whether any version still holds the page. Once none does, as after its
+    /// frames were forgotten, nothing can read it again.
+    pub(crate) fn kept(&self) -> Weak<dyn Send + Sync> {
+        let kept: Weak<Store<T>> = Arc::downgrade(&self.store);
+        kept
     }
 }
 
@@ -397,10 +421,13 @@ fn forget_before<T: Copy>(log: &mut Log<Page<T>>, index: u64) {
 }
 
 /// Writes `entry`'s `items` after the last entry of `log`. They go into the last page if it can
-/// grow and has room within `limit` items, else into a new growable page.
-fn grow<T: Copy>(log: &mut Log<Page<T>>, entry: u64, items: &[T], limit: usize) {
+/// grow and has room within `limit` items, else into a new growable page with room for `entries`
+/// entries, which it fills without moving.
+fn grow<T: Copy>(log: &mut Log<Page<T>>, entry: u64, items: &[T], limit: usize, entries: usize) {
     if !log.last().is_some_and(|page| page.extend(entry, items, limit)) {
-        log.push(Page::new(entry, items.len(), items.to_vec(), true));
+        let mut stored = Vec::with_capacity((items.len() * entries).clamp(items.len(), limit));
+        stored.extend_from_slice(items);
+        log.push(Page::new(entry, items.len(), stored, true));
     }
 }
 
@@ -434,6 +461,84 @@ pub(crate) struct Samples {
     axes: Arc<[Log<AxisPage>]>,
     /// Per row block, its frames, then each level's least and greatest values.
     blocks: Arc<[Vec<Log<FramePage>>]>,
+    /// The buckets appends are filling, shared between versions.
+    filling: Arc<Mutex<Filling>>,
+}
+
+/// The buckets appends are filling, one a level above frames: per row block, each row's least and
+/// greatest value over the entries one level below folded in so far. An append folds in each frame
+/// it writes, and each bucket it seals into the level above, so a bucket seals without reading its
+/// eight entries again, and no append pays for a whole bucket at once. An entry that does not
+/// continue the bucket held, as an older version appends, starts it over, or past its first entry
+/// leaves none held. A bucket not held whole seals by reading its entries.
+#[derive(Default)]
+struct Filling(Vec<Filled>);
+
+/// A bucket being filled: its index at its level, how many of its entries were folded in from its
+/// first, and per row block, each row's least and greatest value so far, NaN while all are missing.
+struct Filled {
+    index: u64,
+    folded: u64,
+    blocks: Vec<[Vec<f32>; 2]>,
+}
+
+/// No bucket's index.
+const NOT_FILLED: u64 = u64::MAX;
+
+impl Filling {
+    /// Folds `entry` of the level below `level` into `level`'s bucket. `sides(b)` gives the entry's
+    /// least and greatest values in row block `b` of `blocks`: a frame's one value for both.
+    fn fold<'a>(&mut self, level: u32, entry: u64, blocks: usize, sides: impl Fn(usize) -> [&'a [f32]; 2]) {
+        let k = level as usize - 1;
+        if self.0.len() <= k {
+            self.0.resize_with(k + 1, || Filled { index: NOT_FILLED, folded: 0, blocks: Vec::new() });
+        }
+        let filled = &mut self.0[k];
+        let (index, child) = (entry / 8, entry % 8);
+        if filled.index != index || filled.folded != child {
+            if child != 0 {
+                filled.index = NOT_FILLED;
+                return;
+            }
+            (filled.index, filled.folded) = (index, 0);
+            filled.blocks.resize_with(blocks, Default::default);
+            for (b, block) in filled.blocks.iter_mut().enumerate() {
+                for side in block {
+                    side.clear();
+                    side.resize(sides(b)[0].len(), f32::NAN);
+                }
+            }
+        }
+        if filled.blocks.len() != blocks {
+            filled.index = NOT_FILLED;
+            return;
+        }
+        for (b, [least, greatest]) in filled.blocks.iter_mut().enumerate() {
+            let [low, high] = sides(b);
+            if low.len() != least.len() || high.len() != greatest.len() {
+                filled.index = NOT_FILLED;
+                return;
+            }
+            for (out, &v) in least.iter_mut().zip(low) {
+                *out = out.min(v);
+            }
+            for (out, &v) in greatest.iter_mut().zip(high) {
+                *out = out.max(v);
+            }
+        }
+        filled.folded += 1;
+    }
+
+    /// `level`'s bucket `index` of `blocks` row blocks, taken if all eight of its entries were
+    /// folded in.
+    fn take(&mut self, level: u32, index: u64, blocks: usize) -> Option<Vec<[Vec<f32>; 2]>> {
+        let filled = self.0.get_mut(level as usize - 1)?;
+        let whole = filled.index == index && filled.folded == 8 && filled.blocks.len() == blocks;
+        whole.then(|| {
+            filled.index = NOT_FILLED;
+            std::mem::take(&mut filled.blocks)
+        })
+    }
 }
 
 impl Samples {
@@ -598,7 +703,9 @@ impl Samples {
         stored
     }
 
-    /// The first and last coordinates of the entries this version reads, across all levels.
+    /// The first and last coordinates of the entries this version reads: its first and last frames'
+    /// where it holds them, else those of the coarser buckets covering them, as time tiles hold
+    /// before their finer spans arrive. Forgetting frames moves the first to the first kept.
     pub(crate) fn span(&self) -> Option<[f64; 2]> {
         let mut span: Option<[f64; 2]> = None;
         for (level, log) in self.axes.iter().enumerate() {
@@ -607,7 +714,11 @@ impl Samples {
             let (Some(lo), Some(hi)) = (first.coordinate(a.start, 0), last.coordinate(b.end - 1, 1)) else { continue };
             span = Some(span.map_or([lo, hi], |s| [s[0].min(lo), s[1].max(hi)]));
         }
-        span
+        // A held frame at either end is exact. A coarser bucket covering an end can reach past it,
+        // as one that began before the frames forgotten does.
+        let first = self.at(self.start);
+        let last = self.end.checked_sub(1).and_then(|frame| self.at(frame));
+        span.map(|[lo, hi]| [first.unwrap_or(lo), last.unwrap_or(hi)])
     }
 
     /// The coordinate of the last frame, or if that frame is missing, the end of the span across
@@ -635,20 +746,34 @@ impl Samples {
         }
         let blocks = rows.div_ceil(PAGE_ROWS);
         let mut logs = self.logs(blocks);
-        let mut frame_values = vec![0.0_f32; rows];
+        let filling = self.filling.clone();
+        let mut filling = filling.lock().unwrap_or_else(PoisonError::into_inner);
+        // The values as `f32`, NaN where missing: as stored when they are, else converted at once.
+        let converted: Vec<f32>;
+        let floats = if let Some(floats) = values.floats() {
+            floats
+        } else {
+            converted = values.map_numbers(|value| value.map_or(f32::NAN, |x| x as f32));
+            &converted
+        };
         for (f, &t) in at.iter().enumerate() {
             let frame = self.end;
-            for (row, value) in frame_values.iter_mut().enumerate() {
-                let i = f * rows + row;
-                *value = if values.is_valid(i) { values.number(i) as f32 } else { f32::NAN };
+            let frame_values = &floats[f * rows..(f + 1) * rows];
+            let block = |b: usize| frame_values.get(b * PAGE_ROWS..rows.min((b + 1) * PAGE_ROWS)).unwrap_or(&[]);
+            // Every row block opens its next page in the same frame: make room for them all at once.
+            let opens = |log: &Vec<Log<FramePage>>| {
+                !log[0].last().is_some_and(|p| p.takes(frame, block(0).len(), FRAME_PAGE_WORDS))
+            };
+            if blocks > 1 && logs.blocks.first().is_some_and(opens) {
+                crate::room::make_room(blocks * FRAME_PAGE_WORDS * size_of::<f32>());
             }
-            for (b, block) in logs.blocks.iter_mut().enumerate().take(blocks) {
-                let slice = &frame_values[b * PAGE_ROWS..rows.min((b + 1) * PAGE_ROWS)];
-                grow(&mut block[0], frame, slice, FRAME_PAGE_WORDS);
+            for (b, log) in logs.blocks.iter_mut().enumerate().take(blocks) {
+                grow(&mut log[0], frame, block(b), FRAME_PAGE_WORDS, OPENED);
             }
-            grow(&mut logs.axes[0], frame, &[t], FRAME_PAGE_WORDS / 2);
+            grow(&mut logs.axes[0], frame, &[t], FRAME_PAGE_WORDS / 2, OPENED);
             self.end += 1;
-            seal(&mut logs, frame);
+            filling.fold(1, frame, logs.blocks.len(), |b| [block(b), block(b)]);
+            seal(&mut logs, frame, &mut filling);
         }
         self.keep(logs);
         Ok(())
@@ -668,10 +793,10 @@ impl Samples {
         }
         let mut dense =
             Vec::with_capacity(at.len().checked_mul(total).ok_or_else(|| Error::invalid("too many values"))?);
+        let floats = values.map_numbers(|value| value.map_or(f32::NAN, |x| x as f32));
         for f in 0..at.len() {
             for (k, &row) in rows.iter().enumerate() {
-                let i = f * given + k;
-                frame[row] = if values.is_valid(i) { values.number(i) as f32 } else { f32::NAN };
+                frame[row] = floats[f * given + k];
             }
             dense.extend_from_slice(&frame);
         }
@@ -1248,8 +1373,9 @@ impl Samples {
 /// After `frame` is appended to `logs`, writes each bucket it completes, level by level, while the
 /// bucket's eight entries one level below are all present. A bucket stores its first and last
 /// frame's coordinates and, per row block, the least of its entries' least values and the greatest
-/// of their greatest values.
-fn seal(logs: &mut Logs, frame: u64) {
+/// of their greatest values: as `filling` folded them in, else read from its entries. Each bucket
+/// written is folded into the level above.
+fn seal(logs: &mut Logs, frame: u64, filling: &mut Filling) {
     let next = frame + 1;
     for level in 1..=LEVELS {
         let span = bucket_frames(level);
@@ -1265,27 +1391,41 @@ fn seal(logs: &mut Logs, frame: u64) {
         let first = below[0].0.coordinate(children.start, 0);
         let last = below[below.len() - 1].0.coordinate(children.end - 1, 1);
         let (Some(first), Some(last)) = (first, last) else { break };
-        grow(&mut logs.axes[level as usize], bucket, &[first, last], FRAME_PAGE_WORDS / 2);
-        for block in &mut logs.blocks {
-            for side in 0..2 {
-                let from = &block[slot(level - 1, if level == 1 { 0 } else { side })];
-                let parts = held(from, children.clone());
-                let Some(rows) = parts.iter().map(|(p, _)| p.per as usize).max() else { continue };
-                let mut sealed = vec![f32::NAN; rows];
-                for (page, range) in &parts {
-                    page.read(|values| {
-                        for e in range.clone() {
-                            let base = ((e - page.first) * u64::from(page.per)) as usize;
-                            for (out, &v) in sealed.iter_mut().zip(&values[base..base + page.per as usize]) {
-                                *out = if side == 0 { out.min(v) } else { out.max(v) };
-                            }
-                        }
-                    });
-                }
-                grow(&mut block[slot(level, side)], bucket, &sealed, FRAME_PAGE_WORDS);
+        grow(&mut logs.axes[level as usize], bucket, &[first, last], FRAME_PAGE_WORDS / 2, 1);
+        let blocks = logs.blocks.len();
+        let sealed = filling.take(level, bucket, blocks).unwrap_or_else(|| read_bucket(logs, level, &children));
+        for (log, [least, greatest]) in logs.blocks.iter_mut().zip(&sealed) {
+            if !least.is_empty() && !greatest.is_empty() {
+                grow(&mut log[slot(level, 0)], bucket, least, FRAME_PAGE_WORDS, 1);
+                grow(&mut log[slot(level, 1)], bucket, greatest, FRAME_PAGE_WORDS, 1);
             }
         }
+        if level < LEVELS {
+            filling.fold(level + 1, bucket, blocks, |b| [&sealed[b][0], &sealed[b][1]]);
+        }
     }
+}
+
+/// Per row block, the least and greatest values of `level`'s bucket over `children`, read from
+/// those entries one level below: none where the block holds none of them.
+fn read_bucket(logs: &Logs, level: u32, children: &Range<u64>) -> Vec<[Vec<f32>; 2]> {
+    let side = |block: &[Log<FramePage>], side: usize| {
+        let parts = held(&block[slot(level - 1, if level == 1 { 0 } else { side })], children.clone());
+        let Some(rows) = parts.iter().map(|(p, _)| p.per as usize).max() else { return Vec::new() };
+        let mut sealed = vec![f32::NAN; rows];
+        for (page, range) in &parts {
+            page.read(|values| {
+                for e in range.clone() {
+                    let base = ((e - page.first) * u64::from(page.per)) as usize;
+                    for (out, &v) in sealed.iter_mut().zip(&values[base..base + page.per as usize]) {
+                        *out = if side == 0 { out.min(v) } else { out.max(v) };
+                    }
+                }
+            });
+        }
+        sealed
+    };
+    logs.blocks.iter().map(|block| [side(block, 0), side(block, 1)]).collect()
 }
 
 #[cfg(test)]
@@ -1349,6 +1489,14 @@ mod tests {
         assert_eq!(newest.value(0, 1), Some(2.0));
         assert_eq!(older.end(), 1);
         assert_eq!(older.value(0, 1), None, "a version reads only its own frames");
+        // Both fill bucket 0 in turn, each sealing its own frames' least and greatest.
+        for frame in 2..8 {
+            let t = f64::from(frame);
+            newest.append(&[t], &Values::from(vec![10.0 + t]), 1).expect("frame");
+            forked.append(&[t + 1.0], &Values::from(vec![20.0 + t]), 1).expect("frame");
+        }
+        assert_eq!([0, 1].map(|side| newest.entry(0, 1, side, 0)), [Some(1.0), Some(17.0)]);
+        assert_eq!([0, 1].map(|side| forked.entry(0, 1, side, 0)), [Some(1.0), Some(27.0)]);
     }
 
     #[test]
@@ -1375,13 +1523,17 @@ mod tests {
         let older = samples.clone();
         let pages = |s: &Samples| s.blocks[0][0].read(<[FramePage]>::len);
         let before = pages(&samples);
+        let first = samples.blocks[0][0].read(|pages| pages[0].kept());
         assert!(samples.forget(50.0));
         assert!(!samples.forget(50.0), "nothing more to forget");
         assert_eq!((samples.start(), samples.end()), (50, 100));
         assert_eq!(samples.value(7, 60), Some(60.0), "frames keep their numbers");
         assert_eq!(samples.at(49), None);
+        assert_eq!(samples.span(), Some([50.0, 99.0]), "the span starts at the first kept frame, not its bucket");
         assert!(pages(&samples) < before, "whole pages before the first kept frame drop");
         assert_eq!(older.value(7, 10), Some(10.0), "an older version still reads them");
+        drop(older);
+        assert!(first.upgrade().is_none(), "once no version reads a forgotten page, its storage is freed");
         samples.append(&[100.0], &Values::from(vec![1.0_f32; rows]), rows).expect("frame");
         assert_eq!(samples.end(), 101);
         let run = Run { level: 0, entries: 10..11 };

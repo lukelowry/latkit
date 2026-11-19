@@ -17,6 +17,12 @@ fn vector(v: DVec3) -> [f32; 4] {
     [v.x as f32, v.y as f32, v.z as f32, 0.0]
 }
 
+/// The seconds the sun moves in one step. It crosses the sky by a sixtieth of a degree in a step,
+/// which changes no place's daylight (see `lib/daylight.wesl`) by more than about one level of an
+/// 8-bit color. So a view playing through time draws its lit marks again once a step, rather than
+/// every frame.
+const SUN_STEP: f64 = 4.0;
+
 /// The frame uniform for `scene` seen through `projected`, at axis coordinate `at` and `elapsed`
 /// seconds on the view's clock. `linear` says the target is sRGB and encodes color itself, so
 /// shaders write linear color. Pointer, probe, and focus words start empty. Theme lengths are in
@@ -24,10 +30,14 @@ fn vector(v: DVec3) -> [f32; 4] {
 pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed: f64, at: f64) -> wgsl::Frame {
     let theme = &scene.theme;
     let (cx, cy) = (split(projected.center[0]), split(projected.center[1]));
-    // The sun's position at the earth's daylight instant, advanced by the shown axis coordinate.
+    // The sun's position at the earth's daylight instant, advanced by the shown axis coordinate, in
+    // steps of `SUN_STEP`.
     let (sun, atmosphere) = match &scene.space {
         Space::Earth(earth) => (
-            earth.daylight.map(|t| crate::scene::sun(t + if at.is_finite() { at } else { 0.0 })),
+            earth.daylight.map(|t| {
+                let seconds = t + if at.is_finite() { at } else { 0.0 };
+                crate::scene::sun((seconds / SUN_STEP).round() * SUN_STEP)
+            }),
             earth.atmosphere.then(|| theme.earth.atmosphere.to_array()),
         ),
         _ => (None, None),
@@ -285,6 +295,9 @@ pub(crate) fn mark(
         }
         if shown.geodesic {
             mark.flags |= wgsl::GEODESIC;
+        }
+        if shown.along_units {
+            mark.flags |= wgsl::ALONG_UNITS;
         }
     }
     mark

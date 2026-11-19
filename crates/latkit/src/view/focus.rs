@@ -144,11 +144,21 @@ impl View {
         ats.sort_unstable();
         ats.dedup();
         let focus = &mut self.focus;
+        // Marks whose rows draw differently: a selection dims the rows it does not light, so rows
+        // read their words only while it lights some. Hover changes only the focus draw over the
+        // still, which draws the hovered rows again.
+        let mut redrawn = vec![fresh && focus.lighting; self.marks.len()];
         let changes: Vec<(At, u32)> = ats
             .into_iter()
             .filter_map(|at| {
                 let word = focus.standing.get(&at).copied().unwrap_or(0) | focus.passing.get(&at).copied().unwrap_or(0);
-                (focus.written.get(&at).copied().unwrap_or(0) != word).then_some((at, word))
+                let was = focus.written.get(&at).copied().unwrap_or(0);
+                if (was ^ word) & (wgsl::SELECTED | wgsl::RELATED_SELECTED) != 0
+                    && let Some(redraw) = redrawn.get_mut(at.0)
+                {
+                    *redraw = true;
+                }
+                (was != word).then_some((at, word))
             })
             .collect();
         for &(at, word) in &changes {
@@ -187,6 +197,7 @@ impl View {
                     .collect();
                 if fresh || !pages.is_empty() {
                     shown.dirty_rows(shown.channels_reading(Deps::FOCUS), (!fresh).then_some(&pages[..]));
+                    shown.focused |= redrawn[i];
                 }
             }
         }

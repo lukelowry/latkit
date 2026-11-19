@@ -4,9 +4,10 @@
 //! when the view goes, are retired, so their memory is freed once the GPU is done with them.
 //!
 //! Every shader's pass group (group 2) uses the same bindings: 0 the arena pages (the data, and the
-//! marks' per-row words), 2 extents, 4 domains, 5 probe words and query results, 6 depth,
-//! 7 sprites, 8 the text atlas, 9 lists, 12 remap words, 13 labels, 15 icons, 16 the row blocks
-//! each mark evaluates. Raster operations bind their own small immutable uniform.
+//! marks' per-row words), 2 extents, 4 domains, 5 probe words and query results, 6 depth, 7
+//! sprites, 8 the text atlas, 9 lists, 10 the still, 11 the screen records, 12 remap words, 13
+//! labels, 15 icons, 16 the row blocks each mark evaluates. Raster operations bind their own small
+//! immutable uniform.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -30,11 +31,20 @@ pub(crate) struct Groups {
     pub(crate) mark: wgpu::BindGroup,
 }
 
+/// Frames in a row that may draw without the still before its texture goes. A frame that draws
+/// whole between frames that start from the still, as one lighting a hovered row does, so keeps
+/// the texture for the frames after it, rather than making a canvas-sized texture again.
+const STILL_UNUSED: u32 = 120;
+
 /// The textures a frame draws into, with their views: multisampled color (resolved into the
-/// target) when it multisamples, and depth.
+/// target) when it multisamples, and depth. While frames start from it, the still: what they draw
+/// up to a cut in the marks, at one sample a pixel (see `View::choose_still`), and the frames in a
+/// row since one did (`unused`).
 struct Targets {
     color: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth: (wgpu::Texture, wgpu::TextureView),
+    still: Option<(wgpu::Texture, wgpu::TextureView)>,
+    unused: u32,
     size: [u32; 2],
     format: wgpu::TextureFormat,
     samples: u32,
@@ -42,8 +52,8 @@ struct Targets {
 
 impl Targets {
     fn retire(self, retired: &Retired) {
-        if let Some((color, _)) = self.color {
-            retired.retire(color);
+        for (texture, _) in [self.color, self.still].into_iter().flatten() {
+            retired.retire(texture);
         }
         retired.retire(self.depth.0);
     }
@@ -75,9 +85,10 @@ pub(crate) struct Resources {
     /// The shared bind groups, with the (arena, colormaps, icons, own) generations they were built
     /// from.
     groups: Option<((u64, u64, u64, u64), Groups)>,
-    /// Pass groups by shader, built at `passes_generation`: the arena, icons, and own generations.
+    /// Pass groups by shader, built at `passes_generation`: the arena, icons, screen, and own
+    /// generations.
     passes: HashMap<Shader, wgpu::BindGroup>,
-    passes_generation: (u64, u64, u64),
+    passes_generation: (u64, u64, u64, u64),
     targets: Option<Targets>,
     pick_targets: Option<Targets>,
     retired: Retired,
@@ -111,7 +122,7 @@ impl Resources {
             lists_generation: 0,
             groups: None,
             passes: HashMap::new(),
-            passes_generation: (u64::MAX, 0, 0),
+            passes_generation: (u64::MAX, 0, 0, 0),
             targets: None,
             pick_targets: None,
             retired: retired.clone(),
@@ -145,13 +156,13 @@ impl Resources {
         self.remap.write_padded(queue, 0, words);
     }
 
-    /// Makes room for every mark's uniforms (two each: see `View::mark_uniforms`), domains, and
+    /// Makes room for every mark's uniforms (three each: see `View::mark_uniforms`), domains, and
     /// extents.
     pub(crate) fn fit(&mut self, device: &wgpu::Device, marks: u64, domains: u64) {
         let count = marks + 1;
         let mut replaced = self.domains.ensure(device, (domains * 2).max(4));
         replaced |= self.extents.ensure(device, u64::from(wgsl::EXTENT_WORDS) * count);
-        replaced |= self.marks.ensure(device, MARK_STRIDE * 2 * count);
+        replaced |= self.marks.ensure(device, MARK_STRIDE * 3 * count);
         if replaced {
             self.generation += 1;
         }
@@ -340,7 +351,7 @@ impl Resources {
 
     /// `shader`'s pass group, cached until a generation it binds changes.
     pub(crate) fn pass(&mut self, device: &wgpu::Device, inner: &mut Inner, shader: Shader) -> wgpu::BindGroup {
-        let generation = (inner.arena.generation, inner.icons.generation, self.generation);
+        let generation = (inner.arena.generation, inner.icons.generation, inner.screen.generation, self.generation);
         if self.passes_generation != generation {
             self.passes.clear();
             self.passes_generation = generation;
@@ -370,8 +381,12 @@ impl Resources {
                         &self.targets.as_ref().expect("a frame drew before probing").depth.1,
                     ),
                     7 => self.sprites.binding(),
+                    10 => wgpu::BindingResource::TextureView(
+                        &self.targets.as_ref().and_then(|t| t.still.as_ref()).expect("a still to draw").1,
+                    ),
                     8 => wgpu::BindingResource::TextureView(&inner.atlas.view),
                     9 => self.lists.binding(),
+                    11 => inner.screen.binding(),
                     12 => self.remap.binding(),
                     13 => self.labels.binding(),
                     14 => wgpu::BindingResource::TextureView(&self.cells.view),
@@ -422,7 +437,8 @@ impl Resources {
                     | if samples == 1 { wgpu::TextureUsages::TEXTURE_BINDING } else { wgpu::TextureUsages::empty() },
             );
             // A canvas being resized changes size every frame, so the old textures go at once.
-            if let Some(old) = self.targets.replace(Targets { color, depth, size, format, samples }) {
+            let targets = Targets { color, depth, still: None, unused: 0, size, format, samples };
+            if let Some(old) = self.targets.replace(targets) {
                 old.retire(&self.retired);
             }
             // Depth drawn at one sample is read where it was drawn, so the replayed copy goes.
@@ -463,7 +479,8 @@ impl Resources {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             );
             let color = Some(make("latkit pick target", format, wgpu::TextureUsages::RENDER_ATTACHMENT));
-            if let Some(old) = self.pick_targets.replace(Targets { color, depth, size, format, samples: 1 }) {
+            let replayed = Targets { color, depth, still: None, unused: 0, size, format, samples: 1 };
+            if let Some(old) = self.pick_targets.replace(replayed) {
                 old.retire(&self.retired);
             }
         }
@@ -482,6 +499,46 @@ impl Resources {
     /// Samples per pixel of the frame's targets.
     pub(crate) fn samples(&self) -> u32 {
         self.targets.as_ref().map_or(1, |t| t.samples)
+    }
+
+    /// The still, at the size and format of the frame's targets, when `kept`, and whether it was
+    /// just made, so holds nothing yet. Without `kept` for `STILL_UNUSED` frames in a row, its
+    /// texture goes. A frame without `kept` holds no still, so one that keeps the texture draws
+    /// into it again.
+    pub(crate) fn still(&mut self, device: &wgpu::Device, kept: bool) -> Option<(wgpu::TextureView, bool)> {
+        let targets = self.targets.as_mut().expect("a draw target");
+        if !kept {
+            targets.unused = targets.unused.saturating_add(1);
+            if targets.unused > STILL_UNUSED
+                && let Some((texture, _)) = targets.still.take()
+            {
+                self.retired.retire(texture);
+                self.generation += 1;
+            }
+            return None;
+        }
+        targets.unused = 0;
+        let fresh = targets.still.is_none();
+        if fresh {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("latkit still"),
+                size: wgpu::Extent3d {
+                    width: targets.size[0].max(1),
+                    height: targets.size[1].max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: targets.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            targets.still = Some((texture, view));
+            self.generation += 1;
+        }
+        targets.still.as_ref().map(|(_, view)| (view.clone(), fresh))
     }
 }
 

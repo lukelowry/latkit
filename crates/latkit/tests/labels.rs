@@ -1,8 +1,9 @@
-//! Labels show beside their rows once the host rasterizes their text, or inside a block while they
-//! fit. Where labels would overlap, the label of the row drawn on top shows. An empty text gives no
-//! label. Only labels that show near the view have their text rasterized, so a dense view settles.
-//! A conditional text labels only the rows it names, a number label writes its value, and a label
-//! keeps showing while its mark gains texts.
+//! Labels show beside their rows once the host rasterizes their text, or inside a sized shape where
+//! they fit, in a color that reads on it. Where labels would overlap, the label of the row drawn on
+//! top shows, and none shows under a legend in a corner. An empty text gives no label. Only labels
+//! that show near the view have their text rasterized, so a dense view settles. A conditional text
+//! labels only the rows it names, a number label writes its value, and a label keeps showing while
+//! its mark gains texts.
 
 #![cfg(feature = "gpu")]
 
@@ -14,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::{SETTLE, SIZE, at, camera, errors, frame, gpu, haloless, plain_theme, plane, step};
 use latkit::Ids;
 use latkit::host::{Host, Raster, TextRun};
-use latkit::{Color, Data, Edges, Expr, Label, Patch, Scene, Table, Vertices, View, field, when};
+use latkit::{Color, Data, Edges, Expr, Label, Legend, Patch, Scene, Table, Vertices, View, field, when};
 
 /// A host that rasterizes text as a solid box, 0.6 × size wide per character and `size` tall.
 struct Boxes;
@@ -221,7 +222,7 @@ fn dense_label_draws_keep_the_same_winners_as_a_small_scene() {
 }
 
 #[test]
-fn a_label_moves_outward_when_its_hovered_marker_grows() {
+fn a_hovered_marker_grows_and_its_label_stays() {
     let Some(gpu) = gpu() else { return };
     gpu.set_host(Boxes);
     let data = Data::new("d");
@@ -233,15 +234,14 @@ fn a_label_moves_outward_when_its_hovered_marker_grows() {
     let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
-    let first = |pixels: &[[u8; 4]]| {
-        (0..SIZE)
-            .find(|&x| {
-                let p = at(pixels, x, SIZE / 2);
-                p[0] > 200 && p[1] < 60
-            })
-            .expect("the text shows")
+    // Where the text starts, and how wide the marker is, across the middle row.
+    let seen = |pixels: &[[u8; 4]]| {
+        let row = |x| at(pixels, x, SIZE / 2);
+        let text = (0..SIZE).find(|&x| row(x)[0] > 200 && row(x)[1] < 60).expect("the text shows");
+        let marker = (0..SIZE).filter(|&x| row(x)[1] > 200 && row(x)[0] < 60).count();
+        (text, marker)
     };
-    let normal = first(&frame(&gpu, &mut view));
+    let normal = seen(&frame(&gpu, &mut view));
     let pointer = |point| latkit::Input::Move {
         pointer: 1,
         point,
@@ -249,10 +249,11 @@ fn a_label_moves_outward_when_its_hovered_marker_grows() {
         device: latkit::Device::Mouse,
     };
     view.input(&pointer([SIZE as f32 / 2.0; 2]), common::now());
-    let hovered = first(&frame(&gpu, &mut view));
-    assert!(hovered > normal, "the growing marker moves its label outward: {normal} -> {hovered}");
+    let hovered = seen(&frame(&gpu, &mut view));
+    assert!(hovered.1 > normal.1, "the focus draw grows the hovered marker: {normal:?} -> {hovered:?}");
+    assert_eq!(hovered.0, normal.0, "a hover moves no label");
     view.input(&pointer([0.0; 2]), common::now());
-    assert_eq!(first(&frame(&gpu, &mut view)), normal, "the label returns when the hover leaves");
+    assert_eq!(seen(&frame(&gpu, &mut view)), normal, "the marker shrinks back when the hover leaves");
     assert_eq!(errors(&mut view), Vec::new());
 }
 
@@ -270,17 +271,28 @@ fn a_color_changing_every_frame_leaves_labels_placed() {
 }
 
 #[test]
-fn a_block_shows_its_label_inside_while_it_fits() {
+fn a_sized_shape_holds_its_label_where_it_fits_in_a_color_that_reads_on_it() {
     let Some(gpu) = gpu() else { return };
     let c = SIZE / 2;
-    let green = Color::rgb(0.0, 1.0, 0.0);
-    // The label is 36 by 10 pixels. A 60 by 20 block fits it, and a 20 by 20 block does not.
-    let mut wide = shown(&gpu, vec![0.0], |v| v.size(60.0, 20.0).color(green));
+    let black = Color::rgb(0.0, 0.0, 0.0);
+    // The second row's label is blue, 36 by 10 pixels. A black shape 60 by 20 holds it, lightened
+    // to read on black.
+    let mut wide = shown(&gpu, vec![-1000.0, 0.0], |v| v.size(60.0, 20.0).color(black));
     let middle = at(&frame(&gpu, &mut wide), c, c);
-    assert!(middle[0] > 200 && middle[1] < 60, "the label inside: {middle:?}");
-    let mut narrow = shown(&gpu, vec![0.0], |v| v.size(20.0, 20.0).color(green));
-    let middle = at(&frame(&gpu, &mut narrow), c, c);
-    assert!(middle[1] > 200 && middle[0] < 60, "only the block: {middle:?}");
+    assert!(middle[2] > 200 && (60..140).contains(&middle[0]), "the label inside, lighter: {middle:?}");
+    // A 20 by 20 shape does not hold it, so it shows beside the shape in its own color.
+    let mut narrow = shown(&gpu, vec![-1000.0, 0.0], |v| v.size(20.0, 20.0).color(black));
+    let pixels = frame(&gpu, &mut narrow);
+    let (middle, beside) = (at(&pixels, c, c), at(&pixels, c + 24, c));
+    assert!(middle[2] < 60, "only the shape: {middle:?}");
+    assert!(beside[2] > 200 && beside[0] < 60, "the label beside it: {beside:?}");
+    // Where shapes overlap, only the top one's label shows: the red one inside the shape below
+    // never draws over the shape above it.
+    let mut stacked = shown(&gpu, vec![0.0, 8.0], |v| v.size(60.0, 20.0).color(black));
+    let pixels = frame(&gpu, &mut stacked);
+    let count = |hue: fn([u8; 4]) -> bool| (c - 30..c + 40).filter(|&x| hue(at(&pixels, x, c))).count();
+    assert_eq!(count(|p| p[0] > 100 && p[2] < 60), 0, "the lower shape's label is hidden");
+    assert!(count(|p| p[2] > 200) > 0, "the top shape's label shows");
 }
 
 #[test]
@@ -301,6 +313,32 @@ fn where_labels_would_overlap_the_row_drawn_on_top_shows_its_label() {
     assert!(first[0] > 200 && first[2] < 60, "the first label: {first:?}");
     let after = at(&pixels, c + 44, c);
     assert!(after[2] < 60, "no second label past the first: {after:?}");
+}
+
+#[test]
+fn no_label_shows_under_a_legend_in_a_corner() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    // One row low on the right, where a legend in the bottom-right corner covers it.
+    let data = Data::new("d");
+    let row = Table::new("V", Ids::count(1)).field("x", vec![20.0]).field("y", vec![-40.0]).field("v", vec![0.5]);
+    data.apply(row.field("name", vec!["abcdef"])).expect("valid");
+    let pixels = |legend: bool, labeled: bool| {
+        let color = field("v").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
+        let mut mark = Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).color(color);
+        if legend {
+            mark = mark.legend(Legend::new("v"));
+        }
+        if labeled {
+            mark = mark.label(Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0)));
+        }
+        let mut view = View::new(&gpu, Scene::new(plane()).theme(haloless()).draw(mark));
+        view.set_camera(camera());
+        view.set_sources([&data]).expect("a source");
+        frame(&gpu, &mut view)
+    };
+    assert!(pixels(false, true) != pixels(false, false), "without a legend, the label shows");
+    assert!(pixels(true, true) == pixels(true, false), "under the legend, it shows nowhere");
 }
 
 #[test]

@@ -37,6 +37,7 @@ mod order;
 mod panels;
 mod pending;
 pub mod resource;
+mod room;
 #[cfg(feature = "gpu")]
 mod scene;
 mod schema;

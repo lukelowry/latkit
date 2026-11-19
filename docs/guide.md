@@ -56,13 +56,15 @@ grid.apply(new Patch().set('Bus', [101], { name: ['Northgate'] }).remove('Branch
 
 ### Record over time
 
-A field becomes sampled when you append its first frame. A view shows the axis coordinate
-`view.at`. Marks interpolate each sampled field between the frames on either side of `view.at`. A
+A field becomes sampled at its first append. Append no frames to declare a recording's fields
+before they arrive, so views that read them wait for frames rather than fail. A view shows the axis
+coordinate `view.at`. Marks interpolate each sampled field between the frames on either side of `view.at`. A
 field read with `field(name).step()` shows the last frame at or before it instead. Sampled values
 are stored as `f32` for drawing, and axis coordinates as `f64`.
 
 ```ts
 grid.axis('time', 's');
+grid.append('Bus', [], { vm: new Float32Array(0) }); // declared, no frames yet
 grid.append('Bus', 0.5, { vm: Float32Array.of(1.01, 0.99, 1.0) });
 grid.append('Bus', [1, 1.5], { vm: Float32Array.of(1, 1, 1, 0.98, 0.97, 0.99) });
 grid.append('Bus', 2, { vm: [1.02] }, { ids: [101] }); // one row; the rest hold
@@ -100,9 +102,10 @@ A line that traces a field fetches the spans in its plot window, at the detail i
 marks fetch the frames around `view.at`. While a span loads, the view draws the coarser span that
 covers it. While frames are still recorded, a `TileWriter` writes the same files as they arrive,
 holding only the spans in progress. Apply each patch of appends to it, `flush` it, then call
-`tiles.refresh()`: views keep what they drew and fetch only the last span of each level again. In
-Rust, `Snapshot::to_tiles` writes the files of a whole dataset. A server can also answer the files
-itself through `new Tiles(name, url, { fetch })`.
+`tiles.refresh()`: views keep what they drew and fetch only the last span of each level again.
+Flush it once before the first frames, after appending none, so views find the manifest from the
+start. In Rust, `Snapshot::to_tiles` writes the files of a whole dataset. A server can also answer
+the files itself through `new Tiles(name, url, { fetch })`.
 
 ### Stream
 
@@ -212,9 +215,10 @@ Either way, every mark shows which of its rows are selected and hovered.
 `flow` animates comets along a stroke. An edges mark with `joins: [table, reference]` draws each
 row as a net: a star from the center of the vertex rows whose `reference` names it out to each one.
 
-`label` shows a text field beside each row, inside a block, or along a stroke, when the row is
-visible and the text fits. Labels never overlap. Where two would, the row drawn on top keeps its
-label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit.
+`label` shows a text field beside each row, inside a block where the text fits, or along a stroke,
+when the row is visible. Labels never overlap. Where two would, the row drawn on top keeps its
+label, so `priority` decides which rows are labeled first. A dense view labels as many rows as fit,
+and no label shows under a title or legend in a corner.
 A row whose text is missing has no label, so a `when` that picks between the field and `null`
 labels only some rows, as in the scene above. A number label is written on the GPU each frame, so it
 can follow a sampled field: `label: { text: field('vm'), precision: 3, unit: ' pu' }`.

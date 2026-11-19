@@ -176,7 +176,8 @@ the globe spans a third of the view's shorter side.
 **`daylight`**`?: number | null` [¶](#earth-daylight){.headerlink}
 : Lights the earth by the sun's position this many seconds after the Unix epoch, plus the view's
   axis coordinate when it has one. The night side darkens the ground and everything on it, down to
-  the theme's `earth.night` brightness. When unset, the earth is lit evenly.
+  the theme's `earth.night` brightness. The sun moves in steps of 4 seconds, too small to see.
+  When unset, the earth is lit evenly.
 
 {#earth-atmosphere .member}
 **`atmosphere`**`?: boolean` [¶](#earth-atmosphere){.headerlink}
@@ -389,6 +390,13 @@ rows pick, select, and drag. These options control the view itself.
 : How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
   options that read `elapsed`. `system` follows the user's reduced-motion setting, `full` animates
   everything, and `reduced` animates only motion the user drives. Defaults to `system`.
+
+{#controls-fps .member}
+**`fps`**`?: number` [¶](#controls-fps){.headerlink}
+: The most frames a second a view in a canvas draws while the only thing moving is motion that
+  never settles: comets, an orbit, and options that read `elapsed`. Any other change draws on the
+  next display frame, and that motion with it. Lower it to spend less GPU time and send fewer
+  frames to a remote screen. Defaults to 60.
 
 {#controls-reach .member}
 **`reach`**`?:` [`Reach`](#reach) [¶](#controls-reach){.headerlink}
@@ -618,10 +626,11 @@ it for the tiles they fetched.
 : GPU memory in bytes for the data all views of the [`Gpu`](#gpu) draw: its pages and each view's per-row
   state. A table too large for a view's share draws as a paged table, with only the pages the
   camera needs, so it always fits. Pages no view draws stay cached in the rest of the budget, and
-  the least recently drawn are evicted first. Defaults to half the device's addressable
-  word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never shrinks, so
-  set the budget before drawing data. A device without the memory to grow the pool further lowers
-  the budget to the pool's size.
+  the least recently drawn are evicted first. Frames a dataset forgot are freed instead, so a
+  recording that forgets its oldest frames keeps only what it holds. Defaults to half the device's
+  addressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never
+  shrinks, so set the budget before drawing data. A device without the memory to grow the pool
+  further lowers the budget to the pool's size.
 
 {#budget-uploadperframe .member}
 **`uploadPerFrame`**`: number` [¶](#budget-uploadperframe){.headerlink}
@@ -893,7 +902,10 @@ Defaults for areas.
 `interface FlowTheme`
 
 How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
-tail that thins and fades.
+tail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a
+thin rim of the background color ahead of its head, which parts it from the line. Comets end
+before an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,
+and they come back once it rests.
 
 `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
 In position units (degrees on the earth), comets scale with the zoom and stay in place along
@@ -1236,7 +1248,7 @@ How a vertex is drawn: a shape's name, `"block"`, or
 
 {#marker-block .member}
 `{` **`block`**`: { corner?: number | null } }` [¶](#marker-block){.headerlink}
-: A rectangle with rounded corners that holds its label inside.
+: A rectangle with rounded corners that holds its label inside where the text fits.
 
   {#marker-block-corner .member}
   **`corner`**`?: number | null` [¶](#marker-block-corner){.headerlink}
@@ -1415,13 +1427,16 @@ How a line runs between its samples.
 `type Label =` [`ExprInput`](#exprinput) `| { … }`
 
 Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
-field, a number, or options. A label shows when its row is visible and its text fits, for
-example inside a block.
+field, a number, or options. A label shows when its row is visible. A block, or a marker with a
+width and height, holds its label inside where the text fits, and otherwise the label shows
+beside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or
+darker as it needs, and its halo is that color.
 
-Labels beside or along their rows never overlap. Where they would, the row drawn on top keeps
-its label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text
-is missing or empty has no label, so a `when` that returns the field or missing labels only some
-rows.
+Labels never overlap. Where they would, the row drawn on top keeps its label (so `priority`
+decides), and a dense view labels as many rows as fit. A label inside a marker takes the
+marker's room, so where such markers overlap, only the top one's label shows. No label shows
+under a title or legend in a corner. A row whose text is missing or empty has no label, so a
+`when` that returns the field or missing labels only some rows.
 
 {#label-text .member}
 **`text`**`:` [`ExprInput`](#exprinput) [¶](#label-text){.headerlink}
@@ -1435,7 +1450,8 @@ rows.
 
 {#label-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#label-color){.headerlink}
-: Each row's text color. Defaults to the theme's text color.
+: Each row's text color. Defaults to the theme's text color. Inside a shape or block, it keeps a
+  4.5:1 contrast with the row's color.
 
 {#label-maxwidth .member}
 **`maxWidth`**`?: number | null` [¶](#label-maxwidth){.headerlink}

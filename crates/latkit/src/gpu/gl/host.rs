@@ -163,7 +163,7 @@ impl SurfaceInterface for Surface {
     fn configure(&self, device: &DispatchDevice, config: &wgpu::SurfaceConfiguration) {
         assert!(Rc::ptr_eq(&device.as_custom::<Device>().unwrap().0, &self.device.0));
         assert_eq!(config.format, wgpu::TextureFormat::Rgba8Unorm);
-        self.source.reserve([config.width, config.height]);
+        self.source.reserve([config.width, config.height], &self.device.0.gl);
         let texture = Texture::new(
             &self.device.0.gl,
             &wgpu::TextureDescriptor {

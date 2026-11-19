@@ -16,7 +16,7 @@ use crate::{Color, Expr, Image};
 pub enum Marker {
     /// A filled shape.
     Shape(Shape),
-    /// A rectangle with rounded corners that holds its label inside.
+    /// A rectangle with rounded corners that holds its label inside where the text fits.
     Block {
         /// Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`.
         #[serde(default)]

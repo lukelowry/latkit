@@ -230,13 +230,10 @@ pub(crate) fn ranked_page(reference: &Reference, page: usize, rank: &Order) -> V
         .collect()
 }
 
-/// A page of the values of `samples`' rows `rows` at frame `frame`, padded with missing values.
-pub(crate) fn frame(samples: &Samples, rows: &[u32], frame: Option<u64>) -> Vec<u32> {
-    let mut out: Vec<u32> = rows
-        .iter()
-        .map(|&r| frame.and_then(|f| samples.value(r as usize, f)).map_or(MISSING, |v| (v as f32).to_bits()))
-        .collect();
-    out.resize(PAGE_ROWS as usize, MISSING);
+/// A page of the table rows `rows`, padded with `NONE`.
+pub(crate) fn rows(rows: &[u32]) -> Vec<u32> {
+    let mut out = rows.to_vec();
+    out.resize(PAGE_ROWS as usize, NONE);
     out
 }
 

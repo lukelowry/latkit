@@ -2,9 +2,16 @@
 // pixels. Where a path runs on through a segment's end, the segment draws only its own side of the
 // joint there, so a path draws as one stroke.
 
-import package::lib::bind::frame;
-import package::lib::mark::coverage;
+import package::lib::bind::{frame, eye};
+import package::lib::mark::{coverage, fringe};
 import package::lib::types::FLOW_UNITS;
+import package::lib::color::{to_linear, luminance, contrast};
+
+// The least contrast a comet keeps with its stroke, as WCAG measures it: its minimum for graphics.
+// A comet whose color has less takes a rim of the background color, `COMET_RIM` CSS pixels wide,
+// ahead of its head, which parts it from the line.
+const COMET_CONTRAST: f32 = 3.0;
+const COMET_RIM: f32 = 1.0;
 
 struct Stroke {
     a: vec2f,
@@ -27,6 +34,17 @@ struct Stroke {
     // whether it shares each end that way (see `Joints` in `lib/path.wesl`).
     split: vec4f,
     shares: vec2<bool>,
+    // Whether its comets take a rim (see `COMET_CONTRAST`).
+    rim: bool,
+    // How far past `b` along its path the tip of its row's arrowhead lies, in CSS pixels: 0 on the
+    // segment ending in it, and negative where comets keep clear of none.
+    tip: f32,
+}
+
+// Whether comets on a stroke of color `line` (straight) take a rim: the flow color contrasts too
+// little with it.
+fn rims(line: vec3f) -> bool {
+    return contrast(luminance(to_linear(frame.flow.rgb)), luminance(to_linear(line))) < COMET_CONTRAST;
 }
 
 // Whether segment `s` draws its line at pixel `p`. Past an end it shares, the segment beyond draws
@@ -87,15 +105,32 @@ fn gap(d: vec3f, s: Stroke) -> bool {
 
 // Coverage of the pixel at `d` (from `stroke_distance`) by stroke `s`'s line, with its dashes.
 fn covered(d: vec3f, s: Stroke) -> f32 {
-    return select(coverage(d.x), 0.0, gap(d, s));
+    return select(line_coverage(d, s), 0.0, gap(d, s));
 }
 
-// Coverage of the pixel at `d` by comets. Comets are `frame.flow_spacing` apart, offset by stroke
-// `s`'s travel. Each has a round head `frame.flow_width` wide (at least the stroke's width),
-// brightest at its middle, and a tail `frame.flow_length` long that thins and fades.
-fn comet(d: vec3f, s: Stroke) -> f32 {
+// Coverage of the pixel at `d` by stroke `s`'s line, without its dashes. A line thinner than a
+// target pixel covers as a line one pixel wide does, at its width's share: pixels along it, which
+// lie at every distance from its middle up to half a pixel diagonally, then sum to one brightness.
+// At its own width it would cover only pixels near its middle, and look dotted. An arrowhead's
+// segment covers at its own width.
+fn line_coverage(d: vec3f, s: Stroke) -> f32 {
+    let thin = s.width * eye.pixel_ratio;
+    if s.arrow | (thin >= 1.0) {
+        return coverage(d.x);
+    }
+    return thin * coverage(d.x + 0.5 * (s.width - fringe()));
+}
+
+// Coverage of the pixel at `d` by comets (x), and by their rims (y). Comets are
+// `frame.flow_spacing` apart, offset by stroke `s`'s travel. Each has a round head
+// `frame.flow_width` wide (at least the stroke's width), brightest at its middle, and a tail
+// `frame.flow_length` long that thins and fades. A rim rings the front of the head. A comet never
+// covers an arrowhead: on every segment of a row ending in one, a comet fades out before its part
+// nearest the arrowhead (its head's front, or its tail where comets run away from the arrowhead)
+// reaches where the head begins. A stub too short for a comet carries none.
+fn comet(d: vec3f, s: Stroke) -> vec2f {
     if s.flow == 0.0 || frame.flow.a <= 0.0 {
-        return 0.0;
+        return vec2f(0.0);
     }
     // The pixel's distance along the line in the comet unit, and CSS pixels per comet unit: CSS
     // pixels, or position units (`FLOW_UNITS`).
@@ -115,19 +150,56 @@ fn comet(d: vec3f, s: Stroke) -> f32 {
     let fade = select(saturate(1.0 - trail / max(frame.flow_length, 1e-6)), 1.0, cap);
     let reach = 0.5 * max(frame.flow_width, s.width) * mix(0.4, 1.0, fade);
     let distance = select(across, length(vec2f(lead * px, across)), cap);
-    return fade * fade * (1.0 - smoothstep(0.35 * reach, reach, distance));
+    let head = 1.0 - smoothstep(0.35 * reach, reach, distance);
+    let rim = saturate(1.0 - smoothstep(reach, reach + COMET_RIM, distance) - head);
+    var clear = 1.0;
+    if s.tip >= 0.0 {
+        // Where this pixel's comet has its head, in CSS pixels from `a`: behind the pixel by `lead`
+        // in the direction comets run, or ahead of it by `trail`. It reaches toward the arrowhead
+        // by its head's front, or where comets run away from the arrowhead, by its tail.
+        let len = length(s.b - s.a);
+        let head_at = d.z * len - select(-trail, lead, cap) * px * sign(s.flow);
+        let radius = 0.5 * max(frame.flow_width, s.width);
+        let reach = head_at + select(radius, frame.flow_length * px, s.flow < 0.0) + COMET_RIM;
+        let base = len + s.tip - frame.arrow - s.width;
+        clear = saturate((base - reach) / radius);
+    }
+    return fade * fade * clear * vec2f(head, select(0.0, rim, s.rim & cap));
 }
 
-// Premultiplied stroke color. Drawing uses it directly; glow also reads its straight color.
-fn stroke_paint(d: vec3f, s: Stroke) -> vec4f {
-    let line = s.color.a * covered(d, s);
-    if s.flow == 0.0 || frame.flow.a <= 0.0 {
-        return vec4f(s.color.rgb * line, line);
+// Which part of a segment comets cover this frame, as fractions of it from `a` to `b` (x and y), and
+// whether any does (z), as `comet` draws them. The segment runs from `c.x` to `c.y` along its path,
+// in the comet unit, at `px` CSS pixels a unit. Comet heads stand `flow_spacing` apart from where a
+// row's comets have traveled, `travel`, each with a tail `flow_length` behind it, in the direction
+// `flow` runs, and a head reaching `front` CSS pixels ahead. Neither reaches past half the spacing.
+fn comets_on(c: vec2f, px: f32, travel: f32, flow: f32, front: f32) -> vec3f {
+    let spacing = max(frame.flow_spacing, 1e-6);
+    let tail = min(frame.flow_length, 0.5 * spacing);
+    let ahead = min(front / max(px, 1e-12), 0.5 * spacing);
+    // How far a comet reaches below its head along the path, and above it.
+    let below = select(ahead, tail, flow > 0.0);
+    let above = select(tail, ahead, flow > 0.0);
+    let low = min(c.x, c.y);
+    let high = max(c.x, c.y);
+    let first = ceil((low - above - travel) / spacing);
+    let last = floor((high + below - travel) / spacing);
+    let covered = vec2f(max(low, travel + first * spacing - below), min(high, travel + last * spacing + above));
+    let length = c.y - c.x;
+    let t = (covered - c.x) / select(length, 1e-12, abs(length) < 1e-12);
+    return vec3f(min(t.x, t.y), max(t.x, t.y), select(0.0, 1.0, first <= last));
+}
+
+// Premultiplied color of stroke `s` at the pixel at `d`: its line, where `line` says, then any rim
+// over it in the background color, and the comets over both, where `comets` says. Rows paint the
+// line, and the comets draw the comets. The lit draw paints both.
+fn stroke_paint(d: vec3f, s: Stroke, line: bool, comets: bool) -> vec4f {
+    var paint = select(vec4f(0.0), vec4f(s.color.rgb, 1.0) * (s.color.a * covered(d, s)), line);
+    if !comets || s.flow == 0.0 || frame.flow.a <= 0.0 {
+        return paint;
     }
-    let head = comet(d, s) * frame.flow.a * s.color.a;
-    let alpha = head + line * (1.0 - head);
-    let color = frame.flow.rgb * head + s.color.rgb * line * (1.0 - head);
-    return vec4f(color, alpha);
+    let c = comet(d, s) * (frame.flow.a * s.color.a);
+    paint = vec4f(frame.background.rgb, 1.0) * c.y + paint * (1.0 - c.y);
+    return vec4f(frame.flow.rgb, 1.0) * c.x + paint * (1.0 - c.x);
 }
 
 // Preserve the straight-color path's attenuation at vanishing alpha without dividing each RGB

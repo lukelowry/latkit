@@ -79,11 +79,14 @@ fn static_value(c: Column, row: u32) -> vec2u {
     return vec2u(hi, select(lo, 0u, c.low == NONE));
 }
 
-// A sampled column's value at the shown coordinate, as bits. Each page of rows has a six-word
-// cursor: the block and word of the frame at the shown coordinate, the same for the next frame, and
-// both frames' row counts.
+// A sampled column's value at the shown coordinate, as bits. Each page of the table's rows has a
+// six-word cursor: the block and word of the frame at the shown coordinate, the same for the next
+// frame, and both frames' row counts. A paged table's rows read through `low`, a page per slot of
+// each held row's row in the table.
 fn sample_value(c: Column, row: u32) -> u32 {
-    let at = page_of(row);
+    let held = page_of(row);
+    let r = select(page_word(program(c.low + held.x), held.y, NONE), row, c.low == NONE);
+    let at = page_of(r);
     let cursor = c.table + at.x * 6u;
     let local = at.y;
     let next = program(cursor + 2u);
@@ -92,7 +95,7 @@ fn sample_value(c: Column, row: u32) -> u32 {
     let alone = ((c.flags & STEP) != 0u) | (next == NONE) | (local >= program(cursor + 5u)) | missing_bits(a)
         | missing_bits(b);
     let mixed = bitcast<u32>(mix(bitcast<f32>(a), bitcast<f32>(b), c.t));
-    return select(select(mixed, a, alone), MISSING, local >= program(cursor + 4u));
+    return select(select(mixed, a, alone), MISSING, (r == NONE) | (local >= program(cursor + 4u)));
 }
 
 // A bits column's word, such as a reference's row index. NONE where unwired.

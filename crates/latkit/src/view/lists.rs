@@ -7,8 +7,10 @@
 //! drawn row in one word.
 //!
 //! Last come the height orders of marks whose rows stand at different heights, where depth varies.
-//! Each sorts its instances lowest first on the GPU (`raster/order.wesl`), whenever the heights or
-//! the instances change. Height does not depend on the camera, so moving the camera sorts nothing.
+//! Each sorts its instances lowest first on the GPU (`raster/order.wesl`): at once when the
+//! instances change, and in the background, a few passes a frame, when only their heights do, so
+//! heights that stream in cost each frame a bounded share. Height does not depend on the camera, so
+//! moving the camera sorts nothing.
 
 use super::View;
 use std::sync::Arc;
@@ -19,22 +21,28 @@ use crate::data::{Field, RowIds, Version};
 use crate::derive::{Derived, stamp_of};
 use crate::expr::compile::{Deps, Program, Reads};
 use crate::gpu::Inner;
+use crate::gpu::listing::Background;
+use crate::gpu::order::PASSES;
 use crate::gpu::pipelines::Projection;
 use crate::gpu::readback::Readback;
-use crate::gpu::shaders as wgsl;
+use crate::gpu::shaders::{self as wgsl, HEIGHT_BITS, RADIX_BITS};
 use crate::scene::mark::MarkKind;
 use crate::{Mark, Space};
 
 /// A listed mark's segment list (see `Shown::listed`), used when its rows have different numbers
 /// of segments, or for areas, of triangles: where it lies, a stamp of its last build's inputs (the
-/// list, the paths, and for great circles where the vertices are drawn), and its count. Each entry
-/// is a segment's row and distance along its path, or an area's row and prepared corner address.
-/// A curved mark's count is read back,
-/// one readback at a time, and its list grows to fit what was found.
+/// list, the paths, and for great circles where the vertices are drawn), a stamp of what its
+/// distances along were last measured from, and its count. Each entry is a segment's row and the
+/// distance along its path to the segment's end, or an area's row and prepared corner address, so
+/// a row's last entry holds its path's whole length. Distances along are in
+/// position units for comets spaced in them, and otherwise in CSS pixels on screen, measured again
+/// as the projection changes. A curved mark's count is read back, one readback at a time, and its
+/// list grows to fit what was found.
 #[derive(Default)]
 pub(crate) struct Segments {
     pub(crate) list: Option<List>,
     pub(crate) built: u64,
+    measured: u64,
     pub(crate) found: Derived<u32>,
 }
 
@@ -122,8 +130,8 @@ pub(crate) struct DrawnRows {
 
 /// A mark's height order: its list, whose entries are the instance drawn at each position
 /// (`ORDER_WORDS` per instance), and how many instances its last sort covered: those draws cover,
-/// not the spare room of the lists they come from. It sorts again when its instances change, and
-/// at most every [`RESORT`] seconds while only their heights change.
+/// not the spare room of the lists they come from. It sorts at once when its instances change.
+/// When only their heights change, it sorts again in the background (see [`Sort`]).
 #[derive(Default)]
 pub(crate) struct HeightOrder {
     pub(crate) list: Option<List>,
@@ -131,22 +139,51 @@ pub(crate) struct HeightOrder {
     /// Stamps of what its instances are and of where they stand.
     instances: u64,
     heights: u64,
-    /// Whether heights changed since its last sort, which happened at `sorted` on the view's clock.
+    /// Whether heights changed since its last sort began.
     stale: bool,
-    sorted: f64,
+    /// Frames since its heights last changed, `None` before they ever did.
+    since_change: Option<u32>,
 }
 
 impl HeightOrder {
-    /// Whether heights changed since the last sort, which a coming frame makes.
+    /// Whether heights changed since the last sort began, which a coming frame sorts.
     pub(super) fn stale(&self) -> bool {
         self.stale
     }
 }
 
-/// The fewest seconds between two sorts of a height order while only heights change, as when they
-/// stream in every frame. Meanwhile, a row whose height changed may draw out of order among rows of
-/// nearly its height.
-const RESORT: f64 = 0.1;
+/// Records a background sort may pass over a frame: about three milliseconds on a laptop's GPU. A
+/// sort takes [`SORT_PASSES`] passes over its instances, at least one a frame, so a sort of 160,000
+/// raised rows lands within about 32 frames, and one of a few thousand within its frame.
+const SORT_RECORDS: u32 = 1 << 17;
+
+/// Frames without a height change after which heights count as at rest: a change then sorts at
+/// once, and a background sort under way finishes. Heights fed at half the frame rate keep sorting
+/// in the background.
+const RESTED: u32 = 4;
+
+/// Passes a height sort takes: keying the instances, each digit's passes, and writing the order.
+const SORT_PASSES: u32 = 2 + HEIGHT_BITS.div_ceil(RADIX_BITS) * PASSES;
+
+/// A height order sorting in the background, a few passes a frame, while only heights change. Its
+/// mark keeps drawing its last order until this one lands. A view sorts one at a time: the mark,
+/// what its instances were when the sort began, and the passes left.
+pub(crate) struct Sort {
+    mark: usize,
+    key: crate::scene::mark::Key,
+    instances: u64,
+    count: u32,
+    left: u32,
+}
+
+/// This frame's part of a background sort: its mark, the passes it runs, and whether its order
+/// lands.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SortStep {
+    pub(crate) mark: usize,
+    passes: u32,
+    pub(crate) lands: bool,
+}
 
 /// Words a height order keeps per instance: the instance and its key, on each of two sides.
 const ORDER_WORDS: u32 = 1;
@@ -193,17 +230,18 @@ impl List {
 }
 
 impl View {
-    /// Builds only invalidated lists. Every intermediate stays on the GPU, and persistent lists
-    /// are updated by ordered copies from shared scratch, avoiding sampled/attached aliases.
+    /// Builds only invalidated lists, and measures again the distances along of the segment lists of
+    /// `lengths`. Every intermediate stays on the GPU, and persistent lists are updated by ordered
+    /// copies from shared scratch, avoiding sampled/attached aliases.
     pub(super) fn record_lists(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         expanded: &[usize],
-        segments: &[usize],
-        ordered: &[usize],
+        [segments, lengths]: [&[usize]; 2],
+        (ordered, sorting): (&[usize], Option<SortStep>),
     ) {
-        if expanded.is_empty() && segments.is_empty() && ordered.is_empty() {
+        if expanded.is_empty() && segments.is_empty() && lengths.is_empty() && ordered.is_empty() && sorting.is_none() {
             return;
         }
         let gpu = self.gpu.clone();
@@ -251,10 +289,30 @@ impl View {
                 },
             );
         }
+        for &i in lengths {
+            let list = self.marks[i].segments.list.expect("segment list");
+            inner.listing.measure(&mut raster, &input(i), list.kept, list.entries);
+        }
         for &i in ordered {
             let order = &self.marks[i].height_order;
             let list = order.list.expect("height order");
             inner.listing.order(&mut raster, &input(i), (order.count, list.kept), list.entries);
+        }
+        // The background sort keys its instances, runs its digits' passes, then writes its order.
+        if let (Some(step), Some(sort)) = (sorting, self.sort.as_mut()) {
+            let list = self.marks[step.mark].height_order.list.expect("height order");
+            let background = self.background.get_or_insert_with(|| Background::new(device, queue.retired()));
+            for _ in 0..step.passes {
+                match SORT_PASSES - sort.left {
+                    0 => background.begin(&mut raster, &input(step.mark), (sort.count, list.kept)),
+                    done if done < SORT_PASSES - 1 => background.advance(&mut raster, 1),
+                    _ => background.land(&mut raster, &input(step.mark), sort.count, list.entries),
+                }
+                sort.left -= 1;
+            }
+            if sort.left == 0 {
+                self.sort = None;
+            }
         }
     }
 
@@ -326,7 +384,7 @@ impl View {
     /// Whether mark `i`'s rows can stand at different heights where depth varies, so they draw
     /// lowest first: a raised vertex mark on a plane or the earth, and edges and poles ending at
     /// one.
-    fn heights_vary(&self, i: usize) -> bool {
+    pub(super) fn heights_vary(&self, i: usize) -> bool {
         if !matches!(self.scene.space, Space::Plane(_) | Space::Earth(_)) {
             return false;
         }
@@ -341,16 +399,19 @@ impl View {
         }
     }
 
-    /// The marks whose height orders sort this frame: those whose order, lists buffer, or instances
-    /// changed, and, at most every [`RESORT`] seconds, those whose rows' heights changed. Heights
-    /// change where its rows or the vertices they end at are drawn ([`Shown::places_drawn`]), with
-    /// the paths drawn between them, and where the rows resolve their ends. Only an `input` frame
-    /// that moves the clock waits: a picture's or a video's frame shows every row in order, and
-    /// without the clock moving, no later frame would come.
-    pub(super) fn height_orders_due(&mut self, input: bool) -> Vec<usize> {
+    /// The height orders this frame sorts. Those whose lists buffer or instances changed sort at
+    /// once, as do those whose rows' heights changed in a frame that cannot wait: a picture's or a
+    /// video's frame shows every row in order, and without the clock moving, no later frame would
+    /// come. So does a change after heights rested ([`RESTED`]), a one-off change. Heights that
+    /// keep changing sort in the background, one order at a time, at most [`SORT_RECORDS`] records
+    /// of passes a frame, and once they rest, the sort under way finishes. Heights change where its
+    /// rows or the vertices they end at are drawn ([`Shown::places_drawn`]), with the paths drawn
+    /// between them, and where the rows resolve their ends. Returns the marks that sort at once,
+    /// and this frame's part of the background sort.
+    pub(super) fn height_orders_due(&mut self, input: bool) -> (Vec<usize>, Option<SortStep>) {
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
         let places: Vec<(bool, u64)> = self.marks.iter().map(Shown::places_drawn).collect();
-        let (now, waits) = (self.clock.now(), input && self.clock.moved());
+        let waits = input && self.clock.moved();
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(list) = shown.height_order.list.filter(|_| shown.drawable()) else {
@@ -363,14 +424,54 @@ impl View {
             let instances = stamp_of((list.header, list.kept, generation, shown.rows, shown.exits, drawn, count));
             let heights = stamp_of((shown.segments.built, places[i], ends));
             let order = &mut shown.height_order;
-            order.stale |= heights != order.heights || shown.end_block_count > 0;
+            let changed = heights != order.heights || shown.end_block_count > 0;
+            let streaming = order.since_change.is_some_and(|frames| frames < RESTED);
+            order.since_change =
+                if changed { Some(0) } else { order.since_change.map(|frames| frames.saturating_add(1)) };
+            order.stale |= changed;
             order.heights = heights;
-            if instances != order.instances || (order.stale && (!waits || now - order.sorted >= RESORT)) {
-                (order.instances, order.count, order.stale, order.sorted) = (instances, count, false, now);
+            if instances != order.instances || (order.stale && !(waits && streaming)) {
+                (order.instances, order.count, order.stale) = (instances, count, false);
                 due.push(i);
             }
         }
-        due
+        // A sort under way goes on while its mark keeps a height order over the instances it had,
+        // and does not sort at once. Then the first stale order starts one.
+        let marks = &self.marks;
+        let holds = |sort: &Sort| {
+            marks.get(sort.mark).is_some_and(|m| {
+                m.key == sort.key
+                    && m.drawable()
+                    && m.height_order.list.is_some()
+                    && m.height_order.instances == sort.instances
+                    && !due.contains(&sort.mark)
+            })
+        };
+        if self.sort.as_ref().is_some_and(|sort| !holds(sort)) {
+            self.sort = None;
+        }
+        if self.sort.is_none()
+            && let Some(i) = self.marks.iter().position(|m| m.height_order.stale)
+        {
+            let shown = &mut self.marks[i];
+            let order = &mut shown.height_order;
+            order.stale = false;
+            if order.count > 0 {
+                let (key, instances, count) = (shown.key.clone(), order.instances, order.count);
+                self.sort = Some(Sort { mark: i, key, instances, count, left: SORT_PASSES });
+            }
+        }
+        let step = self.sort.as_ref().map(|sort| {
+            let rested = self.marks[sort.mark].height_order.since_change.is_none_or(|frames| frames >= RESTED);
+            let passes = if rested { sort.left } else { (SORT_RECORDS / sort.count.max(1)).clamp(1, sort.left) };
+            SortStep { mark: sort.mark, passes, lands: passes == sort.left }
+        });
+        (due, step)
+    }
+
+    /// Whether a background sort is under way, which later frames go on with.
+    pub(super) fn sorting(&self) -> bool {
+        self.sort.is_some()
     }
 
     /// The marks whose drawn-row words are rewritten this frame: those whose drawing, rows, word
@@ -413,14 +514,65 @@ impl View {
                 (generation(c.drawing.geometry), generation(c.drawing.lane), ends)
             });
             let drawn = shown.drawing().map(|d| d.made);
-            let stamp =
-                stamp_of((list.header, list.items, list.kept, tables, generation, arcs, drawn, measured, shown.fans));
+            let units = shown.along_units;
+            let stamp = stamp_of((
+                list.header,
+                list.items,
+                list.kept,
+                tables,
+                generation,
+                arcs,
+                drawn,
+                measured,
+                shown.fans,
+                units,
+            ));
             if stamp != shown.segments.built {
                 shown.segments.built = stamp;
                 due.push(i);
             }
         }
         due
+    }
+
+    /// The marks whose segment lists measure their distances along again, as the projection
+    /// changed: those that dash, or carry comets spaced in CSS pixels, which measure on screen.
+    /// A list only comets read waits while comets rest (see `View::comets_travel`). A list `built`
+    /// this frame measures as it builds.
+    pub(super) fn lengths_due(&mut self, built: &[usize]) -> Vec<usize> {
+        let screen = self.screen_stamp();
+        let resting = self.comets_shown == 0.0;
+        let mut due = Vec::new();
+        for (i, shown) in self.marks.iter_mut().enumerate() {
+            let read = shown.mark.dashes() || !resting;
+            if shown.segments.list.is_none()
+                || !shown.drawable()
+                || !shown.measures_paths()
+                || shown.along_units
+                || !read
+            {
+                continue;
+            }
+            let stamp = stamp_of((shown.segments.built, screen));
+            if stamp != shown.segments.measured {
+                shown.segments.measured = stamp;
+                if !built.contains(&i) {
+                    due.push(i);
+                }
+            }
+        }
+        due
+    }
+
+    /// A stamp of what the lengths of segments on screen depend on: the projection and the view's
+    /// size, and where depth varies, the camera's center, which brings rows nearer or farther. On a
+    /// map seen straight down, panning changes no length.
+    fn screen_stamp(&self) -> u64 {
+        let projected = self.projected();
+        let matrix = projected.clip_from_world.to_cols_array().map(|v| (v as f32).to_bits());
+        let center = self.deep().then(|| projected.center.map(f64::to_bits));
+        let shape = [projected.globe, projected.parallax, self.size[0], self.size[1]].map(f64::to_bits);
+        stamp_of((matrix, shape, center))
     }
 
     /// Reads curved marks' counts without blocking. Great-circle reservations grow when needed;
@@ -599,18 +751,40 @@ mod tests {
     }
 
     #[test]
-    fn heights_changing_every_frame_sort_at_most_every_resort_and_end_in_order() {
-        use crate::Vertices;
+    fn heights_changing_every_frame_sort_in_the_background_and_end_in_order() {
         let Some(gpu) = crate::gpu::testing::gpu() else { return };
-        let data = Data::new("d");
-        let node = |z: f64| Table::new("Node", vec![0_u64, 1, 2]).field("z", vec![0.0, z, 2.0]);
-        data.apply(node(1.0).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3])).unwrap();
+        // Three raised rows sort within each frame. Twenty thousand take a few frames a sort, which
+        // go on drawing the order before.
+        for rows in [3_u32, 20_000] {
+            let n = rows as usize;
+            let data = Data::new("d");
+            let node = |lift: f64| {
+                let z: Vec<f64> = (0..n).map(|i| (i % 7) as f64 + if i == 1 { lift } else { 0.0 }).collect();
+                Table::new("Node", Ids::count(rows)).field("z", z)
+            };
+            let x: Vec<f64> = (0..n).map(|i| i as f64 / n as f64 - 0.5).collect();
+            data.apply(node(1.0).field("x", x).field("y", vec![0.0; n])).unwrap();
+            let lands = heights_streaming(&gpu, &data, &node);
+            if rows == 3 {
+                assert_eq!(lands, 30, "a small order lands within each frame");
+            } else {
+                assert!(lands > 0 && lands < 30, "a large one lands every few frames: {lands} of 30");
+            }
+        }
+        assert_eq!(gpu.work().late, 0);
+    }
+
+    /// Draws `data`'s raised nodes tilted, then for half a second changes their heights through
+    /// `node` every frame. Returns the frames in which no sort remained under way. Asserts that once
+    /// heights stop changing, the last sort lands and the view sleeps.
+    fn heights_streaming(gpu: &crate::Gpu, data: &Data, node: &dyn Fn(f64) -> Table) -> u32 {
+        use crate::Vertices;
         let raised = Vertices::of("d", "Node").position(field("x"), field("y")).elevation(field("z"));
         let scene = Scene::new(Plane { grid: Grid::Off }).ease(std::time::Duration::ZERO).draw(raised);
-        let mut view = View::new(&gpu, scene);
+        let mut view = View::new(gpu, scene);
         // Tilted, depth varies, so the raised rows draw lowest first.
         view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 50.0, bearing: 0.0 });
-        view.set_sources([&data]).unwrap();
+        view.set_sources([data]).unwrap();
         let device = gpu.device();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("height order test"),
@@ -641,17 +815,13 @@ mod tests {
             frame(&mut view);
         }
         assert!(view.marks[0].height_order.list.is_some(), "the tilted view orders its raised rows");
-        // Half a second of a height changing every frame sorts about every `RESORT`, not every frame.
-        let mut sorts = 0;
+        let mut lands = 0;
         for i in 0..30 {
-            let before = view.marks[0].height_order.sorted;
             data.apply(node(f64::from(i % 4))).unwrap();
             frame(&mut view);
-            sorts += u32::from(view.marks[0].height_order.sorted != before);
+            lands += u32::from(!view.sorting());
         }
-        assert!((4..=6).contains(&sorts), "{sorts} sorts in 30 frames of 1/60 s");
-        // Once the heights stop changing, a frame soon sorts them all, and the view sleeps.
-        assert!(view.needs_render() || !view.marks[0].height_order.stale());
+        // Once the heights stop changing, the last sort lands, and the view sleeps.
         for _ in 0..12 {
             if !view.needs_render() {
                 break;
@@ -659,8 +829,14 @@ mod tests {
             frame(&mut view);
         }
         assert!(!view.needs_render(), "the view sleeps");
-        assert!(!view.marks[0].height_order.stale(), "with every row in order");
-        assert_eq!(gpu.work().late, 0);
+        assert!(!view.marks[0].height_order.stale() && !view.sorting(), "with every row in order");
+        // A frame that does not sort, as while a new scene's sorts compile, keeps no orders, and
+        // ends a sort under way.
+        data.apply(node(3.0)).unwrap();
+        frame(&mut view);
+        view.lay_out_lists_buffer(false);
+        assert!(view.height_orders_due(true).1.is_none() && !view.sorting(), "no sort without its order");
+        lands
     }
 
     #[test]

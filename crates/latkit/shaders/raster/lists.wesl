@@ -3,11 +3,13 @@
 import package::lib::bind::{mark, program};
 import package::lib::types::{WordStep, NONE, POINTS, TRIANGLES, PATH_TRACE, RUN_WORDS,
     FADE_IN, FADE_OUT, DRAWN_ENTERING, DRAWN_LEAVING, LIST_ITEMS, LIST_KEPT, WORD_WIDTH, WORD_HEIGHT, POINT_BITS,
-    HEIGHT_BITS};
+    HEIGHT_BITS, ALONG_UNITS};
 import package::lib::words::{word_read, word_quad, word_index, fullscreen};
 import package::lib::lists::{list, list_start, list_total};
 import package::lib::read::{last_at_most, points_of, point_address};
-import package::lib::path::{row_segments, path_length, path_segment, numbered_segment, segment_ends, PATH};
+import package::lib::path::{
+    row_segments, path_length, path_segment, numbered_segment, segment_ends, place, screen_length, PATH,
+};
 import package::lib::drawn::held_row;
 import package::lib::state::{row_at, vertex_at};
 import package::lib::reduce::ordered;
@@ -117,9 +119,16 @@ fn segments(@builtin(position) position: vec4f) -> @location(0) vec4u {
     var length = 0.0;
     if PATH != PATH_TRACE {
         if mark.primitive != TRIANGLES {
-            // Measured as every pass reads it, through `segment_ends`.
+            // Measured as every pass reads it, through `segment_ends`: in position units, or in CSS
+            // pixels on screen, as the draw finds its `chord`.
             let ends = segment_ends(path_segment(lo, i - list_start(mark.list, lo), 0.0));
-            if ends.a.shown && ends.b.shown { length = path_length(ends.a, ends.b); }
+            if ends.a.shown && ends.b.shown {
+                if (mark.flags & ALONG_UNITS) != 0u {
+                    length = path_length(ends.a, ends.b);
+                } else {
+                    length = screen_length(place(ends.a).clip, place(ends.b).clip);
+                }
+            }
         }
     }
     return vec4u(lo, bitcast<u32>(length), 0u, 0u);

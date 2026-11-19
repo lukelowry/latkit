@@ -202,6 +202,46 @@ fn panning_a_paged_table_draws_every_row_in_view_as_tiles_change() {
 }
 
 #[test]
+fn a_paged_table_reads_each_rows_own_samples_and_packs_nothing_as_the_coordinate_moves() {
+    let Some(gpu) = gpu() else { return };
+    let (columns, rows) = (600, 500);
+    let data = lattice(columns, rows);
+    // Lit in column 300 at frames 0 and 2, and in column 301 at frame 1.
+    let lit = |column: usize| -> Vec<f64> {
+        (0..columns * rows).map(|i| f64::from(u8::from(i % columns == column))).collect()
+    };
+    let frames = [lit(300), lit(301), lit(300)].concat();
+    data.apply(Patch::new().axis("time", "s").append("Bus", [0.0, 1.0, 2.0], [("w", frames)])).expect("frames");
+    let (red, blue) = (Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0));
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(
+        Vertices::of("grid", "Bus")
+            .position(field("x"), field("y"))
+            .radius(2.0)
+            .color(when(field("w").gt(0.5)).then(red).otherwise(blue)),
+    );
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
+    view.set_sources([&data]).expect("a source");
+    let center = SIZE / 2;
+    let mut before = gpu.work();
+    for (t, middle, right) in [(0.25, red, blue), (1.25, blue, red)] {
+        view.set_at(t);
+        let pixels = frame(&gpu, &mut view);
+        assert_eq!(errors(&mut view), []);
+        assert!(view.stats().drawn < view.stats().rows / 4, "the table is paged");
+        for (dx, want) in [(0, middle), (8, right)] {
+            let pixel = at(&pixels, center + dx, center);
+            assert!(close(pixel, want.to_rgba8()), "at {t}, {dx} px right: {pixel:?}");
+        }
+        // Each row reads its own samples on the GPU, so showing other frames packs nothing.
+        if t > 1.0 {
+            assert_eq!((gpu.work() - before).packed, 0, "moving the coordinate packs nothing");
+        }
+        before = gpu.work();
+    }
+}
+
+#[test]
 fn appending_to_a_paged_table_never_thins_it() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);

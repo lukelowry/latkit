@@ -28,6 +28,7 @@ pub(crate) mod raster;
 pub(crate) mod readback;
 pub(crate) mod reduce;
 pub(crate) mod retired;
+pub(crate) mod screen;
 pub(crate) mod shaders;
 mod specialize;
 pub(crate) mod state;
@@ -157,6 +158,9 @@ pub(crate) struct Inner {
     pub(crate) bounds: bounds::Bounds,
     pub(crate) texts: texts::Texts,
     pub(crate) probing: probing::Probing,
+    /// Where each instance of the marks a frame draws lies on screen, which every view's frames
+    /// write before their draws read it.
+    pub(crate) screen: screen::Screen,
     /// Piece keys of recently drawn geometry pages.
     pub(crate) pieces: arena::Pieces,
     pub(crate) pipelines: Pipelines,
@@ -273,10 +277,11 @@ pub struct Budget {
     /// GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's
     /// per-row state. A table too large for a view's share draws as a paged table, with only the
     /// pages the camera needs, so it always fits. Pages no view draws stay cached in the rest of
-    /// the budget, and the least recently drawn are evicted first. Defaults to half the device's
-    /// addressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never
-    /// shrinks, so set the budget before drawing data. A device without the memory to grow the pool
-    /// further lowers the budget to the pool's size.
+    /// the budget, and the least recently drawn are evicted first. Frames a dataset forgot are
+    /// freed instead, so a recording that forgets its oldest frames keeps only what it holds.
+    /// Defaults to half the device's addressable word-texture capacity, at most 1 GiB. The page
+    /// pool grows as data needs it and never shrinks, so set the budget before drawing data. A
+    /// device without the memory to grow the pool further lowers the budget to the pool's size.
     pub bytes: u64,
     /// The most bytes uploaded per frame. Larger data streams in over several frames. Defaults to
     /// 32 MiB.
@@ -443,6 +448,7 @@ impl Gpu {
                 bounds: bounds::Bounds::new(&device, queue.retired()),
                 texts: texts::Texts::new(&device, queue.retired()),
                 probing: probing::Probing::new(&device, queue.retired()),
+                screen: screen::Screen::new(&device, queue.retired()),
                 pieces: arena::Pieces::default(),
                 pipelines: Pipelines::new(&device, counters.clone(), gpu.clone()),
                 colormaps: Colormaps::colormaps(&device),

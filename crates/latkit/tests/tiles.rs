@@ -113,22 +113,33 @@ impl Host for Serving {
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
         self.0.fetched.lock().expect("unpoisoned").push(request.url.to_string());
         let tile = if self.0.dense { dense_tile } else { tile };
-        Pending::ready(Ok(if request.url.starts_with("tiles/") { tile() } else { Vec::new() }))
+        Pending::ready(Ok(match &*request.url {
+            url if url.starts_with("tiles/") => tile(),
+            "index.html" => b"<!doctype html>".to_vec(),
+            _ => Vec::new(),
+        }))
     }
 }
 
 #[test]
-fn an_index_that_is_not_tile_json_fails_as_invalid_input() {
+fn an_index_missing_or_not_tile_json_fails_as_what_it_is() {
     let Some(gpu) = gpu() else { return };
-    // The host serves empty bytes for anything outside `tiles/`.
+    // The host serves a page of HTML at `index.html`, and nothing at other URLs outside `tiles/`.
     gpu.set_host(Serving(Arc::new(Served::default())));
     let scene = Scene::new(Earth::default()).draw(Areas::of("base", "water"));
     let mut view = View::new(&gpu, scene);
-    view.set_sources([&Tiles::new("base", "index.json")]).expect("a source");
+    view.set_sources([&Tiles::new("base", "index.html")]).expect("a source");
     frame(&gpu, &mut view);
-    let errors = errors(&mut view);
-    let [latkit::Error::Invalid { path, .. }] = errors.as_slice() else { panic!("one invalid input: {errors:?}") };
+    let told = errors(&mut view);
+    let [latkit::Error::Invalid { path, .. }] = told.as_slice() else { panic!("one invalid input: {told:?}") };
     assert_eq!(path.to_string(), "base", "named by the tiles' dataset");
+    // An index not there yet, as a recording's before its first frames, is not found, and fetched
+    // again after its retry.
+    view.set_sources([&Tiles::new("base", "missing.json")]).expect("a source");
+    frame(&gpu, &mut view);
+    let told = errors(&mut view);
+    let [latkit::Error::Io(reason)] = told.as_slice() else { panic!("one missing index: {told:?}") };
+    assert!(reason.contains("missing.json was not found"), "{reason}");
 }
 
 #[test]

@@ -124,7 +124,7 @@
             "null"
           ],
           "format": "double",
-          "description": "Lights the earth by the sun's position this many seconds after the Unix epoch, plus the\nview's axis coordinate when it has one. The night side darkens the ground and everything on\nit, down to the theme's `earth.night` brightness. When unset, the earth is lit evenly."
+          "description": "Lights the earth by the sun's position this many seconds after the Unix epoch, plus the\nview's axis coordinate when it has one. The night side darkens the ground and everything on\nit, down to the theme's `earth.night` brightness. The sun moves in steps of 4 seconds, too\nsmall to see. When unset, the earth is lit evenly."
         },
         "atmosphere": {
           "type": "boolean",
@@ -1537,7 +1537,7 @@
               "additionalProperties": false
             },
             {
-              "description": "A rectangle with rounded corners that holds its label inside.",
+              "description": "A rectangle with rounded corners that holds its label inside where the text fits.",
               "type": "object",
               "properties": {
                 "block": {
@@ -1772,7 +1772,7 @@
               "format": "float"
             },
             "color": {
-              "description": "Each row's text color. Defaults to the theme's text color.",
+              "description": "Each row's text color. Defaults to the theme's text color. Inside a shape or block, it keeps a\n4.5:1 contrast with the row's color.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Expr"
@@ -1825,7 +1825,7 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible and its text fits, for\nexample inside a block.\n\nLabels beside or along their rows never overlap. Where they would, the row drawn on top keeps\nits label (so `priority` decides), and a dense view labels as many rows as fit. A row whose text\nis missing or empty has no label, so a `when` that returns the field or missing labels only\nsome rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible. A block, or a marker with a\nwidth and height, holds its label inside where the text fits, and otherwise the label shows\nbeside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or\ndarker as it needs, and its halo is that color.\n\nLabels never overlap. Where they would, the row drawn on top keeps its label (so `priority`\ndecides), and a dense view labels as many rows as fit. A label inside a marker takes the\nmarker's room, so where such markers overlap, only the top one's label shows. No label shows under\na title or legend in a corner. A row whose text is missing or empty has no label, so a `when`\nthat returns the field or missing labels only some rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
     },
     "Legend": {
       "anyOf": [
@@ -2695,7 +2695,7 @@
           "description": "The width of a comet's head, in CSS pixels. A head is never narrower than its stroke."
         }
       },
-      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen."
+      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a\nthin rim of the background color ahead of its head, which parts it from the line. Comets end\nbefore an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,\nand they come back once it rests.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen."
     },
     "Length": {
       "description": "A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
@@ -2797,6 +2797,11 @@
             "motion": {
               "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and\noptions that read `elapsed()`. `system` follows the user's reduced-motion setting, `full`\nanimates everything, and `reduced` animates only motion the user drives. Defaults to\n`system`.",
               "$ref": "#/$defs/Motion"
+            },
+            "fps": {
+              "description": "The most frames a second a view in a canvas draws while the only thing moving is motion\nthat never settles: comets, an orbit, and options that read `elapsed()`. Any other change\ndraws on the next display frame, and that motion with it. Lower it to spend less GPU time\nand send fewer frames to a remote screen. Defaults to 60.",
+              "type": "number",
+              "format": "float"
             },
             "reach": {
               "description": "How far the camera may go from what fits have framed. Defaults to `fit`.",
@@ -3921,7 +3926,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\naddressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never\nshrinks, so set the budget before drawing data. A device without the memory to grow the pool\nfurther lowers the budget to the pool's size."
+          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Frames a dataset forgot are\nfreed instead, so a recording that forgets its oldest frames keeps only what it holds.\nDefaults to half the device's addressable word-texture capacity, at most 1 GiB. The page\npool grows as data needs it and never shrinks, so set the budget before drawing data. A\ndevice without the memory to grow the pool further lowers the budget to the pool's size."
         },
         "uploadPerFrame": {
           "type": "integer",
@@ -5297,7 +5302,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Defaults to half the device's\naddressable word-texture capacity, at most 1 GiB. The page pool grows as data needs it and never\nshrinks, so set the budget before drawing data. A device without the memory to grow the pool\nfurther lowers the budget to the pool's size."
+          "description": "GPU memory in bytes for the data all views of the `Gpu` draw: its pages and each view's\nper-row state. A table too large for a view's share draws as a paged table, with only the\npages the camera needs, so it always fits. Pages no view draws stay cached in the rest of\nthe budget, and the least recently drawn are evicted first. Frames a dataset forgot are\nfreed instead, so a recording that forgets its oldest frames keeps only what it holds.\nDefaults to half the device's addressable word-texture capacity, at most 1 GiB. The page\npool grows as data needs it and never shrinks, so set the budget before drawing data. A\ndevice without the memory to grow the pool further lowers the budget to the pool's size."
         },
         "uploadPerFrame": {
           "type": "integer",

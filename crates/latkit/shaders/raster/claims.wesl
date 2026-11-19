@@ -1,5 +1,7 @@
-// Ascending instance and mark order writes the same winner as a maximum claim key.
-import package::lib::types::WordStep;
+// Ascending instance and mark order writes the same winner as a maximum claim key. A guide's box,
+// drawn after every label's claim with `params.value` set, claims its cells for no label: `params`
+// holds its first cell (`source`, `other`) and its last (`destination`, `layer`).
+import package::lib::types::{WordStep, NONE};
 import package::lib::bind::mark;
 import package::lib::words::word_quad;
 
@@ -14,15 +16,16 @@ struct Claim {
 @vertex
 fn vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) row: u32) -> Claim {
     let m = word_quad(metadata, mark.label_metadata + row * 4u);
+    let guide = params.value != 0u;
     var out: Claim;
     out.position = vec4f(2.0, 2.0, 2.0, 1.0);
-    if (m.w & 1u) == 0u { return out; }
-    let first = vec2u(m.x & 65535u, m.x >> 16u);
-    let last = vec2u(m.y & 65535u, m.y >> 16u);
+    if !guide & ((m.w & 1u) == 0u) { return out; }
+    let first = select(vec2u(m.x & 65535u, m.x >> 16u), vec2u(params.source, params.other), guide);
+    let last = select(vec2u(m.y & 65535u, m.y >> 16u), vec2u(params.destination, params.layer), guide);
     let corners = array<vec2f, 6>(vec2f(0,0), vec2f(1,0), vec2f(0,1), vec2f(0,1), vec2f(1,0), vec2f(1,1));
     let p = mix(vec2f(first), vec2f(last + 1u), corners[v]);
     out.position = vec4f(p / vec2f(params.size) * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), 0.0, 1.0);
-    out.key = vec2u(mark.index + 1u, row + 1u);
+    out.key = select(vec2u(mark.index + 1u, row + 1u), vec2u(NONE), guide);
     return out;
 }
 

@@ -29,6 +29,11 @@ pub(crate) struct Rig {
     pub(crate) orbit: f64,
     /// The box fits have framed, which narrows the zoom and pan limits.
     pub(crate) bounds: Option<Bounds>,
+    /// The camera as the last frame left it, and when on the view's clock it last moved by
+    /// anything but an orbit: a gesture, pending motion, a flight, a fit, or the setter. The camera
+    /// a view draws first is no move.
+    rested: Option<Camera>,
+    pub(crate) moved_at: Option<f64>,
 }
 
 /// A flight from one camera to another, started at `start` on the view's clock.
@@ -97,7 +102,7 @@ impl View {
 
     /// Clamps the camera to its zoom and pan limits, which may have changed since the last frame.
     /// Then applies the share of pending motion due for the `dt` seconds the clock moved, advances
-    /// a flight, and orbits.
+    /// a flight, and orbits. Notes when the camera last moved by anything but an orbit.
     pub(super) fn advance(&mut self, dt: f64) {
         self.move_camera(self.camera);
         if let Some(flight) = &self.rig.flight {
@@ -108,10 +113,7 @@ impl View {
             }
             self.move_camera(camera);
         }
-        if dt <= 0.0 {
-            return;
-        }
-        if self.rig.owed() {
+        if dt > 0.0 && self.rig.owed() {
             // When motion is disabled, pending motion applies at once.
             let moves = self.moves();
             let coast = if moves { 1.0 - (-dt / COAST).exp() } else { 1.0 };
@@ -129,12 +131,20 @@ impl View {
             self.rig.zoom = settle(self.rig.zoom - zoom, 1e-4);
             self.move_camera(camera);
         }
-        if self.rig.orbit != 0.0 && matches!(self.camera, Camera::Map { .. }) && self.moves() {
-            let Camera::Map { center, .. } = self.camera else { return };
+        // An orbit is motion of the view's own, which comets ride through (see `View::comets_travel`).
+        if self.rig.rested.is_some_and(|rested| rested != self.camera) {
+            self.rig.moved_at = Some(self.clock.now());
+        }
+        if dt > 0.0
+            && self.rig.orbit != 0.0
+            && let Camera::Map { center, .. } = self.camera
+            && self.moves()
+        {
             let view = self.projected();
             let camera = self.camera.turned(&view, center, [self.rig.orbit * dt, 0.0]);
             self.move_camera(camera);
         }
+        self.rig.rested = Some(self.camera);
     }
 
     /// Moves the camera for a gesture, a fit, or an animation, or back within limits that changed,

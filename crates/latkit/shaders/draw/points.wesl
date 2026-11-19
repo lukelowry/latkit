@@ -1,19 +1,20 @@
 // Points: one instanced quad per vertex row, shaded by its marker. A quad covers its marker and any
-// status ring, plus one pixel of antialiased edge. The focus variant redraws the lit rows over
-// everything, with quads enlarged for their glow. Where depth varies, an opaque pass draws each
-// marker's opaque pixels before any pixel blends, keeping their depth, so the nearest marker shows.
-// The custom variants call an application's `marker`, and the shaded variants its `shade`.
+// status ring, plus one pixel of antialiased edge. A quad's corners place its point on screen (see
+// `lib/screen.wesl`). The focus variant redraws the lit rows over everything, with quads enlarged
+// for their glow. Where depth varies, an opaque pass draws each marker's opaque pixels before any
+// pixel blends, keeping their depth, so the nearest marker shows. The custom variants call an
+// application's `marker`, and the shaded variants its `shade`.
 
-import package::lib::types::{STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON};
+import package::lib::types::{STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON, DRAW_OPAQUE};
 import package::lib::bind::{mark, ramp, program, focused};
+import package::lib::points::shown_point;
+import package::lib::drawn::drawn_instance;
 import package::lib::state::row_inputs;
 import package::lib::hooks::{MarkerColor, MarkerFragment};
 import package::lib::shade::shade_fragment;
-import package::lib::project::{to_screen, to_clip, nearer, culled};
-import package::lib::points::{Point, shown_point, reach, drawn_clip};
+import package::lib::project::{to_clip, nearer, culled};
+import package::lib::screen::{ScreenPoint, screen_point, point_reach};
 import package::lib::marker::{gauge, pie, filled, outline_distance, status_ring, glow, premultiplied};
-import package::lib::daylight::daylight;
-import package::lib::drawn::drawn_instance;
 import package::lib::color::{output, OPAQUE};
 
 @group(2) @binding(15) var icons: texture_2d_array<f32>;
@@ -41,31 +42,29 @@ const LIT_DRAW: bool = true;
 @if(!focused)
 const LIT_DRAW: bool = false;
 
-// The point drawn at `instance`.
-@if(!focused)
-fn drawn(instance: u32) -> Point {
-    return shown_point(drawn_instance(instance));
-}
-
-@if(focused)
-fn drawn(instance: u32) -> Point {
-    return shown_point(focused(mark.focused + instance));
+// Where point `instance` lies on screen: a drawn row's, or in the lit draw, a lit row's.
+fn marker_at(instance: u32) -> ScreenPoint {
+    if LIT_DRAW {
+        return screen_point(shown_point(focused(mark.focused + instance), true));
+    }
+    return screen_point(shown_point(drawn_instance(instance), false));
 }
 
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
-    let p = drawn(instance);
+    let p = marker_at(instance);
     var out: Varyings;
     if !p.shown {
         out.clip = culled();
         return out;
     }
-    let extent = reach(p, LIT_DRAW);
+    let extent = point_reach(p, LIT_DRAW);
     let quad = vec2f(f32(corner & 1u), f32(corner >> 1u)) * 2.0 - 1.0;
-    out.clip = nearer(to_clip(to_screen(p.clip) + quad * extent, drawn_clip(p)));
+    // Every corner shares the marker's depth, so their w is 1.
+    out.clip = nearer(to_clip(p.center + quad * extent, vec4f(0.0, 0.0, p.depth, 1.0)));
     out.p = quad * extent * vec2f(1.0, -1.0);
     out.row = p.row;
-    out.color = vec4f(p.color.rgb * daylight(p.position), p.color.a);
+    out.color = p.color;
     out.half = max(p.half, vec2f(0.5));
     out.status = p.status;
     out.focus = p.focus;
@@ -124,7 +123,7 @@ fn colored(v: Varyings) -> MarkerColor {
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let c = premultiplied(colored(v));
-    if (mark.opaque != 0u) & (c.a < OPAQUE) {
+    if (mark.draw == DRAW_OPAQUE) & (c.a < OPAQUE) {
         discard;
     }
     return output(c);

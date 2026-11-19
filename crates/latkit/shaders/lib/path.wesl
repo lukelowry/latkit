@@ -58,8 +58,9 @@ fn joins() -> bool {
     return false;
 }
 
-// One segment of a row's path. `along` is the distance along the path where it starts, in position
-// units (degrees on the earth). The segment list stores it. Without a list it is 0. `row` is the
+// One segment of a row's path. `along` is the distance along the path where it ends, in the unit
+// its list measures (see `segments` in `raster/lists.wesl`). The segment list stores it. Without a
+// list it is 0. `row` is the
 // held row, whose state and columns it reads. `item` is the drawn row, which the mark's list
 // numbers. While its tile fades in or out, the segment shows with opacity `presence` and scale
 // `growth`, and a leaving segment ignores the pointer.
@@ -73,7 +74,7 @@ struct Segment {
     leaving: bool,
 }
 
-// Segment `index` of drawn row `item`'s path, starting at distance `along`.
+// Segment `index` of drawn row `item`'s path, ending at distance `along`.
 fn path_segment(item: u32, index: u32, along: f32) -> Segment {
     let d = drawn_row(item);
     return Segment(d.row, item, index, along, d.presence, d.growth, d.leaving);
@@ -133,7 +134,10 @@ struct Joints {
 // A segment on screen: its end points in position units, its ends in CSS pixels and in clip space,
 // whether it shows, the drawn part as fractions along it, and where it meets the segments beside it.
 // The drawn part is cut at the near plane and stops at the markers of the vertices at its ends.
-// A fan (`fan`, see `SegmentPoints`) has no length in position units.
+// `chord` is the length in CSS pixels, between its points and cut at the near plane, of the path's
+// segment it draws or runs beside, as a segment list measures it (see `screen_length`), and
+// `visible` the drawn part as fractions of that cut segment. A fan (`fan`, see `SegmentPoints`)
+// keeps the ends of the segment it fans from, and stands for one end of it (see `on_screen`).
 struct OnScreen {
     ends: PathEnds,
     a: vec2f,
@@ -142,6 +146,8 @@ struct OnScreen {
     cb: vec4f,
     shown: bool,
     kept: vec2f,
+    chord: f32,
+    visible: vec2f,
     joints: Joints,
     fan: u32,
 }
@@ -163,8 +169,7 @@ fn numbered_segment(instance: u32) -> Segment {
 }
 
 // The segment drawn at position `instance`, which `drawn_instance` gives.
-@if(!focused)
-fn segment(instance: u32) -> Segment {
+fn drawn_segment(instance: u32) -> Segment {
     // Traces have a fixed segment count and never sort by height. Keep their inner vertex loop
     // free of list and height-order traversal; drawn rows still handle a shared paged table.
     if PATH == PATH_TRACE {
@@ -174,11 +179,25 @@ fn segment(instance: u32) -> Segment {
     return numbered_segment(drawn_instance(instance));
 }
 
+@if(!focused)
+fn segment(instance: u32) -> Segment {
+    return drawn_segment(instance);
+}
+
 // In the focus draw: segment `instance % mark.pieces` of lit row `instance / mark.pieces`, with its
 // distance along from the list. Segments past the row's last draw nothing.
 @if(focused)
 fn segment(instance: u32) -> Segment {
     return lit_segment(instance);
+}
+
+// The segment a stroke mark draws at position `instance`: in its rows' draws, or with `lit`, in its
+// focus draw. The screen pass writes both kinds of record with one program.
+fn stroke_segment(instance: u32, lit: bool) -> Segment {
+    if lit {
+        return lit_segment(instance);
+    }
+    return drawn_segment(instance);
 }
 
 fn lit_segment(instance: u32) -> Segment {
@@ -188,6 +207,13 @@ fn lit_segment(instance: u32) -> Segment {
     let along = bitcast<f32>(list(list_entry(mark.list, 2u * (list_start(mark.list, item) + index)) + 1u));
     let listed = (mark.per_row == NONE) & (item < mark.rows) & (index < path_count(item));
     return path_segment(item, index, select(0.0, along, listed));
+}
+
+// The length of drawn row `item`'s whole path, in the unit its list measures: where its last listed
+// segment ends.
+fn path_total(item: u32) -> f32 {
+    let last = max(list_start(mark.list, item + 1u), 1u) - 1u;
+    return bitcast<f32>(list(list_entry(mark.list, 2u * last) + 1u));
 }
 
 // Distance between two path points in position units, which a segment adds to the distance along.
@@ -290,6 +316,12 @@ fn exit_marker(v: PathPoint, center: vec2f, p: vec2f, dir: vec2f) -> f32 {
     let outside = dot(q, q) - v.half.x * v.half.x;
     let circle = select(0.0, sqrt(max(along * along - outside, 0.0)) - along, outside <= 0.0);
     return select(circle, boxed, v.boxed);
+}
+
+// The farthest vertex `v`'s marker reaches from its center, in CSS pixels: its radius, or a box's
+// half diagonal. No path leaves the marker farther out (see `exit_marker`).
+fn marker_reach(v: PathPoint) -> f32 {
+    return select(v.half.x, length(v.half), v.boxed);
 }
 
 // How far vertex `v`'s marker reaches across a path whose sideways direction is `n`, from its
@@ -763,6 +795,19 @@ fn in_front(ca: vec4f, cb: vec4f) -> vec2f {
     return vec2f(select(0.0, t, da < 0.0), select(1.0, t, db < 0.0));
 }
 
+// The length in CSS pixels of the part in front of the near plane of the segment from clip position
+// `ca` to `cb`, as `on_screen` finds its `chord`. A segment list measures distances along in CSS
+// pixels with it.
+fn screen_length(ca: vec4f, cb: vec4f) -> f32 {
+    var cut = vec2f(0.0, 1.0);
+    if (ca.z > ca.w) | (cb.z > cb.w) {
+        cut = in_front(ca, cb);
+    }
+    let a = to_screen(mix(ca, cb, cut.x));
+    let b = to_screen(mix(ca, cb, cut.y));
+    return select(0.0, length(b - a), cut.x < cut.y);
+}
+
 // Segment `s` on screen (see `OnScreen`).
 fn segment_screen(s: Segment) -> OnScreen {
     return on_screen(segment_points(s));
@@ -772,11 +817,8 @@ fn segment_screen(s: Segment) -> OnScreen {
 // part. A parallel edge runs beside its path, and a fan from its vertex out to it.
 fn on_screen(p: SegmentPoints) -> OnScreen {
     var out: OnScreen;
-    // In position units a fan stays at its vertex.
     out.fan = p.fan;
     out.ends = p.ends;
-    if p.fan == 1u { out.ends.b = p.ends.a; }
-    if p.fan == 2u { out.ends.a = p.ends.b; }
     if !p.ends.a.shown | !p.ends.b.shown { return out; }
     // The points the segment projects, each placed at one call in a loop, as `path_points` reads
     // them: its ends, then where a stroke joins its neighbors (`joined`) the points beside them,
@@ -841,11 +883,16 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
     var start = joint(before, vec3f(sa, front.x), vec3f(sb, front.y));
     var end = joint(vec3f(sa, front.x), vec3f(sb, front.y), after);
     let dir = normalize(sb - sa + vec2f(1e-6, 0.0));
+    out.chord = length(sb - sa);
     var a = sa;
     var b = sb;
     // Whether the drawn segment starts or ends at a vertex, which its stroke stops short of.
     var at_from = p.first;
     var at_to = p.last;
+    // The part of the segment from `sa` to `sb` that the drawn piece stands for, as fractions of it.
+    // Where an edge fans, its fans stand for the first and last `reach` of its path, and the path
+    // between them for the rest, so distances along run on through the fans.
+    var span = vec2f(0.0, 1.0);
     if has_end_vertices() {
         var o = 0.0;
         if p.lane.offset != 0.0 {
@@ -863,6 +910,7 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
             // path. The segments meeting there both compute that corner and its joint from the
             // first own segment, or the last.
             let reach = fan_length(sa, sb, o);
+            let r = reach / max(out.chord, 1e-6);
             let into = sa + beside(dir) * o + dir * reach;
             let out_of = sb + beside(dir) * o - dir * reach;
             let fan_start = joint(vec3f(sa, front.x), vec3f(into, front.x * front.y), vec3f(into + dir * reach, front.y));
@@ -870,30 +918,35 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
             if p.first {
                 a = into;
                 start = fan_start;
+                span.x = r;
             }
             if p.last {
                 b = out_of;
                 end = fan_end;
+                span.y = 1.0 - r;
             }
             if p.fan == 1u {
                 a = sa;
                 b = into;
                 end = fan_start;
                 start.through = false;
+                span = vec2f(0.0, r);
             }
             if p.fan == 2u {
                 a = out_of;
                 b = sb;
                 start = fan_end;
                 end.through = false;
+                span = vec2f(1.0 - r, 1.0);
             }
             at_from = p.fan == 1u;
             at_to = p.fan == 2u;
         }
     }
-    out.kept = cut;
     // Strokes stop at the markers of their end vertices, and each end gives up at most half the
-    // length. An end cut at the near plane has no vertex to stop at.
+    // length. An end cut at the near plane has no vertex to stop at. `drawn` is what is left, as
+    // fractions of the piece.
+    var drawn = vec2f(0.0, 1.0);
     if clips_outlines() {
         let along = b - a;
         let length_along = length(along);
@@ -907,9 +960,12 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
             let short = min(stops, vec2f(room));
             a += u * short.x;
             b -= u * short.y;
-            out.kept = mix(vec2f(cut.x), vec2f(cut.y), vec2f(short.x, length_along - short.y) / length_along);
+            drawn = vec2f(short.x, length_along - short.y) / length_along;
         }
     }
+    // What is drawn, within what the piece stands for, within what lies in front of the near plane.
+    out.visible = mix(vec2f(span.x), vec2f(span.y), drawn);
+    out.kept = mix(vec2f(cut.x), vec2f(cut.y), out.visible);
     out.a = a;
     out.b = b;
     out.joints = joints_of(start, end);

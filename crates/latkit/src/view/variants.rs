@@ -3,7 +3,8 @@
 //! Draw: for each kind of mark, its draw pipelines and the raster passes it needs (for a stroke
 //! mark, those for the path it follows), and each mark's channel pipeline for what its channels
 //! read. Where depth can vary, a mark's opaque draw shares its rows' program, so it costs no
-//! compile. Text: labels, glyphs, the distance fields text is set in, and the overlay. Changes: the
+//! compile, as its comets' draw does. Text: labels, glyphs, the distance fields text is set in, and
+//! the overlay. Changes: the
 //! passes that transitions and comet carry use. Lit: the lit rows' draws. Layers: the height sorts
 //! frames use where depth varies. Fit: the passes measuring rows' extents for a
 //! fit. Input: each kind of mark's probe program, which answers hover, picks, box selection, and
@@ -30,8 +31,8 @@ use crate::gpu::Inner;
 use crate::gpu::atlas::FIELDS;
 use crate::gpu::hooks::Hooks;
 use crate::gpu::pipelines::{Asked, Projection, Urgency, Variant};
-use crate::gpu::shaders::{PATH_BENDS, PATH_ENDS, PATH_GEOMETRY, PATH_POLES, Shader};
-use crate::scene::mark::MarkKind;
+use crate::gpu::shaders::{PATH_BENDS, PATH_ENDS, PATH_GEOMETRY, PATH_POLES, PATH_TRACE, Shader};
+use crate::scene::mark::{MarkKind, Primitive};
 use crate::{Action, Mark, Scene, Space};
 
 /// Writes the word of each drawn row of a paged mark from its runs.
@@ -55,7 +56,8 @@ pub(super) const DIGIT_PASSES: [Variant; 4] = [
 /// Eases a mark in transition from its frozen words toward its settled ones.
 pub(super) const EASE: Variant = Variant::raster(Shader::State, "ease");
 
-/// Moves comets along their rows at this frame's flow.
+/// Writes how far comets have traveled into their rows, before their flows change or their rows
+/// move, and every so often (see `View::comets_travel`).
 pub(super) const TRAVEL: Variant = Variant::raster(Shader::State, "travel");
 
 /// Carries comets' travel over to the rows a transition moved.
@@ -110,9 +112,18 @@ impl MarkVariants {
     pub(super) fn shader(&self, draw: Draw) -> Shader {
         let (every, focus) = self.kind.shaders(self.hooks.marker.is_some(), self.hooks.shade.is_some());
         match draw {
-            Draw::Rows | Draw::Opaque => every,
+            Draw::Rows | Draw::Opaque | Draw::Comets | Draw::Depth => every,
             Draw::Lit => focus,
         }
+    }
+
+    /// The pass writing where each segment of a stroke mark lies on screen this frame, for its draws
+    /// and for its lit draw, which read it (see `lib/screen.wesl`). A trace's segment and a point
+    /// cost less to place than a record does, so their draws place them, and areas draw from their
+    /// triangles.
+    pub(super) fn screen(&self) -> Option<Variant> {
+        (self.kind.primitive() == Primitive::Strokes && self.path != PATH_TRACE)
+            .then(|| Variant::raster(Shader::Screen, "record").path(self.path).projection(self.projection))
     }
 
     /// The pipeline for draw `draw`. The mark's hooks complete its shader.
@@ -449,6 +460,13 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.add_all(Stage::Changes, [Asked::Shader(EASE), Asked::Shader(GATHER)]);
     }
     if !scene.marks.is_empty() {
+        // Frames start from the still once its pipeline lands, after the marks' own. Under it, the
+        // globe draws its depth again.
+        stages.add(Stage::Changes, draw(Shader::Still));
+        if Projection::of(&scene.space) == Projection::Globe {
+            let depth = Variant::draw(Shader::Backdrop, format, samples).mode(Draw::Depth);
+            stages.add(Stage::Changes, Asked::Shader(depth.projection(Projection::Globe)));
+        }
         stages.add(Stage::Draw, Asked::Shader(PAGES));
         if any(&|mark| matches!(mark, Mark::Edges(_))) {
             stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::State, "ends")));
@@ -471,8 +489,10 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     if written || labeled {
         stages.add_all(Stage::Text, FIELDS.map(Asked::Shader));
     }
+    // Comets travel, and frames where only they move start from the still.
     if any(&Mark::flows) {
         stages.add(Stage::Draw, Asked::Shader(TRAVEL));
+        stages.add(Stage::Draw, draw(Shader::Still));
         stages.add(Stage::Changes, Asked::Shader(CARRY));
     }
     if any(&|m| MarkVariants::of(m, &scene.space).listed()) {
@@ -503,6 +523,11 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, &scene.space);
     stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
+    stages.add_all(Stage::Draw, variants.screen().map(Asked::Shader));
+    // Comets draw over their rows with the rows' program.
+    if mark.flows() {
+        stages.add(Stage::Draw, variants.draw(Draw::Comets, format, samples));
+    }
     stages.add(Stage::Lit, variants.draw(Draw::Lit, format, samples));
     // Depth varies only where the camera can tilt or the globe shows: on a plane or the earth.
     if matches!(scene.space, Space::Plane(_) | Space::Earth(_)) {

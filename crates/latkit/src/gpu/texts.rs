@@ -96,6 +96,37 @@ impl Texts {
         });
     }
 
+    /// Claims the cells `[first, last]` of `grid` for no label, as a guide's box does, after the
+    /// labels of the mark `input` draws claimed theirs.
+    pub(crate) fn claim_box(
+        raster: &mut Raster<'_>,
+        input: &Inputs<'_>,
+        labels: &Words,
+        grid: &Texture,
+        cells: [[u32; 2]; 2],
+    ) {
+        let [first, last] = cells;
+        raster.draw(Draw {
+            variant: Variant::raster(Shader::Claims, "claim"),
+            shared: Some(shared(input)),
+            uniform: 19,
+            step: WordStep {
+                source: first[0],
+                other: first[1],
+                destination: last[0],
+                layer: last[1],
+                value: 1,
+                size: [grid.raw.width(), grid.raw.height()],
+                ..WordStep::of(1)
+            },
+            bindings: &[wgpu::BindGroupEntry { binding: 18, resource: labels.binding() }],
+            target: &grid.view,
+            vertices: 6,
+            instances: 1,
+            clear: false,
+        });
+    }
+
     pub(crate) fn gather(
         &mut self,
         raster: &mut Raster<'_>,

@@ -442,7 +442,8 @@ writer.flush(write); // then tiles.refresh()
 **`flush`**`(write: (path: string, bytes: Uint8Array) => void): void` [¶](#tilewriter-flush){.headerlink}
 : Calls `write` with the spans in progress as they stand, then the base and the `frames.json`
   manifest, so [`Tiles`](#tiles) drawing the manifest find every frame appended so far. A span written
-  again as it grows replaces the one before.
+  again as it grows replaces the one before. Flushed before the first frames, after appends of
+  none, it lists their fields, so views find the manifest from the start.
 
 (source)=
 
@@ -653,7 +654,8 @@ const patch = new Patch('grid')
 {#patch-append .member}
 **`append`**`(table: string, at: number | readonly number[], fields: Readonly<Record<string,` [`Values`](#values)`>>, options?: { ids?:` [`RowIds`](#rowids) `}): this` [¶](#patch-append){.headerlink}
 : Records a frame of `table` at each axis coordinate in `at`. Each field gives one value per row
-  for each frame, frame by frame. A field becomes a sampled field at its first frame. Consecutive
+  for each frame, frame by frame. A field becomes a sampled field at its first append, even of no
+  frames, which declares it so views can read it before its frames arrive. Consecutive
   appends of typed float arrays to the same fields of every row are written as one change, so
   appending one frame per call costs no more than one call with every frame.
 
@@ -1590,15 +1592,32 @@ playhead.play(); // one axis unit per second
 
 {#playhead-at .member}
 **`at`**`: number` [¶](#playhead-at){.headerlink}
-: The axis coordinate it is at. Setting it moves every view that follows it at once.
+: The axis coordinate it is at. Setting it moves every view that follows it at once, and stops a
+  live playhead.
 
 {#playhead-rate .member}
 `readonly` **`rate`**`: number` [¶](#playhead-rate){.headerlink}
-: Axis units per second it moves while it plays, backward when negative.
+: Axis units per second it moves while it plays, backward when negative. While live, the rate the
+  end of its span moves.
 
 {#playhead-playing .member}
 `readonly` **`playing`**`: boolean` [¶](#playhead-playing){.headerlink}
-: Whether it plays.
+: Whether it is moving. A live playhead that reached the end of its span waits there.
+
+{#playhead-live .member}
+**`live`**`: boolean` [¶](#playhead-live){.headerlink}
+: Whether it plays along the end of its span while the page extends the span as data arrives, as
+  a recording does. It trails the end by a little more than the time between arrivals, at the rate
+  the end moves, so data that arrives in uneven chunks plays at an even pace, and eases to a stop
+  at the end when no more arrives. Turning it on starts at the end. Seeking, playing, or pausing
+  stops it, and turning it off pauses it where it is.
+
+  ```ts
+  playhead.live = true;
+  // As frames arrive:
+  data.append('Bus', times, { vm });
+  playhead.span = [0, times.at(-1)];
+  ```
 
 {#playhead-span .member}
 **`span`**`: readonly [number, number] | null` [¶](#playhead-span){.headerlink}
@@ -1619,7 +1638,7 @@ playhead.play(); // one axis unit per second
 
 {#playhead-pause .member}
 **`pause`**`(): void` [¶](#playhead-pause){.headerlink}
-: Stops it where it is.
+: Stops it where it is, live or not.
 
 {#playhead-on .member}
 **`on`**`(type: 'at', listener: (at: number) => void): () => void` [¶](#playhead-on){.headerlink}

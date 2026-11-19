@@ -13,9 +13,12 @@
 //! reserves all the pages its next draw reads at once, or none. Resident pages are pinned, and
 //! missing ones get blocks, evicting the least recently used unpinned pages. So nothing is partly
 //! pinned and no page waits for space. Page tables pin the pages they reference, so a page in use
-//! is never evicted, and unpinned pages stay cached. Uploads stream into the reserved blocks within
-//! a per-frame byte budget. Views plan their drawing to fit the pool, so a reservation rarely finds
-//! no space. When it does, it waits for the next frame, which grows the pool by the shortfall.
+//! is never evicted, and unpinned pages stay cached, except a page of frames that no version of
+//! its dataset holds, such as frames forgotten: nothing draws it again, so it is freed before the
+//! pool grows. So a recording that forgets its oldest frames keeps the pool at the frames it holds.
+//! Uploads stream into the reserved blocks within a per-frame byte budget. Views plan their drawing
+//! to fit the pool, so a reservation rarely finds no space. When it does, it waits for the next
+//! frame, which grows the pool by the shortfall.
 //!
 //! A page written over a resident page takes that page's block when the tables reading it are
 //! replaced, and uploads only the rows written (see [`Arena::rewrite`]). Nothing is allocated and
@@ -38,7 +41,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 
 use rustc_hash::{FxBuildHasher, FxHasher};
@@ -59,6 +62,11 @@ const CLASSES: usize = (CHUNK_BITS - MIN_CLASS_BITS + 1) as usize;
 /// 64-bit words in a chunk's free bitmap, one bit per block of the smallest class.
 const FREE_WORDS: usize = 1 << (CHUNK_BITS - MIN_CLASS_BITS - 6);
 const INITIAL_CHUNKS: u32 = 8;
+/// Most cached pages a frame, or an allocation, checks for pages no dataset holds.
+const SWEPT: usize = 64;
+
+/// A handle that tells whether any version of a dataset still holds a page.
+type Held = Weak<dyn Send + Sync>;
 /// Most points a geometry piece holds, each stored as an x and a y word.
 pub(crate) const PIECE_POINTS: usize = 1 << POINT_BITS;
 const _: () = assert!(2 * PIECE_POINTS <= CHUNK_WORDS as usize, "a piece of points fits a chunk");
@@ -159,6 +167,14 @@ impl Content {
             Content::Values { values, words, low } => append_words(&values.slice(range), *words, *low, out),
             Content::Frames(page) => page.read(|values| out.extend_from_slice(bytemuck::cast_slice(&values[range]))),
             Content::Computed(words) => out.extend_from_slice(&words[range]),
+        }
+    }
+
+    /// For a page of a dataset's frames, a handle that tells whether any version still holds it.
+    fn kept(&self) -> Option<Held> {
+        match self {
+            Content::Frames(page) => Some(page.kept()),
+            Content::Values { .. } | Content::Computed(_) => None,
         }
     }
 
@@ -306,6 +322,15 @@ struct Block {
     pins: u32,
     /// When it was last unpinned: its position in the LRU order.
     tick: u64,
+    /// For a page of a dataset's frames, whether any version still holds it (see [`Block::gone`]).
+    kept: Option<Held>,
+}
+
+impl Block {
+    /// Whether no version of its dataset holds its page any more, so nothing can draw it again.
+    fn gone(&self) -> bool {
+        self.kept.as_ref().is_some_and(|kept| kept.strong_count() == 0)
+    }
 }
 
 /// A chunk of the pool: free, or carved into blocks of one class with a bit per free block. The
@@ -345,8 +370,10 @@ pub(crate) struct Arena {
     free: BTreeSet<u32>,
     partial: [BTreeSet<u32>; CLASSES],
     blocks: HashMap<PageKey, Block, FxBuildHasher>,
-    /// Unpinned, allocated blocks by when they were unpinned.
+    /// Unpinned, allocated blocks by when they were unpinned, and where the next sweep for pages no
+    /// dataset holds starts (see [`sweep`](Arena::sweep)).
     unpinned: BTreeMap<u64, PageKey>,
+    swept: u64,
     tick: u64,
     uploads: VecDeque<PageKey>,
     contents: HashMap<PageKey, Content, FxBuildHasher>,
@@ -385,6 +412,7 @@ impl Arena {
             partial: Default::default(),
             blocks: HashMap::default(),
             unpinned: BTreeMap::new(),
+            swept: 0,
             tick: 0,
             uploads: VecDeque::new(),
             contents: HashMap::default(),
@@ -406,6 +434,7 @@ impl Arena {
         for (offset, class) in std::mem::take(&mut self.freed) {
             self.release(offset, class);
         }
+        self.sweep();
         self.writing = false;
         let short = std::mem::take(&mut self.short).div_ceil(u64::from(CHUNK_WORDS));
         if short > 0 {
@@ -444,7 +473,7 @@ impl Arena {
                 self.grow(device, queue, (chunks + short).max(2 * chunks).min(u64::from(u32::MAX)) as u32);
             }
         }
-        let mut placed: HashMap<PageKey, (u32, usize), FxBuildHasher> = HashMap::default();
+        let mut placed: HashMap<PageKey, (u32, usize, Option<Held>), FxBuildHasher> = HashMap::default();
         let mut room = true;
         for (ask, _) in asks.iter().zip(&held).filter(|&(_, &held)| !held) {
             if placed.contains_key(&ask.key) {
@@ -455,10 +484,10 @@ impl Arena {
                 room = false;
                 break;
             };
-            placed.insert(ask.key, (offset, class.expect("placed")));
+            placed.insert(ask.key, (offset, class.expect("placed"), ask.content.as_ref().and_then(Content::kept)));
         }
         if !room {
-            for (offset, class) in placed.into_values() {
+            for (offset, class, _) in placed.into_values() {
                 self.release(offset, class);
             }
             for ask in asks.iter().zip(&held).filter(|&(_, &held)| held).map(|(ask, _)| ask) {
@@ -466,8 +495,8 @@ impl Arena {
             }
             return false;
         }
-        for (key, (offset, class)) in placed {
-            self.blocks.insert(key, Block { offset, class, written: 0, pins: 0, tick: 0 });
+        for (key, (offset, class, kept)) in placed {
+            self.blocks.insert(key, Block { offset, class, written: 0, pins: 0, tick: 0, kept });
         }
         for (ask, held) in asks.iter_mut().zip(held) {
             if !held {
@@ -528,6 +557,7 @@ impl Arena {
                 tails.push((block.offset + piece.start, content, words, u64::from(i == 0)));
             }
             block.written = block.written.max(ask.need);
+            block.kept = content.kept();
             self.blocks.insert(ask.key, block);
         }
         self.upload(queue, tails);
@@ -683,7 +713,8 @@ impl Arena {
     }
 
     /// Releases a pin a table took. A page no longer pinned stays cached, unless it is still
-    /// uploading: nothing waits for it now, so it is freed and its upload dropped.
+    /// uploading (nothing waits for it now, so it is freed and its upload dropped) or no version of
+    /// its dataset holds it, as frames forgotten, which nothing draws again.
     pub(crate) fn unpin(&mut self, key: PageKey) {
         self.release_pin(key, true);
     }
@@ -703,7 +734,8 @@ impl Arena {
         if block.pins > 0 {
             return;
         }
-        if self.contents.remove(&key).is_some() || !cache {
+        let gone = block.gone();
+        if self.contents.remove(&key).is_some() || !cache || gone {
             let block = self.blocks.remove(&key).expect("a resident page");
             self.release(block.offset, block.class);
             return;
@@ -754,6 +786,36 @@ impl Arena {
         bytes
     }
 
+    /// Frees cached pages that no version of their dataset holds, such as frames forgotten as a
+    /// recording moves on, so the pool keeps its room for pages that can still be drawn instead of
+    /// filling its budget with them. Each frame checks at most [`SWEPT`] cached pages, from where
+    /// the last sweep stopped, so a frame's work does not grow with the pool.
+    fn sweep(&mut self) {
+        let from = self.swept;
+        let checked: Vec<(u64, PageKey)> =
+            self.unpinned.range(from..).chain(self.unpinned.range(..from)).take(SWEPT).map(|(&t, &k)| (t, k)).collect();
+        self.swept = checked.last().map_or(0, |&(tick, _)| tick + 1);
+        for (tick, key) in checked {
+            if self.blocks.get(&key).is_some_and(Block::gone) {
+                self.drop_cached(tick, key);
+            }
+        }
+    }
+
+    /// Frees the first page no dataset holds among the [`SWEPT`] least recently used cached pages,
+    /// where forgotten frames gather. Returns whether it freed one.
+    fn free_gone(&mut self) -> bool {
+        let gone = self.unpinned.iter().take(SWEPT).find(|(_, key)| self.blocks[*key].gone()).map(|(&t, &k)| (t, k));
+        gone.inspect(|&(tick, key)| self.drop_cached(tick, key)).is_some()
+    }
+
+    /// Frees cached page `key`, unpinned at `tick`.
+    fn drop_cached(&mut self, tick: u64, key: PageKey) {
+        self.unpinned.remove(&tick);
+        let block = self.blocks.remove(&key).expect("an unpinned page is resident");
+        self.release(block.offset, block.class);
+    }
+
     fn release(&mut self, offset: u32, class: usize) {
         let k = offset / CHUNK_WORDS;
         let slot = (offset % CHUNK_WORDS) / class_words(class);
@@ -771,9 +833,10 @@ impl Arena {
     }
 
     /// Allocates a block of `class`. Tries, in order: a free block of that class, a newly carved
-    /// free chunk, growing the pool (only before this frame writes the pages), then evicting least
-    /// recently used unpinned blocks of any size. Returns `None` when every remaining block is
-    /// pinned or a per-row block. The next frame then grows the pool by the shortfall.
+    /// free chunk, freeing a cached page no dataset holds, growing the pool (only before this frame
+    /// writes the pages), then evicting least recently used unpinned blocks of any size. Returns
+    /// `None` when every remaining block is pinned or a per-row block. The next frame then grows
+    /// the pool by the shortfall.
     fn allocate(&mut self, device: &wgpu::Device, queue: &Queue, class: usize) -> Option<(u32, bool)> {
         loop {
             if let Some(&k) = self.partial[class].first() {
@@ -799,16 +862,14 @@ impl Arena {
                 self.partial[class].insert(k);
                 continue;
             }
-            if !self.writing && self.grow(device, queue, 2 * self.chunks.len() as u32) {
+            if self.free_gone() || (!self.writing && self.grow(device, queue, 2 * self.chunks.len() as u32)) {
                 continue;
             }
             let Some((&tick, &key)) = self.unpinned.iter().next() else {
                 self.short += u64::from(class_words(class));
                 return None;
             };
-            self.unpinned.remove(&tick);
-            let block = self.blocks.remove(&key).expect("an unpinned page is resident");
-            self.release(block.offset, block.class);
+            self.drop_cached(tick, key);
         }
     }
 
@@ -1085,6 +1146,27 @@ mod tests {
         arena.discard(cached);
         assert!(!arena.holds(cached, 64));
         assert_eq!(arena.resident(), 0);
+        // A page of frames no version of its dataset holds, as frames forgotten, is freed instead
+        // of cached: when the last table lets go, or once a frame begins if it was cached first.
+        for cached_first in [false, true] {
+            let mut samples = crate::data::Samples::default();
+            samples.append(&[0.0], &Values::from(vec![1.0_f32; 64]), 64).expect("a frame");
+            let (frames, _) = samples.cursor(0, 0).expect("its page");
+            let key = PageKey::of(frames.id, Words::Values, false);
+            assert!(arena.reserve(device, queue, &mut [Ask { key, need: 64, content: Some(Content::Frames(frames)) }]));
+            arena.pump(queue, u64::MAX);
+            if cached_first {
+                arena.unpin(key);
+                assert!(arena.holds(key, 64), "frames a dataset still holds stay cached");
+                drop(samples);
+                arena.begin_frame(device, queue);
+            } else {
+                drop(samples);
+                arena.unpin(key);
+            }
+            assert!(!arena.holds(key, 64), "frames no version holds are freed (cached first: {cached_first})");
+            assert_eq!(arena.resident(), 0);
+        }
     }
 
     #[test]

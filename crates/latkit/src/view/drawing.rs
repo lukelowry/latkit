@@ -12,7 +12,7 @@
 //! while kept.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rustc_hash::FxHashSet;
 
@@ -114,6 +114,8 @@ pub(crate) struct Drawing {
     kept_from: u64,
     /// A stamp of how it holds rows. See [`Drawing::layout`].
     layout: u64,
+    /// See [`Drawing::reads`].
+    reads: OnceLock<Arc<[bool]>>,
 }
 
 /// Pinned rows (drawn regardless of tiles) as order places, ascending, with a stamp to compare them
@@ -252,6 +254,7 @@ impl Drawing {
             moved: before.map_or_else(|| (Version::next(), Arc::default()), |b| b.moved.clone()),
             kept_from,
             layout: 0,
+            reads: OnceLock::new(),
         };
         drawing.layout = stamp_of((drawing.order.id(), drawing.order.len(), &*drawing.slots, &*drawing.kept));
         if let Some(b) = before.filter(|b| b.kept_from != kept_from) {
@@ -378,6 +381,24 @@ impl Drawing {
                 self.places(s).into_iter().map(source).collect()
             }
         }
+    }
+
+    /// Whether each page of the table's own rows has a row in a slot. A sampled column reads the
+    /// table's frames of only those pages.
+    pub(crate) fn reads(&self) -> Arc<[bool]> {
+        self.reads
+            .get_or_init(|| {
+                let mut reads = vec![false; self.order.len().div_ceil(PAGE_ROWS) as usize];
+                for s in 0..self.slot_count() {
+                    for r in self.rows(s) {
+                        if let Some(read) = reads.get_mut((r / PAGE_ROWS) as usize) {
+                            *read = true;
+                        }
+                    }
+                }
+                reads.into()
+            })
+            .clone()
     }
 
     /// The held row of order place `d`, from its resident page or the kept rows. `None` if not

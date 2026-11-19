@@ -44,6 +44,35 @@ fn to_linear(c: vec3f) -> vec3f {
     return select(pow((c + 0.055) / 1.055, vec3f(2.4)), c / 12.92, c <= vec3f(0.04045));
 }
 
+// The relative luminance of a color in linear light, and the contrast ratio between two, as WCAG
+// defines them (see `legible` in `src/expr/ramp.rs`).
+fn luminance(linear: vec3f) -> f32 {
+    return dot(linear, vec3f(0.2126, 0.7152, 0.0722));
+}
+
+fn contrast(a: f32, b: f32) -> f32 {
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05);
+}
+
+fn to_srgb(c: vec3f) -> vec3f {
+    return select(1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3f(0.0031308));
+}
+
+// `color` (straight sRGB) made lighter or darker, toward whichever of white and black contrasts more
+// with `ground`, until its contrast ratio with `ground` is at least `ratio`, as `legible` in
+// `src/expr/ramp.rs` makes colormap colors read on the background. Luminance is linear in linear
+// light, so the mix toward white or black that reaches the ratio has a closed form.
+fn legible(color: vec3f, ground: vec3f, ratio: f32) -> vec3f {
+    let c = to_linear(color);
+    let g = luminance(to_linear(ground));
+    let l = luminance(c);
+    let lighter = contrast(1.0, g) >= contrast(0.0, g);
+    let want = select((g + 0.05) / ratio - 0.05, ratio * (g + 0.05) - 0.05, lighter);
+    let end = select(0.0, 1.0, lighter);
+    let fitted = to_srgb(mix(c, vec3f(end), saturate((want - l) / (end - l))));
+    return select(fitted, color, contrast(l, g) >= ratio);
+}
+
 // A premultiplied fragment color prepared for the target. sRGB values convert to linear when the
 // target stores linear color.
 fn output(premultiplied: vec4f) -> vec4f {

@@ -38,8 +38,8 @@ pub(crate) struct Shared<'a> {
 }
 
 /// One integer raster dispatch. Resources are sampled inputs; the destination is separate. Every
-/// raster shader writes one color target, so ANGLE on D3D11 builds its pixel shader when the
-/// program links, not at its first draw.
+/// raster shader but the screen pass's (see [`super::screen`]) writes one color target, so ANGLE
+/// on D3D11 builds its pixel shader when the program links, not at its first draw.
 pub(crate) struct Render<'a> {
     pub(crate) variant: Variant,
     pub(crate) shared: Option<Shared<'a>>,
@@ -394,8 +394,9 @@ fn scan(raster: &mut Raster<'_>, levels: &[Level], input: At<'_>, output: At<'_>
     raster.run((Shader::Words, "scan"), input.words, other, output.words, step, (count + 1).next_multiple_of(4));
 }
 
-/// An exclusive sum of lengths within each contiguous row. The hierarchy carries the last row
-/// and only its trailing sum; no global prefix is subtracted, preserving short local distances.
+/// An inclusive sum of lengths within each contiguous row, so each entry holds the distance to its
+/// end and a row's last entry its whole length. The hierarchy carries the last row and only its
+/// trailing sum; no global prefix is subtracted, preserving short local distances.
 #[derive(Default)]
 pub(crate) struct Lengths {
     levels: Vec<Level>,
@@ -417,7 +418,7 @@ impl Lengths {
             self.levels[level].prefix.ensure(raster.device, u64::from(n) * 4);
             level += 1;
         }
-        lengths(raster, &self.levels, input, output, count, false);
+        lengths(raster, &self.levels, input, output, count, true);
     }
 }
 
@@ -509,9 +510,9 @@ pub(super) mod tests {
                     sum = 0.0;
                 }
                 let length = (i % 7) as f32 + 0.25;
+                sum += length;
                 values.extend([row, length.to_bits(), 0, 0]);
                 expected.extend([row, sum.to_bits(), 0, 0]);
-                sum += length;
             }
             input.write(queue, 0, &values);
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -685,7 +686,17 @@ pub(super) mod tests {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             let mut raster = Raster { device, queue, pipelines: &mut fixture.pipelines, encoder: &mut encoder };
             raster.fill(&input, At::new(&output, 0), room, 0xfedc_ba98);
-            order.record(&mut raster, (At::new(&input, 4), At::new(&output, 4)), n, n, bits);
+            let sides = (At::new(&input, 4), At::new(&output, 4));
+            if (n, bits) == (65_539, 20) {
+                // A pass at a time, a submission each, as a sort spread over frames runs.
+                let mut sorting = order.begin(&mut raster, n, n, bits);
+                while !order.advance(&mut raster, sides, &mut sorting, 1) {
+                    let next = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    queue.submit([std::mem::replace(&mut *raster.encoder, next).finish()]);
+                }
+            } else {
+                order.record(&mut raster, sides, n, n, bits);
+            }
             let read =
                 Readback::words(&fixture.readbacks, device, &mut encoder, &output, 0, room, std::task::Waker::noop());
             queue.submit([encoder.finish()]);

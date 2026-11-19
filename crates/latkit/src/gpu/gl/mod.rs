@@ -50,9 +50,9 @@ fn noticed_loss(state: &std::rc::Rc<device::State>) -> bool {
     lost
 }
 
-/// Yields to the next browser task, where WebGL fences and queries advance.
-async fn turn() {
-    crate::time::next_task().await;
+/// Whether the GPU of `device`, latkit's WebGL2 device, has not finished the frame presented last.
+pub(crate) fn behind(device: &wgpu::Device) -> bool {
+    device.as_custom::<device::Device>().is_some_and(|device| waits::Waits::behind(&device.0))
 }
 
 pub(crate) fn take_read(buffer: &wgpu::Buffer, size: u64) -> Option<Vec<u8>> {
@@ -98,18 +98,19 @@ fn show(
     if noticed_loss(state) {
         return Ok(());
     }
-    blit(texture, canvas)?;
+    blit(texture)?;
     waits::Waits::presented(state);
     let size = texture.0.size;
     sink.copy(canvas, [size.width, size.height])
 }
 
-fn blit(texture: &resource::Texture, canvas: &super::browser::Canvas) -> crate::Result<()> {
+fn blit(texture: &resource::Texture) -> crate::Result<()> {
     use web_sys::WebGl2RenderingContext as Gl;
     let gl = &texture.0.gl;
     let size = texture.0.size;
-    // The caller reserved room for the texture, so the canvas never resizes while presenting.
-    let extent = canvas.size();
+    // The caller reserved room for the texture, so the canvas never resizes while presenting. Rows
+    // count from the top of the drawing buffer, which the canvas matches (see `Canvas::fit`).
+    let extent = [gl.drawing_buffer_width(), gl.drawing_buffer_height()].map(|side| side.max(0) as u32);
     if size.width > extent[0] || size.height > extent[1] {
         return Err(crate::Error::Unsupported("the presentation texture is larger than the WebGL2 canvas".into()));
     }
