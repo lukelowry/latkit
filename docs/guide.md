@@ -214,6 +214,9 @@ Either way, every mark shows which of its rows are selected and hovered.
 
 `flow` animates comets along a stroke. An edges mark with `joins: [table, reference]` draws each
 row as a net: a star from the center of the vertex rows whose `reference` names it out to each one.
+On a plot, `trace` names the sampled field a line draws, or scales it: `trace: field('vm').mul(100)`
+draws per-unit values as percent. An axis's `minSpan` keeps a fit from zooming into the noise of a
+steady signal.
 
 `label` shows a text field beside each row, inside a block where the text fits, or along a stroke,
 when the row is visible. Labels never overlap. Where two would, the row drawn on top keeps its
@@ -257,7 +260,9 @@ Where an expression can't say how a mark looks, two options take WGSL:
 
 - A vertex mark's `marker: { wgsl: { source, inputs } }` draws each marker. `source` defines
   `fn marker(f: MarkerFragment) -> MarkerColor`, which returns the pixel's color and its signed
-  distance from the outline, so glows and status rings follow the shape.
+  distance from the outline, so glows and status rings follow the shape. The color's alpha is the
+  pixel's coverage, blended as given: fade the edge yourself, as
+  `color.a * saturate(0.5 - distance / fwidth(distance))` does.
 - Any mark's `shade: { source, inputs }` colors each pixel before it blends. `source` defines
   `fn shade(f: ShadeFragment) -> vec4f`. It reads the pixel (`f.px`, and `f.local` within its row's
   shape), the pointer (`f.pointer`), and the time (`f.elapsed`). A shade that reads the time draws

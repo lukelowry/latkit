@@ -378,6 +378,8 @@ pub(crate) struct Drawing {
     pub(crate) markers: Markers,
     /// The program column a line traces, or `NONE`.
     pub(crate) trace: u32,
+    /// The scale and offset a trace draws its field's values at: `value × scale + offset`.
+    pub(crate) scale: [f64; 2],
     /// Program columns, `NONE` when absent. `geometry` holds the points a stroke's path runs
     /// through (a net's star, bends, or a line's path) or an area's triangles. `lane` holds each
     /// row's lane among edges joining the same two vertices.
@@ -399,6 +401,7 @@ impl Drawing {
             flags: 0,
             markers: Markers::default(),
             trace: wgsl::NONE,
+            scale: [1.0, 0.0],
             geometry: wgsl::NONE,
             lane: wgsl::NONE,
             label: None,

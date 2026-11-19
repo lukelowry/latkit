@@ -330,8 +330,9 @@ const STATUS: u32 = 16u;
 const LABELED: u32 = 32u;
 const STEP_BEFORE: u32 = 64u;
 const STEP_AFTER: u32 = 128u;
-// Distances along the mark's paths are in position units, for comets spaced in them. Otherwise
-// they are in CSS pixels on screen.
+// Distances along the mark's paths are in position units, for comets spaced in them, or on a plane
+// seen straight down, where the screen scales them evenly. Otherwise they are in CSS pixels on
+// screen.
 const ALONG_UNITS: u32 = 256u;
 
 // The draws that bind a copy of a mark's uniform. ROWS: its rows, and every pass but the draws.

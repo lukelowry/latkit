@@ -98,20 +98,36 @@ fn show(
     if noticed_loss(state) {
         return Ok(());
     }
-    blit(texture)?;
+    blit(texture, [0, 0])?;
     waits::Waits::presented(state);
     let size = texture.0.size;
     sink.copy(canvas, [size.width, size.height])
 }
 
-fn blit(texture: &resource::Texture) -> crate::Result<()> {
+/// Draws a picture at the top left of the context's own canvas: each of `parts`, a texture with
+/// the pixel its top left goes to, as a picture's panels. A browser's video encoder takes the
+/// picture from the canvas. On a lost context it draws nothing, and fails.
+pub(crate) fn picture(queue: &wgpu::Queue, parts: &[([u32; 2], &wgpu::Texture)]) -> crate::Result<()> {
+    let other = || crate::Error::Unsupported("picture texture belongs to another GPU".into());
+    let queue = queue.as_custom::<queue::Queue>().ok_or_else(other)?;
+    if noticed_loss(&queue.state) {
+        return Err(crate::Error::DeviceLost);
+    }
+    for &(origin, texture) in parts {
+        blit(texture.as_custom::<resource::Texture>().ok_or_else(other)?, origin)?;
+    }
+    Ok(())
+}
+
+/// Blits `texture` to the context's own canvas, its top left at pixel `origin` from the top left.
+fn blit(texture: &resource::Texture, origin: [u32; 2]) -> crate::Result<()> {
     use web_sys::WebGl2RenderingContext as Gl;
     let gl = &texture.0.gl;
     let size = texture.0.size;
     // The caller reserved room for the texture, so the canvas never resizes while presenting. Rows
     // count from the top of the drawing buffer, which the canvas matches (see `Canvas::fit`).
     let extent = [gl.drawing_buffer_width(), gl.drawing_buffer_height()].map(|side| side.max(0) as u32);
-    if size.width > extent[0] || size.height > extent[1] {
+    if origin[0] + size.width > extent[0] || origin[1] + size.height > extent[1] {
         return Err(crate::Error::Unsupported("the presentation texture is larger than the WebGL2 canvas".into()));
     }
     let read = gl
@@ -124,8 +140,8 @@ fn blit(texture: &resource::Texture) -> crate::Result<()> {
     gl.disable(Gl::SCISSOR_TEST);
     let width = size.width as i32;
     let height = size.height as i32;
-    let top = extent[1] as i32;
-    gl.blit_framebuffer(0, 0, width, height, 0, top, width, top - height, Gl::COLOR_BUFFER_BIT, Gl::NEAREST);
+    let [left, top] = [origin[0] as i32, extent[1] as i32 - origin[1] as i32];
+    gl.blit_framebuffer(0, 0, width, height, left, top, left + width, top - height, Gl::COLOR_BUFFER_BIT, Gl::NEAREST);
     gl.delete_framebuffer(Some(&read));
     Ok(())
 }

@@ -76,6 +76,12 @@ export interface Axis {
   precision?: number | null;
   /** Text written after the last tick's value, such as `" s"` or `"%"`, so the axis needs no title. */
   unit?: string | null;
+  /**
+   * The least range a fit shows on the axis, centered on what it fits, so a steady signal draws flat
+   * instead of filling the plot with its noise: `0.1` shows a steady `1.0` as `0.95` to `1.05`. When
+   * unset, a fit shows what it fits.
+   */
+  minSpan?: number | null;
 }
 
 /** An image of RGBA texels: straight alpha, sRGB, rows top to bottom. */
@@ -410,10 +416,10 @@ export type Controls =
        */
       motion?: Motion;
       /**
-       * The most frames a second a view in a canvas draws while the only thing moving is motion that
-       * never settles: comets, an orbit, and options that read `elapsed`. Any other change draws on the
-       * next display frame, and that motion with it. Lower it to spend less GPU time and send fewer
-       * frames to a remote screen. Defaults to 60.
+       * The most frames a second a view in a canvas draws while the only thing moving is the shown
+       * coordinate, as a playhead plays, or motion that never settles: comets, an orbit, and options
+       * that read `elapsed`. Any other change draws on the next display frame, and that motion with it.
+       * Lower it to spend less GPU time and send fewer frames to a remote screen. Defaults to 60.
        */
       fps?: number;
       /** How far the camera may go from what fits have framed. Defaults to `fit`. */
@@ -876,10 +882,12 @@ export interface Lines extends MarkOptions, StrokeOptions {
    */
   geometry?: string | null;
   /**
-   * The sampled field each row traces across the data's axis. Required on a plot, and allowed only
-   * there. A field with no frames yet draws nothing until its first frame arrives.
+   * What each row traces across the data's axis: a sampled field's name, with or without `$`, or an
+   * expression that multiplies the field by a number and adds one, such as
+   * `{ "mul": ["$vm", 100] }`. Required on a plot, and allowed only there. A field with no frames
+   * yet draws nothing until its first frame arrives.
    */
-  trace?: string | null;
+  trace?: string | ExprInput;
   /** How each row runs between its samples on a plot. Defaults to `linear`. */
   interpolation?: Interpolation;
 }
@@ -986,9 +994,11 @@ export type Marker =
        * reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's size
        * as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It returns
        * the pixel's straight color and its signed distance in CSS pixels from the outline, negative
-       * inside, which glows and status rings follow. The source may declare its own functions, types,
-       * and constants. Of latkit's shader code, it sees only `MarkerFragment` and `MarkerColor`. It
-       * compiles once, when a view first draws it.
+       * inside, which glows and status rings follow. The color's alpha is the pixel's coverage: latkit
+       * blends it as given and smooths no edge, so fade the outline over a pixel, as
+       * `color.a * saturate(0.5 - distance / fwidth(distance))` does. The source may declare its own
+       * functions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and
+       * `MarkerColor`. It compiles once, when a view first draws it.
        */
       wgsl: {
         /** The WGSL source of the `marker` function. */
@@ -1358,6 +1368,12 @@ export type Title =
       /** Where the title sits. Defaults to `top` on a plot and `top-left` elsewhere. */
       place?: Place | null;
     };
+
+/**
+ * A sampled field's name, with or without `$`, or an expression that multiplies the field by a
+ * number and adds one.
+ */
+export type Trace = string | ExprInput;
 
 /**
  * A size in position units (degrees on the earth). It scales with the zoom. `atLeast` and `atMost`

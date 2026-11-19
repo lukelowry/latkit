@@ -29,7 +29,7 @@ pub(crate) use form::seconds;
 pub use guide::{Legend, Place, Title};
 pub use label::Label;
 pub use layout::{Direction, Interpolation, Layered, Layout, Route, Stress};
-pub use lines::Lines;
+pub use lines::{Lines, Trace};
 pub use mark::Mark;
 pub use marker::{Marker, Shape};
 pub use shade::Shade;

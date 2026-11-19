@@ -431,12 +431,16 @@ impl<'a> Compiler<'a> {
         self.stored(name, expr, Store::Number { word, fallback: None })
     }
 
-    /// The column of sampled field `name` that a line traces over the axis. Errors if `name` is not
-    /// a sampled field.
-    pub(crate) fn trace(&mut self, name: &str) -> Result<u32> {
+    /// The column of sampled field `name` that a line traces over the axis, drawing each value times
+    /// `scale[0]` plus `scale[1]`. Those are the program's first two constants, which
+    /// `lib/trace.wesl` reads, so a trace compiles before any channel. Errors if `name` is not a
+    /// sampled field.
+    pub(crate) fn trace(&mut self, name: &str, scale: [f64; 2]) -> Result<u32> {
         if self.fields.kind(None, name) != Some(Kind::Sampled) {
             return Err(invalid("not a sampled field").at(name));
         }
+        debug_assert!(self.program.constants.is_empty(), "a trace's scale is its program's first constants");
+        self.program.constants.extend(scale.map(|k| (k as f32).to_bits()));
         let use_ = ColumnUse { sampled: true, trace: true, ..ColumnUse::own(name, Words::Values) };
         self.deps |= Deps::SAMPLES;
         Ok(self.column(use_))

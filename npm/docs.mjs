@@ -845,6 +845,7 @@ const sections = {
         'Vertices',
         'Edges',
         'Lines',
+        'Trace',
         'Areas',
         'Marker',
         'Shape',

@@ -15,7 +15,7 @@ use super::marks::{Holding, Shown};
 use super::resources::{MARK_STRIDE, Resources};
 use super::sync::{Inputs, Rebuilt, Rows, Source, Window};
 use super::transition::{bound, holds_alike, in_place, moved};
-use super::variants::Stage;
+use super::variants::{MarkVariants, Stage};
 use super::words::Kept;
 use super::{Camera, Event, Frame, View, uniforms};
 use crate::data::Keyed;
@@ -288,7 +288,7 @@ impl View {
                 resolver.resolve(Ok(()));
             }
         }
-        self.changed = false;
+        (self.changed, self.played) = (false, false);
         self.stats.frames += 1;
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
         if self.due(input) {
@@ -304,14 +304,17 @@ impl View {
         let device = &gpu.0.device;
         let fans =
             matches!(self.scene.theme.edge.parallel, Some(crate::Parallel { converge: crate::Converge::Fan, .. }));
-        // Comets in position units place themselves along a path in those units. Everything else
-        // measures along it in CSS pixels on screen.
+        // Comets in position units place themselves along a path in those units. On a plane seen
+        // straight down, the screen only scales and turns positions, so every distance along is
+        // measured in units too, once, and the draw scales it: a zoom or pan measures nothing.
+        // Everything else measures along a path in CSS pixels on screen.
         let units = matches!(self.scene.theme.flow.spacing, crate::Length::Units(_));
+        let flat = matches!(self.scene.space, crate::Space::Plane(_)) && !self.deep();
         for i in 0..self.marks.len() {
             let geodesic = self.geodesic(&self.marks[i]);
             let shown = &mut self.marks[i];
             (shown.geodesic, shown.fans) = (geodesic, fans);
-            shown.along_units = units && shown.mark.flows();
+            shown.along_units = (units && shown.mark.flows()) || (flat && shown.measures_paths());
         }
         self.resources.get_or_insert_with(|| Resources::new(device, gpu.0.queue.retired()));
         let fresh = self.fit_words(inner);
@@ -445,8 +448,9 @@ impl View {
 
     /// Reports the failures when they changed. Runs after the frame takes the latest data versions,
     /// so a dataset filled between frames reports nothing about the version before. Failures change
-    /// only with the scene, the data, or a hook's check, so most frames only compare each mark's
-    /// with what it last reported. A mark whose hook does not compile draws nothing, and says why.
+    /// only with the scene, the data, a hook's check, or a tile fetch, so most frames only compare
+    /// each mark's with what it last reported. A mark whose hook does not compile draws nothing, and
+    /// says why.
     fn tell_failures(&mut self, inner: &mut Inner) {
         inner.pipelines.check_hooked();
         for shown in self.marks.iter_mut().filter(|shown| !shown.twin) {
@@ -460,7 +464,9 @@ impl View {
                 shown.failures.push(failure.clone());
             }
         }
-        let due = std::mem::take(&mut self.scene_failures_due) || self.marks.iter().any(|m| m.failures != m.told);
+        let due = std::mem::take(&mut self.scene_failures_due)
+            | self.derived.tiles.take_failures_due()
+            | self.marks.iter().any(|m| m.failures != m.told);
         if !due {
             return;
         }
@@ -575,6 +581,8 @@ impl View {
 
     /// Every mark's uniform at its dynamic offset, then each one's copy for its opaque draw, then,
     /// where any mark has comets, for its comets' draw (see [`passes::offset`](super::passes::offset)).
+    /// The comets draw of a mark whose segments have records numbers its instances by its comet
+    /// slots, so its copy's `list` is theirs, or `NONE` while it has none.
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
         let count = self.marks.len();
         let blocks = if self.marks.iter().any(|shown| shown.mark.flows()) { 3 } else { 2 };
@@ -593,6 +601,9 @@ impl View {
             write(count + i, &uniform);
             if blocks == 3 {
                 uniform.draw = wgsl::DRAW_COMETS;
+                if MarkVariants::shown(shown, &self.scene.space).screen().is_some() {
+                    uniform.list = shown.comets.list.map_or(wgsl::NONE, |list| list.header);
+                }
                 write(2 * count + i, &uniform);
             }
         }
@@ -624,7 +635,7 @@ impl View {
             let style = shown.mark.style();
             let Some(compiled) = &shown.compiled else {
                 if let crate::Mark::Lines(lines) = &shown.mark
-                    && let Some(field) = &lines.trace
+                    && let Some(field) = lines.trace.as_ref().and_then(|trace| trace.field())
                 {
                     fields.push((style.data.clone(), style.table.clone(), field.clone(), true));
                 }

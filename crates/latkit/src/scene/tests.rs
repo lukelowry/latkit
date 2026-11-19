@@ -33,6 +33,17 @@ fn scenes_match_builders() {
                 .color(field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05)),
         );
     assert_eq!(scene(json), built);
+    // A trace names its field, with or without `$`, or scales it by numbers. Anything else traces
+    // nothing, and says why when the mark compiles.
+    let trace = |json: &str| -> Mark {
+        serde_json::from_str(&format!(r#"{{ "lines": ["d", "t"], "trace": {json} }}"#)).expect(json)
+    };
+    let named = Lines::of("d", "t").trace("vm");
+    assert_eq!((trace(r#""vm""#), trace(r#""$vm""#)), (named.clone().into(), named.into()));
+    let scaled = trace(r#"{ "add": [{ "mul": [100, { "sub": ["$vm", 1] }] }, 5] }"#);
+    assert_eq!(scaled, Lines::of("d", "t").trace(field("vm") * 100.0 - 95.0).into(), "the same scale and offset");
+    let Mark::Lines(squared) = trace(r#"{ "mul": ["$vm", "$vm"] }"#) else { unreachable!("lines") };
+    assert_eq!(squared.trace.and_then(|trace| trace.field().cloned()), None);
 }
 
 #[test]

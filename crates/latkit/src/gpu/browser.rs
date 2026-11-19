@@ -246,6 +246,23 @@ impl Browser {
     pub(crate) fn present(&mut self, queue: &wgpu::Queue, source: &wgpu::Texture, sink: &Sink) -> Result<()> {
         super::gl::present(queue, source, &self.canvas, sink)
     }
+
+    /// Draws a `size`-pixel picture at the top left of the shared canvas, from `parts`, each a
+    /// texture with the pixel its top left goes to. Returns the canvas, which shows the picture
+    /// until something else draws on it.
+    pub(crate) fn picture(
+        &mut self,
+        queue: &wgpu::Queue,
+        parts: &[([u32; 2], &wgpu::Texture)],
+        size: [u32; 2],
+    ) -> Result<JsValue> {
+        self.reserve(size);
+        super::gl::picture(queue, parts)?;
+        Ok(match &self.canvas {
+            Canvas::Element(canvas) => canvas.clone().into(),
+            Canvas::Offscreen(canvas) => canvas.clone().into(),
+        })
+    }
 }
 
 /// The screen's size in device pixels, at most the largest drawing buffer `gl` makes. In a worker,

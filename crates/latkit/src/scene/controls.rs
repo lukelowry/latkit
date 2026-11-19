@@ -62,10 +62,11 @@ pub struct Controls {
     /// animates everything, and `reduced` animates only motion the user drives. Defaults to
     /// `system`.
     pub motion: Motion,
-    /// The most frames a second a view in a canvas draws while the only thing moving is motion
-    /// that never settles: comets, an orbit, and options that read `elapsed()`. Any other change
-    /// draws on the next display frame, and that motion with it. Lower it to spend less GPU time
-    /// and send fewer frames to a remote screen. Defaults to 60.
+    /// The most frames a second a view in a canvas draws while the only thing moving is the shown
+    /// coordinate, as a playhead plays, or motion that never settles: comets, an orbit, and options
+    /// that read `elapsed()`. Any other change draws on the next display frame, and that motion
+    /// with it. Lower it to spend less GPU time and send fewer frames to a remote screen.
+    /// Defaults to 60.
     pub fps: f32,
     /// How far the camera may go from what fits have framed. Defaults to `fit`.
     pub reach: Reach,

@@ -7,9 +7,10 @@
 //! nearest decoded ancestor is drawn as a placeholder, and so are the finer keys the set drew
 //! before within it, and missing pieces are fetched, nearest first. So a set never draws less than
 //! it did while what replaces it loads. A renewed piece is fetched again and draws what it holds
-//! until the new bytes land. A piece whose fetch failed draws nothing and is fetched again once
-//! wanted after its [`Retry`]. Earth tiles and spans of a sampled field's history both use
-//! tilings.
+//! until the new bytes land. A piece renewed while its fetch is under way takes what that fetch
+//! brings, then is fetched once more, so renewals faster than a fetch still land. A piece whose
+//! fetch failed draws nothing and is fetched again once wanted after its [`Retry`]. Earth tiles and
+//! spans of a sampled field's history both use tilings.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -124,6 +125,9 @@ pub(crate) struct Tiling<K: Key> {
     fetching: FxHashMap<K, Pending<Vec<u8>>>,
     /// Held pieces to fetch again once wanted. Each draws what it holds until the new bytes land.
     renewing: FxHashSet<K>,
+    /// Pieces renewed while their fetch was under way. Each takes what that fetch brings, then is
+    /// fetched once more.
+    stale: FxHashSet<K>,
     /// Decodes in progress, by key and stamp.
     decoding: FxHashMap<(K, u64), Pending<Vec<u8>>>,
     /// Each drawing set's claim, by set.
@@ -141,6 +145,7 @@ impl<K: Key> Default for Tiling<K> {
             held: FxHashMap::default(),
             fetching: FxHashMap::default(),
             renewing: FxHashSet::default(),
+            stale: FxHashSet::default(),
             decoding: FxHashMap::default(),
             claims: FxHashMap::default(),
             failure: None,
@@ -253,11 +258,11 @@ impl<K: Key> Tiling<K> {
     }
 
     /// Fetches the pieces `stale` accepts again once wanted, and every piece whose fetch failed,
-    /// without waiting for its retry. Each draws what it holds until the new bytes land. Clears
-    /// the failure to report.
+    /// without waiting for its retry. Each draws what it holds until the new bytes land. A stale
+    /// piece whose fetch is under way takes what it brings, which may be the old bytes, then is
+    /// fetched once more. Clears the failure to report.
     pub(crate) fn renew(&mut self, stale: impl Fn(&K) -> bool) {
-        // A fetch under way for a stale piece may return its old bytes.
-        self.fetching.retain(|key, _| !stale(key));
+        self.stale.extend(self.fetching.keys().filter(|key| stale(key)).copied());
         let renewed = self.held.iter().filter(|(key, held)| held.retry.is_some() || stale(key)).map(|(key, _)| *key);
         self.renewing.extend(renewed);
         self.failure = None;
@@ -282,13 +287,15 @@ impl<K: Key> Tiling<K> {
 
     /// Collects finished fetches and decodes, keeping the first failure. A piece whose fetch
     /// failed is fetched again after its retry, which wakes `waker`. A renewed piece keeps the
-    /// bytes it held meanwhile. A cancelled fetch leaves the piece as it was, to be fetched again
-    /// once wanted. A decode of a piece evicted since is dropped.
+    /// bytes it held meanwhile, and a piece renewed during its fetch is renewed again once the
+    /// bytes land. A cancelled fetch leaves the piece as it was, to be fetched again once wanted. A
+    /// decode of a piece evicted since is dropped.
     fn land(&mut self, waker: &Waker) {
         let fetched: Vec<_> = self.fetching.iter().filter_map(|(key, p)| p.take().map(|r| (*key, r))).collect();
         for (key, result) in fetched {
             self.fetching.remove(&key);
             let renewed = self.renewing.remove(&key);
+            let stale = self.stale.remove(&key);
             match result {
                 Err(Error::Cancelled) => {
                     if renewed {
@@ -308,6 +315,9 @@ impl<K: Key> Tiling<K> {
                         self.decoding.retain(|(k, _), _| *k != key);
                     }
                     self.hold(key, bytes, None);
+                    if stale {
+                        self.renewing.insert(key);
+                    }
                     self.recovered();
                 }
             }
@@ -439,7 +449,17 @@ mod tests {
     #[test]
     fn a_set_draws_what_it_drew_until_what_replaces_it_lands() {
         let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
-        let fetch: crate::tiles::Fetch = Arc::new(|_: &Request| Pending::ready(Ok(vec![1])));
+        // Fetches land when the test lands them.
+        let under_way: Arc<Mutex<Vec<crate::pending::Resolver<Vec<u8>>>>> = Arc::default();
+        let fetch: crate::tiles::Fetch = {
+            let under_way = under_way.clone();
+            Arc::new(move |_: &Request| {
+                let (pending, resolver) = Pending::new();
+                under_way.lock().expect("unpoisoned").push(resolver);
+                pending
+            })
+        };
+        let land = || under_way.lock().expect("unpoisoned").drain(..).for_each(|r| r.resolve(Ok(vec![1])));
         let jobs = Jobs::new(None, Waker::noop(), &counters, &errors).fetching(Some(&fetch));
         let children: Vec<Span> = (0..8).map(|index| Span { level: 0, index }).collect();
         let parent = Span { level: 1, index: 0 };
@@ -448,6 +468,7 @@ mod tests {
         // Fetched in one update, landed and decoded in the next.
         let update = |tiling: &mut Tiling<Span>, wanted: &[Span], served: &mut Served| {
             tiling.update(1, wanted, 0, served, &jobs);
+            land();
             tiling.update(1, wanted, 0, served, &jobs)
         };
         let drawn = update(&mut tiling, &children, &mut served);
@@ -463,5 +484,15 @@ mod tests {
         tiling.renew(|_| true);
         let drawn = tiling.update(1, &[parent], 0, &mut served, &jobs);
         assert_eq!((drawn.keys, drawn.renewing), (vec![parent], true));
+        // Refreshed again while that fetch is under way, the fetch lands, then it is fetched once
+        // more: refreshes faster than a fetch still land.
+        let landed = tiling.landed(&parent);
+        tiling.renew(|_| true);
+        land();
+        let drawn = tiling.update(1, &[parent], 0, &mut served, &jobs);
+        assert!(tiling.landed(&parent) != landed && drawn.renewing, "landed, and fetched once more");
+        land();
+        let drawn = tiling.update(1, &[parent], 0, &mut served, &jobs);
+        assert_eq!((drawn.keys, drawn.renewing), (vec![parent], false));
     }
 }

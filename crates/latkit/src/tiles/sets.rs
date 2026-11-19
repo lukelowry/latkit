@@ -102,8 +102,8 @@ struct TileSet {
     drawing: Option<Drawing>,
     /// Whether the dataset changed since it was last taken.
     changed: bool,
-    /// The failure the set last reported. A source reports each failure once.
-    told: Option<Error>,
+    /// Why the source or a piece the view wants could not be fetched, until it is.
+    failure: Option<Error>,
     /// Whether a piece the view wanted at the last update showed a placeholder: an ancestor, finer
     /// pieces, or nothing.
     standing_in: bool,
@@ -126,7 +126,7 @@ impl TileSet {
             tiles,
             drawing: None,
             changed: false,
-            told: None,
+            failure: None,
             standing_in: true,
             bare: true,
             renewing: false,
@@ -157,7 +157,7 @@ impl TileSet {
     }
 
     /// Updates the dataset to what the view needs, from what the cache holds of the source. Returns
-    /// a failure to report, if any.
+    /// the failure that lasts, if any.
     fn update(&mut self, input: &Input<'_>, asked: &Asked<'_>, cache: &mut Cache, jobs: &Jobs<'_>) -> Option<Error> {
         self.tiles.refreshes.views.watch(self.id, jobs.waker());
         let fetched = cache.open(&self.tiles, self.id, jobs);
@@ -209,7 +209,8 @@ pub(crate) struct TileSets {
     incoming: Vec<TileSet>,
     /// Datasets the last update changed, for the view to take.
     changed: Vec<Snapshot>,
-    errors: Vec<Error>,
+    /// Whether the failures of the sets drawn changed since last taken.
+    failures_due: bool,
 }
 
 impl TileSets {
@@ -233,6 +234,7 @@ impl TileSets {
             }
             None => TileSet::new(tiles),
         };
+        self.failures_due |= set.failure.is_some();
         self.sets.push(set);
     }
 
@@ -266,9 +268,11 @@ impl TileSets {
     /// taken yet.
     pub(crate) fn remove(&mut self, name: &str, cache: &mut Cache) {
         self.changed.retain(|data| **data.name() != *name);
+        let due = &mut self.failures_due;
         self.sets.retain(|set| {
             let kept = *set.tiles.name != *name;
             if !kept {
+                *due |= set.failure.is_some();
                 set.release(cache);
             }
             kept
@@ -278,6 +282,7 @@ impl TileSets {
     /// Stops drawing every source, because the view no longer draws.
     pub(crate) fn release(&mut self, cache: &mut Cache) {
         self.changed.clear();
+        self.failures_due |= self.sets.iter().any(|set| set.failure.is_some());
         for set in self.sets.drain(..).chain(self.incoming.drain(..)) {
             set.release(cache);
         }
@@ -342,30 +347,34 @@ impl TileSets {
         std::mem::take(&mut self.changed)
     }
 
-    /// Failures since the last call.
-    pub(crate) fn take_errors(&mut self) -> Vec<Error> {
-        std::mem::take(&mut self.errors)
+    /// Each source drawn that failed, or whose piece the view wants failed, named by the tiles'
+    /// dataset, until it is fetched.
+    pub(crate) fn failures(&self) -> impl Iterator<Item = Error> + '_ {
+        self.sets.iter().filter_map(|set| set.failure.clone().map(|error| error.within(&set.tiles.name)))
+    }
+
+    /// Whether the failures changed since the last call.
+    pub(crate) fn take_failures_due(&mut self) -> bool {
+        std::mem::take(&mut self.failures_due)
     }
 
     /// Updates every set to what the view needs and the scene draws, from what `cache` holds.
     /// The view takes a set's dataset only as a whole version (see `TileSet::whole`). Sets loading
-    /// beside them update alike, and show nothing until they swap in.
+    /// beside them update alike, and show nothing until they swap in, failures included.
     pub(crate) fn update(&mut self, input: &Input<'_>, asked: &Asked<'_>, cache: &mut Cache, jobs: &Jobs<'_>) {
         for set in &mut self.sets {
-            if let Some(error) = set.update(input, asked, cache, jobs)
-                && set.told.as_ref() != Some(&error)
-            {
-                self.errors.push(error.clone().within(&set.tiles.name));
-                set.told = Some(error);
+            let failure = set.update(input, asked, cache, jobs);
+            if failure != set.failure {
+                set.failure = failure;
+                self.failures_due = true;
             }
             if set.whole() && std::mem::take(&mut set.changed) {
                 self.changed.retain(|data| data.name() != set.data.name());
                 self.changed.push(set.data.clone());
             }
         }
-        // A failure of a set loading is reported once it swaps in.
         for set in &mut self.incoming {
-            set.update(input, asked, cache, jobs);
+            set.failure = set.update(input, asked, cache, jobs);
         }
     }
 }

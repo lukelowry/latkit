@@ -460,11 +460,10 @@ impl Derivations {
         self.shapes.busy()
     }
 
-    /// Takes the errors every derivation reported since the last call.
+    /// Takes the errors every derivation reported since the last call. Tile failures last, so the
+    /// view lists them with its failures instead.
     pub(crate) fn take_errors(&mut self) -> Vec<crate::Error> {
-        let mut errors = self.places.take_errors();
-        errors.extend(self.tiles.take_errors());
-        errors
+        self.places.take_errors()
     }
 
     /// What the lanes of table `table` of dataset `data` ask of the list drawing them.

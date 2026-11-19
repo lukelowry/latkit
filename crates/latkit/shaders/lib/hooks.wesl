@@ -4,7 +4,8 @@
 // it translated ahead of time, so this module is all a hook links against.
 
 // A marker's color, straight, and the signed distance in CSS pixels from the pixel to its outline,
-// negative inside. Glows and status rings follow the outline.
+// negative inside. Glows and status rings follow the outline. The color's alpha is the pixel's
+// coverage, blended as given.
 struct MarkerColor {
     color: vec4f,
     distance: f32,

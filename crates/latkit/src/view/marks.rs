@@ -162,13 +162,15 @@ pub(crate) struct Shown {
     /// Where its rows stand at different heights, the order it draws its instances in, lowest
     /// first.
     pub(crate) height_order: super::lists::HeightOrder,
+    /// Where its comets flow along recorded segments, the slots its comets draw draws, a comet each.
+    pub(crate) comets: super::lists::CometSlots,
     /// Whether an edge mark follows great circles.
     pub(crate) geodesic: bool,
     /// Whether the theme's parallel edges fan into their vertices, so a row off its family's middle
     /// draws one more segment at each end.
     pub(crate) fans: bool,
-    /// Whether it measures distance along its paths in position units, for comets spaced in them,
-    /// rather than in CSS pixels on screen.
+    /// Whether it measures distance along its paths in position units, for comets spaced in them or
+    /// on a plane seen straight down, rather than in CSS pixels on screen.
     pub(crate) along_units: bool,
     /// What the lanes of an edge mark's table ask of its list, read when the lane column it draws
     /// was last replaced: `lanes_at` is that column's generation.
@@ -240,6 +242,7 @@ impl Shown {
             carry: false,
             query: wgsl::NONE,
             segments: super::lists::Segments::default(),
+            comets: super::lists::CometSlots::default(),
             drawn_rows: super::lists::DrawnRows::default(),
             height_order: super::lists::HeightOrder::default(),
             geodesic: false,

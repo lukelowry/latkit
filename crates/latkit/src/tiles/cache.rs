@@ -31,7 +31,9 @@ pub(crate) struct Cache {
 /// One tile source: its open state, the sets drawing it, the tiles naming it, and the waker that
 /// wakes the sets as the source's work finishes. It fetches with the tiles' own fetch when they
 /// have one. `refreshed` is the refresh of the tiles it holds, and `refreshing` the index fetched
-/// again for a newer one. `retry` is when it opens again after its index failed to fetch.
+/// again for a newer one. The index is fetched once at a time: `again` is a refresh that came while
+/// it was, which fetches it once more after it lands. `retry` is when it opens again after its
+/// index failed to fetch.
 pub(crate) struct Fetched {
     pub(crate) state: State,
     sets: Arc<Watchers>,
@@ -40,6 +42,7 @@ pub(crate) struct Fetched {
     fetch: Option<super::Fetch>,
     refreshed: u64,
     refreshing: Option<Pending<Vec<u8>>>,
+    again: bool,
     retry: Option<Retry>,
 }
 
@@ -84,7 +87,8 @@ impl Cache {
                 let state = start(url, &jobs.waking(&waker).fetching(fetch.as_ref()));
                 let refreshed = tiles.refreshed();
                 let named = Vec::new();
-                entry.insert(Fetched { state, sets, named, waker, fetch, refreshed, refreshing: None, retry: None })
+                let (refreshing, again, retry) = (None, false, None);
+                entry.insert(Fetched { state, sets, named, waker, fetch, refreshed, refreshing, again, retry })
             }
         };
         if matches!(fetched.state, State::Failed(_)) && fetched.retry.is_some_and(Retry::due) {
@@ -181,9 +185,14 @@ impl Fetched {
     }
 
     /// Fetches the source's index again, for its tiles' refresh `refreshed`. Open time tiles keep
-    /// drawing until it arrives. Other sources start over.
+    /// drawing until it arrives. Other sources start over. While the index is being fetched, the
+    /// fetch under way lands first, then the index is fetched once more.
     fn refresh(&mut self, url: &Arc<str>, refreshed: u64, jobs: &Jobs<'_>) {
         self.refreshed = refreshed;
+        if self.refreshing.is_some() || matches!(self.state, State::Opening(_)) {
+            self.again = true;
+            return;
+        }
         let jobs = self.jobs(jobs);
         if matches!(self.state, State::Open(Holds::Frames(_))) {
             let refreshing = jobs.fetch(&Request::new(url.clone()));
@@ -195,7 +204,8 @@ impl Fetched {
     }
 
     /// Opens the source once its first bytes arrive, as what its index says it holds. Takes the
-    /// index fetched again, once it arrives.
+    /// index fetched again, once it arrives. Then fetches the index once more for a refresh that
+    /// came meanwhile.
     fn settle(&mut self, url: &Arc<str>, jobs: &Jobs<'_>) {
         if let Some(landed) = self.refreshing.as_ref().and_then(Pending::take) {
             self.refreshing = None;
@@ -207,6 +217,14 @@ impl Fetched {
                 frames.refresh(url, manifest, &jobs);
             }
         }
+        self.open(url, jobs);
+        if self.refreshing.is_none() && !matches!(self.state, State::Opening(_)) && std::mem::take(&mut self.again) {
+            self.refresh(url, self.refreshed, jobs);
+        }
+    }
+
+    /// Opens the source once its first bytes arrive, as what its index says it holds.
+    fn open(&mut self, url: &Arc<str>, jobs: &Jobs<'_>) {
         let State::Opening(pending) = &self.state else { return };
         let Some(landed) = pending.take() else { return };
         let (waker, fetch) = (self.waker.clone(), self.fetch.clone());

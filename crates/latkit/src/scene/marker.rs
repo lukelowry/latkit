@@ -52,7 +52,9 @@ pub enum Marker {
     /// reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's
     /// size as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It
     /// returns the pixel's straight color and its signed distance in CSS pixels from the outline,
-    /// negative inside, which glows and status rings follow. The source may declare its own
+    /// negative inside, which glows and status rings follow. The color's alpha is the pixel's
+    /// coverage: latkit blends it as given and smooths no edge, so fade the outline over a pixel, as
+    /// `color.a * saturate(0.5 - distance / fwidth(distance))` does. The source may declare its own
     /// functions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and
     /// `MarkerColor`. It compiles once, when a view first draws it.
     Wgsl {

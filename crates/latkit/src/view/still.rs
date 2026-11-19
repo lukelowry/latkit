@@ -48,6 +48,12 @@ impl Still {
         self.held
     }
 
+    /// The stamp of what draws the same for every mark this frame: the view's camera, size, theme,
+    /// guides, and scene.
+    pub(super) fn view(&self) -> u64 {
+        self.view
+    }
+
     /// Notes that this frame drew `cut` into the still, or drew no still. A still that keeps its
     /// depth holds only until a frame draws whole, which leaves other depth behind.
     pub(super) fn drew(&mut self, cut: Option<Cut>) {

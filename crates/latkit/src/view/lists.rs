@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use super::marks::{Holding, Shown};
 use super::passes::offset;
+use super::variants::MarkVariants;
 use crate::data::{Field, RowIds, Version};
 use crate::derive::{Derived, stamp_of};
 use crate::expr::compile::{Deps, Program, Reads};
@@ -119,6 +120,30 @@ impl ShapeInputs {
 
 /// Words per instance: its row, and its path distance or prepared triangle address.
 const SEGMENT_WORDS: u32 = 2;
+
+/// A flowing mark's comet slots (see `raster/comets.wesl`): where they lie, a stamp of what the
+/// records they were counted from hold, and how many its segments last counted. The count is read
+/// back so the list grows to fit, when the view or the list changed (`seen`), not as data streams.
+/// Each entry is a segment's record and which of its comets the slot draws.
+#[derive(Default)]
+pub(crate) struct CometSlots {
+    pub(crate) list: Option<List>,
+    built: u64,
+    seen: u64,
+    pub(crate) found: Derived<u32>,
+}
+
+impl CometSlots {
+    /// The slots the comets draw draws: as many as the segments last counted, once read back, else
+    /// every slot the list keeps. A slot past those counted draws nothing.
+    pub(crate) fn drawn(&self) -> u32 {
+        let Some(list) = self.list else { return 0 };
+        if self.built != 0 && self.found.stamp() == self.built { list.kept.min(self.found.value) } else { list.kept }
+    }
+}
+
+/// Words per comet slot: its segment's record, and which comet.
+const SLOT_WORDS: u32 = 2;
 
 /// Where a paged mark's drawn-row words lie in the lists buffer, `[start, room]` in words, and the
 /// stamp of their last expansion's inputs: the drawing, their location, and the buffer.
@@ -378,7 +403,93 @@ impl View {
             at += List::front_words(list.kept, ORDER_WORDS) + List::back_words(list.items);
             shown.height_order.list = Some(list);
         }
+        // Then the comet slots of each flowing mark whose segments have records: at first two for
+        // each segment, and then what its segments counted, with a quarter to spare.
+        for shown in &mut self.marks {
+            if let Some((stamp, bytes)) = shown.comets.found.landed() {
+                let found = crate::wire::In::new(&bytes).u32().unwrap_or(0);
+                shown.comets.found.make(stamp, found);
+            }
+            let recorded = MarkVariants::shown(shown, &self.scene.space).screen().is_some();
+            if !(recorded && shown.mark.flows() && shown.drawable()) {
+                shown.comets.list = None;
+                continue;
+            }
+            let items = shown.counted_instances(shown.instances());
+            let found = shown.comets.found.value;
+            let kept = (2 * items).max(found).max(4);
+            let list = match shown.comets.list {
+                Some(list) if list.header == at && list.items == items && list.kept >= kept => list,
+                _ => {
+                    let kept = kept + kept / 4;
+                    List::at(at, at + List::front_words(kept, SLOT_WORDS), items, kept, SLOT_WORDS)
+                }
+            };
+            at += List::front_words(list.kept, SLOT_WORDS) + List::back_words(items);
+            shown.comets.list = Some(list);
+        }
         self.list_words = at;
+    }
+
+    /// The comet slots this frame counts again (see `raster/comets.wesl`): those of each mark
+    /// `drawn` whose comets show, where its records may hold other than when they were counted. Its
+    /// list moved, its records (`firsts`) start elsewhere, the view draws other than it did (its
+    /// camera, size, or theme, `view`), or the mark, or a mark whose rows it reads, draws other than it
+    /// did (see `View::changed_marks`). A frame where comets only travel counts none. Each comes
+    /// with where its records start, and whether its count is read back: when anything but the
+    /// marks' drawing changed.
+    pub(super) fn comet_slots_due(
+        &mut self,
+        drawn: &[bool],
+        firsts: &[Option<u32>],
+        view: u64,
+    ) -> Vec<(usize, u32, bool)> {
+        if self.comets_shown == 0.0 {
+            return Vec::new();
+        }
+        let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
+        let draws: Vec<u64> = self.marks.iter().map(|m| m.drawn).collect();
+        let mut due = Vec::new();
+        for (i, shown) in self.marks.iter_mut().enumerate() {
+            let (Some(list), Some(&Some(first)), Some(true)) =
+                (shown.comets.list, firsts.get(i), drawn.get(i).copied())
+            else {
+                continue;
+            };
+            let ends: Vec<u64> = shown.ends.iter().filter_map(|end| end.mark).map(|m| draws[m]).collect();
+            let seen = stamp_of(((list.header, list.items, list.kept), generation, first, view));
+            let stamp = stamp_of((seen, draws[i], ends));
+            let comets = &mut shown.comets;
+            if stamp != comets.built {
+                due.push((i, first, seen != comets.seen));
+                (comets.built, comets.seen) = (stamp, seen);
+            }
+        }
+        due
+    }
+
+    /// Reads back how many comet slots each mark `counted` counted, one readback at a time, so its
+    /// list grows to fit.
+    pub(super) fn comet_slots_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner, counted: &[usize]) {
+        let gpu = self.gpu.clone();
+        let Some(resources) = &self.resources else { return };
+        for &i in counted {
+            let comets = &mut self.marks[i].comets;
+            let Some(list) = comets.list else { continue };
+            if comets.found.busy() || !comets.found.due(comets.built) {
+                continue;
+            }
+            let readback = Readback::words(
+                &inner.readbacks,
+                &gpu.0.device,
+                encoder,
+                resources.lists(),
+                list.total(),
+                1,
+                &self.waker,
+            );
+            comets.found.start(comets.built, readback);
+        }
     }
 
     /// Whether mark `i`'s rows can stand at different heights where depth varies, so they draw

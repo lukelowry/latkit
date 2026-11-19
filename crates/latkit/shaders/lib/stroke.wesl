@@ -173,20 +173,45 @@ fn comet(d: vec3f, s: Stroke) -> vec2f {
 // row's comets have traveled, `travel`, each with a tail `flow_length` behind it, in the direction
 // `flow` runs, and a head reaching `front` CSS pixels ahead. Neither reaches past half the spacing.
 fn comets_on(c: vec2f, px: f32, travel: f32, flow: f32, front: f32) -> vec3f {
+    let reach = comet_reach(px, flow, front);
+    let spacing = max(frame.flow_spacing, 1e-6);
+    let low = min(c.x, c.y);
+    let high = max(c.x, c.y);
+    let first = ceil((low - reach.y - travel) / spacing);
+    let last = floor((high + reach.x - travel) / spacing);
+    return covering(c, vec2f(travel + first * spacing - reach.x, travel + last * spacing + reach.y), first <= last);
+}
+
+// The part of a segment that comet `k` of those reaching its part `visible` (fractions of it from `a`
+// to `b`) covers this frame, as `comets_on` gives a part, for the comets draw's quad of one comet
+// slot (see `raster/comets.wesl`). Covers none when fewer comets reach that part.
+fn comet_on(c: vec2f, px: f32, travel: f32, flow: f32, front: f32, visible: vec2f, k: u32) -> vec3f {
+    let reach = comet_reach(px, flow, front);
+    let spacing = max(frame.flow_spacing, 1e-6);
+    let shown = c.x + (c.y - c.x) * visible;
+    let first = ceil((min(shown.x, shown.y) - reach.y - travel) / spacing) + f32(k);
+    let last = floor((max(shown.x, shown.y) + reach.x - travel) / spacing);
+    let head = travel + first * spacing;
+    return covering(c, vec2f(head - reach.x, head + reach.y), first <= last);
+}
+
+// How far a comet reaches below its head along its path (x) and above it (y), in the comet unit at
+// `px` CSS pixels a unit: its tail behind it, in the direction `flow` runs, and its head `front` CSS
+// pixels ahead. Neither reaches past half the spacing.
+fn comet_reach(px: f32, flow: f32, front: f32) -> vec2f {
     let spacing = max(frame.flow_spacing, 1e-6);
     let tail = min(frame.flow_length, 0.5 * spacing);
     let ahead = min(front / max(px, 1e-12), 0.5 * spacing);
-    // How far a comet reaches below its head along the path, and above it.
-    let below = select(ahead, tail, flow > 0.0);
-    let above = select(tail, ahead, flow > 0.0);
-    let low = min(c.x, c.y);
-    let high = max(c.x, c.y);
-    let first = ceil((low - above - travel) / spacing);
-    let last = floor((high + below - travel) / spacing);
-    let covered = vec2f(max(low, travel + first * spacing - below), min(high, travel + last * spacing + above));
+    return select(vec2f(tail, ahead), vec2f(ahead, tail), flow <= 0.0);
+}
+
+// The part `span` of a segment running from `c.x` to `c.y` covers, within it, as fractions of it
+// from `a` to `b` (x and y), and whether it covers any (z).
+fn covering(c: vec2f, span: vec2f, any: bool) -> vec3f {
+    let covered = vec2f(max(min(c.x, c.y), span.x), min(max(c.x, c.y), span.y));
     let length = c.y - c.x;
     let t = (covered - c.x) / select(length, 1e-12, abs(length) < 1e-12);
-    return vec3f(min(t.x, t.y), max(t.x, t.y), select(0.0, 1.0, first <= last));
+    return vec3f(min(t.x, t.y), max(t.x, t.y), select(0.0, 1.0, any));
 }
 
 // Premultiplied color of stroke `s` at the pixel at `d`: its line, where `line` says, then any rim

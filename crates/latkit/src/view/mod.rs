@@ -184,6 +184,9 @@ pub struct View {
     regions: Regions,
     /// Something visible changed since the last frame.
     changed: bool,
+    /// The axis coordinate shown moved since the last frame, as a playhead playing moves it. Like
+    /// the motion the view makes on its own, it draws at most `controls.fps` times a second.
+    played: bool,
     /// Whether the device loss has been reported, and the number of the next error the device
     /// raises that this view has not reported.
     told_lost: bool,
@@ -317,6 +320,7 @@ impl View {
             resources: None,
             regions: Regions::default(),
             changed: true,
+            played: false,
             told_lost: false,
             refused: None,
             // Errors raised before the view existed are not its to report.
@@ -835,11 +839,14 @@ impl View {
         self.at
     }
 
-    /// Shows axis coordinate `at`. Only options that read sampled fields evaluate again.
+    /// Shows axis coordinate `at`. Only options that read sampled fields evaluate again. A canvas
+    /// draws the coordinate moving, as a playhead plays, at most
+    /// [`Controls::fps`](crate::Controls) times a second.
     pub fn set_at(&mut self, at: f64) {
         if at.to_bits() != self.at.to_bits() {
             self.at = at;
-            self.wake();
+            self.played = true;
+            self.signal.ask();
         }
     }
 
@@ -1048,14 +1055,17 @@ impl View {
 
     /// An error for every option that draws as if unset, and every mark that draws nothing,
     /// because the scene's JSON can't be read there, the scene can't use it, or the data doesn't
-    /// fit it. Each error's path names the option, such as `marks[2].color`.
+    /// fit it. Each error's path names the option, such as `marks[2].color`. Then an error for each
+    /// tile source drawn that could not be fetched, or whose piece the view wants could not be,
+    /// named by the tiles' dataset. It lasts until the fetch succeeds, after its retry or a
+    /// [`Tiles::refresh`](crate::Tiles::refresh).
     pub fn failures(&self) -> impl Iterator<Item = crate::Error> + '_ {
         let marks = self
             .marks
             .iter()
             .enumerate()
             .flat_map(|(i, shown)| shown.failures.iter().map(move |error| error.clone().at(i).at("marks")));
-        self.scene_failures.iter().cloned().chain(marks)
+        self.scene_failures.iter().cloned().chain(marks).chain(self.derived.tiles.failures())
     }
 
     /// The cursor the view requests for what is under the pointer.
@@ -1249,16 +1259,17 @@ impl View {
     /// on wakes it.
     pub fn needs_render(&self) -> bool {
         let (comets, other) = self.own_motion();
-        self.changes() || comets || other
+        self.changes() || self.played || comets || other
     }
 
-    /// Whether the only difference a new frame would show is motion the view makes on its own,
-    /// which never settles: comets, an orbit, and what reads `elapsed()`. A canvas draws such frames
-    /// at most [`Controls::fps`](crate::Controls) times a second.
+    /// Whether the only difference a new frame would show is motion: what the view makes on its
+    /// own, which never settles (comets, an orbit, and what reads `elapsed()`), and the shown
+    /// coordinate moving as a playhead plays. A canvas draws such frames at most
+    /// [`Controls::fps`](crate::Controls) times a second.
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn paced(&self) -> bool {
         let (comets, other) = self.own_motion();
-        (comets || other) && !self.changes()
+        (comets || other || self.played) && !self.changes()
     }
 
     /// The motion the view makes on its own, once it draws and while motion is enabled: whether

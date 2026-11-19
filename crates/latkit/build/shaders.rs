@@ -53,6 +53,8 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::lists", variants: &[("main", &[])] },
     // Records where each segment of a stroke mark lies on screen, and each its lit draw draws.
     Entry { module: "raster::screen", variants: &[("main", &["joined"])] },
+    // Counts and writes the comet slots of a flowing mark, from its records.
+    Entry { module: "raster::comets", variants: &[("main", &[])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
     Entry { module: "draw::still", variants: &[("main", &[])] },
     Entry {

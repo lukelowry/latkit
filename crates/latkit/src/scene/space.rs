@@ -235,6 +235,11 @@ pub struct Axis {
     /// Text written after the last tick's value, such as `" s"` or `"%"`, so the axis needs no
     /// title.
     pub unit: Option<String>,
+    /// The least range a fit shows on the axis, centered on what it fits, so a steady signal draws
+    /// flat instead of filling the plot with its noise: `0.1` shows a steady `1.0` as `0.95` to
+    /// `1.05`. When unset, a fit shows what it fits.
+    #[schemars(range(min = 0))]
+    pub min_span: Option<f64>,
 }
 
 /// A tick in JSON: a value, or `[value, label]`.
@@ -264,7 +269,16 @@ fn ticks<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Ticks, D::Error> 
 
 impl Default for Axis {
     fn default() -> Axis {
-        Axis { label: None, grid: true, hidden: false, ticks: None, format: Format::Auto, precision: None, unit: None }
+        Axis {
+            label: None,
+            grid: true,
+            hidden: false,
+            ticks: None,
+            format: Format::Auto,
+            precision: None,
+            unit: None,
+            min_span: None,
+        }
     }
 }
 

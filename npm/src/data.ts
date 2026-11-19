@@ -427,8 +427,9 @@ const tiled = new WeakMap<Tiles, { fetch?: TilesOptions['fetch']; bound?: bindin
  * drawing the tiles and starts again fetches nothing twice. Every `Tiles` on a GPU shares its
  * `budget.tiles` bytes. Past them, the pieces no view draws are dropped, least recently drawn
  * first. A file that fails to fetch draws nothing and is fetched again on its own: a second later,
- * then twice as long after each further failure, at most a minute. Each view reports the failure
- * once in an `error` event.
+ * then twice as long after each further failure, at most a minute. Each view drawing the tiles
+ * lists the failure in its `failures` until the file arrives, so a `failures` event tells both
+ * when it fails and when it recovers.
  */
 export class Tiles {
   /** The name of the dataset the tiles are drawn as. */
@@ -453,7 +454,9 @@ export class Tiles {
    * changed in every view drawing the tiles. Time tiles keep the base dataset and the spans the
    * earlier frames filled. They fetch the last span of each level again, which shows what it held
    * until the new one arrives. Every file that failed is fetched again at once. A manifest that
-   * names another base, `chunk`, or `url` starts over, as vector tiles always do.
+   * names another base, `chunk`, or `url` starts over, as vector tiles always do. Refresh as often
+   * as the data changes: a file being fetched lands first, then is fetched once more however often
+   * the tiles were refreshed meanwhile.
    */
   refresh(): void {
     tiled.get(this)!.bound?.refresh();

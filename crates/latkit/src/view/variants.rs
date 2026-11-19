@@ -53,6 +53,10 @@ pub(super) const DIGIT_PASSES: [Variant; 4] = [
     Variant::raster(Shader::OrderScatter, "scatter"),
 ];
 
+/// Counts each recorded segment's comet slots, then writes each slot, around a [`SCAN`].
+pub(super) const COMET_SLOTS: [Variant; 2] =
+    [Variant::raster(Shader::Comets, "count_slots"), Variant::raster(Shader::Comets, "slots")];
+
 /// Eases a mark in transition from its frozen words toward its settled ones.
 pub(super) const EASE: Variant = Variant::raster(Shader::State, "ease");
 
@@ -524,9 +528,14 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
     let variants = MarkVariants::of(mark, &scene.space);
     stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
     stages.add_all(Stage::Draw, variants.screen().map(Asked::Shader));
-    // Comets draw over their rows with the rows' program.
+    // Comets draw over their rows with the rows' program. Where the rows have records, a comet a
+    // slot, which the frame counts from the records (see `raster/comets.wesl`).
     if mark.flows() {
         stages.add(Stage::Draw, variants.draw(Draw::Comets, format, samples));
+        if variants.screen().is_some() {
+            stages.add_all(Stage::Draw, COMET_SLOTS.map(Asked::Shader));
+            stages.add_all(Stage::Draw, SCAN.map(Asked::Shader));
+        }
     }
     stages.add(Stage::Lit, variants.draw(Draw::Lit, format, samples));
     // Depth varies only where the camera can tilt or the globe shows: on a plane or the earth.

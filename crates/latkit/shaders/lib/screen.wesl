@@ -13,17 +13,17 @@
 // width. A draw numbers its instances from its mark's first record, so an instance's index is its
 // record's.
 
-import package::lib::types::{NONE, ARROWS, ALONG_UNITS, PATH_TRACE, STATUS};
-import package::lib::bind::{frame, mark};
+import package::lib::types::{NONE, ARROWS, ALONG_UNITS, FLOW_UNITS, PATH_TRACE, STATUS};
+import package::lib::bind::{frame, eye, mark};
 import package::lib::path::{
     PATH, Style, PathEnds, stroke_segment, segment_points, on_screen, stroke_style, ends_part, path_count, path_length,
     path_total, path_position, marker_reach,
 };
 import package::lib::points::Point;
 import package::lib::project::{to_screen, PI};
-import package::lib::lists::list_total;
+import package::lib::lists::{list, list_entry, list_total};
 import package::lib::mark::fringe;
-import package::lib::stroke::{rims, COMET_RIM};
+import package::lib::stroke::{rims, comet_reach, COMET_RIM};
 import package::lib::daylight::daylight;
 
 @group(2) @binding(11) var screen: texture_2d_array<u32>;
@@ -297,6 +297,53 @@ fn screen_point(p: Point) -> ScreenPoint {
 fn point_reach(p: ScreenPoint, lit: bool) -> vec2f {
     let ring = select(0.0, 3.0, ((mark.flags & STATUS) != 0u) & (p.status.a > 0.0));
     return p.half + ring + select(0.0, frame.glow, lit) + fringe();
+}
+
+// The part of the segment from `a` to `b` on screen, in CSS pixels, that lies on the target, as
+// fractions of it from `a`, low then high. Empty (x above y) when none does.
+fn on_target(a: vec2f, b: vec2f) -> vec2f {
+    let across = clip_axis(vec2f(0.0, 1.0), a.x, b.x - a.x, eye.size.x);
+    return clip_axis(across, a.y, b.y - a.y, eye.size.y);
+}
+
+// `t`, the fractions of a segment kept so far, within those where `start + d·t` lies from 0 to
+// `most`.
+fn clip_axis(t: vec2f, start: f32, d: f32, most: f32) -> vec2f {
+    if abs(d) < 1e-6 {
+        return select(vec2f(1.0, 0.0), t, (start >= 0.0) & (start <= most));
+    }
+    let ends = vec2f(-start, most - start) / d;
+    return vec2f(max(t.x, min(ends.x, ends.y)), min(t.y, max(ends.x, ends.y)));
+}
+
+// The comet slots segment `s` takes in its mark's comets draw (see `raster/comets.wesl`): as many as
+// comets reach its part on the target at any travel, or none when it carries none. A comet reaches
+// the part when its head lies on it, or within its tail behind it or its head's reach ahead, as the
+// comets draw measures them, so the slots are one for each comet spacing across that span, and one
+// more. The comets draw draws a slot's comet with `comet_on`, from the same part.
+fn comet_slots(s: ScreenStroke) -> u32 {
+    let on = on_target(s.a, s.b);
+    if !s.shown | (s.flow == 0.0) | (on.x > on.y) {
+        return 0u;
+    }
+    let units = frame.flow_unit == FLOW_UNITS;
+    let pixels = length(s.b - s.a);
+    let along = select(pixels, abs(s.along.y - s.along.x), units);
+    let px = select(1.0, pixels / max(along, 1e-12), units);
+    let reach = comet_reach(px, s.flow, 0.5 * max(frame.flow_width, s.width) + COMET_RIM + fringe());
+    // A thousandth more, for the rounding where the draw measures the part in its own terms.
+    let spacings = 1.001 * (along * (on.y - on.x) + reach.x + reach.y) / max(frame.flow_spacing, 1e-6);
+    return u32(min(floor(spacings), 65535.0)) + 1u;
+}
+
+// The record and the comet that slot `i` of its mark's comets draw draws, from the mark's comet
+// slots, which the copy of its uniform for that draw lists as `list`. NONE past the slots they hold.
+fn comet_slot(i: u32) -> vec2u {
+    if i >= list_total(mark.list) {
+        return vec2u(NONE, 0u);
+    }
+    let at = list_entry(mark.list, 2u * i);
+    return vec2u(list(at), list(at + 1u));
 }
 
 // Layer `layer` of record `i`.

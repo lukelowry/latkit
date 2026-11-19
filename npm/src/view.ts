@@ -379,8 +379,10 @@ export class View extends Handle {
   /**
    * An error for each option that draws as if unset, and each mark that draws nothing: the scene's
    * JSON can't be read there, the scene can't use it, or the data doesn't fit it, such as a missing
-   * field or table. Each error's `path` names the option, such as `marks[2].color`. The `failures`
-   * event reports changes, and a picture of the view draws the same.
+   * field or table. Each error's `path` names the option, such as `marks[2].color`. Then an error
+   * for each `Tiles` source drawn that could not be fetched, or whose piece the view wants
+   * could not be, until the fetch succeeds. The `failures` event reports changes, and a picture of
+   * the view draws the same.
    */
   get failures(): readonly LatkitError[] {
     return (JSON.parse(view(this).failures) as Failure[]).map(thrown);
