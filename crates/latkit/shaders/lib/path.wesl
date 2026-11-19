@@ -169,8 +169,7 @@ fn numbered_segment(instance: u32) -> Segment {
 }
 
 // The segment drawn at position `instance`, which `drawn_instance` gives.
-@if(!focused)
-fn segment(instance: u32) -> Segment {
+fn drawn_segment(instance: u32) -> Segment {
     // Traces have a fixed segment count and never sort by height. Keep their inner vertex loop
     // free of list and height-order traversal; drawn rows still handle a shared paged table.
     if PATH == PATH_TRACE {
@@ -180,11 +179,25 @@ fn segment(instance: u32) -> Segment {
     return numbered_segment(drawn_instance(instance));
 }
 
+@if(!focused)
+fn segment(instance: u32) -> Segment {
+    return drawn_segment(instance);
+}
+
 // In the focus draw: segment `instance % mark.pieces` of lit row `instance / mark.pieces`, with its
 // distance along from the list. Segments past the row's last draw nothing.
 @if(focused)
 fn segment(instance: u32) -> Segment {
     return lit_segment(instance);
+}
+
+// The segment a stroke mark draws at position `instance`: in its rows' draws, or with `lit`, in its
+// focus draw. The screen pass writes both kinds of record with one program.
+fn stroke_segment(instance: u32, lit: bool) -> Segment {
+    if lit {
+        return lit_segment(instance);
+    }
+    return drawn_segment(instance);
 }
 
 fn lit_segment(instance: u32) -> Segment {

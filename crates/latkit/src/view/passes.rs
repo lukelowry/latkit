@@ -303,12 +303,11 @@ impl Marks<'_> {
         pass.set_bind_group(1, &self.groups.mark, &[offset(at)]);
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(2, group, &[]);
-        // A stroke or point mark's instances are numbered from its first record for the draw, which
-        // they read. Areas number their own triangles.
-        let first = match (shown.kind().primitive(), self.firsts[usize::from(draw == Draw::Lit)][i]) {
-            (Primitive::Triangles, _) => 0,
-            (_, Some(first)) => first,
-            (_, None) => unreachable!("a stroke or point mark draws only once placed"),
+        // A recorded mark's instances are numbered from its first record for the draw, which they
+        // read. Other marks place their own instances, from 0.
+        let first = match variants.screen() {
+            Some(_) => self.firsts[usize::from(draw == Draw::Lit)][i].expect("a recorded mark draws only once placed"),
+            None => 0,
         };
         if draw == Draw::Lit {
             drawn.draw_range(pass, corners, first..first + shown.lit.rows * shown.lit.pieces);
@@ -766,8 +765,8 @@ impl View {
         drawn
     }
 
-    /// Writes where each instance the frame's draws draw lies on screen (see `lib/screen.wesl`):
-    /// those of every stroke and point mark in `drawn`, then those of the rows each one's focus
+    /// Writes where each segment the frame's draws draw lies on screen (see `lib/screen.wesl`):
+    /// those of every recorded stroke mark in `drawn`, then those of the rows each one's focus
     /// lights, where the lit draw draws them, each mark's records after the last's. Returns where
     /// each mark's records start, for its draws and for its lit draw, which number their instances
     /// from there.
@@ -781,11 +780,10 @@ impl View {
         let device = &gpu.0.device;
         let lights = !self.unplaced() && self.can_use(Stage::Lit);
         let mut records = 0;
-        let placed: [Vec<Option<(u32, u32, Variant)>>; 2] = [Draw::Rows, Draw::Lit].map(|draw| {
-            let lit = draw == Draw::Lit;
+        let placed: [Vec<Option<(u32, u32, Variant)>>; 2] = [false, true].map(|lit| {
             (self.marks.iter().zip(drawn))
                 .map(|(shown, &drawn)| {
-                    let variant = MarkVariants::shown(shown, &self.scene.space).screen(draw)?;
+                    let variant = MarkVariants::shown(shown, &self.scene.space).screen()?;
                     let (count, drawn) = if lit {
                         (shown.lit.rows * shown.lit.pieces, lights && shown.drawable() && shown.lit.rows > 0)
                     } else {
@@ -803,7 +801,7 @@ impl View {
         let groups = resources.groups(&gpu.0, inner);
         let Inner { screen, pipelines, arena, .. } = inner;
         let mut raster = crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines, encoder };
-        for list in &placed {
+        for (lit, list) in [false, true].into_iter().zip(&placed) {
             for (i, &(first, count, variant)) in list.iter().enumerate().filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
             {
                 if count == 0 || !self.marks[i].drawable() {
@@ -819,7 +817,7 @@ impl View {
                     projection: Projection::of(&self.scene.space),
                     measured: self.marks[i].measures_paths(),
                 };
-                screen.place(&mut raster, &input, variant, count, first);
+                screen.place(&mut raster, &input, variant, [count, first], lit);
             }
         }
         placed.map(|list| list.iter().map(|p| p.map(|(first, ..)| first)).collect())

@@ -51,17 +51,8 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::boxed", variants: &[("main", &[])] },
     Entry { module: "raster::query_pack", variants: &[("main", &[])] },
     Entry { module: "raster::lists", variants: &[("main", &[])] },
-    // Records where each instance of a stroke mark (`joined`) or point mark lies on screen, and each
-    // instance its lit draw draws (`focused`).
-    Entry {
-        module: "raster::screen",
-        variants: &[
-            ("strokes", &["joined"]),
-            ("strokes_focus", &["joined", "focused"]),
-            ("points", &[]),
-            ("points_focus", &["focused"]),
-        ],
-    },
+    // Records where each segment of a stroke mark lies on screen, and each its lit draw draws.
+    Entry { module: "raster::screen", variants: &[("main", &["joined"])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
     Entry { module: "draw::still", variants: &[("main", &[])] },
     Entry {
@@ -811,6 +802,10 @@ fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
         return false;
     }
     let path = value("PATH");
+    // A trace's draws place its segments themselves, so no screen pass writes their records.
+    if module == "raster::screen" && path == Some(type_constant(types, "PATH_TRACE")) {
+        return false;
+    }
     if module == "draw::areas" {
         return path.is_none_or(|path| path == type_constant(types, "PATH_GEOMETRY"));
     }

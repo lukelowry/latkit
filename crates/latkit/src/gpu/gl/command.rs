@@ -137,7 +137,8 @@ impl Drop for Pass {
 }
 
 impl Command {
-    pub(super) fn run(&self, gl: &Gl) {
+    pub(super) fn run(&self, state: &State) {
+        let gl = &state.gl;
         match self {
             Self::BufferCopy(from, start, to, end, size) => {
                 gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&from.0.raw));
@@ -222,7 +223,7 @@ impl Command {
             Self::Upload(from, layout, to, size) => {
                 super::transfer::upload(gl, super::transfer::Source::Buffer(from), *layout, to, *size);
             }
-            Self::Render(render) => render.run(gl),
+            Self::Render(render) => render.run(state),
             // The submission times the commands between them (see `Queue::submit`).
             Self::Begin(_) | Self::End(_) => {}
         }
@@ -361,30 +362,78 @@ impl super::pipeline::Program {
         gl.uniform1ui(self.first_instance.borrow().as_ref(), first_instance);
     }
 }
-impl Render {
-    fn attach(&self, gl: &Gl) -> (web_sys::WebGlFramebuffer, i32, i32) {
+/// Framebuffers kept by the attachments they hold, so a render pass binds one rather than making
+/// it, which ANGLE validates and builds anew each time. A framebuffer goes once any of its
+/// textures is dropped or destroyed: one still attached would keep a deleted texture's memory.
+#[derive(Default)]
+pub(super) struct Framebuffers(RefCell<Vec<Kept>>);
+
+/// A kept framebuffer, and each of its attachments: the attachment point, and the texture, level,
+/// and layer attached there.
+struct Kept {
+    fbo: web_sys::WebGlFramebuffer,
+    attached: Vec<(u32, Weak<super::resource::TextureData>, u32, u32)>,
+}
+
+impl Framebuffers {
+    /// Binds as the draw framebuffer the one holding `attached`, each an attachment point and the
+    /// view attached there, drawing to its color attachments. Releases those whose textures went.
+    fn bind(&self, gl: &Gl, attached: &[(u32, &View)]) -> web_sys::WebGlFramebuffer {
+        let mut kept = self.0.borrow_mut();
+        kept.retain(|k| {
+            let live = k.attached.iter().all(|(_, texture, ..)| texture.upgrade().is_some_and(|t| !t.destroyed.get()));
+            if !live {
+                gl.delete_framebuffer(Some(&k.fbo));
+            }
+            live
+        });
+        let same = |k: &&Kept| {
+            k.attached.len() == attached.len()
+                && k.attached.iter().zip(attached).all(|((point, texture, level, layer), (at, view))| {
+                    point == at
+                        && std::ptr::eq(texture.as_ptr(), Rc::as_ptr(&view.texture.0))
+                        && *level == view.level
+                        && *layer == view.layer
+                })
+        };
+        if let Some(found) = kept.iter().find(same) {
+            gl.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&found.fbo));
+            return found.fbo.clone();
+        }
         let fbo = gl.create_framebuffer().unwrap();
         gl.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&fbo));
-        let attachments = js_sys::Array::new();
-        for (index, color) in self.colors.iter().enumerate() {
-            attachments.push(&wasm_bindgen::JsValue::from(if color.is_some() {
-                Gl::COLOR_ATTACHMENT0 + index as u32
+        let colors = attached.iter().filter(|(at, _)| *at != Gl::DEPTH_ATTACHMENT).map(|(at, _)| *at).max();
+        let buffers = js_sys::Array::new();
+        for point in colors.map_or(0..0, |last| Gl::COLOR_ATTACHMENT0..last + 1) {
+            buffers.push(&wasm_bindgen::JsValue::from(if attached.iter().any(|(at, _)| *at == point) {
+                point
             } else {
                 Gl::NONE
             }));
-            if let Some(color) = color {
-                color.view.texture.attach(
-                    Gl::DRAW_FRAMEBUFFER,
-                    Gl::COLOR_ATTACHMENT0 + index as u32,
-                    color.view.level,
-                    color.view.layer,
-                );
-            }
         }
-        gl.draw_buffers(&attachments);
+        for &(at, view) in attached {
+            view.texture.attach(Gl::DRAW_FRAMEBUFFER, at, view.level, view.layer);
+        }
+        gl.draw_buffers(&buffers);
+        let attached =
+            attached.iter().map(|(at, view)| (*at, Rc::downgrade(&view.texture.0), view.level, view.layer)).collect();
+        kept.push(Kept { fbo: fbo.clone(), attached });
+        fbo
+    }
+}
+
+impl Render {
+    fn attach(&self, state: &State) -> (web_sys::WebGlFramebuffer, i32, i32) {
+        let gl = &state.gl;
+        let mut attached: Vec<(u32, &View)> = (self.colors.iter().enumerate())
+            .filter_map(|(index, color)| {
+                color.as_ref().map(|color| (Gl::COLOR_ATTACHMENT0 + index as u32, &color.view))
+            })
+            .collect();
         if let Some(depth) = &self.depth {
-            depth.view.texture.attach(Gl::DRAW_FRAMEBUFFER, Gl::DEPTH_ATTACHMENT, depth.view.level, depth.view.layer);
+            attached.push((Gl::DEPTH_ATTACHMENT, &depth.view));
         }
+        let fbo = state.framebuffers.bind(gl, &attached);
         let view = self
             .colors
             .iter()
@@ -429,8 +478,9 @@ impl Render {
         (fbo, width, height)
     }
 
-    fn run(&self, gl: &Gl) {
-        let (fbo, width, height) = self.attach(gl);
+    fn run(&self, state: &State) {
+        let gl = &state.gl;
+        let (fbo, width, height) = self.attach(state);
         let mut pipeline: Option<&Pipeline> = None;
         let mut inputs = super::vertex::Inputs::new(gl);
         let mut groups: [Option<(&Group, &[u32])>; 4] = [None; 4];
@@ -504,13 +554,10 @@ impl Render {
                     color.as_ref().unwrap().view.texture.0.samples > 1 && to.texture.0.samples == 1,
                     "invalid multisample resolve"
                 );
-                let dest = gl.create_framebuffer().unwrap();
                 gl.bind_framebuffer(Gl::READ_FRAMEBUFFER, Some(&fbo));
                 gl.read_buffer(Gl::COLOR_ATTACHMENT0 + index as u32);
-                gl.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&dest));
-                to.texture.attach(Gl::DRAW_FRAMEBUFFER, Gl::COLOR_ATTACHMENT0, to.level, to.layer);
+                state.framebuffers.bind(gl, &[(Gl::COLOR_ATTACHMENT0, to)]);
                 gl.blit_framebuffer(0, 0, width, height, 0, 0, width, height, Gl::COLOR_BUFFER_BIT, Gl::NEAREST);
-                gl.delete_framebuffer(Some(&dest));
             }
         }
         // Resolve before discarding its source. Transient multisample color and unqueried
@@ -528,7 +575,6 @@ impl Render {
             gl.bind_framebuffer(Gl::DRAW_FRAMEBUFFER, Some(&fbo));
             gl.invalidate_framebuffer(Gl::DRAW_FRAMEBUFFER, &discarded).expect("render pass attachments");
         }
-        gl.delete_framebuffer(Some(&fbo));
     }
 }
 

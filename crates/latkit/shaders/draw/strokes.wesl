@@ -2,8 +2,8 @@
 // covers the stroke, any arrowhead, and one pixel of antialiased edge. Where a path runs on through
 // a segment's end, its quad stops a pixel past the line splitting that end with the next segment.
 // The last segment of each part of a path draws the arrowhead. A quad's corners read where its
-// segment lies on screen from its record, which the frame wrote once (see `lib/screen.wesl`). A
-// mark's comets draw after its rows, through the copy of its uniform for `DRAW_COMETS`, each
+// segment lies on screen from its record, which the frame wrote once. A trace's quads place their
+// segment themselves (see `lib/screen.wesl`). A mark's comets draw after its rows, through the copy of its uniform for `DRAW_COMETS`, each
 // segment's quad spanning only the comets on it this frame, so comets cost the pixels they cover. A
 // segment no comet reaches draws nothing. The focus variant redraws the lit rows' segments over
 // everything, comets included, with quads enlarged for their glow. The shaded variants call an
@@ -19,7 +19,7 @@ import package::lib::shade::shade_fragment;
 import package::lib::focus::focus_of;
 import package::lib::mark::{fringe, px_per_length};
 import package::lib::stroke::{Stroke, covered, stroke_paint, painted, stroke_distance, owns, comets_on, COMET_RIM};
-import package::lib::screen::read_stroke;
+import package::lib::screen::{ScreenStroke, read_stroke, screen_stroke};
 import package::lib::color::{output, OPAQUE};
 
 // A scene whose dash and flow expressions are constant zero needs no phase or comet payload.
@@ -53,10 +53,18 @@ const LIT_DRAW: bool = true;
 @if(!focused)
 const LIT_DRAW: bool = false;
 
+// Where segment `instance` lies on screen: from its record, or for a trace, placed here.
+fn stroke_at(instance: u32) -> ScreenStroke {
+    if PATH == PATH_TRACE {
+        return screen_stroke(instance, LIT_DRAW);
+    }
+    return read_stroke(instance);
+}
+
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
     var out: Varyings;
-    let s = read_stroke(instance);
+    let s = stroke_at(instance);
     let flows = PAINTED & (s.flow != 0.0) & (frame.flow.a > 0.0);
     // The comets draw paints only comets, and the lit draw paints them with its rows. Rows paint none.
     let comets_draw = !LIT_DRAW & (mark.draw == DRAW_COMETS);

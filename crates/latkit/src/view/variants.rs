@@ -31,7 +31,7 @@ use crate::gpu::Inner;
 use crate::gpu::atlas::FIELDS;
 use crate::gpu::hooks::Hooks;
 use crate::gpu::pipelines::{Asked, Projection, Urgency, Variant};
-use crate::gpu::shaders::{PATH_BENDS, PATH_ENDS, PATH_GEOMETRY, PATH_POLES, Shader};
+use crate::gpu::shaders::{PATH_BENDS, PATH_ENDS, PATH_GEOMETRY, PATH_POLES, PATH_TRACE, Shader};
 use crate::scene::mark::{MarkKind, Primitive};
 use crate::{Action, Mark, Scene, Space};
 
@@ -117,22 +117,13 @@ impl MarkVariants {
         }
     }
 
-    /// The pass writing where each instance draw `draw` draws lies on screen this frame, which the
-    /// draw reads (see `lib/screen.wesl`): a stroke mark's segments, or a vertex mark's points, and
-    /// for the lit draw, those of the rows its focus lights. Areas draw from their triangles.
-    pub(super) fn screen(&self, draw: Draw) -> Option<Variant> {
-        let lit = draw == Draw::Lit;
-        match self.kind.primitive() {
-            Primitive::Strokes => {
-                let shader = if lit { Shader::ScreenStrokesFocus } else { Shader::ScreenStrokes };
-                Some(Variant::raster(shader, "record").path(self.path).projection(self.projection))
-            }
-            Primitive::Points => {
-                let shader = if lit { Shader::ScreenPointsFocus } else { Shader::ScreenPoints };
-                Some(Variant::raster(shader, "record").projection(self.projection))
-            }
-            Primitive::Triangles => None,
-        }
+    /// The pass writing where each segment of a stroke mark lies on screen this frame, for its draws
+    /// and for its lit draw, which read it (see `lib/screen.wesl`). A trace's segment and a point
+    /// cost less to place than a record does, so their draws place them, and areas draw from their
+    /// triangles.
+    pub(super) fn screen(&self) -> Option<Variant> {
+        (self.kind.primitive() == Primitive::Strokes && self.path != PATH_TRACE)
+            .then(|| Variant::raster(Shader::Screen, "record").path(self.path).projection(self.projection))
     }
 
     /// The pipeline for draw `draw`. The mark's hooks complete its shader.
@@ -532,8 +523,7 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, &scene.space);
     stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
-    stages.add_all(Stage::Draw, variants.screen(Draw::Rows).map(Asked::Shader));
-    stages.add_all(Stage::Lit, variants.screen(Draw::Lit).map(Asked::Shader));
+    stages.add_all(Stage::Draw, variants.screen().map(Asked::Shader));
     // Comets draw over their rows with the rows' program.
     if mark.flows() {
         stages.add(Stage::Draw, variants.draw(Draw::Comets, format, samples));

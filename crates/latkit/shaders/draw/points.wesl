@@ -1,17 +1,19 @@
 // Points: one instanced quad per vertex row, shaded by its marker. A quad covers its marker and any
-// status ring, plus one pixel of antialiased edge. A quad's corners read where its point lies on
-// screen from its record, which the frame wrote once (see `lib/screen.wesl`). The focus variant
-// redraws the lit rows over everything, with quads enlarged for their glow. Where depth varies, an opaque pass draws each marker's opaque pixels before any pixel
-// blends, keeping their depth, so the nearest marker shows. The custom variants call an
+// status ring, plus one pixel of antialiased edge. A quad's corners place its point on screen (see
+// `lib/screen.wesl`). The focus variant redraws the lit rows over everything, with quads enlarged
+// for their glow. Where depth varies, an opaque pass draws each marker's opaque pixels before any
+// pixel blends, keeping their depth, so the nearest marker shows. The custom variants call an
 // application's `marker`, and the shaded variants its `shade`.
 
 import package::lib::types::{STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON, DRAW_OPAQUE};
-import package::lib::bind::{mark, ramp, program};
+import package::lib::bind::{mark, ramp, program, focused};
+import package::lib::points::shown_point;
+import package::lib::drawn::drawn_instance;
 import package::lib::state::row_inputs;
 import package::lib::hooks::{MarkerColor, MarkerFragment};
 import package::lib::shade::shade_fragment;
 import package::lib::project::{to_clip, nearer, culled};
-import package::lib::screen::{read_point, point_reach};
+import package::lib::screen::{ScreenPoint, screen_point, point_reach};
 import package::lib::marker::{gauge, pie, filled, outline_distance, status_ring, glow, premultiplied};
 import package::lib::color::{output, OPAQUE};
 
@@ -40,9 +42,17 @@ const LIT_DRAW: bool = true;
 @if(!focused)
 const LIT_DRAW: bool = false;
 
+// Where point `instance` lies on screen: a drawn row's, or in the lit draw, a lit row's.
+fn marker_at(instance: u32) -> ScreenPoint {
+    if LIT_DRAW {
+        return screen_point(shown_point(focused(mark.focused + instance), true));
+    }
+    return screen_point(shown_point(drawn_instance(instance), false));
+}
+
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
-    let p = read_point(instance);
+    let p = marker_at(instance);
     var out: Varyings;
     if !p.shown {
         out.clip = culled();

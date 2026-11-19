@@ -1,20 +1,22 @@
 // Where each instance of a stroke or point mark lies on screen this frame, as every draw of the mark
 // places it: a segment, with its joints, distances along, comets, colors, and arrowhead, or a
-// point's marker. Placing a segment reads its path's points, projects them, and joins it to its
-// neighbors, work each corner of each draw would otherwise repeat: four corners in each of a mark's
-// opaque, rows, and comets draws. So a frame writes each instance's record once
+// point's marker. Placing a segment of a path reads its path's points, projects them, and joins it
+// to its neighbors, work each corner of each draw would otherwise repeat: four corners in each of a
+// mark's opaque, rows, and comets draws. So a frame writes the record of each such segment once
 // (`raster/screen.wesl`) before it draws the mark, and every corner reads it. The lit draw's
-// instances, the rows the mark's focus lights, have records of their own.
+// instances, the rows the mark's focus lights, have records of their own. A trace's segment reads
+// two samples, and a point one vertex, which costs less than writing and reading a record, so their
+// draws place them with these same functions.
 //
 // A record is one texel in each layer of a group of four in the screen store, at the same place, so
-// one point's fragment writes it whole. Record `i` lies at texel `i` of its group, in rows of the
-// store's width. A draw numbers its instances from its mark's first record, so an instance's index
-// is its record's.
+// one fragment writes it whole. Record `i` lies at texel `i` of its group, in rows of the store's
+// width. A draw numbers its instances from its mark's first record, so an instance's index is its
+// record's.
 
 import package::lib::types::{NONE, ARROWS, ALONG_UNITS, PATH_TRACE, STATUS};
 import package::lib::bind::{frame, mark};
 import package::lib::path::{
-    PATH, Style, PathEnds, segment, segment_points, on_screen, stroke_style, ends_part, path_count, path_length,
+    PATH, Style, PathEnds, stroke_segment, segment_points, on_screen, stroke_style, ends_part, path_count, path_length,
     path_total, path_position, marker_reach,
 };
 import package::lib::points::Point;
@@ -106,7 +108,7 @@ fn screen_stroke(instance: u32, lit: bool) -> ScreenStroke {
     if !lit & (mark.per_row == NONE) & (instance >= list_total(mark.list)) {
         return out;
     }
-    let s = segment(instance);
+    let s = stroke_segment(instance, lit);
     if lit & ((s.item >= mark.rows) | (s.index >= path_count(s.item))) {
         return out;
     }
@@ -288,35 +290,6 @@ fn screen_point(p: Point) -> ScreenPoint {
     out.row = p.row;
     out.focus = p.focus;
     return out;
-}
-
-// `p` as the texels of its record. A hidden point's half size is negative. Colors keep to 8 bits
-// a channel, as rows' colors are.
-fn point_record(p: ScreenPoint) -> ScreenRecord {
-    let half = select(vec2f(-1.0), p.half, p.shown);
-    return ScreenRecord(
-        vec4u(bitcast<vec3u>(vec3f(p.center, p.depth)), p.row),
-        vec4u(bitcast<vec2u>(half), pack4x8unorm(p.color), pack4x8unorm(p.status)),
-        vec4u(p.focus, 0u, 0u, 0u),
-        vec4u(0u),
-    );
-}
-
-// Instance `i`'s point, from its record.
-fn read_point(i: u32) -> ScreenPoint {
-    let t0 = record_texel(i, 0u);
-    let t1 = record_texel(i, 1u);
-    let t2 = record_texel(i, 2u);
-    var p: ScreenPoint;
-    p.focus = t2.x;
-    p.half = bitcast<vec2f>(t1.xy);
-    p.shown = p.half.x >= 0.0;
-    p.center = bitcast<vec2f>(t0.xy);
-    p.depth = bitcast<f32>(t0.z);
-    p.row = t0.w;
-    p.color = unpack4x8unorm(t1.z);
-    p.status = unpack4x8unorm(t1.w);
-    return p;
 }
 
 // How far point `p`'s quad reaches from its center, in CSS pixels: its marker, its status ring, one

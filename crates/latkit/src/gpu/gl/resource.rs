@@ -238,6 +238,8 @@ pub(super) struct TextureData {
     pub(super) size: wgpu::Extent3d,
     pub(super) format: Format,
     pub(super) samples: u32,
+    /// Whether it was destroyed, so no framebuffer keeps it attached (see `Framebuffers`).
+    pub(super) destroyed: Cell<bool>,
 }
 impl Texture {
     pub(super) fn new(gl: &Gl, desc: &wgpu::TextureDescriptor<'_>) -> Self {
@@ -296,6 +298,7 @@ impl Texture {
             size: desc.size,
             format,
             samples: desc.sample_count,
+            destroyed: Cell::new(false),
         }))
     }
     pub(super) fn attach(&self, target: u32, attachment: u32, level: u32, layer: u32) {
@@ -324,6 +327,7 @@ impl TextureInterface for Texture {
         })
     }
     fn destroy(&self) {
+        self.0.destroyed.set(true);
         self.0.gl.delete_texture(self.0.raw.as_ref());
         self.0.gl.delete_renderbuffer(self.0.renderbuffer.as_ref());
     }

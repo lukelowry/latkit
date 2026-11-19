@@ -69,8 +69,8 @@ impl QueueInterface for Queue {
                         timing = None;
                     }
                     command => match &timing {
-                        Some(query) => query.time(gl, || command.run(gl)),
-                        None => command.run(gl),
+                        Some(query) => query.time(gl, || command.run(&self.state)),
+                        None => command.run(&self.state),
                     },
                 }
             }

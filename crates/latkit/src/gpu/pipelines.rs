@@ -1141,10 +1141,7 @@ impl Pipelines {
         let layout = self.pipeline_layout(device, shader);
         // Every fragment entry writes one color target but the screen pass's, which writes the four
         // layers of a record (see `check_targets` in the build). A depth draw writes no color.
-        let screen = matches!(
-            shader,
-            Shader::ScreenStrokes | Shader::ScreenStrokesFocus | Shader::ScreenPoints | Shader::ScreenPointsFocus
-        );
+        let screen = shader == Shader::Screen;
         let target = Some(wgpu::ColorTargetState {
             format,
             blend: (!raster).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),

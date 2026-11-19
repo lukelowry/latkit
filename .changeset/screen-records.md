@@ -2,9 +2,10 @@
 'latkit': minor
 ---
 
-Frames place each line segment and point once, a hover draws only the rows it lights, and thin lines stay solid.
+Frames place each segment of a path once, a hover draws only the rows it lights, and thin lines stay solid.
 
-- Changed: each frame works out where every segment and point it draws lies on screen once, before drawing. The opaque, rows, comets, and lit draws of a mark all read that, rather than each corner of each draw working it out again. Large maps take about a quarter less GPU time a frame.
+- Changed: each frame works out where every segment of the edges and lines it draws lies on screen once, before drawing, and the opaque, rows, comets, and lit draws of a mark all read that, rather than each corner of each draw working it out again. A trace's segment and a point cost less to place than to store, so their draws place them. On an integrated GPU, a plot of 2,000 traces takes 39 ms of GPU time a frame rather than 50 ms.
+- Changed: in a browser, a render pass reuses the WebGL framebuffer that holds its targets rather than making one.
 - Changed: hovering a row no longer draws every mark again. The frame starts from the kept image of the marks, and only the hovered row and the rows it lights draw over it. On a grid of 900,000 lines and buses on an integrated GPU, a hover takes one frame of about 3 ms of GPU time, rather than frames of 36 ms and 18 ms.
 - Changed: a hovered marker grows under its label rather than pushing the label outward, so a hover lays out no labels.
 - Changed: on a globe, a frame that starts from the kept image of the marks draws only the globe's depth under it, not the whole backdrop again.

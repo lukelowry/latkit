@@ -141,6 +141,8 @@ pub(crate) struct HeightOrder {
     heights: u64,
     /// Whether heights changed since its last sort began.
     stale: bool,
+    /// Frames since its heights last changed, `None` before they ever did.
+    since_change: Option<u32>,
 }
 
 impl HeightOrder {
@@ -154,6 +156,11 @@ impl HeightOrder {
 /// sort takes [`SORT_PASSES`] passes over its instances, at least one a frame, so a sort of 160,000
 /// raised rows lands within about 32 frames, and one of a few thousand within its frame.
 const SORT_RECORDS: u32 = 1 << 17;
+
+/// Frames without a height change after which heights count as at rest: a change then sorts at
+/// once, and a background sort under way finishes. Heights fed at half the frame rate keep sorting
+/// in the background.
+const RESTED: u32 = 4;
 
 /// Passes a height sort takes: keying the instances, each digit's passes, and writing the order.
 const SORT_PASSES: u32 = 2 + HEIGHT_BITS.div_ceil(RADIX_BITS) * PASSES;
@@ -395,11 +402,12 @@ impl View {
     /// The height orders this frame sorts. Those whose lists buffer or instances changed sort at
     /// once, as do those whose rows' heights changed in a frame that cannot wait: a picture's or a
     /// video's frame shows every row in order, and without the clock moving, no later frame would
-    /// come. Otherwise an order whose heights changed sorts in the background, one at a time, at
-    /// most [`SORT_RECORDS`] records of passes a frame. Heights change where its rows or the
-    /// vertices they end at are drawn ([`Shown::places_drawn`]), with the paths drawn between them,
-    /// and where the rows resolve their ends. Returns the marks that sort at once, and this frame's
-    /// part of the background sort.
+    /// come. So does a change after heights rested ([`RESTED`]), a one-off change. Heights that
+    /// keep changing sort in the background, one order at a time, at most [`SORT_RECORDS`] records
+    /// of passes a frame, and once they rest, the sort under way finishes. Heights change where its
+    /// rows or the vertices they end at are drawn ([`Shown::places_drawn`]), with the paths drawn
+    /// between them, and where the rows resolve their ends. Returns the marks that sort at once,
+    /// and this frame's part of the background sort.
     pub(super) fn height_orders_due(&mut self, input: bool) -> (Vec<usize>, Option<SortStep>) {
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
         let places: Vec<(bool, u64)> = self.marks.iter().map(Shown::places_drawn).collect();
@@ -416,9 +424,13 @@ impl View {
             let instances = stamp_of((list.header, list.kept, generation, shown.rows, shown.exits, drawn, count));
             let heights = stamp_of((shown.segments.built, places[i], ends));
             let order = &mut shown.height_order;
-            order.stale |= heights != order.heights || shown.end_block_count > 0;
+            let changed = heights != order.heights || shown.end_block_count > 0;
+            let streaming = order.since_change.is_some_and(|frames| frames < RESTED);
+            order.since_change =
+                if changed { Some(0) } else { order.since_change.map(|frames| frames.saturating_add(1)) };
+            order.stale |= changed;
             order.heights = heights;
-            if instances != order.instances || (order.stale && !waits) {
+            if instances != order.instances || (order.stale && !(waits && streaming)) {
                 (order.instances, order.count, order.stale) = (instances, count, false);
                 due.push(i);
             }
@@ -450,7 +462,8 @@ impl View {
             }
         }
         let step = self.sort.as_ref().map(|sort| {
-            let passes = (SORT_RECORDS / sort.count.max(1)).clamp(1, sort.left);
+            let rested = self.marks[sort.mark].height_order.since_change.is_none_or(|frames| frames >= RESTED);
+            let passes = if rested { sort.left } else { (SORT_RECORDS / sort.count.max(1)).clamp(1, sort.left) };
             SortStep { mark: sort.mark, passes, lands: passes == sort.left }
         });
         (due, step)
