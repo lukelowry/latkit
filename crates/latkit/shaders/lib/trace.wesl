@@ -1,9 +1,10 @@
 // Visible trace points are planned once on the CPU. Each row block holds a ring of aligned records:
 // coordinate high/low, absolute value address, and a word of the rows in that value's page, how
 // many entries the point reads, and whether it draws their greatest. A missing address breaks the
-// line. Drawing, picking, and bounds all read this same plan.
+// line. Drawing, picking, and bounds all read this same plan, and draw each value times the trace's
+// scale plus its offset: the first two constants of its mark's program.
 import package::lib::types::{NONE, MISSING, TRACE_ROWS, TRACE_COUNT, TRACE_MOST, TRACE_GREATEST};
-import package::lib::bind::{program_words, mark, word};
+import package::lib::bind::{program_words, program, mark, word};
 import package::lib::words::word_quad;
 import package::lib::read::{page_of, missing_bits};
 
@@ -36,8 +37,10 @@ fn trace_read(base: vec3u, point: u32) -> vec3u {
         value = select(value, bits, takes);
         best = select(best, v, takes);
     }
+    let scale = bitcast<vec2f>(vec2u(program(mark.constants), program(mark.constants + 1u)));
+    let drawn = select(bitcast<u32>(best * scale.x + scale.y), MISSING, missing_bits(value));
     let missing = (point >= base.y) | (cursor.z == NONE) | (base.z >= per);
-    return select(vec3u(cursor.xy, value), vec3u(0u, 0u, MISSING), missing);
+    return select(vec3u(cursor.xy, drawn), vec3u(0u, 0u, MISSING), missing);
 }
 
 fn trace_sample(row: u32, point: u32) -> vec3u {

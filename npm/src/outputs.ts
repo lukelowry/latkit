@@ -124,7 +124,7 @@ export interface Sample {
   frame: Id;
   /** The axis coordinate. */
   at: number;
-  /** The value. */
+  /** The value as the line draws it, at the trace's scale. */
   value: number;
 }
 
@@ -324,8 +324,8 @@ export type ViewEvent =
       detail: Waiting;
     }
   | /**
-     * The failures changed: `view.failures`. Each option that draws as if unset, and each mark that
-     * draws nothing, with why. Empty once everything draws.
+     * The failures changed: `view.failures`. Each option that draws as if unset, each mark that draws
+     * nothing, and each tile source that could not be fetched, with why. Empty once everything draws.
      */ { type: 'failures'; detail: Failure[] }
   | /**
      * The view can't draw: the device was lost, a limit was reached, latkit stopped, a fetch or text

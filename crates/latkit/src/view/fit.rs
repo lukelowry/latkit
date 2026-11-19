@@ -321,12 +321,19 @@ impl View {
         })
     }
 
-    /// The least and greatest value a plot's traces draw this frame (`NO_EXTENT` for none), or
-    /// `None` until every trace with rows is planned.
+    /// The least and greatest value a plot's traces draw this frame, at each trace's scale
+    /// (`NO_EXTENT` for none), or `None` until every trace with rows is planned.
     fn traced_values(&self) -> Option<[f32; 2]> {
         let traces = self.marks.iter().filter(|m| m.measured() && m.held() > 0);
         traces
-            .map(|m| m.tables.traced_values())
+            .map(|m| {
+                let [lo, hi] = m.tables.traced_values()?;
+                let Some([scale, offset]) = m.compiled.as_ref().map(|c| c.drawing.scale.map(|k| k as f32)) else {
+                    return Some([lo, hi]);
+                };
+                let ends = [lo * scale + offset, hi * scale + offset];
+                Some(if lo > hi { [lo, hi] } else { [ends[0].min(ends[1]), ends[0].max(ends[1])] })
+            })
             .try_fold(crate::data::NO_EXTENT, |values, traced| Some(crate::data::widen(values, traced?)))
     }
 
@@ -441,14 +448,30 @@ impl View {
         self.move_camera(camera);
     }
 
-    /// Grows the value range a plot shows to hold `lo..hi` with 12% headroom on each side, and
-    /// shrinks it once the values fill less than a third of it.
+    /// Grows the value range a plot shows to hold `lo..hi` with 12% headroom on each side, and at
+    /// least the y axis's `min_span`. Shrinks it once the values fill less than a third of it,
+    /// unless it is that least range.
     fn fit_values(&mut self, lo: f64, hi: f64) {
-        let holds = self.plot_y.is_some_and(|[a, b]| lo >= a && hi <= b && (hi - lo) * 3.0 >= b - a);
+        let least = self.min_span(|plot| &plot.y);
+        let holds = self
+            .plot_y
+            .is_some_and(|[a, b]| lo >= a && hi <= b && ((hi - lo) * 3.0 >= b - a || b - a <= least * (1.0 + 1e-9)));
         if !holds {
-            let pad = if hi > lo { (hi - lo) * 0.12 } else { lo.abs().max(1.0) * 0.1 };
-            self.plot_y = Some([lo - pad, hi + pad]);
+            let pad = match hi - lo {
+                spread if spread > 0.0 => spread * 0.12,
+                _ if least > 0.0 => 0.0,
+                _ => lo.abs().max(1.0) * 0.1,
+            };
+            self.plot_y = Some(at_least([lo - pad, hi + pad], least));
             self.wake();
+        }
+    }
+
+    /// The least range a fit shows on the plot's axis that `axis` picks, or 0.
+    fn min_span(&self, axis: impl Fn(&crate::Plot) -> &crate::Axis) -> f64 {
+        match &self.scene.space {
+            Space::Plot(plot) => axis(plot).min_span.unwrap_or(0.0).max(0.0),
+            _ => 0.0,
         }
     }
 
@@ -457,8 +480,10 @@ impl View {
         self.marks.iter().any(|shown| matches!(&shown.mark, crate::Mark::Lines(lines) if lines.trace.is_some()))
     }
 
-    /// The axis range a plot's traces span, widened to a unit range around a single point.
+    /// The axis range a plot's traces span, widened to a unit range around a single point, and to
+    /// at least the x axis's `min_span`.
     fn traced_span(&self) -> Option<[f64; 2]> {
+        let least = self.min_span(|plot| &plot.x);
         let spans = self.marks.iter().filter_map(|shown| {
             let crate::Mark::Lines(lines) = &shown.mark else { return None };
             let style = shown.mark.style();
@@ -470,8 +495,17 @@ impl View {
         });
         spans
             .reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])])
-            .map(|[a, b]| if b > a { [a, b] } else { [a - 0.5, a + 0.5] })
+            .map(|[a, b]| at_least(if b > a { [a, b] } else { [a - 0.5, a + 0.5] }, least))
     }
+}
+
+/// `[lo, hi]` widened about its middle to span at least `least`.
+fn at_least([lo, hi]: [f64; 2], least: f64) -> [f64; 2] {
+    if hi - lo >= least {
+        return [lo, hi];
+    }
+    let middle = lo.midpoint(hi);
+    [middle - least / 2.0, middle + least / 2.0]
 }
 
 impl View {

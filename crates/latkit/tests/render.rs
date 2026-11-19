@@ -881,7 +881,7 @@ fn a_plot_without_a_value_range_fits_it_to_its_traces_without_reading_back() {
         data.apply(Patch::new().append("Signal", [v], [("v", vec![v, -v])])).unwrap();
     }
     let axis = Axis { grid: false, hidden: true, ..Axis::default() };
-    let scene = Scene::new(Plot { x: axis.clone(), y: axis })
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis.clone() })
         .ease(std::time::Duration::ZERO)
         .draw(Lines::of("signals", "Signal").trace("v"));
     let mut view = View::new(&gpu, scene);
@@ -904,6 +904,17 @@ fn a_plot_without_a_value_range_fits_it_to_its_traces_without_reading_back() {
     let [lo, hi] = shown(&view);
     assert!(lo < -7.0 && hi > 7.0 && hi < 12.0, "the first frames' values: {lo}..{hi}");
     assert_eq!((gpu.work() - before).readbacks, 0);
+    // A trace that scales its field fits to the values it draws, 86 to 114 there, and an axis's
+    // least range keeps the fit from closing in on them.
+    let least = Axis { min_span: Some(500.0), ..axis.clone() };
+    let scaled = Lines::of("signals", "Signal").trace(latkit::field("v") * 2.0 + 100.0);
+    let scene = Scene::new(Plot { x: axis.clone(), y: least }).ease(std::time::Duration::ZERO).draw(scaled);
+    let mut view = View::new(&gpu, scene);
+    view.set_sources([&data]).unwrap();
+    view.set_camera(Camera::Plot { x: [0.0, 7.0], y: None });
+    frame(&gpu, &mut view);
+    let [lo, hi] = shown(&view);
+    assert!((lo + 150.0).abs() < 2.0 && (hi - 350.0).abs() < 2.0, "500 around the values drawn: {lo}..{hi}");
 }
 
 #[test]
@@ -1232,7 +1243,7 @@ fn comets_scene(units: bool, speed: Option<f64>) -> Scene {
 
 /// The x of each comet head along pixel row `y`: the reddest pixel of each run of red.
 fn heads(pixels: &[[u8; 4]], y: u32) -> Vec<u32> {
-    common::heads_along(pixels, [0.0, y as f32], [(SIZE - 1) as f32, y as f32])
+    common::heads_along(pixels, &[[0.0, y as f32], [(SIZE - 1) as f32, y as f32]])
 }
 
 #[test]

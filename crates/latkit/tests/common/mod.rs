@@ -172,27 +172,33 @@ pub fn rest(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     (0..24).map(|_| step(gpu, view)).last().expect("frames")
 }
 
-/// Where comet heads lie on the screen line from `a` to `b`, in pixels from `a`: the reddest pixel
-/// of each run of red, stepping a pixel at a time.
-pub fn heads_along(pixels: &[[u8; 4]], a: [f32; 2], b: [f32; 2]) -> Vec<u32> {
-    let steps = (b[0] - a[0]).hypot(b[1] - a[1]).round() as u32;
-    let red = |i: u32| {
-        let t = i as f32 / steps.max(1) as f32;
-        let [x, y] = [0, 1].map(|k| (a[k] + (b[k] - a[k]) * t).round().clamp(0.0, (SIZE - 1) as f32) as u32);
-        at(pixels, x, y)[0]
-    };
+/// Where comet heads lie along the screen polyline through `points`, in pixels along it from the
+/// first: the reddest pixel of each run of red, stepping a pixel at a time.
+pub fn heads_along(pixels: &[[u8; 4]], points: &[[f32; 2]]) -> Vec<u32> {
+    let mut reds = Vec::new();
+    for piece in points.windows(2) {
+        let [a, b] = [piece[0], piece[1]];
+        let steps = (b[0] - a[0]).hypot(b[1] - a[1]).round().max(1.0) as u32;
+        // Each piece starts where the last ended.
+        let first = u32::from(!reds.is_empty());
+        reds.extend((first..=steps).map(|i| {
+            let t = i as f32 / steps as f32;
+            let [x, y] = [0, 1].map(|k| (a[k] + (b[k] - a[k]) * t).round().clamp(0.0, (SIZE - 1) as f32) as u32);
+            at(pixels, x, y)[0]
+        }));
+    }
     let mut heads = Vec::new();
     let mut i = 0;
-    while i <= steps {
-        if red(i) <= 60 {
+    while i < reds.len() {
+        if reds[i] <= 60 {
             i += 1;
             continue;
         }
         let start = i;
-        while i <= steps && red(i) > 60 {
+        while i < reds.len() && reds[i] > 60 {
             i += 1;
         }
-        heads.extend((start..i).max_by_key(|&i| red(i)));
+        heads.extend((start..i).max_by_key(|&i| reds[i]).map(|i| i as u32));
     }
     heads
 }

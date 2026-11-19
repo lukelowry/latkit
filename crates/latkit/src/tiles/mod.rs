@@ -57,8 +57,10 @@ use crate::pending::Watchers;
 /// longer draws until they outnumber the rows it draws.
 ///
 /// A file that fails to fetch draws nothing and is fetched again on its own: a second later, then
-/// twice as long after each further failure, at most a minute. Each view reports the failure once.
-/// A fetch that fails with [`Error::Cancelled`](crate::Error::Cancelled), as when the page's own
+/// twice as long after each further failure, at most a minute. Each view drawing the tiles lists
+/// the failure in its [`failures`](crate::View::failures) until the file arrives, so a
+/// [`Failures`](crate::Event::Failures) event tells both when it fails and when it recovers. A
+/// fetch that fails with [`Error::Cancelled`](crate::Error::Cancelled), as when the page's own
 /// fetch is aborted, is no failure: the file is fetched again when next needed.
 ///
 /// ```
@@ -109,7 +111,8 @@ impl Tiles {
     /// what it drew until all the spans it fetched again land, then takes them in one change.
     /// Every file that failed is fetched again at once. A manifest that names another base, span
     /// size, or span template starts over, as vector tiles always do. Views draw what they drew
-    /// until what starts over can draw.
+    /// until what starts over can draw. Refresh as often as the data changes: a file being fetched
+    /// lands first, then is fetched once more however often the tiles were refreshed meanwhile.
     pub fn refresh(&self) {
         self.refreshes.count.fetch_add(1, Ordering::Relaxed);
         self.refreshes.views.wake_all();

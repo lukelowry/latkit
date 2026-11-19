@@ -9,7 +9,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use common::{SETTLE, SIZE, at, errors, frame, gpu, plain_theme, step};
+use common::{SETTLE, SIZE, at, errors, failures, frame, gpu, plain_theme, step};
 use latkit::Tiles;
 use latkit::host::{Host, Raster, Request, TextRun};
 use latkit::{
@@ -130,16 +130,22 @@ fn an_index_missing_or_not_tile_json_fails_as_what_it_is() {
     let mut view = View::new(&gpu, scene);
     view.set_sources([&Tiles::new("base", "index.html")]).expect("a source");
     frame(&gpu, &mut view);
-    let told = errors(&mut view);
+    let told = failures(&mut view).expect("a failures event");
     let [latkit::Error::Invalid { path, .. }] = told.as_slice() else { panic!("one invalid input: {told:?}") };
     assert_eq!(path.to_string(), "base", "named by the tiles' dataset");
     // An index not there yet, as a recording's before its first frames, is not found, and fetched
     // again after its retry.
     view.set_sources([&Tiles::new("base", "missing.json")]).expect("a source");
     frame(&gpu, &mut view);
-    let told = errors(&mut view);
+    let told = failures(&mut view).expect("a failures event");
     let [latkit::Error::Io(reason)] = told.as_slice() else { panic!("one missing index: {told:?}") };
     assert!(reason.contains("missing.json was not found"), "{reason}");
+    assert_eq!(view.failures().count(), 1, "the failure lasts");
+    assert_eq!(errors(&mut view), Vec::new(), "and stops nothing else drawing");
+    // Tiles that draw clear it.
+    view.set_sources([&Tiles::new("base", "tiles/{z}/{x}/{y}.pbf")]).expect("a source");
+    frame(&gpu, &mut view);
+    assert_eq!(failures(&mut view), Some(Vec::new()), "a failures event says it cleared");
 }
 
 #[test]

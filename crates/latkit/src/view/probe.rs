@@ -43,14 +43,15 @@ pub(crate) struct Drew {
 }
 
 /// One mark as its frame drew it: its dataset, table, and name, whether selection picks its rows,
-/// the rows its state held, and, for a line tracing a field, the field and its trace plan.
+/// the rows its state held, and, for a line tracing a field, the field, the scale and offset it
+/// draws values at, and its trace plan.
 struct Held {
     data: Name,
     table: Name,
     name: Option<Name>,
     selects: bool,
     holding: Option<Holding>,
-    traced: Option<(Name, Arc<Plan>)>,
+    traced: Option<(Name, [f64; 2], Arc<Plan>)>,
 }
 
 impl Drew {
@@ -92,10 +93,11 @@ impl Drew {
         self.marks.get(i).is_some_and(|m| m.selects)
     }
 
-    /// The sample that point `point` of row `row`'s traced path shows, on mark `i` tracing a field.
+    /// The sample that point `point` of row `row`'s traced path shows, on mark `i` tracing a field,
+    /// with its value as drawn.
     fn sample(&self, i: usize, row: usize, point: u32) -> Option<Sample> {
         let mark = self.marks.get(i)?;
-        let (field, plan) = mark.traced.as_ref()?;
+        let (field, [scale, offset], plan) = mark.traced.as_ref()?;
         let (level, entries, side) = plan.entries(point)?;
         let table = &mark.holding.as_ref()?.table;
         let crate::data::Field::Sampled(samples, _) = table.field_named(field)? else { return None };
@@ -107,6 +109,7 @@ impl Drew {
             held.reduce(|a, b| if (side == 1 && b.1 > a.1) || (side == 0 && b.1 < a.1) { b } else { a })?;
         // A bucket shows its middle frame.
         let span = crate::data::bucket_frames(level);
+        let value = value * scale + offset;
         Some(Sample { frame: index * span + span / 2, at: samples.drawn_at(level, index)?, value })
     }
 }
@@ -167,7 +170,7 @@ impl View {
     /// probe is in flight. The point under a resting pointer is probed again whenever the frame
     /// changes under it, so a moving frame runs one probe per readback and a still frame runs none.
     pub(super) fn probe_point(&mut self, answers: bool) -> Option<Probe> {
-        if (self.changed || self.easing())
+        if (self.changed || self.played || self.easing())
             && matches!(self.gestures.now, Gesture::Idle)
             && self.gestures.keys.at.is_none()
             && let Some(pointer) = self.pointer
@@ -297,8 +300,10 @@ impl View {
             .iter()
             .map(|shown| {
                 let style = shown.mark.style();
-                let traced = match &shown.mark {
-                    crate::Mark::Lines(lines) => shown.tables.plan().map(|plan| (lines.traced(), plan.clone())),
+                let traced = match (&shown.mark, &shown.compiled) {
+                    (crate::Mark::Lines(lines), Some(compiled)) => {
+                        shown.tables.plan().map(|plan| (lines.traced(), compiled.drawing.scale, plan.clone()))
+                    }
                     _ => None,
                 };
                 Held {

@@ -97,6 +97,43 @@ impl Listing {
         render(raster, input, "pack_segments", &self.scanned, &self.packed, kept, words);
     }
 
+    /// Counts the comet slots of the `items` segments whose records start at record `first` in
+    /// `screen`, scans the counts into where each segment's slots start, at `counts`, and writes
+    /// the `kept` slots at `destination` (see `raster/comets.wesl`). `input` binds the copy of the
+    /// mark's uniform that says where its slots lie.
+    pub(crate) fn comet_slots(
+        &mut self,
+        raster: &mut Raster<'_>,
+        input: &Inputs<'_>,
+        screen: &super::screen::Screen,
+        first: u32,
+        [items, kept]: [u32; 2],
+        [counts, destination]: [u32; 2],
+    ) {
+        let words = (kept * 2).next_multiple_of(4);
+        self.packed.ensure(raster.device, u64::from(words.max(items.next_multiple_of(4))));
+        self.scanned.ensure(raster.device, u64::from((items + 1).next_multiple_of(4)));
+        let render = |raster: &mut Raster<'_>, entry: &'static str, output: &Words, count: u32, words: u32| {
+            raster.render(Render {
+                variant: Variant::raster(Shader::Comets, entry),
+                shared: Some(Shared { view: input.view, mark: input.mark, offset: input.offset }),
+                bindings: &[
+                    wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
+                    wgpu::BindGroupEntry { binding: 11, resource: screen.binding() },
+                ],
+                uniform: 19,
+                step: WordStep { source: first, ..WordStep::of(count) },
+                output,
+                words,
+            });
+        };
+        render(raster, "count_slots", &self.packed, items, items.next_multiple_of(4));
+        self.scan.record(raster, At::new(&self.packed, 0), At::new(&self.scanned, 0), items);
+        self.scanned.copy_to(raster.encoder, 0, input.lists, counts, (items + 1).next_multiple_of(4));
+        render(raster, "slots", &self.packed, kept, words);
+        self.packed.copy_to(raster.encoder, 0, input.lists, destination, words);
+    }
+
     /// Writes the order the mark's first `count` instances draw in, lowest first, at `destination`
     /// in the lists buffer. Scratch has room for the list's `kept` instances, so a count that
     /// changes between sorts never makes it again.

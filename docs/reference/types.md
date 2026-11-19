@@ -257,6 +257,12 @@ A plot axis.
 **`unit`**`?: string | null` [¶](#axis-unit){.headerlink}
 : Text written after the last tick's value, such as `" s"` or `"%"`, so the axis needs no title.
 
+{#axis-minspan .member}
+**`minSpan`**`?: number | null` [¶](#axis-minspan){.headerlink}
+: The least range a fit shows on the axis, centered on what it fits, so a steady signal draws flat
+  instead of filling the plot with its noise: `0.1` shows a steady `1.0` as `0.95` to `1.05`. When
+  unset, a fit shows what it fits.
+
 (tick)=
 
 ### `Tick`
@@ -393,10 +399,10 @@ rows pick, select, and drag. These options control the view itself.
 
 {#controls-fps .member}
 **`fps`**`?: number` [¶](#controls-fps){.headerlink}
-: The most frames a second a view in a canvas draws while the only thing moving is motion that
-  never settles: comets, an orbit, and options that read `elapsed`. Any other change draws on the
-  next display frame, and that motion with it. Lower it to spend less GPU time and send fewer
-  frames to a remote screen. Defaults to 60.
+: The most frames a second a view in a canvas draws while the only thing moving is the shown
+  coordinate, as a playhead plays, or motion that never settles: comets, an orbit, and options
+  that read `elapsed`. Any other change draws on the next display frame, and that motion with it.
+  Lower it to spend less GPU time and send fewer frames to a remote screen. Defaults to 60.
 
 {#controls-reach .member}
 **`reach`**`?:` [`Reach`](#reach) [¶](#controls-reach){.headerlink}
@@ -1203,13 +1209,25 @@ monitor. On the earth, paths follow the globe's curve and stay unbroken across t
   allowed on a plot.
 
 {#lines-trace .member}
-**`trace`**`?: string | null` [¶](#lines-trace){.headerlink}
-: The sampled field each row traces across the data's axis. Required on a plot, and allowed only
-  there. A field with no frames yet draws nothing until its first frame arrives.
+**`trace`**`?: string |` [`ExprInput`](#exprinput) [¶](#lines-trace){.headerlink}
+: What each row traces across the data's axis: a sampled field's name, with or without `$`, or an
+  expression that multiplies the field by a number and adds one, such as
+  `{ "mul": ["$vm", 100] }`. Required on a plot, and allowed only there. A field with no frames
+  yet draws nothing until its first frame arrives.
 
 {#lines-interpolation .member}
 **`interpolation`**`?:` [`Interpolation`](#interpolation) [¶](#lines-interpolation){.headerlink}
 : How each row runs between its samples on a plot. Defaults to `linear`.
+
+(trace)=
+
+### `Trace`
+
+{.signature}
+`type Trace = string |` [`ExprInput`](#exprinput)
+
+A sampled field's name, with or without `$`, or an expression that multiplies the field by a
+number and adds one.
 
 (areas)=
 
@@ -1301,9 +1319,11 @@ How a vertex is drawn: a shape's name, `"block"`, or
   reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's size
   as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It returns
   the pixel's straight color and its signed distance in CSS pixels from the outline, negative
-  inside, which glows and status rings follow. The source may declare its own functions, types,
-  and constants. Of latkit's shader code, it sees only `MarkerFragment` and `MarkerColor`. It
-  compiles once, when a view first draws it.
+  inside, which glows and status rings follow. The color's alpha is the pixel's coverage: latkit
+  blends it as given and smooths no edge, so fade the outline over a pixel, as
+  `color.a * saturate(0.5 - distance / fwidth(distance))` does. The source may declare its own
+  functions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and
+  `MarkerColor`. It compiles once, when a view first draws it.
 
   {#marker-wgsl-source .member}
   **`source`**`: string` [¶](#marker-wgsl-source){.headerlink}
@@ -2259,8 +2279,8 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 
 {#viewevent-failures .member}
 **`'failures'`**`:` [`Failure`](#failure)`[]` [¶](#viewevent-failures){.headerlink}
-: The failures changed: [`view.failures`](#view-failures). Each option that draws as if unset, and each mark that
-  draws nothing, with why. Empty once everything draws.
+: The failures changed: [`view.failures`](#view-failures). Each option that draws as if unset, each mark that draws
+  nothing, and each tile source that could not be fetched, with why. Empty once everything draws.
 
 {#viewevent-error .member}
 **`'error'`**`:` [`Failure`](#failure) [¶](#viewevent-error){.headerlink}
@@ -2631,7 +2651,7 @@ A sample of a traced field: its frame, the axis coordinate it was recorded at, a
 
 {#sample-value .member}
 **`value`**`: number` [¶](#sample-value){.headerlink}
-: The value.
+: The value as the line draws it, at the trace's scale.
 
 (stats)=
 

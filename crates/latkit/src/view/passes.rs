@@ -309,8 +309,11 @@ impl Marks<'_> {
             Some(_) => self.firsts[usize::from(draw == Draw::Lit)][i].expect("a recorded mark draws only once placed"),
             None => 0,
         };
+        // A comets draw with comet slots draws a slot an instance, each naming its record.
         if draw == Draw::Lit {
             drawn.draw_range(pass, corners, first..first + shown.lit.rows * shown.lit.pieces);
+        } else if draw == Draw::Comets && shown.comets.list.is_some() {
+            drawn.draw(pass, corners, shown.comets.drawn());
         } else {
             shown.record(pass, drawn, corners, first);
         }
@@ -767,9 +770,9 @@ impl View {
 
     /// Writes where each segment the frame's draws draw lies on screen (see `lib/screen.wesl`):
     /// those of every recorded stroke mark in `drawn`, then those of the rows each one's focus
-    /// lights, where the lit draw draws them, each mark's records after the last's. Returns where
-    /// each mark's records start, for its draws and for its lit draw, which number their instances
-    /// from there.
+    /// lights, where the lit draw draws them, each mark's records after the last's. Then counts the
+    /// comet slots due from the records (see [`View::count_comets`]). Returns where each mark's
+    /// records start, for its draws and for its lit draw, which number their instances from there.
     fn place(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -820,7 +823,55 @@ impl View {
                 screen.place(&mut raster, &input, variant, [count, first], lit);
             }
         }
-        placed.map(|list| list.iter().map(|p| p.map(|(first, ..)| first)).collect())
+        let firsts = placed.map(|list| list.iter().map(|p| p.map(|(first, ..)| first)).collect::<Vec<_>>());
+        self.count_comets(encoder, inner, drawn, &firsts[0]);
+        firsts
+    }
+
+    /// Counts again, from the records [`View::place`] just wrote, the comet slots due (see
+    /// `View::comet_slots_due`) of the marks `drawn`, whose records start at `firsts`, and reads back
+    /// how many each counted where more than the marks' drawing changed.
+    fn count_comets(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        drawn: &[bool],
+        firsts: &[Option<u32>],
+    ) {
+        let due = self.comet_slots_due(drawn, firsts, self.still.view());
+        if due.is_empty() {
+            return;
+        }
+        let gpu = self.gpu.clone();
+        let device = &gpu.0.device;
+        let count = self.marks.len();
+        let resources = self.resources.as_mut().expect("created before passes");
+        for &(i, ..) in &due {
+            let list = self.marks[i].comets.list.expect("comet slots");
+            resources.lists().write(&gpu.0.queue, list.header, &list.header_words());
+        }
+        let groups = resources.groups(&gpu.0, inner);
+        let Inner { screen, pipelines, arena, listing, .. } = &mut *inner;
+        let mut raster = crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines, encoder };
+        for &(i, first, _) in &due {
+            let shown = &self.marks[i];
+            let list = shown.comets.list.expect("comet slots");
+            // The copy of the mark's uniform for its comets draw says where its slots lie.
+            let input = crate::gpu::listing::Inputs {
+                pages: arena.words(),
+                lists: resources.lists(),
+                view: &groups.view,
+                mark: &groups.mark,
+                offset: offset(2 * count + i),
+                path: shown.path(),
+                projection: Projection::of(&self.scene.space),
+                measured: shown.measures_paths(),
+            };
+            let regions = [list.counts, list.entries];
+            listing.comet_slots(&mut raster, &input, screen, first, [list.items, list.kept], regions);
+        }
+        let read: Vec<usize> = due.iter().filter(|&&(.., read)| read).map(|&(i, ..)| i).collect();
+        self.comet_slots_found(encoder, inner, &read);
     }
 
     /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark

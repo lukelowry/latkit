@@ -288,6 +288,15 @@
             "null"
           ],
           "description": "Text written after the last tick's value, such as `\" s\"` or `\"%\"`, so the axis needs no\ntitle."
+        },
+        "minSpan": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "The least range a fit shows on the axis, centered on what it fits, so a steady signal draws\nflat instead of filling the plot with its noise: `0.1` shows a steady `1.0` as `0.95` to\n`1.05`. When unset, a fit shows what it fits.",
+          "minimum": 0
         }
       },
       "description": "A plot axis."
@@ -1660,7 +1669,7 @@
               "additionalProperties": false
             },
             {
-              "description": "A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It\nreads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's\nsize as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It\nreturns the pixel's straight color and its signed distance in CSS pixels from the outline,\nnegative inside, which glows and status rings follow. The source may declare its own\nfunctions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and\n`MarkerColor`. It compiles once, when a view first draws it.",
+              "description": "A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It\nreads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's\nsize as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It\nreturns the pixel's straight color and its signed distance in CSS pixels from the outline,\nnegative inside, which glows and status rings follow. The color's alpha is the pixel's\ncoverage: latkit blends it as given and smooths no edge, so fade the outline over a pixel, as\n`color.a * saturate(0.5 - distance / fwidth(distance))` does. The source may declare its own\nfunctions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and\n`MarkerColor`. It compiles once, when a view first draws it.",
               "type": "object",
               "properties": {
                 "wgsl": {
@@ -2192,11 +2201,16 @@
               "description": "The path or polygon field each row runs along. Defaults to the field named `geometry`. Not\nallowed on a plot."
             },
             "trace": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Trace"
+                },
+                {
+                  "type": "null"
+                }
               ],
-              "description": "The sampled field each row traces across the data's axis. Required on a plot, and allowed\nonly there. A field with no frames yet draws nothing until its first frame arrives."
+              "description": "What each row traces across the data's axis: a sampled field's name, with or without `$`, or\nan expression that multiplies the field by a number and adds one, such as\n`{ \"mul\": [\"$vm\", 100] }`. Required on a plot, and allowed only there. A field with no frames\nyet draws nothing until its first frame arrives.",
+              "tsType": "string | ExprInput"
             },
             "interpolation": {
               "$ref": "#/$defs/Interpolation",
@@ -2210,6 +2224,17 @@
       ],
       "unevaluatedProperties": false,
       "description": "Rows drawn as lines along a path field (roads, rivers, borders) or a polygon field's rings (area outlines). On a plot, each row traces a sampled field's history across the data's axis, like a monitor. On the earth, paths follow the globe's curve and stay unbroken across the antimeridian."
+    },
+    "Trace": {
+      "description": "A sampled field's name, with or without `$`, or an expression that multiplies the field by a number and adds one.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/Expr"
+        }
+      ]
     },
     "Interpolation": {
       "oneOf": [
@@ -2799,7 +2824,7 @@
               "$ref": "#/$defs/Motion"
             },
             "fps": {
-              "description": "The most frames a second a view in a canvas draws while the only thing moving is motion\nthat never settles: comets, an orbit, and options that read `elapsed()`. Any other change\ndraws on the next display frame, and that motion with it. Lower it to spend less GPU time\nand send fewer frames to a remote screen. Defaults to 60.",
+              "description": "The most frames a second a view in a canvas draws while the only thing moving is the shown\ncoordinate, as a playhead plays, or motion that never settles: comets, an orbit, and options\nthat read `elapsed()`. Any other change draws on the next display frame, and that motion\nwith it. Lower it to spend less GPU time and send fewer frames to a remote screen.\nDefaults to 60.",
               "type": "number",
               "format": "float"
             },
@@ -4444,7 +4469,7 @@
             "type",
             "detail"
           ],
-          "description": "The failures changed: [`View::failures`](crate::View::failures). Each option that draws as\nif unset, and each mark that draws nothing, with why. Empty once everything draws."
+          "description": "The failures changed: [`View::failures`](crate::View::failures). Each option that draws as\nif unset, each mark that draws nothing, and each tile source that could not be fetched, with\nwhy. Empty once everything draws."
         },
         {
           "type": "object",
@@ -4575,7 +4600,7 @@
         "value": {
           "type": "number",
           "format": "double",
-          "description": "The value."
+          "description": "The value as the line draws it, at the trace's scale."
         }
       },
       "required": [

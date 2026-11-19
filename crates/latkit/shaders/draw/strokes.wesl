@@ -3,13 +3,15 @@
 // a segment's end, its quad stops a pixel past the line splitting that end with the next segment.
 // The last segment of each part of a path draws the arrowhead. A quad's corners read where its
 // segment lies on screen from its record, which the frame wrote once. A trace's quads place their
-// segment themselves (see `lib/screen.wesl`). A mark's comets draw after its rows, through the copy of its uniform for `DRAW_COMETS`, each
-// segment's quad spanning only the comets on it this frame, so comets cost the pixels they cover. A
-// segment no comet reaches draws nothing. The focus variant redraws the lit rows' segments over
+// segment themselves (see `lib/screen.wesl`). A mark's comets draw after its rows, through the copy
+// of its uniform for `DRAW_COMETS`: a quad for each of its comet slots, spanning one comet, so comets
+// cost the pixels they cover and a segment off screen costs nothing (see `raster/comets.wesl`). A
+// trace's comets draw a quad for each segment, spanning only the comets on it this frame. A quad no
+// comet reaches draws nothing. The focus variant redraws the lit rows' segments over
 // everything, comets included, with quads enlarged for their glow. The shaded variants call an
 // application's `shade` for each pixel.
 
-import package::lib::types::{PATH_TRACE, ALONG_UNITS, DRAW_OPAQUE, DRAW_COMETS};
+import package::lib::types::{NONE, PATH_TRACE, ALONG_UNITS, FLOW_UNITS, DRAW_OPAQUE, DRAW_COMETS};
 import package::lib::path::PATH;
 import package::lib::bind::{frame, mark, eye};
 import package::lib::project::{to_clip, nearer, culled};
@@ -18,8 +20,10 @@ import package::lib::marker::glow;
 import package::lib::shade::shade_fragment;
 import package::lib::focus::focus_of;
 import package::lib::mark::{fringe, px_per_length};
-import package::lib::stroke::{Stroke, covered, stroke_paint, painted, stroke_distance, owns, comets_on, COMET_RIM};
-import package::lib::screen::{ScreenStroke, read_stroke, screen_stroke};
+import package::lib::stroke::{
+    Stroke, covered, stroke_paint, painted, stroke_distance, owns, comets_on, comet_on, COMET_RIM,
+};
+import package::lib::screen::{ScreenStroke, read_stroke, screen_stroke, comet_slot, on_target};
 import package::lib::color::{output, OPAQUE};
 
 // A scene whose dash and flow expressions are constant zero needs no phase or comet payload.
@@ -64,10 +68,22 @@ fn stroke_at(instance: u32) -> ScreenStroke {
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
     var out: Varyings;
-    let s = stroke_at(instance);
-    let flows = PAINTED & (s.flow != 0.0) & (frame.flow.a > 0.0);
     // The comets draw paints only comets, and the lit draw paints them with its rows. Rows paint none.
+    // Where a mark's segments have records and it has comet slots, which its comets draw's `list`
+    // names, that draw draws one comet an instance: its slot's, on the segment whose record the slot
+    // names. Otherwise it draws a segment's comets an instance.
     let comets_draw = !LIT_DRAW & (mark.draw == DRAW_COMETS);
+    let slotted = comets_draw & (PATH != PATH_TRACE) & (mark.list != NONE);
+    var slot = vec2u(instance, 0u);
+    if slotted {
+        slot = comet_slot(instance);
+        if slot.x == NONE {
+            out.clip = culled();
+            return out;
+        }
+    }
+    let s = stroke_at(slot.x);
+    let flows = PAINTED & (s.flow != 0.0) & (frame.flow.a > 0.0);
     if !s.shown | (comets_draw & !flows) {
         out.clip = culled();
         return out;
@@ -82,9 +98,10 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let normal = vec2f(-dir.y, dir.x);
     let pixels = length(s.b - s.a);
     // Comets in position units place themselves by `along`, and everything else by `phase`, in CSS
-    // pixels: where the mark measures in units, a dash converts `along` at the camera's center. A
+    // pixels: where the mark measures in units, `phase` converts `along` at the camera's center. A
     // trace measures along x on screen.
     let units = (mark.flags & ALONG_UNITS) != 0u;
+    let comet_units = frame.flow_unit == FLOW_UNITS;
     var phase = select(s.along, s.along * px_per_length(), units);
     if PATH == PATH_TRACE {
         phase = select(vec2f(0.0), vec2f(s.a.x, s.a.x + pixels), PAINTED & (s.dash | (s.flow != 0.0)));
@@ -99,9 +116,12 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let past = select(vec2f(reach), across * s.turn + fringe(), shares & vec2<bool>(s.arrow & !comets_draw, true));
     var span = vec2f(0.0, 1.0);
     if comets_draw {
-        let c = select(phase, s.along, units);
-        let px = select(1.0, pixels / max(abs(c.y - c.x), 1e-12), units);
-        let on_it = comets_on(c, px, travel, s.flow, comets + fringe());
+        let c = select(phase, s.along, comet_units);
+        let px = select(1.0, pixels / max(abs(c.y - c.x), 1e-12), comet_units);
+        var on_it = comets_on(c, px, travel, s.flow, comets + fringe());
+        if slotted {
+            on_it = comet_on(c, px, travel, s.flow, comets + fringe(), on_target(s.a, s.b), slot.y);
+        }
         if on_it.z == 0.0 {
             out.clip = culled();
             return out;

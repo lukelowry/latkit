@@ -108,7 +108,8 @@ pub enum Event {
     /// once frames are complete.
     Waiting(Waiting),
     /// The failures changed: [`View::failures`](crate::View::failures). Each option that draws as
-    /// if unset, and each mark that draws nothing, with why. Empty once everything draws.
+    /// if unset, each mark that draws nothing, and each tile source that could not be fetched, with
+    /// why. Empty once everything draws.
     Failures(Vec<Error>),
     /// The view can't draw: the device was lost, a limit was reached, latkit stopped, a fetch or
     /// text failed. Reported once. Shots and videos fail with it.
@@ -302,7 +303,7 @@ pub struct Sample {
     pub frame: u64,
     /// The axis coordinate.
     pub at: f64,
-    /// The value.
+    /// The value as the line draws it, at the trace's scale.
     pub value: f64,
 }
 
