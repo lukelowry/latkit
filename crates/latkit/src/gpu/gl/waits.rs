@@ -196,15 +196,6 @@ impl Waits {
         Self::poll(state);
     }
 
-    /// Runs the waits of the fences that settled now, rather than at the poller's next look. A
-    /// frame does this before it gives the GPU more work, which a read would otherwise wait behind.
-    /// What waits for the GPU to catch up stays with the poller, which fences for it.
-    pub(super) fn settle(state: &Rc<State>) {
-        if !super::noticed_loss(state) {
-            state.waits.settle_fences(state);
-        }
-    }
-
     /// Starts the poller unless it runs, and wakes it if it rests.
     fn poll(state: &Rc<State>) {
         if state.waits.polling.replace(true) {
