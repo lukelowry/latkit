@@ -401,8 +401,9 @@ impl View {
             return;
         }
         // What the passes read: a color changing every frame moves no label.
-        // An edge label also follows the marks supplying its endpoints. Transitions, tile
-        // growth, and hover growth move anchors even when no position channel was re-evaluated.
+        // An edge label also follows the marks supplying its endpoints. Transitions and tile
+        // growth move anchors even when no position channel was re-evaluated. Hover moves none:
+        // only the focus draw grows a hovered marker.
         let versions: Vec<_> = self.marks.iter().map(|m| (m.places_drawn(), m.rows, m.reveal.to_bits())).collect();
         // The eye's matrix is relative to the frame's origin. Panning can change that origin
         // without changing the matrix, but still moves every label's screen claim.
@@ -421,8 +422,6 @@ impl View {
             self.labels.changes,
             versions,
             self.scene_version,
-            &self.focus.hovered,
-            frame.grow.to_bits(),
             self.guides.backdrops().map(|area| area.map(f64::to_bits)).collect::<Vec<_>>(),
         ));
         let claim = self.labels.claimed != Some(stamp);

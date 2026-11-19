@@ -274,6 +274,46 @@ mod platform {
     }
 }
 
+/// The longest a poll of the browser's GPU waits after one that found nothing.
+#[cfg(target_arch = "wasm32")]
+const LONGEST_BACKOFF: Duration = Duration::from_millis(4);
+
+/// How long a loop polling the browser's GPU polls every task after it starts waiting: a frame of
+/// light work finishes within it.
+#[cfg(target_arch = "wasm32")]
+const PROMPT: Duration = Duration::from_millis(3);
+
+/// How a loop polls what the browser's GPU process answers between tasks: WebGL fences, readbacks,
+/// and work done. For [`PROMPT`] after it starts waiting, it polls every task, so it sees a light
+/// frame's answer at once. Then each poll waits twice as long as the last, from a millisecond up
+/// to [`LONGEST_BACKOFF`], so a long wait, as on a GPU busy with heavy frames, takes a few hundred
+/// polls a second where a poll every task would run tens of thousands and keep the page busy.
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+pub(crate) struct Backoff {
+    waiting: Option<Instant>,
+    sleeps: u32,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Backoff {
+    /// Waits before the next poll, after one that found nothing.
+    pub(crate) async fn missed(&mut self) {
+        if self.waiting.get_or_insert_with(Instant::now).elapsed() < PROMPT {
+            next_task().await;
+            return;
+        }
+        let sleeps = self.sleeps;
+        self.sleeps = self.sleeps.saturating_add(1);
+        sleep(Duration::from_millis(1 << sleeps.min(8)).min(LONGEST_BACKOFF)).await;
+    }
+
+    /// Notes a poll that found what it waited for: the next wait starts polling every task again.
+    pub(crate) fn found(&mut self) {
+        (self.waiting, self.sleeps) = (None, 0);
+    }
+}
+
 /// Yields to a browser task, allowing WebGL fences to advance without the nested-timer
 /// four-millisecond clamp. One shared message channel serves every outstanding GPU wait.
 #[cfg(target_arch = "wasm32")]

@@ -114,11 +114,13 @@ impl View {
     }
 
     /// Whether each mark draws other than it did last frame: its uniform (but for what only this
-    /// frame's evaluation reads: the channels it evaluates, and the remap it freezes from), its
-    /// program words, its column tables, or its words changed, this frame's work rewrites what it
-    /// draws from, its focus words changed, or its shade reads the clock or the pointer. A mark
-    /// reading another's rows, as edges read their vertices', changes with it, but for its shade,
-    /// which colors pixels and moves no row.
+    /// frame's evaluation reads, the channels it evaluates and the remap it freezes from, where its
+    /// focus words lie, and its lit rows, which only the focus draw reads), its program words, its
+    /// column tables, or its words changed, this frame's work rewrites what it draws from, the
+    /// selection changed which of its rows dim, or its shade reads the clock or the pointer. A hover
+    /// changes none of these: the focus draw draws the hovered rows over the still. A mark reading
+    /// another's rows, as edges read their vertices', changes with it, but for its shade, which
+    /// colors pixels and moves no row.
     fn changed_marks(&mut self, work: &Work, marks: &[u8]) -> Vec<bool> {
         let size = size_of::<wgsl::Mark>();
         let (mut changed, shaded): (Vec<bool>, Vec<bool>) = self
@@ -129,7 +131,9 @@ impl View {
                 let at = i * MARK_STRIDE as usize;
                 let mut uniform: wgsl::Mark =
                     marks.get(at..at + size).map_or_else(bytemuck::Zeroable::zeroed, bytemuck::pod_read_unaligned);
-                (uniform.mask, uniform.remap) = (0, 0);
+                // Rows read focus words only while a selection lights rows, and focus pages that
+                // move then mark the mark focused, so where they lie changes nothing drawn.
+                (uniform.mask, uniform.remap, uniform.focus, uniform.focused, uniform.pieces) = (0, 0, 0, 0, 0);
                 let uniform = bytemuck::bytes_of(&uniform);
                 let drawn = stamp_of((uniform, &shown.written, shown.tables.generation(), shown.version));
                 let shading = shown.compiled.as_ref().and_then(|c| c.drawing.shade.as_ref());

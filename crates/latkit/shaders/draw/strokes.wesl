@@ -1,29 +1,26 @@
 // Strokes: one instanced quad per segment of every row's path, for edges and lines alike. A quad
 // covers the stroke, any arrowhead, and one pixel of antialiased edge. Where a path runs on through
 // a segment's end, its quad stops a pixel past the line splitting that end with the next segment.
-// The last segment of each part of a path draws the arrowhead. A mark's comets draw after its rows,
-// through the copy of its uniform for `DRAW_COMETS`, each segment's quad spanning only the comets on
-// it this frame, so comets cost the pixels they cover. A segment no comet reaches draws nothing.
-// The focus variant redraws the lit rows' segments over everything, comets included, with quads
-// enlarged for their glow. The shaded variants call an application's `shade` for each pixel.
+// The last segment of each part of a path draws the arrowhead. A quad's corners read where its
+// segment lies on screen from its record, which the frame wrote once (see `lib/screen.wesl`). A
+// mark's comets draw after its rows, through the copy of its uniform for `DRAW_COMETS`, each
+// segment's quad spanning only the comets on it this frame, so comets cost the pixels they cover. A
+// segment no comet reaches draws nothing. The focus variant redraws the lit rows' segments over
+// everything, comets included, with quads enlarged for their glow. The shaded variants call an
+// application's `shade` for each pixel.
 
-import package::lib::types::{ARROWS, PATH_TRACE, ALONG_UNITS, DRAW_OPAQUE, DRAW_COMETS};
+import package::lib::types::{PATH_TRACE, ALONG_UNITS, DRAW_OPAQUE, DRAW_COMETS};
 import package::lib::path::PATH;
 import package::lib::bind::{frame, mark, eye};
 import package::lib::project::{to_clip, nearer, culled};
-import package::lib::path::{
-    segment, segment_points, on_screen, stroke_style, ends_part, path_count, path_length, path_total,
-    path_position, marker_reach,
-};
 import package::lib::hooks::{MarkerColor, ShadeFragment};
 import package::lib::marker::glow;
 import package::lib::shade::shade_fragment;
 import package::lib::focus::focus_of;
-import package::lib::mark::{coverage, fringe, px_per_length};
-import package::lib::stroke::{Stroke, gap, stroke_paint, painted, stroke_distance, owns, rims, comets_on, COMET_RIM};
-import package::lib::daylight::daylight;
+import package::lib::mark::{fringe, px_per_length};
+import package::lib::stroke::{Stroke, covered, stroke_paint, painted, stroke_distance, owns, comets_on, COMET_RIM};
+import package::lib::screen::read_stroke;
 import package::lib::color::{output, OPAQUE};
-import package::lib::lists::list_total;
 
 // A scene whose dash and flow expressions are constant zero needs no phase or comet payload.
 // Changing either expression requests the corresponding specialized program.
@@ -59,101 +56,44 @@ const LIT_DRAW: bool = false;
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
     var out: Varyings;
-    let lit = LIT_DRAW;
-    if !LIT_DRAW {
-        if (mark.per_row == NONE) & (instance >= list_total(mark.list)) {
-            out.clip = culled();
-            return out;
-        }
-    }
-    let s = segment(instance);
-    if LIT_DRAW {
-        if (s.item >= mark.rows) | (s.index >= path_count(s.item)) {
-            out.clip = culled();
-            return out;
-        }
-    }
-    // A stroke fades and scales with its row's tile.
-    var style = stroke_style(s.row);
-    style.color.a *= s.presence;
-    style.width *= s.growth;
-    let points = segment_points(s);
-    let on = on_screen(points);
-    let ends = on.ends;
-    if !style.shown | !on.shown {
-        out.clip = culled();
-        return out;
-    }
-    let ca = on.ca;
-    let cb = on.cb;
-    let a = on.a;
-    let b = on.b;
-    let width = style.width;
-    let dir = normalize(b - a + vec2f(1e-6, 0.0));
-    let normal = vec2f(-dir.y, dir.x);
-    // A segment shorter than half a pixel on screen, such as one between vertices at one place,
-    // points nowhere, so it has no head.
-    let arrow = (PATH != PATH_TRACE) & ((mark.flags & ARROWS) != 0u) & ends_part(s) & (length(b - a) >= 0.5);
-    let flows = PAINTED & (style.flow != 0.0) & (frame.flow.a > 0.0);
+    let s = read_stroke(instance);
+    let flows = PAINTED & (s.flow != 0.0) & (frame.flow.a > 0.0);
     // The comets draw paints only comets, and the lit draw paints them with its rows. Rows paint none.
     let comets_draw = !LIT_DRAW & (mark.draw == DRAW_COMETS);
-    if comets_draw & !flows {
+    if !s.shown | (comets_draw & !flows) {
         out.clip = culled();
         return out;
     }
-    let comets = select(0.0, 0.5 * max(frame.flow_width, width) + COMET_RIM, flows & (lit | comets_draw));
+    let width = s.width;
+    let comets = select(0.0, 0.5 * max(frame.flow_width, width) + COMET_RIM, flows & (LIT_DRAW | comets_draw));
     // How far the stroke, its comets, and any glow reach from its middle. An arrowhead reaches
     // further, but comets never cover one.
-    let across = select(max(0.5 * width, comets), comets, comets_draw) + select(0.0, frame.glow, lit) + fringe();
-    let reach = across + select(0.0, frame.arrow + width, arrow & !comets_draw);
-    // A segment's distance along ends where its list says, so it starts its own length before (at 0
-    // without a list), and its drawn part covers part of the path's segment it draws or runs
-    // beside: in position units, `kept` of its length between its points, else in CSS pixels,
-    // `visible` of its `chord` on screen, which is what its list measured. A fan stands for an end
-    // of that segment (see `on_screen`). The list gives a fan no length, so a fan into the first
-    // vertex starts at 0, and one into the last, listed after its path, starts a segment back. A
-    // trace measures along x on screen. Comets in position units place themselves by `along`, and
-    // everything else by `phase`, in CSS pixels: where the mark measures in units, a dash converts
-    // `along` at the camera's center. Where comets flow toward an arrowhead, `tip` is how far past
-    // `b` the head's tip lies: 0 on its own segment, and before it, the rest of the path less the
-    // farthest its marker reaches.
-    var along = vec2f(0.0);
-    var phase = vec2f(0.0);
-    var tip = select(-1.0, 0.0, arrow);
-    if PAINTED {
-        if style.dash | (style.flow != 0.0) {
-            let pixels = length(b - a);
-            let units = (mark.flags & ALONG_UNITS) != 0u;
-            let listed = mark.per_row == NONE;
-            let span = select(on.chord, path_length(ends.a, ends.b), units);
-            let start = select(0.0, s.along - select(span, 0.0, on.fan == 1u), listed);
-            along = start + span * select(on.visible, on.kept, units);
-            phase = select(along, along * px_per_length(), units);
-            if PATH == PATH_TRACE {
-                phase = vec2f(a.x, a.x + pixels);
-            }
-            if flows & listed & !arrow & ((mark.flags & ARROWS) != 0u) {
-                let px = select(1.0, pixels / max(abs(along.y - along.x), 1e-12), units);
-                tip = max((path_total(s.item) - along.y) * px - marker_reach(points.vertex_b), 0.0);
-            }
-        }
+    let across = select(max(0.5 * width, comets), comets, comets_draw) + select(0.0, frame.glow, LIT_DRAW) + fringe();
+    let reach = across + select(0.0, frame.arrow + width, s.arrow & !comets_draw);
+    let dir = normalize(s.b - s.a + vec2f(1e-6, 0.0));
+    let normal = vec2f(-dir.y, dir.x);
+    let pixels = length(s.b - s.a);
+    // Comets in position units place themselves by `along`, and everything else by `phase`, in CSS
+    // pixels: where the mark measures in units, a dash converts `along` at the camera's center. A
+    // trace measures along x on screen.
+    let units = (mark.flags & ALONG_UNITS) != 0u;
+    var phase = select(s.along, s.along * px_per_length(), units);
+    if PATH == PATH_TRACE {
+        phase = select(vec2f(0.0), vec2f(s.a.x, s.a.x + pixels), PAINTED & (s.dash | (s.flow != 0.0)));
     }
     // Comets move on from where their row's travel was last written, at its flow.
-    let travel = select(0.0, style.travel + style.flow * frame.flow_time, PAINTED);
-    // Where the path runs on through an end, this segment shares that end's pixels with the next
-    // (see `Joints`), unless the turn there is too sharp for the two segments' lengths. Its quad then
-    // stops a pixel past the split line, except behind an arrowhead's segment, where the head's base
-    // can reach. The comets draw's quad spans only the comets on the segment, as fractions of it: it
-    // reaches past an end as the rows' does only where a comet does.
-    let joints = on.joints;
-    let shares = joints.through & (joints.turn * across <= joints.room);
-    let past = select(vec2f(reach), across * joints.turn + fringe(), shares & vec2<bool>(arrow & !comets_draw, true));
+    let travel = select(0.0, s.travel + s.flow * frame.flow_time, PAINTED);
+    // Where the segment shares an end with the next, its quad stops a pixel past the split line
+    // there, except behind an arrowhead's segment, where the head's base can reach. The comets
+    // draw's quad spans only the comets on the segment, as fractions of it: it reaches past an end
+    // as the rows' does only where a comet does.
+    let shares = select(s.shares, s.shares_comets, comets_draw);
+    let past = select(vec2f(reach), across * s.turn + fringe(), shares & vec2<bool>(s.arrow & !comets_draw, true));
     var span = vec2f(0.0, 1.0);
     if comets_draw {
-        let units = (mark.flags & ALONG_UNITS) != 0u;
-        let c = select(phase, along, units);
-        let px = select(1.0, length(b - a) / max(abs(c.y - c.x), 1e-12), units);
-        let on_it = comets_on(c, px, travel, style.flow, comets + fringe());
+        let c = select(phase, s.along, units);
+        let px = select(1.0, pixels / max(abs(c.y - c.x), 1e-12), units);
+        let on_it = comets_on(c, px, travel, s.flow, comets + fringe());
         if on_it.z == 0.0 {
             out.clip = culled();
             return out;
@@ -162,34 +102,30 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     let t = f32(corner & 1u);
     let side = f32(corner >> 1u) * 2.0 - 1.0;
-    let start = a - dir * past.x;
-    let end_a = select(mix(a, b, span.x), start, span.x <= 0.0);
-    let end_b = select(mix(a, b, span.y), b + dir * past.y, span.y >= 1.0);
+    let start = s.a - dir * past.x;
+    let end_a = select(mix(s.a, s.b, span.x), start, span.x <= 0.0);
+    let end_b = select(mix(s.a, s.b, span.y), s.b + dir * past.y, span.y >= 1.0);
     let line = mix(end_a, end_b, t);
-    let screen = line + normal * side * reach;
-    // A comets quad takes the depth the rows' quad has where its corner lies, so comets meet their
-    // own line's depth, and stand a hair in front of it against rounding.
-    let u = dot(line - start, dir) / max(length(b - a) + past.x + past.y, 1e-6);
-    let w = mix(ca.w, cb.w, u);
-    let depth = mix(ca.z / ca.w, cb.z / cb.w, u) * w;
-    let at = select(select(ca, cb, t > 0.5), vec4f(0.0, 0.0, min(depth * 1.0005, w), w), comets_draw);
-    out.clip = nearer(to_clip(screen, at));
-    out.ends = vec4f(a, b);
-    // This corner's fraction along the whole segment, at the start or end of the drawn part.
-    let f = mix(on.kept.x, on.kept.y, mix(span.x, span.y, t));
-    var color = style.color;
-    if style.blends {
-        color *= mix(ends.a.color, ends.b.color, f);
-    }
-    let light = daylight(mix(path_position(ends.a).xy, path_position(ends.b).xy, f));
-    out.color = vec4f(color.rgb * light, color.a);
-    out.style = vec4f(width, phase, select(0.0, style.flow, PAINTED));
-    out.comet = vec4f(along, travel, tip);
-    out.split = joints.split;
-    let rim = flows & rims(color.rgb);
-    out.bits.x = u32(arrow) | (u32(PAINTED & style.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u)
-        | (u32(rim) << 4u);
-    if lit { out.bits.y = focus_of(s.row); }
+    // A rows quad's corner takes the depth at its end. A comets quad's takes the depth the rows'
+    // quad has where it lies, so comets meet their own line's depth, and stands a hair in front of
+    // it against rounding. Corners' w is relative to `a`'s.
+    let u = dot(line - start, dir) / max(pixels + past.x + past.y, 1e-6);
+    let rows_w = select(1.0, s.w, t > 0.5);
+    let comets_w = mix(1.0, s.w, u);
+    let comets_z = min(mix(s.depth.x, s.depth.y, u) * comets_w * 1.0005, comets_w);
+    let rows_at = vec4f(0.0, 0.0, select(s.depth.x, s.depth.y, t > 0.5) * rows_w, rows_w);
+    let at = select(rows_at, vec4f(0.0, 0.0, comets_z, comets_w), comets_draw);
+    out.clip = nearer(to_clip(line + normal * side * reach, at));
+    out.ends = vec4f(s.a, s.b);
+    // This corner's color: its end's, or for a comets quad, between them where its corner lies.
+    out.color = mix(s.color_a, s.color_b, mix(span.x, span.y, t));
+    out.style = vec4f(width, phase, select(0.0, s.flow, PAINTED));
+    out.comet = vec4f(s.along, travel, s.tip);
+    out.split = s.split;
+    let rim = flows & s.rim;
+    out.bits.x =
+        u32(s.arrow) | (u32(s.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u) | (u32(rim) << 4u);
+    if LIT_DRAW { out.bits.y = focus_of(s.row); }
     out.bits.z = s.row;
     return out;
 }
@@ -243,7 +179,7 @@ fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
             let straight = vec4f(color.rgb / max(color.a, 1e-6), color.a);
             return output(glow(MarkerColor(straight, d.x), v.bits.y));
         }
-        if opaque & ((s.color.a < OPAQUE) | (coverage(d.x) < 1.0) | gap(d, s)) {
+        if opaque & ((s.color.a < OPAQUE) | (covered(d, s) < 1.0)) {
             discard;
         }
         return output(painted(color));

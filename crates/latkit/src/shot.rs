@@ -542,6 +542,8 @@ impl Drawing {
     /// Returns `readback`'s bytes once the GPU has written them. Fails at the deadline or when the
     /// device is lost.
     pub(crate) async fn read<T: for<'a> From<&'a [u8]> + From<Vec<u8>>>(&self, readback: &Readback) -> Result<T> {
+        #[cfg(target_arch = "wasm32")]
+        let mut backoff = crate::time::Backoff::default();
         loop {
             self.check_deadline()?;
             self.finish();
@@ -553,7 +555,7 @@ impl Drawing {
                 return Err(Error::DeviceLost);
             }
             #[cfg(target_arch = "wasm32")]
-            crate::time::next_task().await;
+            backoff.missed().await;
             #[cfg(not(target_arch = "wasm32"))]
             self.notify.wait(FRAME).await;
         }

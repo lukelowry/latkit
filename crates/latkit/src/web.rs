@@ -400,6 +400,7 @@ async fn settled(gpu: &Gpu, compiled: bool) {
     let (submitted, finished) = crate::Pending::new();
     gpu.queue().on_submitted_work_done(move || finished.resolve(Ok(())));
     let mut completed = false;
+    let mut backoff = crate::time::Backoff::default();
     loop {
         let _ = gpu.device().poll(wgpu::PollType::Poll);
         completed |= submitted.take().is_some();
@@ -407,7 +408,7 @@ async fn settled(gpu: &Gpu, compiled: bool) {
         if completed && !compiling || gpu.lost() {
             return;
         }
-        crate::time::next_task().await;
+        backoff.missed().await;
     }
 }
 

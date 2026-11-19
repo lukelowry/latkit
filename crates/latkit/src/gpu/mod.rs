@@ -28,6 +28,7 @@ pub(crate) mod raster;
 pub(crate) mod readback;
 pub(crate) mod reduce;
 pub(crate) mod retired;
+pub(crate) mod screen;
 pub(crate) mod shaders;
 mod specialize;
 pub(crate) mod state;
@@ -157,6 +158,9 @@ pub(crate) struct Inner {
     pub(crate) bounds: bounds::Bounds,
     pub(crate) texts: texts::Texts,
     pub(crate) probing: probing::Probing,
+    /// Where each instance of the marks a frame draws lies on screen, which every view's frames
+    /// write before their draws read it.
+    pub(crate) screen: screen::Screen,
     /// Piece keys of recently drawn geometry pages.
     pub(crate) pieces: arena::Pieces,
     pub(crate) pipelines: Pipelines,
@@ -444,6 +448,7 @@ impl Gpu {
                 bounds: bounds::Bounds::new(&device, queue.retired()),
                 texts: texts::Texts::new(&device, queue.retired()),
                 probing: probing::Probing::new(&device, queue.retired()),
+                screen: screen::Screen::new(&device, queue.retired()),
                 pieces: arena::Pieces::default(),
                 pipelines: Pipelines::new(&device, counters.clone(), gpu.clone()),
                 colormaps: Colormaps::colormaps(&device),

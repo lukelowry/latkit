@@ -1,12 +1,22 @@
 //! Everything the driver waits on, polled by one task: fences in submission order, with the waits
-//! that follow each one, and programs still linking. Fences are polled every browser task while
-//! any is pending, since WebGL signals them only between tasks. Programs link in hundreds of
+//! that follow each one, programs still linking, and what waits for the GPU to catch up. WebGL
+//! signals fences only between browser tasks, so while any is pending, the poller looks again
+//! every task for a few milliseconds, then less often ([`Backoff`]). Programs link in hundreds of
 //! milliseconds, so they are polled every few.
 //!
 //! A wait makes a fence only when the GPU was given work since the newest one, and otherwise joins
 //! it. Each presented frame is fenced before the page copies the canvas, so a wait after a frame
 //! joins that fence. WebKit reports a fence made after a canvas copy, with no work since, as
-//! unsignaled for 256 polls after the GPU finished it: about 8 seconds.
+//! unsignaled for 256 polls after the GPU finished it.
+//!
+//! A poll that finds every fence settled, with no work given the GPU since the newest, finds it
+//! caught up: the browser's GPU process then answers a synchronous query at once, rather than
+//! holding the page while it runs the commands issued before it. What must ask one waits for such
+//! a poll ([`Waits::caught_up`]). A GPU busy with frame after frame may never catch up, so each
+//! such wait gives up waiting after a time of its own, and asks once a fence made after it settles
+//! while no program links: the query then waits behind at most the work issued since that fence.
+
+use crate::time::Backoff;
 
 use super::device::State;
 use super::pipeline::Program;
@@ -26,6 +36,17 @@ const COMPLETION_STATUS: u32 = 0x91B1;
 
 /// A wait. It gets whether its fence signaled, rather than failed.
 type Then = Box<dyn FnOnce(&Rc<State>, bool)>;
+
+/// What runs once the GPU catches up.
+type Ready = Box<dyn FnOnce(&Rc<State>)>;
+
+/// What waits for the GPU to catch up, and when it stops waiting: past `late`, once a fence made
+/// after `made` fences settles.
+struct CaughtUp {
+    then: Ready,
+    late: web_time::Instant,
+    made: u64,
+}
 
 struct Fenced {
     /// `None` when no fence was needed, or none could be made.
@@ -54,6 +75,7 @@ pub(super) struct Waits {
     fenced: RefCell<Vec<Fenced>>,
     since: RefCell<Since>,
     linking: RefCell<Vec<Weak<Program>>>,
+    caught_up: RefCell<Vec<CaughtUp>>,
     polling: Cell<bool>,
     /// The poller while it rests between program polls. A new fence wakes it.
     resting: RefCell<Option<Waker>>,
@@ -83,11 +105,41 @@ impl Waits {
         Self::poll(state);
     }
 
-    /// Whether every fence has settled and no work was given to the GPU since the newest: a
-    /// synchronous query, which the browser's GPU process answers after everything issued before
-    /// it, then answers at once.
-    pub(super) fn quiet(&self) -> bool {
-        self.fenced.borrow().is_empty() && matches!(*self.since.borrow(), Since::Nothing)
+    /// Runs `then` at the first poll that finds the GPU caught up: every fence settled, and no work
+    /// given it since the newest. Work given since, such as the next frame, is fenced in turn. After
+    /// `patience`, `then` runs once every fence settles, if one was made since this call, while no
+    /// program links.
+    pub(super) fn caught_up(state: &Rc<State>, patience: Duration, then: impl FnOnce(&Rc<State>) + 'static) {
+        let waiting =
+            CaughtUp { then: Box::new(then), late: web_time::Instant::now() + patience, made: state.waits.made() };
+        state.waits.caught_up.borrow_mut().push(waiting);
+        Self::poll(state);
+    }
+
+    /// Runs what waited for the GPU to catch up, if it has, else what has run out of patience. Then,
+    /// if anything still waits, fences the work given the GPU since the newest fence.
+    fn catch_up(state: &Rc<State>) {
+        if !state.waits.fenced.borrow().is_empty() || state.waits.caught_up.borrow().is_empty() {
+            return;
+        }
+        let caught_up = matches!(*state.waits.since.borrow(), Since::Nothing);
+        // While programs link, the GPU process builds them, and a query would wait for that too.
+        let linking = !state.waits.linking.borrow().is_empty();
+        let (now, made) = (web_time::Instant::now(), state.waits.made());
+        let due: Vec<CaughtUp> = {
+            let mut waiting = state.waits.caught_up.borrow_mut();
+            let (due, rest) = std::mem::take(&mut *waiting)
+                .into_iter()
+                .partition(|w| caught_up || (!linking && now >= w.late && made > w.made));
+            *waiting = rest;
+            due
+        };
+        for waiting in due {
+            (waiting.then)(state);
+        }
+        if !caught_up && !state.waits.caught_up.borrow().is_empty() {
+            Self::fence(state, |_, _| {});
+        }
     }
 
     /// Notes work given to the GPU: the next wait needs a fence of its own.
@@ -135,18 +187,23 @@ impl Waits {
         let weak = Rc::downgrade(state);
         wasm_bindgen_futures::spawn_local(async move {
             let mut linked: Option<web_time::Instant> = None;
+            let mut backoff = Backoff::default();
             loop {
                 let Some(state) = weak.upgrade() else { return };
                 // Fences and links end on a lost context. The loss is reported first, so what ended
                 // with it is not mistaken for a failure of its own.
                 super::noticed_loss(&state);
-                state.waits.settle_fences(&state);
+                if state.waits.settle_fences(&state) {
+                    backoff.found();
+                }
+                Self::catch_up(&state);
                 if linked.is_none_or(|at| at.elapsed() >= LINKING) {
                     linked = Some(web_time::Instant::now());
                     state.waits.settle_links(&state);
                 }
-                // Finished links add fences, so both are read after both settle.
-                let fenced = !state.waits.fenced.borrow().is_empty();
+                // Finished links and what waited for the GPU add fences, so both are read after
+                // both settle. What waits for the GPU and was added meanwhile runs at the next poll.
+                let fenced = !state.waits.fenced.borrow().is_empty() || !state.waits.caught_up.borrow().is_empty();
                 let linking = !state.waits.linking.borrow().is_empty();
                 if !fenced && !linking {
                     state.waits.polling.set(false);
@@ -154,7 +211,7 @@ impl Waits {
                 }
                 if fenced {
                     drop(state);
-                    super::turn().await;
+                    backoff.missed().await;
                 } else {
                     rest(&state).await;
                 }
@@ -162,11 +219,11 @@ impl Waits {
         });
     }
 
-    /// Runs the waits of settled fences. The GPU finishes commands in order, so once a fence
-    /// signals, every fence before it has too: polling runs from the newest fence back to the first
-    /// that settled. A fence a browser reports late holds back only until a newer one signals. A
-    /// fence fails only on a lost context, where every wait fails.
-    fn settle_fences(&self, state: &Rc<State>) {
+    /// Runs the waits of settled fences, and returns whether any settled. The GPU finishes commands
+    /// in order, so once a fence signals, every fence before it has too: polling runs from the
+    /// newest fence back to the first that settled. A fence a browser reports late holds back only
+    /// until a newer one signals. A fence fails only on a lost context, where every wait fails.
+    fn settle_fences(&self, state: &Rc<State>) -> bool {
         let (done, failed) = {
             let mut fenced = self.fenced.borrow_mut();
             let (mut settled, mut failed) = (0, false);
@@ -186,7 +243,8 @@ impl Waits {
             (fenced.drain(..settled).collect::<Vec<_>>(), failed)
         };
         // A wait that needed no fence has none to fail: it learns of a lost context here.
-        let failed = failed || (!done.is_empty() && state.gl.is_context_lost());
+        let settled = !done.is_empty();
+        let failed = failed || (settled && state.gl.is_context_lost());
         for entry in done {
             if let Some(fence) = &entry.fence {
                 state.gl.delete_sync(Some(fence));
@@ -196,6 +254,7 @@ impl Waits {
                 then(state, signaled);
             }
         }
+        settled
     }
 
     /// Finishes the programs that linked and wakes their waiters. Finishing looks up a program's

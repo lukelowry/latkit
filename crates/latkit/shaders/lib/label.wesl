@@ -42,7 +42,7 @@ fn anchor(item: u32) -> Anchor {
         }
         return a;
     }
-    let p = point(held_row(item));
+    let p = point(held_row(item), false);
     let c = point_center(p);
     let text = mark.label_size;
     let holds = (mark.marker == MARKER_BLOCK) | ((mark.flags & SIZED) != 0u);

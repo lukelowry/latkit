@@ -38,8 +38,8 @@ pub(crate) struct Shared<'a> {
 }
 
 /// One integer raster dispatch. Resources are sampled inputs; the destination is separate. Every
-/// raster shader writes one color target, so ANGLE on D3D11 builds its pixel shader when the
-/// program links, not at its first draw.
+/// raster shader but the screen pass's (see [`super::screen`]) writes one color target, so ANGLE
+/// on D3D11 builds its pixel shader when the program links, not at its first draw.
 pub(crate) struct Render<'a> {
     pub(crate) variant: Variant,
     pub(crate) shared: Option<Shared<'a>>,

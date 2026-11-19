@@ -83,7 +83,8 @@ fn seen_point(instance: u32, locating: bool) -> Seen {
     if !locating { s.item = drawn_instance(instance); }
     let d = drawn_row(s.item);
     s.row = d.row;
-    let pt = point(s.row);
+    // A hovered marker answers at the size the focus draw shows it.
+    let pt = point(s.row, true);
     s.kept = answers(s.item, s.row, d.leaving);
     s.shown = pt.shown;
     s.a = screen(pt.clip);

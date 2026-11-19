@@ -50,11 +50,6 @@ fn noticed_loss(state: &std::rc::Rc<device::State>) -> bool {
     lost
 }
 
-/// Yields to the next browser task, where WebGL fences and queries advance.
-async fn turn() {
-    crate::time::next_task().await;
-}
-
 pub(crate) fn take_read(buffer: &wgpu::Buffer, size: u64) -> Option<Vec<u8>> {
     buffer.as_custom::<resource::Buffer>()?.take_read(size)
 }

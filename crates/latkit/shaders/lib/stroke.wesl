@@ -2,8 +2,8 @@
 // pixels. Where a path runs on through a segment's end, the segment draws only its own side of the
 // joint there, so a path draws as one stroke.
 
-import package::lib::bind::frame;
-import package::lib::mark::coverage;
+import package::lib::bind::{frame, eye};
+import package::lib::mark::{coverage, fringe};
 import package::lib::types::FLOW_UNITS;
 import package::lib::color::{to_linear, luminance, contrast};
 
@@ -105,7 +105,20 @@ fn gap(d: vec3f, s: Stroke) -> bool {
 
 // Coverage of the pixel at `d` (from `stroke_distance`) by stroke `s`'s line, with its dashes.
 fn covered(d: vec3f, s: Stroke) -> f32 {
-    return select(coverage(d.x), 0.0, gap(d, s));
+    return select(line_coverage(d, s), 0.0, gap(d, s));
+}
+
+// Coverage of the pixel at `d` by stroke `s`'s line, without its dashes. A line thinner than a
+// target pixel covers as a line one pixel wide does, at its width's share: pixels along it, which
+// lie at every distance from its middle up to half a pixel diagonally, then sum to one brightness.
+// At its own width it would cover only pixels near its middle, and look dotted. An arrowhead's
+// segment covers at its own width.
+fn line_coverage(d: vec3f, s: Stroke) -> f32 {
+    let thin = s.width * eye.pixel_ratio;
+    if s.arrow | (thin >= 1.0) {
+        return coverage(d.x);
+    }
+    return thin * coverage(d.x + 0.5 * (s.width - fringe()));
 }
 
 // Coverage of the pixel at `d` by comets (x), and by their rims (y). Comets are

@@ -35,12 +35,10 @@ pub(super) struct State {
     scopes: RefCell<Vec<Option<Scope>>>,
     lost: RefCell<Option<BoxDeviceLostCallback>>,
     handler: RefCell<Option<Arc<dyn wgpu::UncapturedErrorHandler>>>,
-    /// Whether resources were made outside an error scope since errors were last read, and since
-    /// when.
-    pending_errors: Cell<bool>,
-    errors_since: Cell<Option<web_time::Instant>>,
-    /// Whether a fence waits to read errors (see [`Device::check_quiet`]).
-    checking: Cell<bool>,
+    /// Whether errors wait to be read once the GPU catches up (see [`Device::read_errors`]), and
+    /// the out-of-memory scopes waiting for that read.
+    read_due: Cell<bool>,
+    unread: RefCell<Vec<Rc<Unread>>>,
     listener: RefCell<Option<LossListener>>,
     lost_reason: Cell<Option<wgpu::DeviceLostReason>>,
 }
@@ -60,12 +58,21 @@ impl Drop for State {
 #[derive(Debug, Clone)]
 pub(super) struct Device(pub(super) Rc<State>);
 
+/// What an out-of-memory scope waits for: the read of the errors raised by the time the GPU caught
+/// up with it, and the allocation failure that read found for it.
+#[derive(Default)]
+pub(super) struct Unread {
+    read: Cell<bool>,
+    error: RefCell<Option<wgpu::Error>>,
+    waker: RefCell<Option<std::task::Waker>>,
+}
+
+/// How long errors wait for the GPU to catch up before they are read anyway (see
+/// [`Device::read_errors`]).
+const ERRORS_PATIENCE: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// `FIRST_VERTEX_CONVENTION_WEBGL` of `WEBGL_provoking_vertex`.
 const FIRST_VERTEX: u32 = 0x8E4D;
-
-/// The longest errors raised outside a scope wait for the GPU to be quiet before they are read, as
-/// under GPU-bound animation, which leaves no quiet moment.
-const ERRORS_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Device {
     pub(super) fn new(gl: Gl) -> Result<Self, JsValue> {
@@ -94,9 +101,8 @@ impl Device {
             scopes: RefCell::default(),
             lost: RefCell::default(),
             handler: RefCell::default(),
-            pending_errors: Cell::new(false),
-            errors_since: Cell::new(None),
-            checking: Cell::new(false),
+            read_due: Cell::new(false),
+            unread: RefCell::default(),
             listener: RefCell::default(),
             lost_reason: Cell::new(None),
         });
@@ -159,60 +165,53 @@ impl Device {
         }
     }
 
-    fn check_errors(&self) {
-        if !self.0.pending_errors.replace(false) {
-            return;
-        }
-        self.0.errors_since.set(None);
+    /// Reads the errors raised since they were last read. Reading errors is a synchronous query,
+    /// which the browser's GPU process answers only after running every command issued before it,
+    /// and while it builds shaders for a first draw, answers nothing. Asked then, it would block the
+    /// page for a frame's GPU work, or for seconds on opening. So errors are read at a poll that
+    /// finds the GPU caught up (see [`Waits::caught_up`]), when it answers at once, or while frames
+    /// keep the GPU busy, at most `ERRORS_PATIENCE` late. An allocation failure goes to the
+    /// out-of-memory scopes waiting for one, oldest first, and any other error to the innermost
+    /// scope catching it, else the error handler.
+    fn read_errors(&self) {
+        self.0.read_due.set(false);
+        let unread = std::mem::take(&mut *self.0.unread.borrow_mut());
+        let mut waiting = unread.iter();
         loop {
             match self.0.gl.get_error() {
                 Gl::NO_ERROR | Gl::CONTEXT_LOST_WEBGL => break,
-                Gl::OUT_OF_MEMORY => self.error(wgpu::Error::OutOfMemory {
-                    source: Box::new(std::io::Error::other("WebGL2 allocation failed")),
-                }),
+                Gl::OUT_OF_MEMORY => {
+                    let error = wgpu::Error::OutOfMemory {
+                        source: Box::new(std::io::Error::other("WebGL2 allocation failed")),
+                    };
+                    match waiting.next() {
+                        Some(scope) => *scope.error.borrow_mut() = Some(error),
+                        None => self.error(error),
+                    }
+                }
                 code => self.error(validation(format!("WebGL2 operation failed ({code:#x})"))),
+            }
+        }
+        for scope in unread {
+            scope.read.set(true);
+            if let Some(waker) = scope.waker.take() {
+                waker.wake();
             }
         }
     }
 
-    /// Notes a resource made outside an error scope. Its errors are read once the GPU is quiet
-    /// after it (see [`Device::check_quiet`]).
+    /// Reads errors once the GPU catches up with the work given it so far (see
+    /// [`Device::read_errors`]).
+    fn read_later(&self) {
+        if !self.0.read_due.replace(true) {
+            Waits::caught_up(&self.0, ERRORS_PATIENCE, |state| Self(state.clone()).read_errors());
+        }
+    }
+
+    /// Notes a resource made outside an error scope, whose errors are read once the GPU catches up
+    /// with it.
     pub(super) fn changed(&self) {
-        if !self.0.pending_errors.replace(true) {
-            self.0.errors_since.set(Some(web_time::Instant::now()));
-        }
-        Self::check_later(&self.0);
-    }
-
-    /// Reads errors raised outside a scope now if the GPU is quiet, else later.
-    ///
-    /// Reading errors is a synchronous query: the browser's GPU process answers it only after
-    /// running every command issued before it, and while it builds shaders for a first draw it
-    /// answers nothing. Asked then, it blocks the page: for a frame's GPU work, or for up to
-    /// seconds on opening. So errors are read only while the GPU is quiet (see [`Waits::quiet`]),
-    /// which the poller sees between frames, and under GPU-bound animation, which leaves no quiet
-    /// moment, after at most [`ERRORS_WAIT`]. Readbacks need no such wait (see `Buffer::read`).
-    fn check_quiet(state: &Rc<State>) {
-        if !state.pending_errors.get() {
-            return;
-        }
-        let overdue = state.errors_since.get().is_some_and(|at| at.elapsed() >= ERRORS_WAIT);
-        if !state.waits.quiet() && !overdue {
-            Self::check_later(state);
-            return;
-        }
-        Self(state.clone()).check_errors();
-    }
-
-    /// Reads errors once the GPU finishes the work issued so far, if it is quiet then.
-    fn check_later(state: &Rc<State>) {
-        if state.checking.replace(true) {
-            return;
-        }
-        Waits::fence(state, |state, _| {
-            state.checking.set(false);
-            Self::check_quiet(state);
-        });
+        self.read_later();
     }
 
     fn pipeline(&self, desc: &wgpu::RenderPipelineDescriptor<'_>) -> Result<Rc<Program>, String> {
@@ -452,30 +451,43 @@ impl DeviceInterface for Device {
     fn on_uncaptured_error(&self, handler: Arc<dyn wgpu::UncapturedErrorHandler>) {
         *self.0.handler.borrow_mut() = Some(handler);
     }
+    /// A validation scope learns of its errors from shader translation and linking, which report to
+    /// it directly. An out-of-memory scope learns of an allocation failure once the GPU catches up
+    /// with it (see [`Device::read_errors`]): one raised since errors were last read.
     fn push_error_scope(&self, filter: wgpu::ErrorFilter) -> u32 {
-        // Only an out-of-memory scope asks the context for its errors, which waits for the browser's
-        // GPU process, busy for up to a second while it compiles. A validation scope learns of its
-        // errors from shader translation and linking, which report to it directly.
-        if filter == wgpu::ErrorFilter::OutOfMemory {
-            self.check_errors();
-        }
         let mut scopes = self.0.scopes.borrow_mut();
         let index = scopes.len() as u32;
         scopes.push(Some(Scope { filter, programs: Vec::new(), errors: Vec::new() }));
         index
     }
     fn pop_error_scope(&self, index: u32) -> Pin<Box<dyn PopErrorScopeFuture>> {
-        let filter = self.0.scopes.borrow()[index as usize].as_ref().map(|scope| scope.filter);
-        if filter == Some(wgpu::ErrorFilter::OutOfMemory) {
-            self.check_errors();
-        }
-        let mut scopes = self.0.scopes.borrow_mut();
-        let scope = scopes[index as usize].take().expect("scope is active");
-        while scopes.last().is_some_and(Option::is_none) {
-            scopes.pop();
-        }
+        let scope = {
+            let mut scopes = self.0.scopes.borrow_mut();
+            let scope = scopes[index as usize].take().expect("scope is active");
+            while scopes.last().is_some_and(Option::is_none) {
+                scopes.pop();
+            }
+            scope
+        };
+        let unread = (scope.filter == wgpu::ErrorFilter::OutOfMemory).then(|| {
+            let unread = Rc::new(Unread::default());
+            self.0.unread.borrow_mut().push(unread.clone());
+            self.read_later();
+            unread
+        });
         Box::pin(async move {
             let mut first = scope.errors.into_iter().next();
+            if let Some(unread) = unread {
+                let failed = std::future::poll_fn(|context| {
+                    if unread.read.get() {
+                        return std::task::Poll::Ready(unread.error.take());
+                    }
+                    *unread.waker.borrow_mut() = Some(context.waker().clone());
+                    std::task::Poll::Pending
+                })
+                .await;
+                first = first.or(failed);
+            }
             // A scope is also the asynchronous readiness boundary for all of its programs.
             // An earlier validation or link error must not leave later programs unchecked.
             for (program, captures) in scope.programs {

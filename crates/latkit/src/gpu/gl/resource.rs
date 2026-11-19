@@ -67,9 +67,9 @@ impl Buffer {
     /// Readies the buffer, bound to `target`, for a write. A buffer made for reading gets new
     /// storage at its first write since a fence, so bytes written before that fence are gone.
     ///
-    /// The browser copies such a buffer at the first fence after a write, and keeps the copy until
-    /// the storage is given anew (see [`Buffer::read`]). A write after a fence would discard a copy,
-    /// read or not, and Chrome warns of it. The writes between two fences share one copy.
+    /// Chrome copies such a buffer at the first fence after a write, for reading, and keeps the copy
+    /// until the storage is given anew. A write after a fence would discard a copy, read or not, and
+    /// Chrome warns of it. The writes between two fences share one copy.
     pub(super) fn renew(&self, target: u32) {
         let Some(written) = &self.0.written else { return };
         let Some(state) = self.0.state.upgrade() else { return };
@@ -99,10 +99,6 @@ impl Drop for BufferData {
 
 impl Buffer {
     /// Copies bytes `range` of the buffer, which the GPU finished writing.
-    ///
-    /// The browser keeps a copy of a buffer made for reading, taken once a fence follows a write,
-    /// and reads it without asking the GPU process: a read after the fence returns at once, however
-    /// much work was issued since. The next write gives the storage anew (see [`Buffer::renew`]).
     fn read(&self, state: &State, range: &Range<u64>) -> Vec<u8> {
         let mut bytes = vec![0; (range.end - range.start) as usize];
         state.gl.bind_buffer(Gl::COPY_READ_BUFFER, Some(&self.0.raw));
@@ -111,8 +107,11 @@ impl Buffer {
     }
 }
 impl BufferInterface for Buffer {
-    /// Maps the buffer once the GPU finishes the work issued so far: for reading, with the bytes
-    /// it wrote (see [`Buffer::read`]).
+    /// Maps the buffer once the GPU finishes the work issued so far. A read is a synchronous query,
+    /// which waits behind every command issued before it, such as the next frame's. Something waits
+    /// on every read (a pick, a label layout, a loading view), so it reads at its own fence rather
+    /// than waiting for the GPU to catch up as errors do: that wait cost picks and loads 2 to 4 times
+    /// their time while frames or program links kept the GPU busy.
     fn map_async(&self, mode: wgpu::MapMode, range: Range<u64>, callback: BufferMapCallback) {
         assert!(range.end <= self.0.size);
         let this = self.clone();

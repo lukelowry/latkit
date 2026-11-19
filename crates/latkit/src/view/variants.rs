@@ -32,7 +32,7 @@ use crate::gpu::atlas::FIELDS;
 use crate::gpu::hooks::Hooks;
 use crate::gpu::pipelines::{Asked, Projection, Urgency, Variant};
 use crate::gpu::shaders::{PATH_BENDS, PATH_ENDS, PATH_GEOMETRY, PATH_POLES, Shader};
-use crate::scene::mark::MarkKind;
+use crate::scene::mark::{MarkKind, Primitive};
 use crate::{Action, Mark, Scene, Space};
 
 /// Writes the word of each drawn row of a paged mark from its runs.
@@ -112,8 +112,26 @@ impl MarkVariants {
     pub(super) fn shader(&self, draw: Draw) -> Shader {
         let (every, focus) = self.kind.shaders(self.hooks.marker.is_some(), self.hooks.shade.is_some());
         match draw {
-            Draw::Rows | Draw::Opaque | Draw::Comets => every,
+            Draw::Rows | Draw::Opaque | Draw::Comets | Draw::Depth => every,
             Draw::Lit => focus,
+        }
+    }
+
+    /// The pass writing where each instance draw `draw` draws lies on screen this frame, which the
+    /// draw reads (see `lib/screen.wesl`): a stroke mark's segments, or a vertex mark's points, and
+    /// for the lit draw, those of the rows its focus lights. Areas draw from their triangles.
+    pub(super) fn screen(&self, draw: Draw) -> Option<Variant> {
+        let lit = draw == Draw::Lit;
+        match self.kind.primitive() {
+            Primitive::Strokes => {
+                let shader = if lit { Shader::ScreenStrokesFocus } else { Shader::ScreenStrokes };
+                Some(Variant::raster(shader, "record").path(self.path).projection(self.projection))
+            }
+            Primitive::Points => {
+                let shader = if lit { Shader::ScreenPointsFocus } else { Shader::ScreenPoints };
+                Some(Variant::raster(shader, "record").projection(self.projection))
+            }
+            Primitive::Triangles => None,
         }
     }
 
@@ -451,8 +469,13 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.add_all(Stage::Changes, [Asked::Shader(EASE), Asked::Shader(GATHER)]);
     }
     if !scene.marks.is_empty() {
-        // Frames start from the still once its pipeline lands, after the marks' own.
+        // Frames start from the still once its pipeline lands, after the marks' own. Under it, the
+        // globe draws its depth again.
         stages.add(Stage::Changes, draw(Shader::Still));
+        if Projection::of(&scene.space) == Projection::Globe {
+            let depth = Variant::draw(Shader::Backdrop, format, samples).mode(Draw::Depth);
+            stages.add(Stage::Changes, Asked::Shader(depth.projection(Projection::Globe)));
+        }
         stages.add(Stage::Draw, Asked::Shader(PAGES));
         if any(&|mark| matches!(mark, Mark::Edges(_))) {
             stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::State, "ends")));
@@ -509,6 +532,8 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, &scene.space);
     stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
+    stages.add_all(Stage::Draw, variants.screen(Draw::Rows).map(Asked::Shader));
+    stages.add_all(Stage::Lit, variants.screen(Draw::Lit).map(Asked::Shader));
     // Comets draw over their rows with the rows' program.
     if mark.flows() {
         stages.add(Stage::Draw, variants.draw(Draw::Comets, format, samples));

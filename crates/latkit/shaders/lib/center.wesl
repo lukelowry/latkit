@@ -33,7 +33,7 @@ fn corner_center(c: Corner) -> Center {
 fn row_center(item: u32) -> Center {
     switch PRIMITIVE {
         case POINTS: {
-            return point_center(point(held_row(item)));
+            return point_center(point(held_row(item), false));
         }
         case STROKES: {
             let count = path_count(item);

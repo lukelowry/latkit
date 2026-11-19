@@ -1,12 +1,12 @@
 // Points: a vertex row's marker position, size, and color. Draws, probes, bounds, and labels all
 // read a point through `point`.
 
-import package::lib::types::{VISIBLE, PLACED, SIZED, STATUS, HOVERED, VERTEX_HALF, HALF_UNITS, OWN_HEIGHT};
+import package::lib::types::{VISIBLE, PLACED, SIZED, HOVERED, VERTEX_HALF, HALF_UNITS, OWN_HEIGHT};
 import package::lib::bind::{frame, mark};
 import package::lib::state::{row_at, vertex_at, Vertex};
 import package::lib::project::{world, clip_of, toward_eye, shows};
 import package::lib::focus::{focus_of, faded, growth};
-import package::lib::mark::{px, px_per_length, fringe, within};
+import package::lib::mark::{px, px_per_length, within};
 import package::lib::drawn::drawn_row;
 
 struct Point {
@@ -31,9 +31,10 @@ fn placed(v: Vertex) -> bool {
     return (v.flags & PLACED) != 0u;
 }
 
-// The marker of the current vertex mark's held row `row`. A hovered marker sized in pixels grows.
-// One sized in units is part of the drawing, so it only glows.
-fn point(row: u32) -> Point {
+// The marker of the current vertex mark's held row `row`. With `lit`, a hovered marker sized in
+// pixels grows, as the focus draw and the probe see it. Other draws and labels never read hover, so
+// a hover keeps the still. A marker sized in units is part of the drawing, so it only glows.
+fn point(row: u32, lit: bool) -> Point {
     let v = vertex_at(row_at(row));
     var p: Point;
     p.row = row;
@@ -48,7 +49,7 @@ fn point(row: u32) -> Point {
     half.y = select(half.x, px(v.half.y, VERTEX_HALF + 1u), (mark.flags & SIZED) != 0u);
     half = within(half, vec2f(mark.size_min, mark.size_max));
     let focus = focus_of(row);
-    let grows = ((mark.units & (1u << VERTEX_HALF)) == 0u) & ((focus & HOVERED) != 0u);
+    let grows = lit & ((mark.units & (1u << VERTEX_HALF)) == 0u) & ((focus & HOVERED) != 0u);
     half *= select(1.0, frame.grow, grows) * growth(v.flags);
     let color = unpack4x8unorm(v.color);
     let front = toward_eye(p.clip, p.world, max(half.x, half.y));
@@ -60,15 +61,11 @@ fn point(row: u32) -> Point {
     return p;
 }
 
-// `p`'s clip position at the depth its marker draws at.
-fn drawn_clip(p: Point) -> vec4f {
-    return vec4f(p.clip.xy, p.drawn_z * p.clip.w, p.clip.w);
-}
-
-// The marker of drawn row `item`, faded and scaled while its tile fades in or out.
-fn shown_point(item: u32) -> Point {
+// The marker of drawn row `item`, faded and scaled while its tile fades in or out. `lit` as for
+// `point`.
+fn shown_point(item: u32, lit: bool) -> Point {
     let d = drawn_row(item);
-    var p = point(d.row);
+    var p = point(d.row, lit);
     p.color.a *= d.presence;
     p.half *= d.growth;
     return p;
@@ -82,11 +79,4 @@ fn vertex_half(v: Vertex) -> vec2f {
         half *= px_per_length();
     }
     return within(half, v.range);
-}
-
-// How far a point's quad extends from its center, in CSS pixels. It covers the marker, its status
-// ring, one target pixel of antialiased edge, and when `lit` (in the focus draw), its glow.
-fn reach(p: Point, lit: bool) -> vec2f {
-    let ring = select(0.0, 3.0, (mark.flags & STATUS) != 0u && p.status.a > 0.0);
-    return p.half + ring + select(0.0, frame.glow, lit) + fringe();
 }

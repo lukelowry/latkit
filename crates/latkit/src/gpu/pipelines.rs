@@ -45,12 +45,14 @@ const SETTLE: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Draw passes share a shader's program and differ in their fixed depth state. An opaque draw binds
 /// the copy of its mark's uniform that sets `opaque`, and a comets draw the copy that sets `comets`.
+/// A depth draw writes the backdrop's depth alone, under a still that holds its color.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Draw {
     Rows,
     Lit,
     Opaque,
     Comets,
+    Depth,
 }
 
 /// Fixed geometry projection; shared expression kernels can still read any view.
@@ -270,9 +272,10 @@ impl Variant {
         self
     }
 
-    /// Normal and opaque draws share one program and differ in depth state.
+    /// Normal and opaque draws share one program and differ in depth state. The backdrop draws its
+    /// depth alone with an entry of its own.
     pub(crate) fn mode(mut self, draw: Draw) -> Self {
-        if layered(self.shader) {
+        if layered(self.shader) || (self.shader == Shader::Backdrop && draw == Draw::Depth) {
             self.draw = draw;
         }
         self
@@ -283,7 +286,11 @@ impl Variant {
     }
 
     fn fragment(&self) -> &'static str {
-        if self.entry == "vertex" { "fragment" } else { self.entry }
+        match (self.entry, self.draw) {
+            ("vertex", Draw::Depth) => "depth",
+            ("vertex", _) => "fragment",
+            (entry, _) => entry,
+        }
     }
 
     /// What its shader module is specialized for.
@@ -1132,12 +1139,18 @@ impl Pipelines {
         let (format, samples) = variant.target.expect("a render variant");
         let raster = variant.entry != "vertex";
         let layout = self.pipeline_layout(device, shader);
-        // Every fragment entry writes one color target (see `check_targets` in the build).
-        let targets = [Some(wgpu::ColorTargetState {
+        // Every fragment entry writes one color target but the screen pass's, which writes the four
+        // layers of a record (see `check_targets` in the build). A depth draw writes no color.
+        let screen = matches!(
+            shader,
+            Shader::ScreenStrokes | Shader::ScreenStrokesFocus | Shader::ScreenPoints | Shader::ScreenPointsFocus
+        );
+        let target = Some(wgpu::ColorTargetState {
             format,
             blend: (!raster).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
+            write_mask: if variant.draw == Draw::Depth { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL },
+        });
+        let targets = vec![target; if screen { 4 } else { 1 }];
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(&layout),
@@ -1148,7 +1161,7 @@ impl Pipelines {
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState {
-                topology: if matches!(shader, Shader::OrderScatter | Shader::Requests | Shader::Boxed) {
+                topology: if screen || matches!(shader, Shader::OrderScatter | Shader::Requests | Shader::Boxed) {
                     wgpu::PrimitiveTopology::PointList
                 } else if raster {
                     wgpu::PrimitiveTopology::TriangleList

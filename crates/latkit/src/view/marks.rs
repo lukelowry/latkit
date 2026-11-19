@@ -180,8 +180,8 @@ pub(crate) struct Shown {
     /// moves no label.
     pub(crate) version: u64,
     pub(crate) place_version: u64,
-    /// A stamp of what it drew from last frame, and whether its focus words changed this frame (see
-    /// `View::choose_still`).
+    /// A stamp of what it drew from last frame, and whether focus words its rows draw with changed
+    /// this frame: the selection's, not the hover's (see `View::choose_still`).
     pub(crate) drawn: u64,
     pub(crate) focused: bool,
     /// Revision of existing vertices' source positions, excluding proven append-only changes.

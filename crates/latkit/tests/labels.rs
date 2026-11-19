@@ -222,7 +222,7 @@ fn dense_label_draws_keep_the_same_winners_as_a_small_scene() {
 }
 
 #[test]
-fn a_label_moves_outward_when_its_hovered_marker_grows() {
+fn a_hovered_marker_grows_and_its_label_stays() {
     let Some(gpu) = gpu() else { return };
     gpu.set_host(Boxes);
     let data = Data::new("d");
@@ -234,15 +234,14 @@ fn a_label_moves_outward_when_its_hovered_marker_grows() {
     let mut view = View::new(&gpu, scene);
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
-    let first = |pixels: &[[u8; 4]]| {
-        (0..SIZE)
-            .find(|&x| {
-                let p = at(pixels, x, SIZE / 2);
-                p[0] > 200 && p[1] < 60
-            })
-            .expect("the text shows")
+    // Where the text starts, and how wide the marker is, across the middle row.
+    let seen = |pixels: &[[u8; 4]]| {
+        let row = |x| at(pixels, x, SIZE / 2);
+        let text = (0..SIZE).find(|&x| row(x)[0] > 200 && row(x)[1] < 60).expect("the text shows");
+        let marker = (0..SIZE).filter(|&x| row(x)[1] > 200 && row(x)[0] < 60).count();
+        (text, marker)
     };
-    let normal = first(&frame(&gpu, &mut view));
+    let normal = seen(&frame(&gpu, &mut view));
     let pointer = |point| latkit::Input::Move {
         pointer: 1,
         point,
@@ -250,10 +249,11 @@ fn a_label_moves_outward_when_its_hovered_marker_grows() {
         device: latkit::Device::Mouse,
     };
     view.input(&pointer([SIZE as f32 / 2.0; 2]), common::now());
-    let hovered = first(&frame(&gpu, &mut view));
-    assert!(hovered > normal, "the growing marker moves its label outward: {normal} -> {hovered}");
+    let hovered = seen(&frame(&gpu, &mut view));
+    assert!(hovered.1 > normal.1, "the focus draw grows the hovered marker: {normal:?} -> {hovered:?}");
+    assert_eq!(hovered.0, normal.0, "a hover moves no label");
     view.input(&pointer([0.0; 2]), common::now());
-    assert_eq!(first(&frame(&gpu, &mut view)), normal, "the label returns when the hover leaves");
+    assert_eq!(seen(&frame(&gpu, &mut view)), normal, "the marker shrinks back when the hover leaves");
     assert_eq!(errors(&mut view), Vec::new());
 }
 

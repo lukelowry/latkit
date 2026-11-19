@@ -10,7 +10,8 @@ import package::lib::project::{geographic, globe_amount};
 // pixel they cover. A grid so settles into an even tint there, and neither flickers nor fades away.
 //
 // The round globe writes the depth of the plane through its visible edge, which hides what lies
-// behind the globe and nothing on it.
+// behind the globe and nothing on it. Under a still, which holds the backdrop's color, only that
+// depth draws again (`depth`).
 
 import package::lib::types::{SPACE_EARTH, SPACE_PLANE, GRID_OFF, GRID_DOTS};
 import package::lib::bind::{frame, eye};
@@ -228,6 +229,25 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
         depth = horizon_depth(o, d, radius);
     }
     return Ground(color, depth);
+}
+
+// The ground's depth alone, under a still that holds its color. Only the round globe writes any:
+// that of the plane through its visible edge, where the view ray meets it (see `earth`).
+@fragment
+fn depth(v: Varyings) -> Out {
+    let near = eye.world_from_clip * vec4f(v.ndc, NEAR_Z, 1.0);
+    let far = eye.world_from_clip * vec4f(v.ndc, FAR_Z, 1.0);
+    let o = near.xyz / near.w;
+    let d = normalize(far.xyz / far.w - o);
+    let center = globe_center();
+    let radius = -center.z;
+    let along = dot(center - o, d);
+    let off = length(center - o - d * along);
+    var depth = FAR_Z;
+    if geographic() && globe_amount() >= 1.0 && off < radius && along > 0.0 {
+        depth = horizon_depth(o, d, radius);
+    }
+    return Out(vec4f(0.0), depth);
 }
 
 @fragment
