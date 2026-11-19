@@ -115,8 +115,10 @@ impl Browser {
 
     /// Encodes videos with encoders made by `create(width, height, fps, bitrate)`. An encoder's
     /// `encode(nv12, time, key)` and `finish()` return promises of the units finished since the
-    /// last call, in order, each `[time, key, bytes]`. Its `close()` releases its resources. The
-    /// npm package provides one built on WebCodecs.
+    /// last call, in order, each `[time, key, bytes]`. Its `close()` releases its resources. An
+    /// encoder with `encodeCanvas(canvas, time, key)` takes each picture from the top left of the
+    /// GPU's canvas instead, before it returns, and latkit reads no pixels back. The npm package
+    /// provides one built on WebCodecs.
     pub fn set_encoder(create: js_sys::Function) {
         ENCODERS.with(|encoders| *encoders.borrow_mut() = Some(create));
     }
@@ -130,7 +132,8 @@ impl Browser {
     }
 }
 
-/// An encoder made by the page. Its `encode` and `finish` return promises of units.
+/// An encoder made by the page. Its `encode`, `encodeCanvas`, and `finish` return promises of
+/// units.
 struct Script(JsValue);
 
 impl Script {
@@ -186,6 +189,14 @@ impl Encoder for Script {
 
     fn finish(&mut self) -> Pending<Vec<Unit>> {
         self.call("finish", &js_sys::Array::new())
+    }
+
+    fn takes_canvas(&self) -> bool {
+        js_sys::Reflect::get(&self.0, &"encodeCanvas".into()).is_ok_and(|method| method.is_function())
+    }
+
+    fn encode_canvas(&mut self, canvas: &JsValue, time: u64, key: bool) -> Pending<Vec<Unit>> {
+        self.call("encodeCanvas", &js_sys::Array::of3(canvas, &(time as f64).into(), &key.into()))
     }
 }
 

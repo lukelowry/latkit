@@ -3,6 +3,11 @@
 //! one frame while another is read back and the sink takes a third. A frame where nothing moved is
 //! neither drawn nor read back. The sink is told it is held and shows the previous frame again.
 //!
+//! In a browser, a sink that takes frames from the GPU's canvas, as an [`Mp4`] with the npm
+//! package's WebCodecs encoder does, gets each one there as soon as it is drawn. Nothing is
+//! composed into NV12 or read back, and the browser converts the picture for its encoder on the
+//! GPU.
+//!
 //! [`Mp4`] is the usual sink: H.264 from the host's [`Encoder`](crate::host::Encoder), written as
 //! fragmented MP4.
 
@@ -59,6 +64,23 @@ pub trait Sink {
 
     /// Ends the video at the time of frame `end`, once every earlier frame was taken.
     fn finish(&mut self, end: u64) -> impl Future<Output = Result<()>>;
+
+    /// In a browser, whether it takes frames from the GPU's canvas, where each is drawn (see
+    /// [`canvas`](Sink::canvas)), once it has begun. Its frames' pixels are then never read back.
+    /// Defaults to `false`.
+    #[cfg(target_arch = "wasm32")]
+    fn takes_canvas(&self) -> bool {
+        false
+    }
+
+    /// In a browser, takes frame `index` from the top left of `canvas`, the GPU's canvas, where it
+    /// was just drawn at the video's size. It must take the picture before it returns, since the
+    /// canvas draws other things after. Resolves once the sink can take another frame.
+    #[cfg(target_arch = "wasm32")]
+    fn canvas(&mut self, index: u64, canvas: &wasm_bindgen::JsValue) -> impl Future<Output = Result<()>> {
+        let _ = (index, canvas);
+        std::future::ready(Err(Error::Unsupported("this sink takes no canvas".into())))
+    }
 }
 
 /// A video's encoding: picture size in pixels, frames per second, and the encoder's bitrate.
@@ -138,6 +160,17 @@ impl<W: Write> Mp4<W> {
         self.out
     }
 
+    /// The time of frame `index`, in ticks, and whether it is a keyframe: the first, and then one
+    /// every [`KEYFRAMES`] seconds.
+    fn timed(&mut self, index: u64, fps: f64) -> (u64, bool) {
+        let time = ticks(index, fps);
+        let key = self.keyed.is_none_or(|keyed| time - keyed >= (KEYFRAMES * f64::from(TIMESCALE)) as u64);
+        if key {
+            self.keyed = Some(time);
+        }
+        (time, key)
+    }
+
     fn write(&mut self, units: Vec<Unit>) -> Result<()> {
         let Some((_, muxer, _)) = &mut self.began else { return Ok(()) };
         for unit in units {
@@ -166,13 +199,22 @@ impl<W: Write> Sink for Mp4<W> {
 
     async fn frame(&mut self, index: u64, pixels: Option<Vec<u8>>) -> Result<()> {
         let Some(nv12) = pixels else { return Ok(()) };
-        let (encoder, _, fps) = self.began.as_mut().ok_or_else(|| Error::invalid("begin an MP4 before its frames"))?;
-        let time = ticks(index, *fps);
-        let key = self.keyed.is_none_or(|keyed| time - keyed >= (KEYFRAMES * f64::from(TIMESCALE)) as u64);
-        if key {
-            self.keyed = Some(time);
-        }
-        let units = encoder.encode(nv12, time, key).await?;
+        let fps = self.began.as_ref().ok_or_else(|| Error::invalid("begin an MP4 before its frames"))?.2;
+        let (time, key) = self.timed(index, fps);
+        let units = self.began.as_mut().expect("begun").0.encode(nv12, time, key).await?;
+        self.write(units)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn takes_canvas(&self) -> bool {
+        self.began.as_ref().is_some_and(|(encoder, ..)| encoder.takes_canvas())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn canvas(&mut self, index: u64, canvas: &wasm_bindgen::JsValue) -> Result<()> {
+        let fps = self.began.as_ref().ok_or_else(|| Error::invalid("begin an MP4 before its frames"))?.2;
+        let (time, key) = self.timed(index, fps);
+        let units = self.began.as_mut().expect("begun").0.encode_canvas(canvas, time, key).await?;
         self.write(units)
     }
 
@@ -214,14 +256,10 @@ impl Shot {
         let shot = self.rounded(S::PIXELS);
         let host = gpu.0.lock().host.clone();
         sink.begin(&Encoding::new(shot.size(), fps), host.as_deref())?;
-        Ok(Video {
-            drawing: Drawing::later(shot, S::PIXELS, false),
-            sink,
-            fps,
-            index: 0,
-            flight: VecDeque::with_capacity(IN_FLIGHT * 2),
-            drawn: false,
-        })
+        let drawing = Drawing::later(shot, S::PIXELS, false);
+        #[cfg(target_arch = "wasm32")]
+        let drawing = if sink.takes_canvas() { drawing.on_canvas() } else { drawing };
+        Ok(Video { drawing, sink, fps, index: 0, flight: VecDeque::with_capacity(IN_FLIGHT * 2), drawn: false })
     }
 }
 
@@ -250,33 +288,15 @@ impl<S: Sink> Video<S> {
         if held {
             self.flight.push_back((self.index, None));
         } else {
-            while self.flight.iter().filter(|(_, readback)| readback.is_some()).count() >= IN_FLIGHT {
-                self.hand_on().await?;
-            }
-            let time = self.time();
-            let movable = views.movable();
-            loop {
-                views.lend(|views| self.drawing.begin(views, movable))?;
-                let readback = loop {
-                    match views.lend(|views| self.drawing.step(views, time, false))? {
-                        Step::Done(readback) => break readback,
-                        Step::Easing => {}
-                        Step::Waiting => self.drawing.wait().await,
-                    }
-                };
-                if self.drawn || !movable {
-                    self.flight.push_back((self.index, Some(readback)));
-                    break;
-                }
-                // The first frame has none before it to show again if the device goes before it
-                // comes back, so it is read now, and drawn again once the views move.
-                match self.drawing.read(&readback).await {
-                    Err(Error::DeviceLost) => {}
-                    read => {
-                        self.sink.frame(self.index, Some(read?)).await?;
-                        break;
-                    }
-                }
+            #[cfg(target_arch = "wasm32")]
+            let on_canvas = self.sink.takes_canvas();
+            #[cfg(not(target_arch = "wasm32"))]
+            let on_canvas = false;
+            if on_canvas {
+                #[cfg(target_arch = "wasm32")]
+                self.shown(views).await?;
+            } else {
+                self.read_back(views).await?;
             }
             self.drawn = true;
         }
@@ -296,6 +316,65 @@ impl<S: Sink> Video<S> {
         }
         self.sink.finish(self.index).await?;
         Ok(self.sink)
+    }
+
+    /// Draws the next frame and starts reading it back, once fewer than [`IN_FLIGHT`] frames wait
+    /// to be read. The first frame has none before it to show again if the device goes before it
+    /// comes back, so views that can move read it at once, and draw it again once they move.
+    async fn read_back(&mut self, views: &mut impl Views) -> Result<()> {
+        while self.flight.iter().filter(|(_, readback)| readback.is_some()).count() >= IN_FLIGHT {
+            self.hand_on().await?;
+        }
+        let (time, movable) = (self.time(), views.movable());
+        loop {
+            views.lend(|views| self.drawing.begin(views, movable))?;
+            let readback = loop {
+                match views.lend(|views| self.drawing.step(views, time, false))? {
+                    Step::Done(readback) => break readback,
+                    Step::Easing => {}
+                    Step::Waiting => self.drawing.wait().await,
+                    #[cfg(target_arch = "wasm32")]
+                    Step::Shown(_) => {
+                        return Err(Error::invalid("a video read back draws nothing on the GPU's canvas"));
+                    }
+                }
+            };
+            if self.drawn || !movable {
+                self.flight.push_back((self.index, Some(readback)));
+                return Ok(());
+            }
+            match self.drawing.read(&readback).await {
+                Err(Error::DeviceLost) => {}
+                read => return self.sink.frame(self.index, Some(read?)).await,
+            }
+        }
+    }
+
+    /// Draws the next frame on the GPU's canvas, and gives it to the sink there at once, after the
+    /// frames held before it. Nothing is read back, so even the first frame waits on no read. Views
+    /// that move to a new device while the frame draws draw it again there.
+    #[cfg(target_arch = "wasm32")]
+    async fn shown(&mut self, views: &mut impl Views) -> Result<()> {
+        while !self.flight.is_empty() {
+            self.hand_on().await?;
+        }
+        let (time, movable) = (self.time(), views.movable());
+        loop {
+            views.lend(|views| self.drawing.begin(views, movable))?;
+            let canvas = loop {
+                match views.lend(|views| self.drawing.step(views, time, false)) {
+                    Ok(Step::Shown(canvas)) => break Some(canvas),
+                    Ok(Step::Easing) => {}
+                    Ok(Step::Waiting) => self.drawing.wait().await,
+                    Ok(Step::Done(_)) => return Err(Error::invalid("a video on the GPU's canvas reads nothing back")),
+                    Err(Error::DeviceLost) if movable => break None,
+                    Err(error) => return Err(error),
+                }
+            };
+            if let Some(canvas) = canvas {
+                return self.sink.canvas(self.index, &canvas).await;
+            }
+        }
     }
 
     /// Reads back the oldest frame, if it was drawn, and passes it to the sink. A frame the device

@@ -37,7 +37,9 @@ use crate::{Data, Encoding, Error, Image, ImageFormat, Patch, Pending, Reading, 
 pub const TIMESCALE: u32 = 90_000;
 
 /// A platform's H.264 encoder: NV12 pictures (BT.709, limited range) in, Annex B units out. It uses
-/// no B-frames, so every platform's encoder can comply and the muxer never reorders frames.
+/// no B-frames, so every platform's encoder can comply and the muxer never reorders frames. In a
+/// browser, an encoder may instead take each picture from the GPU's canvas, where it was drawn, so
+/// its pixels never leave the GPU.
 pub trait Encoder {
     /// Encodes one NV12 picture at `time` ticks, as a keyframe when `key`. Once the encoder can
     /// take another picture, resolves to the units finished since the last call, in order.
@@ -45,6 +47,23 @@ pub trait Encoder {
 
     /// Resolves to the remaining units once every picture given has been encoded.
     fn finish(&mut self) -> Pending<Vec<Unit>>;
+
+    /// In a browser, whether it takes pictures from the GPU's canvas (see
+    /// [`encode_canvas`](Encoder::encode_canvas)). Defaults to `false`.
+    #[cfg(target_arch = "wasm32")]
+    fn takes_canvas(&self) -> bool {
+        false
+    }
+
+    /// In a browser, encodes the picture at the top left of `canvas`, the GPU's canvas, at `time`
+    /// ticks, as a keyframe when `key`. The picture is the encoder's size. It must take the picture
+    /// before it returns, since the canvas draws other things after. Resolves as
+    /// [`encode`](Encoder::encode) does.
+    #[cfg(target_arch = "wasm32")]
+    fn encode_canvas(&mut self, canvas: &wasm_bindgen::JsValue, time: u64, key: bool) -> Pending<Vec<Unit>> {
+        let _ = (canvas, time, key);
+        Pending::ready(Err(Error::Unsupported("this encoder takes no canvas".into())))
+    }
 }
 
 /// One encoded H.264 access unit: Annex B bytes at `time` ticks of [`TIMESCALE`]. Decode order

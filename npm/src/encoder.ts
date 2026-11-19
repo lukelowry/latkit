@@ -1,8 +1,9 @@
 /**
- * The H.264 encoder for latkit's videos in a browser, built on WebCodecs. It takes NV12 pictures
- * (BT.709, limited range) and returns Annex B units in order, each `[time, key, bytes]`, with
- * `time` in 90 kHz ticks. It prefers hardware encoding and uses the lowest H.264 level that fits
- * the size and frame rate.
+ * The H.264 encoder for latkit's videos in a browser, built on WebCodecs. It takes each picture
+ * from the top left of latkit's GPU canvas, where it was just drawn, so the browser converts it for
+ * the encoder on the GPU, or else NV12 pictures (BT.709, limited range). It returns Annex B units
+ * in order, each `[time, key, bytes]`, with `time` in 90 kHz ticks. It prefers hardware encoding and
+ * uses the lowest H.264 level that fits the size and frame rate.
  */
 
 import { thrown, type LatkitError } from './internal.js';
@@ -98,8 +99,9 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
     video.removeEventListener('dequeue', wake);
     wake();
   }
-  let configured: Promise<void> | undefined;
-  const configure = async () => {
+  // Configured as the video begins, so probing the browser's encoders overlaps drawing the first
+  // frame. A failure surfaces when a frame or the finish waits for it.
+  const configured = (async () => {
     for (const config of configurations(width, height, fps, bitrate)) {
       if ((await VideoEncoder.isConfigSupported(config)).supported) return video.configure(config);
     }
@@ -107,17 +109,33 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
       code: 'unsupported',
       message: `this browser cannot encode H.264 at ${width}×${height}, ${fps} frames a second`,
     });
-  };
+  })();
+  configured.catch(() => {});
   const failed = () => {
     if (failure) throw failure;
     if (video.state === 'closed') throw thrown({ code: 'io', message: 'the video encoder closed' });
   };
-  return {
-    async encode(nv12: Uint8Array, time: number, key: boolean): Promise<Unit[]> {
-      await (configured ??= configure());
+  /** Encodes `frame` at `time` ticks, as a keyframe when `key`, then closes it. */
+  async function submit(frame: VideoFrame, time: number, key: boolean): Promise<Unit[]> {
+    try {
+      await configured;
       failed();
-      const timestamp = Math.round((time * 100) / 9);
-      times.push({ timestamp, time });
+      times.push({ timestamp: frame.timestamp, time });
+      video.encode(frame, { keyFrame: key });
+    } finally {
+      frame.close();
+    }
+    // Backpressure: wait while more than two frames are queued in the encoder.
+    while (video.encodeQueueSize > 2) {
+      await new Promise<void>((resolve) => waiters.add(resolve));
+      failed();
+    }
+    failed();
+    return units.splice(0);
+  }
+  const timestampOf = (time: number) => Math.round((time * 100) / 9);
+  return {
+    encode(nv12: Uint8Array, time: number, key: boolean): Promise<Unit[]> {
       // The binding gives this encoder an owned buffer. Transfer it to the frame so browsers
       // supporting WebCodecs buffer transfer can avoid another full-frame copy. Older browsers
       // ignore the dictionary member and retain their copying behavior.
@@ -125,27 +143,28 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
         format: 'NV12',
         codedWidth: width,
         codedHeight: height,
-        timestamp,
+        timestamp: timestampOf(time),
         colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false },
         transfer: nv12.buffer instanceof ArrayBuffer ? [nv12.buffer] : [],
       };
-      const frame = new VideoFrame(nv12, init);
-      try {
-        video.encode(frame, { keyFrame: key });
-      } finally {
-        frame.close();
-      }
-      // Backpressure: wait while more than two frames are queued in the encoder.
-      while (video.encodeQueueSize > 2) {
-        await new Promise<void>((resolve) => waiters.add(resolve));
-        failed();
-      }
-      failed();
-      return units.splice(0);
+      return submit(new VideoFrame(nv12, init), time, key);
+    },
+    /**
+     * Encodes the picture at the top left of `canvas`, latkit's GPU canvas, where it was just
+     * drawn. The frame is taken before this returns, since the canvas draws other things after.
+     */
+    encodeCanvas(canvas: CanvasImageSource, time: number, key: boolean): Promise<Unit[]> {
+      const visibleRect = { x: 0, y: 0, width, height };
+      const frame = new VideoFrame(canvas, {
+        timestamp: timestampOf(time),
+        visibleRect,
+        alpha: 'discard',
+      });
+      return submit(frame, time, key);
     },
     async finish(): Promise<Unit[]> {
       try {
-        await (configured ??= configure());
+        await configured;
         failed();
         await video.flush();
         failed();

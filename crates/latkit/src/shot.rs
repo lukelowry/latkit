@@ -226,6 +226,10 @@ impl Shot {
                 }
                 Step::Easing => time += TICK,
                 Step::Waiting => drawing.wait().await,
+                #[cfg(target_arch = "wasm32")]
+                Step::Shown(_) => {
+                    return Err(Error::invalid("a picture's pixels are read back, never left on the GPU"));
+                }
             }
         }
     }
@@ -267,6 +271,10 @@ struct Panel {
 pub(crate) enum Step {
     /// Every view was complete. Holds the readback of the picture's bytes.
     Done(Readback),
+    /// Every view was complete, and the picture is drawn at the top left of the GPU's canvas, which
+    /// this holds. Nothing is read back (see [`Drawing::on_canvas`]).
+    #[cfg(target_arch = "wasm32")]
+    Shown(wasm_bindgen::JsValue),
     /// Views are still easing. Draw again one step later.
     Easing,
     /// Views wait for pending work. Draw again when it arrives, which wakes the drawing.
@@ -290,6 +298,10 @@ pub(crate) struct Drawing {
     movable: bool,
     /// When the current picture began, for its deadline.
     started: Option<Instant>,
+    /// Whether pictures stay on the GPU, drawn on its canvas for a browser's video encoder to take,
+    /// rather than read back (see [`Drawing::on_canvas`]).
+    #[cfg(target_arch = "wasm32")]
+    canvas: bool,
 }
 
 /// The GPU resources a drawing's pictures draw into: one texture per view, and the buffer they
@@ -331,7 +343,29 @@ impl Drawing {
     pub(crate) fn later(shot: Shot, pixels: Pixels, holding: bool) -> Drawing {
         let notify = Arc::new(Notify::default());
         let waker = Waker::from(notify.clone());
-        Drawing { shot, pixels, picture: None, notify, waker, lent: Vec::new(), holding, movable: false, started: None }
+        Drawing {
+            shot,
+            pixels,
+            picture: None,
+            notify,
+            waker,
+            lent: Vec::new(),
+            holding,
+            movable: false,
+            started: None,
+            #[cfg(target_arch = "wasm32")]
+            canvas: false,
+        }
+    }
+
+    /// The same drawing, its pictures drawn on the GPU's canvas, opaque, rather than read back, so
+    /// a browser's video encoder takes them there: each step that completes a picture returns
+    /// [`Step::Shown`]. The panels are copied there as they are, or composed first where the
+    /// picture has gaps between them.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn on_canvas(mut self) -> Drawing {
+        (self.pixels, self.canvas) = (Pixels::Rgba, true);
+        self
     }
 
     /// Begins a picture of `views`, one per panel, which can move to a new device between steps if
@@ -445,7 +479,8 @@ impl Picture {
 
 impl Drawing {
     /// Draws every view into its panel once, at `time`. When every view is complete, and none is
-    /// easing if `still`, composes the panels and starts the readback. Until the views' pipelines
+    /// easing if `still`, composes the panels and starts the readback, or for a drawing on the GPU's
+    /// canvas, draws the picture there. Until the views' pipelines
     /// have compiled, draws nothing and returns [`Step::Waiting`], even while views are easing.
     ///
     /// Views that can move wait while their device is lost, and the picture follows them to their
@@ -505,6 +540,24 @@ impl Drawing {
             if !direct {
                 picture.output(self.pixels, self.shot.size);
                 picture.compose(&mut encoder, self.pixels);
+            }
+            // A picture for the GPU's canvas is drawn there now, once the frame's commands run.
+            #[cfg(target_arch = "wasm32")]
+            if self.canvas {
+                gpu.queue().submit([encoder.finish()]);
+                let parts: Vec<([u32; 2], &wgpu::Texture)> = if direct {
+                    picture
+                        .panels
+                        .iter()
+                        .zip(&picture.textures)
+                        .map(|(panel, texture)| (panel.origin, texture))
+                        .collect()
+                } else {
+                    picture.output.iter().take(1).map(|texture| ([0, 0], texture)).collect()
+                };
+                let mut browser = picture.gpu.0.browser.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let browser = browser.as_mut().ok_or_else(|| Error::Unsupported("no WebGL2 context".into()))?;
+                return browser.picture(gpu.queue(), &parts, self.shot.size).map(Step::Shown);
             }
             let inner = picture.gpu.0.lock();
             let planes = if direct {
