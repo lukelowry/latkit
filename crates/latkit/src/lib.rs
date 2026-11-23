@@ -65,8 +65,8 @@ pub use data::{
 pub use data::{Order, Patches, Query, QueryResult, Reading};
 pub use error::{Error, Path, Result, Step};
 pub use expr::{
-    Color, Colormap, ColormapKind, Expr, Format, Mapped, Size, Stop, Then, When, elapsed, field, hovered, meters,
-    pointer, related, selected, units, when, zoom,
+    Category, Color, Colormap, ColormapKind, Expr, Format, Length, Mapped, Size, Stop, Then, When, elapsed, field,
+    hovered, meters, pointer, related, selected, units, when, zoom,
 };
 pub use image::{Image, ImageFormat};
 pub use json::from_json;
@@ -80,9 +80,9 @@ pub use {
     panels::Panels,
     scene::{
         Action, AreaTheme, Areas, Axis, Controls, Converge, Direction, Earth, EarthTheme, EdgeTheme, Edges, FlowTheme,
-        FocusTheme, Gestures, Grid, GridTheme, Interpolation, Label, Layered, Layout, Legend, Length, LineTheme, Lines,
-        Mark, Marker, Motion, Parallel, Place, Plane, Plot, PlotTheme, Projection, Reach, Route, Scene, Shade, Shape,
-        Space, Stress, TextTheme, Theme, Title, Trace, VertexTheme, Vertices,
+        FocusTheme, Gestures, Grid, GridTheme, Interpolation, Label, Layered, Layout, Legend, LineTheme, Lines, Mark,
+        Marker, Meet, Motion, Parallel, Place, Plane, Plot, PlotTheme, Projection, Reach, Route, Scene, Shade, Shape,
+        Space, Stress, TextTheme, Theme, Title, Trace, VertexTheme, Vertical, Vertices,
     },
     shot::{Capture, Shot},
     tiles::{LayerDescription, Tiles, TilesDescription},

@@ -6,7 +6,7 @@
 // the greatest x, and 1 the greatest y and z and the margin.
 
 import package::lib::types::{
-    NONE, FIT, PATH_ENDS, PATH_BENDS, PATH_TRACE, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS, OWN_HEIGHT, WordStep, SCAN_BLOCK,
+    NONE, FIT, PATH_ENDS, PATH_TRACE, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS, OWN_HEIGHT, WordStep, SCAN_BLOCK,
 };
 import package::lib::bind::{frame, mark};
 import package::lib::focus::focus_of;
@@ -87,9 +87,10 @@ fn trace(i: u32) {
 fn stroke(i: u32) {
     if PATH == PATH_TRACE { trace(i); return; }
     // Keep constant exits separate from runtime tests so unreachable geometry is removed
-    // before translation, rather than leaving the driver to simplify a short-circuit branch.
+    // before translation, rather than leaving the driver to simplify a short-circuit branch. An
+    // edge between its ends lies within its vertices' box, which their marks measure. One through
+    // bends can reach outside it, so its points count.
     if PATH == PATH_ENDS { return; }
-    if PATH == PATH_BENDS { return; }
     if i >= stroke_instances() { return; }
     let s = segment(i);
     if s.item >= mark.rows || !counted(s.row) || !stroke_style(s.row).shown {

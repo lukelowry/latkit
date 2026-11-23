@@ -591,8 +591,9 @@ impl View {
             let at = at * MARK_STRIDE as usize;
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(uniform));
         };
+        let projected = self.projected();
         for (i, shown) in self.marks.iter().enumerate() {
-            let mut uniform = uniforms::mark(i, shown, &self.labels, &self.clock);
+            let mut uniform = uniforms::mark(i, shown, &self.labels, &self.clock, &self.scene, &projected);
             if !self.focus.has_words() {
                 uniform.focus = wgsl::NONE;
             }
@@ -601,7 +602,7 @@ impl View {
             write(count + i, &uniform);
             if blocks == 3 {
                 uniform.draw = wgsl::DRAW_COMETS;
-                if MarkVariants::shown(shown, &self.scene.space).screen().is_some() {
+                if MarkVariants::shown(shown, &self.scene).screen().is_some() {
                     uniform.list = shown.comets.list.map_or(wgsl::NONE, |list| list.header);
                 }
                 write(2 * count + i, &uniform);

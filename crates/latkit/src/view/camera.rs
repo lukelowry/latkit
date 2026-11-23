@@ -513,6 +513,10 @@ impl Projected {
             }
             _ => unreachable!("the camera matches the space"),
         };
+        // A plane whose y grows down mirrors its positions about the camera's center. World
+        // coordinates stay position units, so everything that reads this projection follows.
+        let down = matches!(space, Space::Plane(plane) if plane.y == crate::Vertical::Down);
+        let mirror = if down { -1.0 } else { 1.0 };
         let distance = 0.5 * h / (0.5 * FOV).tan();
         let pitch = pitch.clamp(0.0, MAX_PITCH);
         // Reversed depth: the near plane maps to 1 and the far plane to 0.
@@ -520,7 +524,7 @@ impl Projected {
         let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -distance))
             * DMat4::from_rotation_x(-pitch.to_radians())
             * DMat4::from_rotation_z(bearing.to_radians())
-            * DMat4::from_scale(DVec3::new(px_per_unit[0], px_per_unit[1], px_per_unit[0]))
+            * DMat4::from_scale(DVec3::new(px_per_unit[0], mirror * px_per_unit[1], px_per_unit[0]))
             * DMat4::from_translation(DVec3::new(0.0, 0.0, -height(space_code, center[2])));
         let middle = [area[0].midpoint(area[2]) / w * 2.0 - 1.0, 1.0 - area[1].midpoint(area[3]) / h * 2.0];
         let offset = DMat4::from_cols(DVec4::X, DVec4::Y, DVec4::Z, DVec4::new(middle[0], middle[1], 0.0, 1.0));

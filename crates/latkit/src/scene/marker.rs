@@ -6,16 +6,19 @@ use serde::Deserialize;
 use super::form::{preset_schema, presets};
 use super::mark::Markers;
 use crate::gpu::shaders as wgsl;
-use crate::{Color, Expr, Image};
+use crate::{Color, Expr, Image, Length};
 
-/// How a vertex is drawn: a shape's name, `"block"`, or
-/// `{ shape | block | gauge | pie | icon | wgsl: options }`. Defaults to an ellipse.
+/// How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
+/// `{ shape | block | gauge | pie | icon | symbol | wgsl: options }`. Defaults to an ellipse.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = preset_schema::<Marker>)]
 pub enum Marker {
     /// A filled shape.
     Shape(Shape),
+    /// Nothing. The row keeps its place, its label, and the edges that end on it, and unless the
+    /// mark sets `pick`, the pointer does not reach it.
+    None,
     /// A rectangle with rounded corners that holds its label inside where the text fits.
     Block {
         /// Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`.
@@ -47,6 +50,23 @@ pub enum Marker {
         images: Vec<Image>,
         /// Each row's image index, from 0.
         index: Expr,
+    },
+    /// A drawing in SVG path data, in the row's color, fitted to the square of the marker's
+    /// smaller side. `index` picks each row's path. Coordinates run from -1 to 1 across that
+    /// square, x right and y down, as SVG has them. With `stroke` the path is stroked at that
+    /// width, and without it the path is filled, by the even-odd rule. Each path is set once as a
+    /// distance field, so its outline stays sharp as the marker grows, and glows, rings, and picks
+    /// follow it.
+    Symbol {
+        /// The paths, as SVG path data.
+        paths: Vec<Arc<str>>,
+        /// Each row's path index, from 0. Defaults to 0.
+        #[serde(default = "crate::scene::mark::zero")]
+        index: Expr,
+        /// The stroke's width: a number in CSS pixels, or `{ units }` in position units. Without
+        /// it, the path is filled.
+        #[serde(default)]
+        stroke: Option<Length>,
     },
     /// A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It
     /// reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's
@@ -87,6 +107,7 @@ presets!(Marker {
     "rounded" => Marker::Shape(Shape::Rounded),
     "diamond" => Marker::Shape(Shape::Diamond),
     "block" => Marker::block(),
+    "none" => Marker::None,
 });
 
 impl Default for Marker {
@@ -107,13 +128,28 @@ impl Marker {
         Marker::Block { corner: None }
     }
 
+    /// A symbol of `paths`, SVG path data in a box from -1 to 1, filled. `index` picks each
+    /// row's path.
+    pub fn symbol<P: Into<Arc<str>>>(paths: impl IntoIterator<Item = P>, index: impl Into<Expr>) -> Marker {
+        Marker::Symbol { paths: paths.into_iter().map(Into::into).collect(), index: index.into(), stroke: None }
+    }
+
+    /// A symbol stroked at `width` instead of filled. Other markers are unchanged.
+    #[must_use]
+    pub fn stroke(self, width: impl Into<Length>) -> Marker {
+        match self {
+            Marker::Symbol { paths, index, .. } => Marker::Symbol { paths, index, stroke: Some(width.into()) },
+            other => other,
+        }
+    }
+
     /// The expressions each row's marker reads, in input order.
     pub(crate) fn inputs(&self) -> Vec<&Expr> {
         match self {
-            Marker::Shape(_) | Marker::Block { .. } => Vec::new(),
+            Marker::Shape(_) | Marker::Block { .. } | Marker::None => Vec::new(),
             Marker::Gauge { fill, .. } => vec![fill],
             Marker::Pie { slices, .. } => slices.iter().collect(),
-            Marker::Icon { index, .. } => vec![index],
+            Marker::Icon { index, .. } | Marker::Symbol { index, .. } => vec![index],
             Marker::Wgsl { inputs, .. } => inputs.iter().collect(),
         }
     }
@@ -130,7 +166,8 @@ impl Marker {
                 Markers { hole: *hole, palette: colors.iter().map(|c| c.packed()).collect(), ..base }
             }
             Marker::Icon { images, .. } => Markers { icons: images.clone(), ..base },
-            Marker::Wgsl { .. } => base,
+            Marker::Symbol { paths, stroke, .. } => Markers { symbols: paths.clone(), stroke: *stroke, ..base },
+            Marker::Wgsl { .. } | Marker::None => base,
         }
     }
 
@@ -145,6 +182,8 @@ impl Marker {
     pub(crate) fn code(&self) -> u32 {
         match self {
             Marker::Shape(_) => wgsl::MARKER_SHAPE,
+            Marker::None => wgsl::MARKER_NONE,
+            Marker::Symbol { .. } => wgsl::MARKER_SYMBOL,
             Marker::Block { .. } => wgsl::MARKER_BLOCK,
             Marker::Gauge { .. } => wgsl::MARKER_GAUGE,
             Marker::Pie { .. } => wgsl::MARKER_PIE,

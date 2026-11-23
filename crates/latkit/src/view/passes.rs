@@ -117,7 +117,7 @@ impl Drawn {
 /// the lists buffer, and the plot area that lines clip to.
 #[derive(Clone, Copy)]
 struct Marks<'a> {
-    space: &'a crate::Space,
+    scene: &'a crate::Scene,
     device: &'a wgpu::Device,
     format: wgpu::TextureFormat,
     samples: u32,
@@ -140,7 +140,7 @@ impl Marks<'_> {
         let draw = if depth { Draw::Depth } else { Draw::Rows };
         let variant = Variant::draw(Shader::Backdrop, self.format, self.samples)
             .mode(draw)
-            .projection(Projection::of(self.space));
+            .projection(Projection::of(&self.scene.space));
         let group = &self.passes.iter().find(|(shader, _)| *shader == Shader::Backdrop).expect("listed").1;
         pass.set_bind_group(0, &self.groups.view, &[]);
         pass.set_bind_group(1, &self.groups.mark, &[0]);
@@ -223,7 +223,7 @@ impl Marks<'_> {
         comets: bool,
         clip: Option<[u32; 4]>,
     ) {
-        if !cut.opaque && Projection::of(self.space) == Projection::Globe {
+        if !cut.opaque && Projection::of(&self.scene.space) == Projection::Globe {
             self.backdrop(pass, drawn, inner, true);
         }
         self.still(pass, drawn, inner);
@@ -279,10 +279,12 @@ impl Marks<'_> {
         shown: &super::marks::Shown,
         draw: Draw,
     ) {
-        if shown.compiled.is_none() {
+        let Some(compiled) = &shown.compiled else { return };
+        // A marker of none draws nothing: its rows show only their labels.
+        if compiled.drawing.markers.marker == crate::gpu::shaders::MARKER_NONE {
             return;
         }
-        let variants = MarkVariants::shown(shown, self.space);
+        let variants = MarkVariants::shown(shown, self.scene);
         let shader = variants.shader(draw);
         let asked = variants.draw(draw, self.format, self.samples);
         let pipeline = match asked {
@@ -387,13 +389,13 @@ fn listed(shown: &super::marks::Shown) -> Vec<u32> {
 
 /// The shaders whose pass groups a frame binds, each group built once per resource generation: the
 /// backdrop, text, and overlay, the still when the view keeps one, and each mark's.
-fn pass_shaders(marks: &[super::marks::Shown], space: &crate::Space, still: bool) -> Vec<Shader> {
+fn pass_shaders(marks: &[super::marks::Shown], scene: &crate::Scene, still: bool) -> Vec<Shader> {
     let mut shaders = vec![Shader::Backdrop, Shader::Glyphs, Shader::Overlay];
     if still {
         shaders.push(Shader::Still);
     }
     for shown in marks {
-        let variants = MarkVariants::shown(shown, space);
+        let variants = MarkVariants::shown(shown, scene);
         for draw in [Draw::Rows, Draw::Lit] {
             let shader = variants.shader(draw);
             if !shaders.contains(&shader) {
@@ -558,7 +560,7 @@ impl View {
             raster.fill(inner.arena.words(), At::new(resources.extents(), 0), extent_words, 0);
             for &i in &measured {
                 let shown = &self.marks[i];
-                let Some(variant) = MarkVariants::shown(shown, &self.scene.space).bounds() else { continue };
+                let Some(variant) = MarkVariants::shown(shown, &self.scene).bounds() else { continue };
                 let input = crate::gpu::listing::Inputs {
                     pages: inner.arena.words(),
                     lists: resources.lists(),
@@ -786,7 +788,7 @@ impl View {
         let placed: [Vec<Option<(u32, u32, Variant)>>; 2] = [false, true].map(|lit| {
             (self.marks.iter().zip(drawn))
                 .map(|(shown, &drawn)| {
-                    let variant = MarkVariants::shown(shown, &self.scene.space).screen()?;
+                    let variant = MarkVariants::shown(shown, &self.scene).screen()?;
                     let (count, drawn) = if lit {
                         (shown.lit.rows * shown.lit.pieces, lights && shown.drawable() && shown.lit.rows > 0)
                     } else {
@@ -917,7 +919,7 @@ impl View {
         let firsts = self.place(encoder, inner, &self.drawn_marks(from, made, pick_targets.is_some() && layered));
         let resources = self.resources.as_mut().expect("created before passes");
         let groups = resources.groups(&gpu.0, inner);
-        let passes: Vec<(Shader, wgpu::BindGroup)> = pass_shaders(&self.marks, &self.scene.space, still.is_some())
+        let passes: Vec<(Shader, wgpu::BindGroup)> = pass_shaders(&self.marks, &self.scene, still.is_some())
             .into_iter()
             .map(|shader| (shader, resources.pass(device, inner, shader)))
             .collect();
@@ -927,7 +929,7 @@ impl View {
             None => (frame.target, None),
         };
         let marks = Marks {
-            space: &self.scene.space,
+            scene: &self.scene,
             device,
             format: frame.format,
             samples,
@@ -1045,7 +1047,7 @@ impl View {
             },
             depth: resources.pick_depth(),
             output: resources.probe(),
-            variant: MarkVariants::shown(&self.marks[i], &self.scene.space).probe(Shader::Probe),
+            variant: MarkVariants::shown(&self.marks[i], &self.scene).probe(Shader::Probe),
         };
         let mut raster =
             crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines: &mut inner.pipelines, encoder };
@@ -1099,7 +1101,7 @@ impl View {
                 },
                 depth: resources.pick_depth(),
                 output: resources.probe(),
-                variant: MarkVariants::shown(shown, &self.scene.space).probe(Shader::Probe),
+                variant: MarkVariants::shown(shown, &self.scene).probe(Shader::Probe),
             };
             let instances = shown.counted_instances(shown.live_instances());
             match kind {

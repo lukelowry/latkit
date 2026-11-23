@@ -220,9 +220,28 @@
         "grid": {
           "$ref": "#/$defs/Grid",
           "description": "The grid on the ground under the marks. Defaults to lines."
+        },
+        "y": {
+          "$ref": "#/$defs/Vertical",
+          "description": "Which way y grows on screen with the camera's bearing at 0. Defaults to `up`. `down` suits\npositions drafted on a screen or a page, which then need no flipping."
         }
       },
       "description": "A plane: positions are in plane units."
+    },
+    "Vertical": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "up",
+          "description": "Toward the top, as on a graph."
+        },
+        {
+          "type": "string",
+          "const": "down",
+          "description": "Toward the bottom, as on a screen or a page."
+        }
+      ],
+      "description": "Which way a plane's y grows on screen."
     },
     "Plot": {
       "type": "object",
@@ -443,6 +462,17 @@
               "$ref": "#/$defs/Marker",
               "description": "How each row is drawn. Defaults to an ellipse."
             },
+            "bearing": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Each row's turn about its position, in degrees clockwise from up. Up is the ground's, as\nfor the camera's `bearing`: north on the earth, and the marker turns with the view. The\npointer, labels, and the edges that end on a row still follow its marker's box as it\nstands unturned. Defaults to none."
+            },
             "ring": {
               "anyOf": [
                 {
@@ -492,6 +522,9 @@
         },
         {
           "$ref": "#/$defs/WhenNode"
+        },
+        {
+          "$ref": "#/$defs/MatchNode"
         },
         {
           "$ref": "#/$defs/ScaleNode"
@@ -606,6 +639,61 @@
       ],
       "description": "The value of the first case whose condition holds, else `otherwise`."
     },
+    "MatchNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "$ref": "#/$defs/Expr",
+          "description": "The value compared."
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "description": "A value that a category of a colormap or a case of [`Expr::matched`](crate::Expr::matched)\nnames: a number, which a row's value equals, or a text, which a row's text field equals exactly.",
+                "anyOf": [
+                  {
+                    "description": "A number.",
+                    "type": "number",
+                    "format": "double"
+                  },
+                  {
+                    "description": "A text.",
+                    "type": "string"
+                  }
+                ]
+              },
+              {
+                "$ref": "#/$defs/Expr"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "The cases, as `[value, result]` pairs tried in order. A value is a number, which\ncompares as `eq` does, or a text, which compares as `is` does.",
+          "tsType": "[value: number | string, result: ExprInput][]"
+        },
+        "otherwise": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The value where no case holds. Defaults to a missing value."
+        }
+      },
+      "required": [
+        "match",
+        "cases"
+      ],
+      "description": "The result of the first case a value equals, else `otherwise`."
+    },
     "ScaleNode": {
       "type": "object",
       "additionalProperties": false,
@@ -672,7 +760,7 @@
         },
         "value": {
           "$ref": "#/$defs/Expr",
-          "description": "The value mapped. A categorical map takes each value's integer part as its category."
+          "description": "The value mapped. A categorical map takes each value's integer part as its category, or\nwith `values`, the place among them of the one it equals."
         },
         "domain": {
           "anyOf": [
@@ -812,19 +900,38 @@
           },
           "description": "The colors, blended in OKLab. Each is a color, spaced evenly between its neighbors like a\nCSS gradient, or a `[place, color]` pair with a place from 0 to 1. Places must ascend. A\ncategorical map takes one color per category, without places, at most 256."
         },
+        "values": {
+          "type": "array",
+          "items": {
+            "description": "A value that a category of a colormap or a case of [`Expr::matched`](crate::Expr::matched)\nnames: a number, which a row's value equals, or a text, which a row's text field equals exactly.",
+            "anyOf": [
+              {
+                "description": "A number.",
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "description": "A text.",
+                "type": "string"
+              }
+            ]
+          },
+          "description": "Each category's value in category order, a number or a text. A row whose value equals\n`values[i]` takes color `i`, and a row whose value is none of them takes the theme's\n`missing` color. Without it, a value's integer part is its category. Categorical maps only.",
+          "tsType": "(number | string)[]"
+        },
         "categories": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "The category names in category order, shown in legends. Categorical maps only."
+          "description": "The category names in category order, shown in legends. Defaults to the values as written.\nCategorical maps only."
         }
       },
       "required": [
         "kind",
         "colors"
       ],
-      "description": "A custom colormap: its kind, its colors, and for a categorical map, its category names."
+      "description": "A custom colormap: its kind, its colors, and for a categorical map, its categories' values and\nnames."
     },
     "ColormapKind": {
       "oneOf": [
@@ -1527,7 +1634,8 @@
             "rectangle",
             "rounded",
             "diamond",
-            "block"
+            "block",
+            "none"
           ]
         },
         {
@@ -1669,6 +1777,47 @@
               "additionalProperties": false
             },
             {
+              "description": "A drawing in SVG path data, in the row's color, fitted to the square of the marker's\nsmaller side. `index` picks each row's path. Coordinates run from -1 to 1 across that\nsquare, x right and y down, as SVG has them. With `stroke` the path is stroked at that\nwidth, and without it the path is filled, by the even-odd rule. Each path is set once as a\ndistance field, so its outline stays sharp as the marker grows, and glows, rings, and picks\nfollow it.",
+              "type": "object",
+              "properties": {
+                "symbol": {
+                  "type": "object",
+                  "properties": {
+                    "paths": {
+                      "description": "The paths, as SVG path data.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "index": {
+                      "description": "Each row's path index, from 0. Defaults to 0.",
+                      "$ref": "#/$defs/Expr"
+                    },
+                    "stroke": {
+                      "description": "The stroke's width: a number in CSS pixels, or `{ units }` in position units. Without\nit, the path is filled.",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Length"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "paths"
+                  ]
+                }
+              },
+              "required": [
+                "symbol"
+              ],
+              "additionalProperties": false
+            },
+            {
               "description": "A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It\nreads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's\nsize as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It\nreturns the pixel's straight color and its signed distance in CSS pixels from the outline,\nnegative inside, which glows and status rings follow. The color's alpha is the pixel's\ncoverage: latkit blends it as given and smooths no edge, so fade the outline over a pixel, as\n`color.a * saturate(0.5 - distance / fwidth(distance))` does. The source may declare its own\nfunctions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and\n`MarkerColor`. It compiles once, when a view first draws it.",
               "type": "object",
               "properties": {
@@ -1701,7 +1850,7 @@
           ]
         }
       ],
-      "description": "How a vertex is drawn: a shape's name, `\"block\"`, or\n`{ shape | block | gauge | pie | icon | wgsl: options }`. Defaults to an ellipse."
+      "description": "How a vertex is drawn: a shape's name, `\"block\"`, `\"none\"`, or\n`{ shape | block | gauge | pie | icon | symbol | wgsl: options }`. Defaults to an ellipse."
     },
     "Shape": {
       "oneOf": [
@@ -1760,6 +1909,27 @@
       ],
       "description": "An image of RGBA texels: straight alpha, sRGB, rows top to bottom."
     },
+    "Length": {
+      "description": "A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "units": {
+              "type": "number",
+              "description": "Position units (degrees on the earth), which grow as the view zooms in."
+            }
+          },
+          "required": [
+            "units"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "Label": {
       "anyOf": [
         {
@@ -1773,12 +1943,47 @@
               "$ref": "#/$defs/Expr"
             },
             "size": {
-              "description": "Font size in CSS pixels. Defaults to the theme's `text.size`.",
+              "description": "Font size: a number in CSS pixels, or `{ units }` in position units, so the text grows with\nthe drawing as the view zooms in. Defaults to the theme's `text.size`.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Length"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "place": {
+              "description": "The side or corner of its row the text sits outside of, or a text field that names one for\neach row, as `\"$side\"`. A side centers the text on it, and a corner sets the text\ndiagonally out from it. A row whose field names no place takes the default: inside a marker\nthat holds it, else right of a marker, and on the middle of a stroke or area.",
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Place"
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^\\$."
+                    }
+                  ],
+                  "tsType": "Place | `$${string}`"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "offset": {
+              "description": "How far the text moves from its place on screen, right then down: each a number in CSS\npixels, or `{ units }` in position units. Defaults to none.",
               "type": [
-                "number",
+                "array",
                 "null"
               ],
-              "format": "float"
+              "items": {
+                "$ref": "#/$defs/Length"
+              },
+              "minItems": 2,
+              "maxItems": 2
             },
             "color": {
               "description": "Each row's text color. Defaults to the theme's text color. Inside a shape or block, it keeps a\n4.5:1 contrast with the row's color.",
@@ -1792,7 +1997,7 @@
               ]
             },
             "maxWidth": {
-              "description": "The width at which lines wrap, in CSS pixels.",
+              "description": "The width at which lines wrap, in the unit of `size`.",
               "type": [
                 "number",
                 "null"
@@ -1834,46 +2039,7 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible. A block, or a marker with a\nwidth and height, holds its label inside where the text fits, and otherwise the label shows\nbeside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or\ndarker as it needs, and its halo is that color.\n\nLabels never overlap. Where they would, the row drawn on top keeps its label (so `priority`\ndecides), and a dense view labels as many rows as fit. A label inside a marker takes the\nmarker's room, so where such markers overlap, only the top one's label shows. No label shows under\na title or legend in a corner. A row whose text is missing or empty has no label, so a `when`\nthat returns the field or missing labels only some rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
-    },
-    "Legend": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "object",
-          "properties": {
-            "title": {
-              "description": "The title over the legend.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "unit": {
-              "description": "Text written after the last tick's value of a bar, such as `\" pu\"` or `\"%\"`.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "place": {
-              "description": "Where the legend sits. Defaults to `right` on a plot and `bottom-right` elsewhere.",
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Place"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "additionalProperties": false
-        }
-      ],
-      "description": "A legend of a mark's colors: its title, or options with a title, a unit, and a place. It shows\na ticked bar of the colormap across its domain, a cell for each category, or a swatch beside\neach name in the colormap's `categories`. The mark's `color` must map through a colormap with a\nfixed domain or named categories. In a conditional, `otherwise` is searched before the cases.\n\nOn the left or right, a bar stands upright beside the marks. Elsewhere it lies flat.\n\n```\n# use latkit::{Colormap, Legend, Place, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").color(voltage).legend(Legend::new(\"Voltage\").unit(\" pu\").place(Place::Right));\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and moving with it: a text\nfield, a number, or options. A label shows when its row is visible. A block, or a marker with a\nwidth and height, holds its label inside where the text fits, and otherwise the label shows\nbeside it, on the right unless `place` names another side. Text inside a shape or block keeps\na 4.5:1 contrast with the row's color, lighter or darker as it needs, and its halo is that\ncolor.\n\nLabels never overlap. Where they would, the row drawn on top keeps its label (so `priority`\ndecides), and a dense view labels as many rows as fit. A label inside a marker takes the\nmarker's room, so where such markers overlap, only the top one's label shows. No label shows under\na title or legend in a corner. A row whose text is missing or empty has no label, so a `when`\nthat returns the field or missing labels only some rows.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\nlet voltages = Label::new(field(\"vm\")).precision(3).unit(\" pu\");\n```"
     },
     "Place": {
       "oneOf": [
@@ -1918,7 +2084,46 @@
           "description": "Over the marks, at the bottom right."
         }
       ],
-      "description": "Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the\nmarks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's\nbackground. Either way, the pointer reaches no row under it. A title and legends in one place\nstack in scene order, the title first."
+      "description": "Where a title or legend sits, or a label beside its row. For a title or legend, a side (`top`,\n`right`, `bottom`, or `left`) takes room from the marks, which stay clear of it, and a corner\nsits over the marks, on a backdrop of the theme's background. Either way, the pointer reaches\nno row under it. A title and legends in one place stack in scene order, the title first. A\nlabel sits outside its row: centered on a side, or set diagonally out from a corner."
+    },
+    "Legend": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "title": {
+              "description": "The title over the legend.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unit": {
+              "description": "Text written after the last tick's value of a bar, such as `\" pu\"` or `\"%\"`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "place": {
+              "description": "Where the legend sits. Defaults to `right` on a plot and `bottom-right` elsewhere.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Place"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "description": "A legend of a mark's colors: its title, or options with a title, a unit, and a place. It shows\na ticked bar of the colormap across its domain, a cell for each category, or a swatch beside\neach name in the colormap's `categories`. The mark's `color` must map through a colormap with a\nfixed domain or named categories. In a conditional, `otherwise` is searched before the cases.\n\nOn the left or right, a bar stands upright beside the marks. Elsewhere it lies flat.\n\n```\n# use latkit::{Colormap, Legend, Place, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").color(voltage).legend(Legend::new(\"Voltage\").unit(\" pu\").place(Place::Right));\n```"
     },
     "Shade": {
       "type": "object",
@@ -2091,6 +2296,10 @@
               ],
               "description": "How each row runs between its ends. Defaults to geodesic on the earth and straight\nelsewhere."
             },
+            "meet": {
+              "$ref": "#/$defs/Meet",
+              "description": "Where each row's ends lie on their vertices. Defaults to `center`."
+            },
             "arrows": {
               "type": "boolean",
               "description": "Whether each row has an arrowhead at its second end. Defaults to `false`."
@@ -2140,6 +2349,21 @@
         }
       ],
       "description": "How an edge runs between its ends."
+    },
+    "Meet": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "center",
+          "description": "Aimed at the vertex's center, stopping at its marker's outline."
+        },
+        {
+          "type": "string",
+          "const": "nearest",
+          "description": "At the point of the marker's outline nearest the path's next point. On a bar or a block,\nan end lands square on the side that point lies beside, and its parallel edges land side\nby side. A path without bends joins the nearest points of its two markers: two boxes\nwhere they face, at the middle of their overlap along an axis, and a box and a round\nmarker at the box's point nearest the round one's center."
+        }
+      ],
+      "description": "Where an edge's end lies on its vertex."
     },
     "StrokeOptions": {
       "type": "object",
@@ -2578,6 +2802,11 @@
           "format": "float",
           "description": "The edge width, in CSS pixels."
         },
+        "halo": {
+          "type": "number",
+          "format": "float",
+          "description": "The width of a band of the background's color beside each edge, in CSS pixels. It covers\nthe strokes drawn under it, so an edge that crosses another parts it, as one that ends on\nit does. Where depth decides what covers what (a tilted view, the globe, or raised rows),\nit covers only what lies farther. Defaults to 0, which draws none."
+        },
         "parallel": {
           "anyOf": [
             {
@@ -2602,16 +2831,15 @@
       "additionalProperties": false,
       "properties": {
         "gap": {
-          "type": "number",
-          "format": "float",
-          "description": "The space between neighboring edges, in CSS pixels. Defaults to 3."
+          "$ref": "#/$defs/Length",
+          "description": "The space between neighboring edges: CSS pixels, the same at any zoom, or `{ units }` to\ngrow with the drawing. Defaults to 3 CSS pixels."
         },
         "converge": {
           "$ref": "#/$defs/Converge",
           "description": "How they come together at the vertices they join. Defaults to `squeeze`."
         }
       },
-      "description": "How edges joining the same two vertices run side by side: each moved sideways from the path\nbetween its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.\nMore than eight edges pack closer, within eight steps, and where neighbors would lie less than a\npixel apart, only every second edge draws, or every fourth, and so on."
+      "description": "How edges joining the same two vertices run side by side: each moved sideways from the path\nbetween its vertices, a step apart. A step is an edge's width plus `gap`.\nMore than eight edges pack closer, within eight steps, and where neighbors would lie less than a\npixel apart, only every second edge draws, or every fourth, and so on."
     },
     "Converge": {
       "oneOf": [
@@ -2646,6 +2874,11 @@
           "type": "number",
           "format": "float",
           "description": "The line width, in CSS pixels."
+        },
+        "halo": {
+          "type": "number",
+          "format": "float",
+          "description": "The width of a band of the background's color beside each line, in CSS pixels, as an\nedge's [`halo`](EdgeTheme::halo). Defaults to 0, which draws none."
         }
       },
       "description": "Defaults for lines."
@@ -2721,27 +2954,6 @@
         }
       },
       "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a\nthin rim of the background color ahead of its head, which parts it from the line. Comets end\nbefore an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,\nand they come back once it rests.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen."
-    },
-    "Length": {
-      "description": "A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "object",
-          "properties": {
-            "units": {
-              "type": "number",
-              "description": "Position units (degrees on the earth), which grow as the view zooms in."
-            }
-          },
-          "required": [
-            "units"
-          ],
-          "additionalProperties": false
-        }
-      ]
     },
     "EarthTheme": {
       "type": "object",

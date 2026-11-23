@@ -118,7 +118,7 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
 {#cli-render-size .member}
 **`--size`** `<SIZE>` [¶](#cli-render-size){.headerlink}
-: The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down to a multiple of 4 and its height to an even number. Defaults to `1600x900`.
+: The picture's width and height in pixels, such as `1920x1080`. With one side, as `1920x` or `x1080`, the other follows what the scene's fit frames, with the same room around it. A video rounds its width down to a multiple of 4 and its height to an even number. Defaults to `1600x900`.
 
 {#cli-render-scale .member}
 **`--scale`** `<SCALE>` [¶](#cli-render-scale){.headerlink}

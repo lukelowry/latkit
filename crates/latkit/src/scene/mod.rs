@@ -12,6 +12,7 @@ mod layout;
 pub(crate) mod lines;
 pub(crate) mod mark;
 mod marker;
+pub(crate) mod path;
 mod shade;
 mod space;
 #[cfg(test)]
@@ -24,7 +25,7 @@ use std::time::Duration;
 pub use areas::Areas;
 pub(crate) use controls::Control;
 pub use controls::{Action, Controls, Gestures, Motion, Reach};
-pub use edges::Edges;
+pub use edges::{Edges, Meet};
 pub(crate) use form::seconds;
 pub use guide::{Legend, Place, Title};
 pub use label::Label;
@@ -34,10 +35,10 @@ pub use mark::Mark;
 pub use marker::{Marker, Shape};
 pub use shade::Shade;
 pub(crate) use space::sun;
-pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space};
+pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space, Vertical};
 pub use theme::{
-    AreaTheme, Converge, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, GridTheme, Length, LineTheme, Parallel,
-    PlotTheme, TextTheme, Theme, VertexTheme,
+    AreaTheme, Converge, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, GridTheme, LineTheme, Parallel, PlotTheme,
+    TextTheme, Theme, VertexTheme,
 };
 pub use vertices::Vertices;
 

@@ -195,7 +195,8 @@ The [scene types](reference/types.md#scene) document every option and its defaul
 | `'plot'`  | the axis coordinate across, values up                  |
 
 Write a space as an object to give it options: `{ earth: { projection: 'globe' } }`,
-`{ plane: { grid: { lines: { step: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes.
+`{ plane: { grid: { lines: { step: 10 } } } }`, or a plot's `{ plot: { x, y } }` axes. A plane's y
+grows up the screen, or with `{ plane: { y: 'down' } }`, down it.
 
 ### Marks
 
@@ -212,6 +213,15 @@ Either way, every mark shows which of its rows are selected and hovered.
 | `lines`    | a stroke along a path field; on a plot, a sampled field traced over time |
 | `areas`    | the area a polygon field covers                                          |
 
+A vertex's `marker` is a shape, a block, a gauge, a pie, an icon, or a symbol: SVG path data in a
+box from -1 to 1, filled, or stroked as `symbol(path, { stroke: 2 })`. `bearing` turns each row's
+marker, in degrees clockwise from up. `marker: 'none'` draws nothing, so the row shows only its
+label.
+
+An edge aims at the middle of each vertex it joins. With `meet: 'nearest'`, each end lands on the
+point of its vertex's marker nearest the path, so edges drawn to a bar or a wide block land square
+on it, where their `bends` lead, and parallel edges land side by side.
+
 `flow` animates comets along a stroke. An edges mark with `joins: [table, reference]` draws each
 row as a net: a star from the center of the vertex rows whose `reference` names it out to each one.
 On a plot, `trace` names the sampled field a line draws, or scales it: `trace: field('vm').mul(100)`
@@ -225,6 +235,10 @@ and no label shows under a title or legend in a corner.
 A row whose text is missing has no label, so a `when` that picks between the field and `null`
 labels only some rows, as in the scene above. A number label is written on the GPU each frame, so it
 can follow a sampled field: `label: { text: field('vm'), precision: 3, unit: ' pu' }`.
+
+A label's `place` names the side or corner of its row it sits outside of, such as `'bottom'` or
+`'top-left'`, or a text field that holds one for each row, as `'$side'`. `offset` moves it from
+there, and `size: units(12)` sets its text in position units, so it grows with the drawing.
 
 ### Expressions
 
@@ -240,6 +254,10 @@ field('load').div(field('capacity')).clamp(0, 1); // arithmetic and comparisons
 field('vm').colormap('balance').domain(0.95, 1.05); // a color through a colormap
 field('vm').colormap('viridis').domain('all'); // over every value, in every frame
 field('kv').scale(2, 8); // onto a range
+field('kv').match([
+  [69, 1.5],
+  [138, 2.5],
+]); // a result for each value, a number or a text
 field('rating').fallback(100); // another value where one is missing
 when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10')); // colors
 when(zoom().ge(6)).then(field('name')).otherwise(null); // a label's text, from zoom 6 on
@@ -247,6 +265,11 @@ units('$radius', { atLeast: 2 }); // a size in position units, kept within pixel
 field('vm').from(weather.table('Station')); // read from another dataset, joined by id
 field('kv').of('from'); // read from the row a reference names, such as an edge's first bus
 ```
+
+A categorical colormap takes each value's whole part as its category, or with `values`, the place
+among them of the one it equals: `{ kind: 'categorical', values: ['gas', 'wind'], colors }` colors
+a text field. A legend then draws each category as its mark draws rows: a stroke at its width, or a
+marker's shape.
 
 Sizes are in CSS pixels. Wrap a size in `units()` to give it in position units, which scale with
 the zoom. State expressions read the view: `selected()`, `hovered()`, `related()` (one
@@ -288,10 +311,12 @@ failure (see [Events](#events)), and the mark draws nothing.
 
 - `theme` is `'dark'`, `'light'`, or overrides of a base theme, grouped by what they style:
   `{ base: 'light', text: { size: 12 }, edge: { width: 2 } }`.
-- Edges joining the same two vertices run side by side, `edge.parallel.gap` pixels apart at any
-  zoom. `converge` sets how they meet their vertices: `'squeeze'` fits them within the smaller
+- Edges joining the same two vertices run side by side, `edge.parallel.gap` apart: pixels, the same
+  at any zoom, or `units(n)`. `converge` sets how they meet their vertices: `'squeeze'` fits them within the smaller
   vertex, `'fan'` angles them in to each vertex's center, and `'straight'` stops each at its
   vertex's outline. `parallel: null` draws them over one another.
+- `edge.halo` and `line.halo` draw a band of the background's color beside each stroke, which
+  covers the strokes drawn under it, so a stroke that crosses another parts it.
 - `controls` sets what the pointer and keys do. By default the pointer pans, zooms, turns, and
   hovers. `gestures` binds each input to what it does, as in
   `{ gestures: { wheel: 'pan', 'control+wheel': 'zoom', 'shift+primary': 'box' } }`. `'inspect'`

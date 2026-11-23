@@ -148,3 +148,37 @@ fn a_missing_status_draws_no_ring_in_either_branch() {
         assert_eq!(errors(&mut view), Vec::new());
     }
 }
+
+#[test]
+fn symbols_draw_their_paths_turned_by_each_rows_bearing() {
+    let Some(gpu) = gpu() else { return };
+    let c = SIZE / 2;
+    // A stroked bar from the middle of the box to its top: pointing up, then turned to the right.
+    for (bearing, on, off) in [(0.0, [c, c - 12], [c + 12, c]), (90.0, [c + 12, c], [c, c - 12])] {
+        let data = Data::new("d");
+        let rows = Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]);
+        data.apply(rows.field("turn", vec![bearing])).expect("valid");
+        let bar = Marker::symbol(["M0 0V-1"], 0.0).stroke(4.0);
+        let scene = Scene::new(plane()).theme(plain_theme()).draw(
+            Vertices::of("d", "V")
+                .position(field("x"), field("y"))
+                .radius(20.0)
+                .color(Color::WHITE)
+                .marker(bar)
+                .bearing(field("turn")),
+        );
+        let mut view = View::new(&gpu, scene);
+        view.set_camera(camera());
+        view.set_sources([&data]).expect("a source");
+        let pixels = frame(&gpu, &mut view);
+        assert!(
+            close(at(&pixels, on[0], on[1]), WHITE),
+            "the bar at bearing {bearing}: {:?}",
+            at(&pixels, on[0], on[1])
+        );
+        assert!(close(at(&pixels, off[0], off[1]), BLACK), "and nothing beside it at bearing {bearing}");
+        assert_eq!(errors(&mut view), Vec::new());
+    }
+    let (mut view, gpu) = one(Marker::None);
+    assert!(close(at(&frame(&gpu, &mut view), c, c), BLACK), "a marker of none draws nothing");
+}

@@ -970,6 +970,12 @@ a conditional that chooses between colors.
 **`is`**`(text: string): Expr` [¶](#expr-is){.headerlink}
 : Whether a text field equals `text`, plain text read as neither a field nor a color.
 
+{#expr-match .member}
+**`match`**`(cases: readonly (readonly [value: number | string, result:` [`ExprInput`](#exprinput)`])[], otherwise?:` [`ExprInput`](#exprinput)`): Expr` [¶](#expr-match){.headerlink}
+: The result of the first case this value equals, else `otherwise`, which defaults to a missing
+  value: `field('kv').match([[69, 1.9], [138, 2.6]])`. A number compares as `eq` does, and a text
+  as `is` does.
+
 {#expr-contains .member}
 **`contains`**`(text: string): Expr` [¶](#expr-contains){.headerlink}
 : Whether a text field contains `text` (plain text), ignoring case. In a mark, the field must be
@@ -1193,6 +1199,24 @@ Seconds since the view was created. A mark that reads it redraws every frame.
 
 An icon marker: each row shows `images[index]`, fitted in the marker's box, with `index` counting
 from 0. The pixels are copied into the marker.
+
+(symbol)=
+
+### `symbol()`
+
+{.signature}
+`function symbol(paths: string | readonly string[], options?: { index?:` [`ExprInput`](#exprinput)`; stroke?: number | { units: number } }):` [`Marker`](#marker)
+
+A symbol marker: each row shows `paths[index]`, SVG path data drawn in the row's color. A path's
+coordinates run from -1 to 1 across the square of the marker's smaller side, x right and y down.
+
+{#symbol-index .member}
+**`index`**`?:` [`ExprInput`](#exprinput) [¶](#symbol-index){.headerlink}
+: Each row's path index, from 0. Defaults to 0.
+
+{#symbol-stroke .member}
+**`stroke`**`?: number | { units: number }` [¶](#symbol-stroke){.headerlink}
+: The width the path is stroked at, in CSS pixels or `units(n)`. Without it, the path is filled.
 
 (rgbaimage)=
 

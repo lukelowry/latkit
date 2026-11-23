@@ -92,7 +92,11 @@ const OP_EQ: u32 = 24u;
 const OP_NE: u32 = 25u;
 const OP_AND: u32 = 26u;
 const OP_OR: u32 = 27u;
+// Takes a condition, the value where it holds, and the alternative, in that order. With
+// `SELECT_OVER` as its first operand, the alternative comes first: a chain of conditionals then
+// selects over what it has computed so far, at a fixed depth.
 const OP_SELECT: u32 = 28u;
+const SELECT_OVER: u32 = 1u;
 const OP_SCALE: u32 = 29u;
 const OP_COLORMAP: u32 = 30u;
 const OP_STORE: u32 = 31u;
@@ -252,6 +256,9 @@ const AREA_FLAGS: u32 = 1u;
 const LABEL_WORDS: u32 = 2u;
 const LABEL_CODE: u32 = 0u;
 const LABEL_COLOR: u32 = 1u;
+// Each row's place, as a number from 1 to 8 in `Place`'s order, or 0 for none: a third label word
+// only where a field names each row's place (`LABEL_PLACED_BY_ROW`).
+const LABEL_PLACE: u32 = 2u;
 
 // A number label writes its number as runs of its run table: digits 0–9 at codes 0–9, then these.
 // It writes at most `NUMBER_CHARS` of them.
@@ -334,6 +341,10 @@ const STEP_AFTER: u32 = 128u;
 // seen straight down, where the screen scales them evenly. Otherwise they are in CSS pixels on
 // screen.
 const ALONG_UNITS: u32 = 256u;
+// A label word holds each row's place. Otherwise the four bits from `LABEL_PLACE_SHIFT` hold the
+// place of every row, as a number from 1 to 8 in `Place`'s order, or 0 for none.
+const LABEL_PLACED_BY_ROW: u32 = 8192u;
+const LABEL_PLACE_SHIFT: u32 = 14u;
 
 // The draws that bind a copy of a mark's uniform. ROWS: its rows, and every pass but the draws.
 // OPAQUE: only the pixels its rows cover fully, which draw first where depth varies. COMETS: only
@@ -406,6 +417,15 @@ const MARKER_PIE: u32 = 2u;
 const MARKER_BLOCK: u32 = 3u;
 const MARKER_ICON: u32 = 4u;
 const MARKER_CUSTOM: u32 = 5u;
+const MARKER_SYMBOL: u32 = 6u;
+// Draws nothing: the row keeps its place and its label.
+const MARKER_NONE: u32 = 7u;
+// Texels across a layer of the marker pictures: an icon's image, or a symbol's distance field. A
+// field reaches `SYMBOL_MARGIN` of its box's half size past the box, so a stroke on the box's edge
+// keeps its outer half, and holds `SYMBOL_SPREAD` texels of distance each side of the outline.
+const ICON_SIZE: f32 = 64.0;
+const SYMBOL_MARGIN: f32 = 0.25;
+const SYMBOL_SPREAD: f32 = 8.0;
 const SHAPE_ELLIPSE: u32 = 0u;
 const SHAPE_RECTANGLE: u32 = 1u;
 const SHAPE_ROUNDED: u32 = 2u;
@@ -432,6 +452,9 @@ const THEME_MISSING: u32 = 8u;
 const THEME_CLEAR: u32 = 9u;
 // The corner radius of block markers, in CSS pixels.
 const THEME_CORNER: u32 = 10u;
+// The width of the background-colored band beside edges, and beside lines, in CSS pixels.
+const THEME_EDGE_HALO: u32 = 11u;
+const THEME_LINE_HALO: u32 = 12u;
 const THEME_SLOTS: u32 = 16u;
 
 // The unit of comet spacing and length: CSS pixels or position units.
@@ -600,15 +623,14 @@ struct Mark {
     marker: u32,
     shape: u32,
     corner: f32,
+    // A pie's hole. For a symbol, the width its path is stroked at, in CSS pixels.
     hole: f32,
-    // Marker inputs: how many, the extra word of the first, and where the marker's palette starts
-    // in the program.
+    // Marker inputs: how many in the low byte, and above it the extra word of the first (see
+    // `packed_inputs`). `palette` is where the marker's palette starts in the program.
     inputs: u32,
-    input: u32,
     palette: u32,
-    // Shade inputs: how many, and the extra word of the first.
+    // Shade inputs, packed as the marker's.
     shade_inputs: u32,
-    shade_input: u32,
     // Absolute trace-cursor address (or NONE), visible points, and resident row blocks.
     trace: u32,
     trace_points: u32,
@@ -638,13 +660,16 @@ struct Mark {
     // `label`: the extra word holding the label's code or number, or NONE. The next three are
     // offsets in the labels texture: four words per text run, per-row claim metadata, and
     // per-row screen placement. `number` says how a number label writes its number, NONE for
-    // a text label. The size is in CSS pixels.
+    // a text label. The size, and how far a label moves from its place (right, then down), are in
+    // CSS pixels at this frame's zoom.
     label: u32,
     runs: u32,
     label_metadata: u32,
     label_positions: u32,
     number: u32,
     label_size: f32,
+    label_right: f32,
+    label_down: f32,
     // The range of CSS pixels the mark's size is clamped to at any zoom: a vertex's half size, or a
     // stroke's width.
     size_min: f32,

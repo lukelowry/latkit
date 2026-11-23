@@ -224,7 +224,7 @@ pub fn haloless() -> Theme {
 }
 
 pub fn plane() -> Plane {
-    Plane { grid: Grid::Off }
+    Plane { grid: Grid::Off, ..Plane::default() }
 }
 
 pub fn camera() -> Camera {

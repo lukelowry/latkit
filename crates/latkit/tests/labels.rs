@@ -585,3 +585,32 @@ fn labels_finish_when_their_rows_arrive_after_the_first_frame() {
         assert_eq!(view.failures().collect::<Vec<_>>(), Vec::new(), "{n} labels");
     }
 }
+
+#[test]
+fn a_label_sits_outside_its_row_on_the_side_its_place_names() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    let data = Data::new("d");
+    data.apply(
+        Table::new("V", Ids::count(2))
+            .field("x", vec![-10.0, 30.0])
+            .field("y", vec![0.0; 2])
+            .field("name", vec!["abcdef"; 2])
+            .field("side", vec!["left", "bottom"]),
+    )
+    .expect("valid");
+    let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0)).place_by("side");
+    let scene = Scene::new(plane())
+        .theme(haloless())
+        .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).pick(false).label(label));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    let red = |x: u32, y: u32| at(&pixels, x, y)[0] > 200 && at(&pixels, x, y)[2] < 60;
+    // The text is 36 wide and 10 tall, and ends four pixels from its marker.
+    assert!(red(c - 10 - 20, c) && !red(c - 10 + 12, c), "left of the first row, not right of it");
+    assert!(red(c + 30, c + 11) && !red(c + 30 + 12, c), "under the second row, centered on it");
+    assert_eq!(errors(&mut view), Vec::new());
+}

@@ -24,7 +24,7 @@ use crate::derive::stamp_of;
 use crate::expr::Domain;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
-use crate::{Axis, Color, ColormapKind, Place, Space, Theme};
+use crate::{Axis, Category, Color, ColormapKind, Expr, Mark, Marker, Place, Shape, Space, Theme};
 
 /// Ems between the view's edge, inside its insets, and the guides beside it, unless the theme sets
 /// its `padding`.
@@ -117,8 +117,59 @@ enum Body {
     /// the bottom and labels sit right of it. Flat, its low end is at the left and labels sit under
     /// it. `gapped` bars leave a pixel between fills, one per category.
     Bar { fills: Vec<([f64; 2], Color)>, ticks: Vec<(f64, Text)>, length: f64, upright: bool, gapped: bool },
-    /// A swatch of each color beside its name, in columns of up to `ROWS`.
-    Swatches(Vec<(Color, Text)>),
+    /// A sample of each category beside its name, drawn as the mark draws a row of it: in one row
+    /// when `row`, else in columns of up to `ROWS`.
+    Swatches { samples: Vec<(Color, Sample, Text)>, row: bool },
+}
+
+/// How a legend draws a category, as its mark draws a row of it.
+#[derive(Clone, Copy)]
+enum Sample {
+    /// A filled square, its corners rounded by this fraction of its size: half makes a disc.
+    Fill(f64),
+    /// A stroke of this width in CSS pixels.
+    Stroke(f64),
+}
+
+impl Sample {
+    /// The sample `mark` draws for the category of `input` whose value is `value`: a disc for
+    /// round markers, a square for other markers and for areas, and for a stroke its width, where
+    /// the width is a number of pixels that the category decides.
+    fn of(mark: &Mark, theme: &Theme, input: &Expr, value: &Category) -> Sample {
+        let (stroke, width) = match mark {
+            Mark::Edges(edges) => (&edges.stroke, theme.edge.width),
+            Mark::Lines(lines) => (&lines.stroke, theme.line.width),
+            Mark::Vertices(vertices) => {
+                let round = matches!(vertices.marker, Marker::Shape(Shape::Ellipse));
+                return Sample::Fill(if round { 0.5 } else { 0.0 });
+            }
+            Mark::Areas(_) => return Sample::Fill(0.0),
+        };
+        let own = stroke.width.as_ref().filter(|size| !size.units).and_then(|size| size.expr.given(input, value));
+        Sample::Stroke(own.unwrap_or(f64::from(width)).max(1.0))
+    }
+
+    /// How long the sample is, for text `em` pixels high: a stroke's is three swatches, so its
+    /// width reads.
+    fn length(self, em: f64) -> f64 {
+        match self {
+            Sample::Fill(_) => SWATCH * em,
+            Sample::Stroke(_) => 3.0 * SWATCH * em,
+        }
+    }
+
+    /// The sample's sprite, from `left`, centered on `middle`.
+    fn sprite(self, left: f64, middle: f64, color: Color, em: f64) -> wgsl::Sprite {
+        let swatch = SWATCH * em;
+        match self {
+            Sample::Fill(round) => {
+                fill([left, middle - swatch / 2.0], [left + swatch, middle + swatch / 2.0], color, round * swatch)
+            }
+            Sample::Stroke(width) => {
+                line([left, middle], [left + self.length(em), middle], width.min(swatch) as f32, color)
+            }
+        }
+    }
 }
 
 /// What a scene asks a place to show, in scene order.
@@ -266,7 +317,7 @@ impl View {
                 Place::Bottom => 2,
                 _ => continue,
             };
-            if let Some((guide, size)) = self.guide(want, false, across, &mut m) {
+            if let Some((guide, size)) = self.guide(want, place, across, &mut m) {
                 stack(&mut sides[side], guide, size, true, across, gap, matches!(want, Wanted::Title));
             }
         }
@@ -295,7 +346,7 @@ impl View {
                 Place::Left => 3,
                 _ => continue,
             };
-            if let Some((guide, size)) = self.guide(want, true, tall, &mut m) {
+            if let Some((guide, size)) = self.guide(want, place, tall, &mut m) {
                 stack(&mut sides[side], guide, size, false, tall, gap, false);
             }
         }
@@ -326,7 +377,7 @@ impl View {
             let mut columns: Lanes = Vec::new();
             for &(place, want) in wanted {
                 if place == corner
-                    && let Some((guide, size)) = self.guide(want, false, wide, m)
+                    && let Some((guide, size)) = self.guide(want, place, wide, m)
                 {
                     stack(&mut columns, guide, size, false, (inside[3] - inside[1]).max(0.0), gap, false);
                 }
@@ -367,10 +418,10 @@ impl View {
         title.into_iter().chain(legends).collect()
     }
 
-    /// `want` measured, and its size. A legend's bar stands `upright` beside the marks or lies
-    /// flat, as long as `room` CSS pixels along it allow. `None` for a legend with nothing to show
-    /// yet.
-    fn guide(&self, want: Wanted, upright: bool, room: f64, m: &mut Measure<'_>) -> Option<(Guide, [f64; 2])> {
+    /// `want` measured for `place`, and its size. Left or right of the marks a legend's bar stands
+    /// upright, and elsewhere it lies flat, as long as `room` CSS pixels along it allow. `None` for
+    /// a legend with nothing to show yet.
+    fn guide(&self, want: Wanted, place: Place, room: f64, m: &mut Measure<'_>) -> Option<(Guide, [f64; 2])> {
         let em = f64::from(self.scene.theme.text.size);
         match want {
             Wanted::Title => {
@@ -382,29 +433,43 @@ impl View {
                 Some((Guide::Title(text, subtitle), size))
             }
             Wanted::Legend(i) => {
-                let legend = self.legend(i, upright, room, m)?;
+                let legend = self.legend(i, place, room, m)?;
                 let size = legend.size(em);
                 Some((Guide::Legend(legend), size))
             }
         }
     }
 
-    /// Mark `i`'s legend, measured: a bar of its colormap across the domain it shows, upright or
-    /// flat in `room` CSS pixels along it, or a swatch for each named category. `None` while no
-    /// domain has been fitted.
-    fn legend(&self, i: usize, upright: bool, room: f64, m: &mut Measure<'_>) -> Option<Legend> {
+    /// Mark `i`'s legend, measured for `place`: a bar of its colormap across the domain it shows,
+    /// upright or flat in `room` CSS pixels along it, or a sample for each category that has a name
+    /// or a value. `None` while no domain has been fitted.
+    fn legend(&self, i: usize, place: Place, room: f64, m: &mut Measure<'_>) -> Option<Legend> {
         let theme = &self.scene.theme;
-        let style = self.scene.marks.get(i)?.style();
+        let mark = self.scene.marks.get(i)?;
+        let style = mark.style();
         let legend = style.legend.as_ref()?;
-        let (colormap, ..) = style.color.as_ref()?.colormap_of()?;
+        let upright = matches!(place, Place::Left | Place::Right);
+        let (colormap, input, _) = style.color.as_ref()?.colormap_of()?;
         let colormap = colormap.legible(theme.background, theme.contrast);
         let em = f64::from(theme.text.size);
         let title = legend.title.as_ref().filter(|title| !title.is_empty()).map(|title| m.text(title, 1.0));
         let color = |t: usize| Color::from_bytes(colormap.texels()[t.min(255)]);
-        let names = colormap.named_categories();
+        let names = colormap.category_names();
         if !names.is_empty() {
-            let swatches = names.iter().take(CATEGORIES).enumerate().map(|(k, name)| (color(k), m.text(name, SMALL)));
-            return Some(Legend { title, body: Body::Swatches(swatches.collect()) });
+            let values = colormap.category_values();
+            let samples: Vec<(Color, Sample, Text)> = names
+                .iter()
+                .take(CATEGORIES)
+                .enumerate()
+                .map(|(k, name)| {
+                    // Without values, a category's number is its value.
+                    let value = values.get(k).cloned().unwrap_or(Category::Number(k as f64));
+                    (color(k), Sample::of(mark, theme, input, &value), m.text(name, SMALL))
+                })
+                .collect();
+            // Above or below the marks the samples sit in one row, while it fits.
+            let row = matches!(place, Place::Top | Place::Bottom) && row_width(&samples, em) <= room;
+            return Some(Legend { title, body: Body::Swatches { samples, row } });
         }
         let domain = self.legend_domain(i)?;
         let (mut fills, mut categories) = (Vec::new(), Vec::new());
@@ -594,23 +659,18 @@ impl Legend {
                     }
                 }
             }
-            Body::Swatches(swatches) => {
-                let (row, swatch) = (ROW * em, SWATCH * em);
+            Body::Swatches { samples, row } => {
+                let line = ROW * em;
                 let mut left = x;
-                for column in swatches.chunks(ROWS) {
-                    let mut widest: f64 = 0.0;
-                    for (r, (color, name)) in column.iter().enumerate() {
-                        let middle = y + (r as f64 + 0.5) * row;
-                        sprites.push(fill(
-                            [left, middle - swatch / 2.0],
-                            [left + swatch, middle + swatch / 2.0],
-                            *color,
-                            0.0,
-                        ));
-                        sprites.extend(writer.text(&name.text, [left + swatch + 0.5 * em, middle], [0.0, 0.5]));
-                        widest = widest.max(name.size[0]);
+                // One row, or columns of up to `ROWS`. Each column is as wide as its widest entry.
+                for column in samples.chunks(if *row { 1 } else { ROWS }) {
+                    for (r, (color, sample, name)) in column.iter().enumerate() {
+                        let middle = y + (r as f64 + 0.5) * line;
+                        sprites.push(sample.sprite(left, middle, *color, em));
+                        let text = left + sample.length(em) + 0.5 * em;
+                        sprites.extend(writer.text(&name.text, [text, middle], [0.0, 0.5]));
                     }
-                    left += swatch + 0.5 * em + widest + ROW * em;
+                    left += column_width(column, em) + ROW * em;
                 }
             }
         }
@@ -623,17 +683,26 @@ impl Body {
     fn layout(&self, em: f64) -> ([f64; 2], [f64; 2]) {
         match self {
             Body::Bar { ticks, length, upright, .. } => bar_layout(ticks, *length, *upright, em),
-            Body::Swatches(swatches) => {
-                let rows = swatches.len().min(ROWS);
-                let width: f64 = swatches
-                    .chunks(ROWS)
-                    .map(|column| SWATCH * em + 0.5 * em + column.iter().map(|(_, n)| n.size[0]).fold(0.0, f64::max))
-                    .sum::<f64>()
-                    + ROW * em * swatches.len().div_ceil(ROWS).saturating_sub(1) as f64;
+            Body::Swatches { samples, row: true } => ([row_width(samples, em), ROW * em], [0.0, 0.0]),
+            Body::Swatches { samples, row: false } => {
+                let rows = samples.len().min(ROWS);
+                let width: f64 = samples.chunks(ROWS).map(|column| column_width(column, em)).sum::<f64>()
+                    + ROW * em * samples.len().div_ceil(ROWS).saturating_sub(1) as f64;
                 ([width, rows as f64 * ROW * em], [0.0, 0.0])
             }
         }
     }
+}
+
+/// The width of a column of samples and their names, for text `em` pixels high: its widest entry's.
+fn column_width(column: &[(Color, Sample, Text)], em: f64) -> f64 {
+    column.iter().map(|(_, sample, name)| sample.length(em) + 0.5 * em + name.size[0]).fold(0.0, f64::max)
+}
+
+/// The width of `samples` and their names set in one row, for text `em` pixels high.
+fn row_width(samples: &[(Color, Sample, Text)], em: f64) -> f64 {
+    let between = ROW * em * samples.len().saturating_sub(1) as f64;
+    samples.iter().map(|entry| column_width(std::slice::from_ref(entry), em)).sum::<f64>() + between
 }
 
 /// The width and height in CSS pixels of a bar `length` long with labels `ticks`, for text `em`
@@ -679,7 +748,7 @@ mod tests {
 
     /// A legend guide `size` big.
     fn legend(size: [f64; 2]) -> (Guide, [f64; 2]) {
-        (Guide::Legend(Legend { title: None, body: Body::Swatches(Vec::new()) }), size)
+        (Guide::Legend(Legend { title: None, body: Body::Swatches { samples: Vec::new(), row: false } }), size)
     }
 
     #[test]

@@ -147,6 +147,13 @@ impl View {
         self.wake();
     }
 
+    /// The box of positions that fits have framed, which the camera's limits stay near: its least
+    /// and greatest x, y, and elevation. A fit to everything replaces it, and a fit to part grows
+    /// it. `None` on a plot, and until a fit frames one.
+    pub fn bounds(&self) -> Option<([f64; 3], [f64; 3])> {
+        self.rig.bounds.map(|bounds| (bounds.min, bounds.max))
+    }
+
     /// Resolves once the last fit asked for applies, to the camera it framed, or to `None` when a
     /// camera move or another fit replaces it, or no fit is due.
     pub fn framed(&mut self) -> Pending<Option<Camera>> {
@@ -524,8 +531,9 @@ impl View {
 }
 
 impl super::marks::Shown {
-    /// Whether fits frame this mark's extents, which depends on its kind.
+    /// Whether fits frame this mark's extents: every kind's but edges', which lie between their
+    /// vertices unless they pass through bends.
     pub(crate) fn measured(&self) -> bool {
-        self.kind().bounds().is_some()
+        self.kind().bounds().is_some() || self.path() == wgsl::PATH_BENDS
     }
 }

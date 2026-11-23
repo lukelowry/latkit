@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::de::{self, Deserializer};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::form::{Presets, preset_schema, presets};
-use crate::Color;
+use crate::{Color, Length};
 
 /// Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped
 /// by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
@@ -105,6 +105,11 @@ pub struct EdgeTheme {
     pub color: Option<Color>,
     /// The edge width, in CSS pixels.
     pub width: f32,
+    /// The width of a band of the background's color beside each edge, in CSS pixels. It covers
+    /// the strokes drawn under it, so an edge that crosses another parts it, as one that ends on
+    /// it does. Where depth decides what covers what (a tilted view, the globe, or raised rows),
+    /// it covers only what lies farther. Defaults to 0, which draws none.
+    pub halo: f32,
     /// How edges joining the same two vertices run side by side. `None` draws them over one
     /// another.
     pub parallel: Option<Parallel>,
@@ -114,22 +119,23 @@ pub struct EdgeTheme {
 }
 
 /// How edges joining the same two vertices run side by side: each moved sideways from the path
-/// between its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.
+/// between its vertices, a step apart. A step is an edge's width plus `gap`.
 /// More than eight edges pack closer, within eight steps, and where neighbors would lie less than a
 /// pixel apart, only every second edge draws, or every fourth, and so on.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
 pub struct Parallel {
-    /// The space between neighboring edges, in CSS pixels. Defaults to 3.
-    pub gap: f32,
+    /// The space between neighboring edges: CSS pixels, the same at any zoom, or `{ units }` to
+    /// grow with the drawing. Defaults to 3 CSS pixels.
+    pub gap: Length,
     /// How they come together at the vertices they join. Defaults to `squeeze`.
     pub converge: Converge,
 }
 
 impl Default for Parallel {
     fn default() -> Parallel {
-        Parallel { gap: 3.0, converge: Converge::Squeeze }
+        Parallel { gap: Length::Px(3.0), converge: Converge::Squeeze }
     }
 }
 
@@ -157,6 +163,9 @@ pub struct LineTheme {
     pub color: Color,
     /// The line width, in CSS pixels.
     pub width: f32,
+    /// The width of a band of the background's color beside each line, in CSS pixels, as an
+    /// edge's [`halo`](EdgeTheme::halo). Defaults to 0, which draws none.
+    pub halo: f32,
 }
 
 /// Defaults for areas.
@@ -232,86 +241,6 @@ pub struct PlotTheme {
     pub playhead: Color,
 }
 
-/// A theme length: a plain number in CSS pixels, the same at any zoom, or `{ "units": n }` in
-/// position units (degrees on the earth), which scale with the zoom.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Length {
-    /// CSS pixels.
-    Px(f32),
-    /// Position units (degrees on the earth).
-    Units(f32),
-}
-
-impl Length {
-    /// The number, in the length's own unit.
-    pub(crate) fn value(self) -> f32 {
-        match self {
-            Length::Px(v) | Length::Units(v) => v,
-        }
-    }
-
-    /// Whether `other` is in the same unit.
-    pub(crate) fn alike(self, other: Length) -> bool {
-        std::mem::discriminant(&self) == std::mem::discriminant(&other)
-    }
-}
-
-/// A length's JSON form: a number, or `{ "units": n }` with no other keys.
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-enum LengthForm {
-    Px(f32),
-    Units(UnitsLength),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UnitsLength {
-    units: f32,
-}
-
-impl Serialize for Length {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match *self {
-            Length::Px(px) => LengthForm::Px(px),
-            Length::Units(units) => LengthForm::Units(UnitsLength { units }),
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Length {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Length, D::Error> {
-        LengthForm::deserialize(deserializer)
-            .map(|form| match form {
-                LengthForm::Px(px) => Length::Px(px),
-                LengthForm::Units(UnitsLength { units }) => Length::Units(units),
-            })
-            .map_err(|_| de::Error::custom("a length must be a number or { units: n }"))
-    }
-}
-
-impl JsonSchema for Length {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "Length".into()
-    }
-
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "description": "A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
-            "anyOf": [
-                { "type": "number" },
-                {
-                    "type": "object",
-                    "properties": { "units": { "type": "number", "description": "Position units (degrees on the earth), which grow as the view zooms in." } },
-                    "required": ["units"],
-                    "additionalProperties": false,
-                },
-            ],
-        })
-    }
-}
-
 impl Theme {
     /// Light marks on a dark background. The default theme.
     pub fn dark() -> Theme {
@@ -330,8 +259,8 @@ impl Theme {
                 halo: 2.0,
             },
             vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0, corner: 6.0 },
-            edge: EdgeTheme { color: None, width: 1.5, parallel: Some(Parallel::default()), arrow: 7.0 },
-            line: LineTheme { color: hex("#7cc4ff"), width: 1.5 },
+            edge: EdgeTheme { color: None, width: 1.5, halo: 0.0, parallel: Some(Parallel::default()), arrow: 7.0 },
+            line: LineTheme { color: hex("#7cc4ff"), width: 1.5, halo: 0.0 },
             area: AreaTheme { color: hex("#2b3d50") },
             focus: FocusTheme {
                 hover: Color::WHITE.alpha(0.6),

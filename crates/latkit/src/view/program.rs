@@ -9,6 +9,8 @@
 
 use super::{Event, View};
 use crate::gpu::Inner;
+use crate::scene::mark::Markers;
+use crate::{Gpu, Result};
 
 /// Where the next region starts, and whether every region must be laid out again.
 #[derive(Default)]
@@ -38,6 +40,20 @@ fn changed(was: &[u32], words: &[u32]) -> Vec<[usize; 2]> {
     spans
 }
 
+/// The palette of markers that draw pictures, an icon's images or a symbol's paths: how many, then
+/// each one's layer. `None` for other markers.
+fn pictures(gpu: &Gpu, inner: &mut Inner, markers: &Markers) -> Option<Result<Vec<u32>>> {
+    let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+    let layers = if !markers.icons.is_empty() {
+        inner.icons.of(device, queue, &markers.icons)
+    } else if !markers.symbols.is_empty() {
+        inner.icons.symbols(device, queue, &markers.symbols, markers.stroke.is_some())
+    } else {
+        return None;
+    };
+    Some(layers.map(|layers| std::iter::once(layers.len() as u32).chain(layers).collect()))
+}
+
 impl View {
     /// Writes every changed mark's words into its region of the program texture. When the texture
     /// grows, `encoder` copies the old contents over, and later writes are ordered after the copy.
@@ -48,11 +64,10 @@ impl View {
         for shown in self.marks.iter_mut().filter(|m| !m.packed) {
             let Some(compiled) = &mut shown.compiled else { continue };
             let markers = &mut compiled.drawing.markers;
-            if !markers.icons.is_empty() {
-                match inner.icons.of(&gpu.0.device, &gpu.0.queue, &markers.icons) {
-                    Ok(layers) => markers.palette = std::iter::once(layers.len() as u32).chain(layers).collect(),
-                    Err(error) => self.events.tell(Event::Error(error)),
-                }
+            match pictures(&gpu, inner, markers) {
+                Some(Ok(palette)) => markers.palette = palette,
+                Some(Err(error)) => self.events.tell(Event::Error(error)),
+                None => {}
             }
             for (at, colormap) in &compiled.program.colormaps {
                 let colormap = &colormap.legible(background, contrast);

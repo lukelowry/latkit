@@ -10,6 +10,7 @@ latkit's [bytes](guide.md#bytes), or GeoJSON named with `NAME=`. The
 cargo install latkit-cli   # or, from the repository: cargo build --locked -p latkit-cli --profile cli
 latkit validate scene.json -d grid.json        # check every input without a GPU
 latkit render scene.json -d grid.json -o grid.png --size 2400x1350 --scale 2
+latkit render scene.json -d grid.json -o figure.png --size 2400x   # as tall as what the fit frames
 latkit render scene.json -d grid.json --camera '{"center":[-97,31],"zoom":5,"pitch":0,"bearing":0}' -o tx.png
 latkit render map.json plot.json -d grid.json -d states=usa.geojson \
   --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4

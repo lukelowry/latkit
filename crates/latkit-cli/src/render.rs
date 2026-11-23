@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use latkit::host::Native;
-use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Name, Patch, Scene, Sink, Tiles, View};
+use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Name, Patch, Projection, Scene, Sink, Space, Tiles, View};
 
 use crate::args::{Format, Job, Source};
 use crate::inputs::{self, Each, Frame, Frames, Next, blame};
@@ -89,9 +89,16 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
     let gpu = block(job.deadline, Gpu::new())?;
     gpu.set_host(inputs.host.clone());
     let mut views = inputs.views(&gpu, job)?;
+    let size = if let [Some(width), Some(height)] = job.size {
+        [width, height]
+    } else {
+        let size = sized(job, &inputs, &mut views[0])?;
+        job.shot(size).check(job.format().pixels())?;
+        size
+    };
     let output = job.output.as_deref().expect("render requires --output");
     let Some(playback) = playback(job, &inputs)? else {
-        let mut shot = job.shot();
+        let mut shot = job.shot(size);
         if let Some(elapsed) = job.elapsed {
             shot = shot.elapsed(elapsed);
         }
@@ -106,7 +113,7 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
         return Ok(());
     };
     let host = inputs.host.clone();
-    let sequence = Sequence { job, playback, gpu: &gpu, views: &mut views, inputs: &inputs, report };
+    let sequence = Sequence { job, size, playback, gpu: &gpu, views: &mut views, inputs: &inputs, report };
     let format = job.format();
     if let Some(image) = format.image(job.quality) {
         let images = if job.sequence() {
@@ -128,6 +135,52 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
             sequence.run(mp4)
         }
     }
+}
+
+/// CSS pixels across the picture that measures what a fit frames, for a size with one side.
+const MEASURED: f64 = 512.0;
+
+/// The picture's size where `--size` gives one side: the other follows the box `view`'s fit frames,
+/// with the same room around it as the fit keeps. One small picture measures that box, and the view
+/// then fits again, into the size returned.
+fn sized(job: &Job, inputs: &Inputs, view: &mut View) -> Result<[u32; 2], Failure> {
+    let unframed = || Error::invalid("a size with one side needs rows to frame, on a plane or a flat map").at("--size");
+    let scale = f64::from(job.scale);
+    let measure = [(MEASURED * scale).round().max(1.0) as u32; 2];
+    block(job.deadline, job.shot(measure).image(&mut [&mut *view]))?;
+    let ((min, max), Camera::Map { zoom, .. }) = (view.bounds().ok_or_else(unframed)?, *view.camera()) else {
+        return Err(unframed().into());
+    };
+    // What the fit framed, in CSS pixels at the zoom it chose.
+    let framed = match inputs.scenes[0].1.space() {
+        Space::Plane(_) => [max[0] - min[0], max[1] - min[1]].map(|units| units * zoom.exp2()),
+        Space::Earth(earth) if earth.projection == Projection::Mercator => {
+            let px = 256.0 * zoom.exp2() / std::f64::consts::TAU;
+            let y = |latitude: f64| (std::f64::consts::FRAC_PI_4 + latitude.to_radians() / 2.0).tan().ln();
+            [(max[0] - min[0]).to_radians() * px, (y(max[1]) - y(min[1])) * px]
+        }
+        _ => return Err(unframed().into()),
+    };
+    if !(framed[0] > 0.0 && framed[1] > 0.0) {
+        return Err(unframed().into());
+    }
+    // The room the fit kept around the box, and what the insets and guides take from the picture.
+    let [_, _, width, height] = view.area().map(f64::from);
+    let room = ((width - framed[0]) / 2.0).min((height - framed[1]) / 2.0).max(0.0);
+    let taken = [MEASURED - width, MEASURED - height];
+    let size = match job.size {
+        [Some(width), _] => {
+            let grown = (f64::from(width) / scale - taken[0] - 2.0 * room).max(1.0) / framed[0];
+            [width, ((framed[1] * grown + 2.0 * room + taken[1]) * scale).ceil() as u32]
+        }
+        [None, Some(height)] => {
+            let grown = (f64::from(height) / scale - taken[1] - 2.0 * room).max(1.0) / framed[1];
+            [((framed[0] * grown + 2.0 * room + taken[0]) * scale).ceil() as u32, height]
+        }
+        [None, None] => unreachable!("the size has a side"),
+    };
+    view.fit(inputs.fit.clone());
+    Ok(size.map(|side| side.max(1)))
 }
 
 /// What a render plays: the frames file's lines, in order, and with a span, how its output frames
@@ -242,6 +295,8 @@ fn shown<'a>(
 /// A video of what plays, drawn into a sink.
 struct Sequence<'a> {
     job: &'a Job,
+    /// The picture's size in pixels.
+    size: [u32; 2],
     playback: Playback,
     gpu: &'a Gpu,
     views: &'a mut Vec<View>,
@@ -251,10 +306,10 @@ struct Sequence<'a> {
 
 impl Sequence<'_> {
     fn run<S: Sink + Commit>(self, sink: S) -> Result<(), Failure> {
-        let Sequence { job, playback: Playback { lines, span, file }, gpu, views, inputs, report } = self;
+        let Sequence { job, size, playback: Playback { lines, span, file }, gpu, views, inputs, report } = self;
         // An output frame's own errors name the frames file, or `--span` in a span.
         let source = if span.is_some() { Path::new("--span") } else { file.as_path() };
-        let mut video = job.shot().video(gpu, job.fps, sink)?;
+        let mut video = job.shot(size).video(gpu, job.fps, sink)?;
         for next in shown(lines, span.as_ref(), job.fps) {
             let Shown { lines, at } = next?;
             for (index, mut frame, patches) in lines {

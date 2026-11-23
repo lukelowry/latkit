@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::{Color, Colormap, ColormapKind, Expr, field, units};
+use crate::{Category, Color, Colormap, ColormapKind, Expr, Length, field, units};
 
 fn scene(json: &str) -> Scene {
     serde_json::from_str(json).expect("a scene")
@@ -255,7 +255,7 @@ fn presets_equal_their_values() {
     assert_eq!(label, Label::new(field("name")).size(10.0));
     let grid = r#"{ "plane": { "grid": { "dots": { "step": 10 } } } }"#;
     let space = serde_json::from_str::<Space>(grid).expect("a space");
-    assert_eq!(space, Space::Plane(Plane { grid: Grid::dots().step(10.0) }));
+    assert_eq!(space, Space::Plane(Plane { grid: Grid::dots().step(10.0), ..Plane::default() }));
     assert_eq!(serde_json::from_str::<Space>(r#""earth""#).expect("a space"), Space::Earth(Earth::default()));
 }
 
@@ -268,4 +268,48 @@ fn unknown_options_are_left_out_and_a_mark_has_one_kind() {
     assert_eq!(scene.marks[0], crate::Mark::from(Vertices::of("a", "b")));
     let two = r#"{"space": "plane", "marks": [{"vertices": ["a", "b"], "edges": ["a", "c"]}]}"#;
     assert!(serde_json::from_str::<Scene>(two).is_err(), "a mark of two kinds");
+}
+
+#[test]
+fn rows_drawn_as_objects_read_as_built() {
+    let json = r#"{
+        "space": { "plane": { "y": "down" } },
+        "theme": { "edge": { "halo": 3, "parallel": { "gap": { "units": 4 } } } },
+        "marks": [
+            { "edges": ["g", "Branch"], "ends": ["from", "to"], "meet": "nearest",
+              "width": { "match": "$kv", "cases": [[69, 1.5], ["high", 2.5]], "otherwise": 1 } },
+            { "vertices": ["g", "Bus"], "bearing": "$turn",
+              "marker": { "symbol": { "paths": ["M0 0V-1"], "stroke": { "units": 2 } } },
+              "color": { "value": "$kind",
+                         "colormap": { "kind": "categorical", "colors": ["red", "blue"], "values": ["gas", 2] } },
+              "label": { "text": "$name", "place": "$side", "offset": [0, { "units": 1 }], "size": { "units": 12 } } },
+            { "vertices": ["g", "Note"], "marker": "none", "label": { "text": "$name", "place": "bottom-left" } }
+        ]
+    }"#;
+    let dark = Theme::dark();
+    let parallel = Parallel { gap: Length::Units(4.0), ..Parallel::default() };
+    let kinds = Colormap::new(ColormapKind::Categorical, [Color::css("red").unwrap(), Color::css("blue").unwrap()])
+        .expect("colors")
+        .values([Category::from("gas"), Category::from(2)]);
+    let width = field("kv").matched([(Category::from(69), 1.5), (Category::from("high"), 2.5)], 1.0);
+    let built = Scene::new(Plane { y: Vertical::Down, ..Plane::default() })
+        .theme(Theme { edge: EdgeTheme { halo: 3.0, parallel: Some(parallel), ..dark.edge }, ..dark })
+        .draw(Edges::of("g", "Branch").ends("from", "to").meet(Meet::Nearest).width(width))
+        .draw(
+            Vertices::of("g", "Bus")
+                .bearing(field("turn"))
+                .marker(Marker::symbol(["M0 0V-1"], 0.0).stroke(Length::Units(2.0)))
+                .color(field("kind").colormap(kinds))
+                .label(
+                    Label::new(field("name"))
+                        .place_by("side")
+                        .offset(0.0, Length::Units(1.0))
+                        .size(Length::Units(12.0)),
+                ),
+        )
+        .draw(Vertices::of("g", "Note").marker(Marker::None).label(Label::new(field("name")).place(Place::BottomLeft)));
+    assert_eq!(scene(json), built);
+    let bad = |mark: &str| serde_json::from_str::<Mark>(mark).is_err();
+    assert!(bad(r#"{ "vertices": ["g", "t"], "label": { "text": "$n", "place": "middle" } }"#), "a place is named");
+    assert!(bad(r#"{ "edges": ["g", "t"], "meet": "corner" }"#));
 }

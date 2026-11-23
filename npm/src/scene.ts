@@ -192,6 +192,22 @@ export class Expr {
   }
 
   /**
+   * The result of the first case this value equals, else `otherwise`, which defaults to a missing
+   * value: `field('kv').match([[69, 1.9], [138, 2.6]])`. A number compares as `eq` does, and a text
+   * as `is` does.
+   */
+  match(
+    cases: readonly (readonly [value: number | string, result: ExprInput])[],
+    otherwise: ExprInput = null,
+  ): Expr {
+    return new Expr({
+      match: this.node,
+      cases: cases.map(([value, result]): [number | string, ExprNode] => [value, nodeOf(result)]),
+      otherwise: nodeOf(otherwise),
+    });
+  }
+
+  /**
    * Whether a text field contains `text` (plain text), ignoring case. In a mark, the field must be
    * in the mark's own table.
    */
@@ -242,6 +258,10 @@ function mapFields(input: ExprInput, f: (field: FieldNode) => FieldNode): ExprNo
   if ('when' in node) {
     const cases = node.when.map(([c, v]): [ExprNode, ExprNode] => [map(c), map(v)]);
     return { when: cases, otherwise: map(node.otherwise) };
+  }
+  if ('match' in node) {
+    const cases = node.cases.map(([v, r]): [number | string, ExprNode] => [v, map(r)]);
+    return { match: map(node.match), cases, otherwise: map(node.otherwise ?? null) };
   }
   if ('value' in node) return { ...node, value: map(node.value) };
   // A call: its one key names the operation. `is` and `contains` take a plain text after the value.
@@ -355,6 +375,22 @@ export interface RgbaImage {
   height: number;
   /** 4 bytes per pixel, red, green, blue, and alpha, row after row. */
   data: Uint8ClampedArray;
+}
+
+/**
+ * A symbol marker: each row shows `paths[index]`, SVG path data drawn in the row's color. A path's
+ * coordinates run from -1 to 1 across the square of the marker's smaller side, x right and y down.
+ */
+export function symbol(
+  paths: string | readonly string[],
+  options: {
+    /** Each row's path index, from 0. Defaults to 0. */
+    index?: ExprInput;
+    /** The width the path is stroked at, in CSS pixels or `units(n)`. Without it, the path is filled. */
+    stroke?: number | { units: number };
+  } = {},
+): Marker {
+  return { symbol: { paths: typeof paths === 'string' ? [paths] : [...paths], ...options } };
 }
 
 /**

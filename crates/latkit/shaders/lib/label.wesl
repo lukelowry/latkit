@@ -7,31 +7,71 @@
 import package::lib::types::{
     NONE, POINTS, MARKER_BLOCK, SIZED, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, LABEL_CELL, LABEL_MARGIN, LABEL_GUESS, NUMBER_CHARS, CHAR_POINT, CHAR_MINUS, CHAR_EXPONENT, CHAR_UNIT,
     FORMAT_AUTO, FORMAT_SCIENTIFIC, FORMAT_ENGINEERING, NUMBER_TRIM, NUMBER_UNIT,
+    LABEL_CODE, LABEL_PLACE, LABEL_PLACED_BY_ROW, LABEL_PLACE_SHIFT,
 };
-import package::lib::bind::{eye, mark};
+import package::lib::bind::{eye, mark, word};
+import package::lib::state::extra_at;
 import package::lib::mark::PRIMITIVE;
 import package::lib::points::point;
 import package::lib::path::PATH;
 import package::lib::center::{row_center, point_center};
 import package::lib::drawn::held_row;
 
-// A label's anchor point in CSS pixels, its alignment there (0 left or top, 0.5 centered), whether
-// it lies inside its row's marker, and whether its row shows. Before `fit` places a point's label,
-// `at` is the marker's center and `beside` the point beside the marker. `half` is the half size of
-// a marker that holds labels, negative for any other.
+// Whether the mark's labels take a place or an offset, fixed when the pipeline is created. Only the
+// pipelines of such marks hold the code, so other labels compile and are placed as if there were
+// none.
+override LABEL_PLACED: bool = false;
+
+// The place of held row `row`'s label, from 1 to 8 in `Place`'s order, or 0 for none: the mark's,
+// or where a field names each row's, the row's own. It reads a label word either way, so no branch
+// guards the read.
+fn label_place(row: u32) -> u32 {
+    let by_row = (mark.flags & LABEL_PLACED_BY_ROW) != 0u;
+    let own = bitcast<f32>(word(extra_at(row, mark.label + select(LABEL_CODE, LABEL_PLACE, by_row))));
+    return select((mark.flags >> LABEL_PLACE_SHIFT) & 15u, u32(clamp(own, 0.0, 8.0)), by_row);
+}
+
+// The side place `code` lies on: x right and y down, each -1, 0, or 1. Both are 0 for no place.
+// The codes run top, right, bottom, left, then the corners: top left, top right, bottom left, and
+// bottom right.
+fn label_side(code: u32) -> vec2f {
+    let right = (code == 2u) | (code == 6u) | (code == 8u);
+    let left = (code == 4u) | (code == 5u) | (code == 7u);
+    let top = (code == 1u) | (code == 5u) | (code == 6u);
+    let bottom = (code == 3u) | (code == 7u) | (code == 8u);
+    return vec2f(f32(right) - f32(left), f32(bottom) - f32(top));
+}
+
+// A label's anchor point in CSS pixels, its alignment there (0 left or top, 0.5 centered, 1 right
+// or bottom), whether it lies inside its row's marker, and whether its row shows. Before `fit`
+// places a point's label, `at` is the marker's center and `beside` the point beside the marker, on
+// the side `side` names: that of its place, or with no place (`placed`), the right. `half` is the
+// half size of a marker that holds labels, negative for any other.
 struct Anchor {
     at: vec2f,
     align: vec2f,
     beside: vec2f,
     half: vec2f,
+    side: vec2f,
+    placed: bool,
     inside: bool,
     shown: bool,
 }
 
 // The label anchor of drawn row `item`: centered on the row's center, and beside a trace's last
-// sample. A point's label goes inside or beside its marker once `fit` knows the text's size.
+// sample, or with a place, beside the center on that side. A point's label goes inside or beside
+// its marker once `fit` knows the text's size.
 fn anchor(item: u32) -> Anchor {
-    var a = Anchor(vec2f(0.0), vec2f(0.5), vec2f(0.0), vec2f(-1.0), false, false);
+    var a = Anchor(vec2f(0.0), vec2f(0.5), vec2f(0.0), vec2f(-1.0), vec2f(1.0, 0.0), false, false, false);
+    let text = mark.label_size;
+    // How far the label moves from its place on screen, right then down.
+    var offset = vec2f(0.0);
+    if LABEL_PLACED {
+        let side = label_side(label_place(held_row(item)));
+        a.placed = any(side != vec2f(0.0));
+        a.side = select(a.side, side, a.placed);
+        offset = vec2f(mark.label_right, mark.label_down);
+    }
     if PRIMITIVE != POINTS {
         let c = row_center(item);
         a.at = c.at;
@@ -40,30 +80,45 @@ fn anchor(item: u32) -> Anchor {
             a.at.x += 6.0;
             a.align = vec2f(0.0, 0.5);
         }
+        if LABEL_PLACED {
+            // Beside a stroke or an area's anchor, the text's near edge or corner sits half its
+            // size from the center.
+            a.at += offset + select(vec2f(0.0), a.side * 0.5 * text, a.placed);
+            a.align = select(a.align, 0.5 - 0.5 * a.side, a.placed);
+        }
         return a;
     }
     let p = point(held_row(item), false);
     let c = point_center(p);
-    let text = mark.label_size;
     let holds = (mark.marker == MARKER_BLOCK) | ((mark.flags & SIZED) != 0u);
     a.at = c.at;
     a.shown = c.shown;
     a.beside = c.at + vec2f(p.half.x + 0.4 * text, 0.0);
+    if LABEL_PLACED {
+        a.at += offset;
+        a.beside = a.at + a.side * (p.half + 0.4 * text);
+    }
     a.half = select(vec2f(-1.0), p.half, holds);
     return a;
 }
 
 // Anchor `a` placed for text of size `extent`. A block, or a marker with a width and height, holds
-// the text inside where it fits with half its size to spare across. Other text shows beside a
-// point's marker.
+// the text inside where it fits with half its size to spare across, unless the label has a place.
+// Other text shows beside a point's marker: its near edge or corner sits at the anchor.
 fn fit(a: Anchor, extent: vec2f) -> Anchor {
     if PRIMITIVE != POINTS {
         return a;
     }
     var f = a;
     f.inside = all(extent <= vec2f(2.0 * a.half.x - mark.label_size, 2.0 * a.half.y));
+    if LABEL_PLACED {
+        f.inside = f.inside & !a.placed;
+    }
     f.at = select(a.beside, a.at, f.inside);
     f.align = select(vec2f(0.0, 0.5), vec2f(0.5), f.inside);
+    if LABEL_PLACED {
+        f.align = select(0.5 - 0.5 * a.side, vec2f(0.5), f.inside);
+    }
     return f;
 }
 

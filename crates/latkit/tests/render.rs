@@ -1758,3 +1758,42 @@ fn nets_join_their_members_as_stars() {
     assert!(red(c, c - 15), "the spoke up to the member at the top (y up)");
     assert!(!red(c + 20, c - 20), "nothing where no spoke runs");
 }
+
+#[test]
+fn a_categorical_map_with_values_colors_each_row_by_the_value_it_equals() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    let rows = Table::new("V", Ids::count(3)).field("x", vec![-30.0, 0.0, 30.0]).field("y", vec![0.0; 3]);
+    data.apply(rows.field("kind", vec!["gas", "wind", "coal"])).expect("valid");
+    let (red, green, blue) = (Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 1.0, 0.0), Color::rgb(0.0, 0.0, 1.0));
+    let kinds = Colormap::new(latkit::ColormapKind::Categorical, [red, green]).expect("colors").values(["gas", "wind"]);
+    let scene = Scene::new(plane())
+        .theme(Theme { missing: blue, ..plain_theme() })
+        .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(8.0).color(field("kind").colormap(kinds)));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    let colors = [-30_i32, 0, 30].map(|x| at(&pixels, (c as i32 + x) as u32, c));
+    assert!(close(colors[0], [255, 0, 0, 255]) && close(colors[1], [0, 255, 0, 255]), "each value's color: {colors:?}");
+    assert!(close(colors[2], [0, 0, 255, 255]), "a value among none takes the missing color: {colors:?}");
+}
+
+#[test]
+fn a_plane_whose_y_grows_down_draws_greater_y_lower() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    data.apply(Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![30.0])).expect("valid");
+    let down = latkit::Plane { y: latkit::Vertical::Down, ..plane() };
+    let scene = Scene::new(down)
+        .theme(plain_theme())
+        .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(6.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    assert!(close(at(&pixels, c, c + 30), [255; 4]), "below the middle: {:?}", at(&pixels, c, c + 30));
+    assert!(close(at(&pixels, c, c - 30), [0, 0, 0, 255]), "and not above it");
+}

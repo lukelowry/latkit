@@ -134,9 +134,22 @@ pub(crate) struct Variant {
     projection: Projection,
     painted: bool,
     marker: u32,
+    options: Options,
     reads: Reads,
     target: Option<(wgpu::TextureFormat, u32)>,
     draw: Draw,
+}
+
+/// What a mark's shaders hold only when the mark uses it: edges that end where their paths meet
+/// their vertices' markers (`MEET`), markers turned by a bearing (`TURNED`), labels with a place or
+/// an offset (`LABEL_PLACED`), and strokes with a halo (`HALO`). A pipeline without one compiles
+/// none of its code, so a mark that uses none draws with the shaders it would without them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub(crate) struct Options {
+    pub(crate) meet: bool,
+    pub(crate) turned: bool,
+    pub(crate) placed: bool,
+    pub(crate) halo: bool,
 }
 
 /// What a mark's channels read besides its own table's static fields: other tables' fields by row
@@ -177,7 +190,7 @@ impl Variant {
         if !self.reads_constant("MARKER") {
             self.marker = 0;
         }
-        self
+        self.options(self.options)
     }
     /// An integer raster operation. Its vertex entry covers the target; `entry` computes one
     /// output texel. It has no depth, blending, storage bindings, or compute dispatch.
@@ -195,6 +208,7 @@ impl Variant {
             projection: if matches!(shader, Shader::State) { Projection::Dynamic } else { Projection::Planar },
             painted: true,
             marker: 0,
+            options: Options { meet: false, turned: false, placed: false, halo: false },
             reads: Reads::ALL,
             target: Some((format, 1)),
             draw: Draw::Rows,
@@ -211,6 +225,7 @@ impl Variant {
             projection: Projection::Planar,
             painted: true,
             marker: 0,
+            options: Options { meet: false, turned: false, placed: false, halo: false },
             reads: Reads::ALL,
             target: Some((format, samples)),
             draw: Draw::Rows,
@@ -264,11 +279,29 @@ impl Variant {
         self
     }
 
-    /// Compile only the marker family the scene draws. Blocks use the shape program.
+    /// Compile only the marker family the scene draws. Blocks use the shape program, and so does a
+    /// marker that draws nothing, which no draw runs for.
     pub(crate) fn marker(mut self, marker: u32) -> Self {
+        use super::shaders::{MARKER_BLOCK, MARKER_NONE, MARKER_SHAPE};
         if self.reads_constant("MARKER") {
-            self.marker = if marker == super::shaders::MARKER_BLOCK { super::shaders::MARKER_SHAPE } else { marker };
+            self.marker = if marker == MARKER_BLOCK || marker == MARKER_NONE { MARKER_SHAPE } else { marker };
         }
+        self
+    }
+
+    /// This variant with those of a mark's `options` that its shader holds code for. Only an edge's
+    /// ends meet markers, and a draw reads where they lie from its records, so it takes its path
+    /// first.
+    #[must_use]
+    pub(crate) fn options(mut self, options: Options) -> Self {
+        let edges = matches!(self.path, PATH_ENDS | super::shaders::PATH_BENDS);
+        let placing = edges && self.entry != "vertex";
+        self.options = Options {
+            meet: options.meet && placing && self.reads_constant("MEET"),
+            turned: options.turned && self.reads_constant("TURNED"),
+            placed: options.placed && self.reads_constant("LABEL_PLACED"),
+            halo: options.halo && self.reads_constant("HALO"),
+        };
         self
     }
 
@@ -302,6 +335,7 @@ impl Variant {
             projection: self.projection,
             painted: self.painted,
             marker: self.marker,
+            options: self.options,
             reads: self.reads,
         }
     }
@@ -322,8 +356,13 @@ impl Variant {
     fn label(&self) -> String {
         let Reads { joined, timed, viewed } = self.reads;
         let target = self.target.map(|(format, samples)| format!(" {format:?}x{samples}")).unwrap_or_default();
+        let Options { meet, turned, placed, halo } = self.options;
+        let options: String = [(meet, " MEET"), (turned, " TURNED"), (placed, " LABEL_PLACED"), (halo, " HALO")]
+            .into_iter()
+            .filter_map(|(on, name)| on.then_some(name))
+            .collect();
         format!(
-            "latkit {:?} {} PRIMITIVE={} PATH={} JOINED={} TIMED={} VIEWED={} PROJECTION={:?} PAINTED={} MARKER={} DRAW={:?}{target}",
+            "latkit {:?} {} PRIMITIVE={} PATH={} JOINED={} TIMED={} VIEWED={} PROJECTION={:?} PAINTED={} MARKER={} DRAW={:?}{options}{target}",
             self.shader,
             self.entry,
             self.primitive,
@@ -350,6 +389,7 @@ struct Specialized {
     projection: Projection,
     painted: bool,
     marker: u32,
+    options: Options,
     reads: Reads,
 }
 
@@ -365,6 +405,10 @@ impl Specialized {
             "PROJECTION" => self.projection.code(),
             "PAINTED" => self.painted.into(),
             "MARKER" => self.marker,
+            "MEET" => self.options.meet.into(),
+            "TURNED" => self.options.turned.into(),
+            "LABEL_PLACED" => self.options.placed.into(),
+            "HALO" => self.options.halo.into(),
             other => unreachable!("no value for the constant {other}"),
         }
     }

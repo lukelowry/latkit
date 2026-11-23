@@ -198,7 +198,12 @@ const OVERRIDES: &[(&str, &[&str])] = &[
     ("VIEWED", &["false", "true"]),
     ("PROJECTION", &["PROJECTION_PLANAR", "PROJECTION_MERCATOR", "PROJECTION_GLOBE", "PROJECTION_DYNAMIC"]),
     ("PAINTED", &["false", "true"]),
-    ("MARKER", &["MARKER_SHAPE", "MARKER_GAUGE", "MARKER_PIE", "MARKER_ICON"]),
+    ("MARKER", &["MARKER_SHAPE", "MARKER_GAUGE", "MARKER_PIE", "MARKER_ICON", "MARKER_SYMBOL"]),
+    // Options a mark's shaders hold only when the mark uses them.
+    ("MEET", &["false", "true"]),
+    ("TURNED", &["false", "true"]),
+    ("LABEL_PLACED", &["false", "true"]),
+    ("HALO", &["false", "true"]),
 ];
 
 pub(crate) fn generate() {
@@ -576,10 +581,9 @@ fn declared(glsl: &str, written: &[&str]) -> String {
 }
 
 /// Deduplicated text for the browser: each translated entry's GLSL, by key. Texts are split into
-/// chunks at blank lines and at each `struct` and `const` declaration, and each distinct chunk is
-/// stored once. Chunks are packed in their first order into blocks of about [`BLOCK`] bytes, each
-/// compressed with deflate on its own, so a page inflates only the blocks the shaders it compiles
-/// use.
+/// chunks (see [`crate::glsl::chunks`]), and each distinct chunk is stored once. Chunks are packed in their first
+/// order into blocks of about [`BLOCK`] bytes, each compressed with deflate on its own, so a page
+/// inflates only the blocks the shaders it compiles use.
 ///
 /// `shaders.bin`, all little-endian: the index's compressed and inflated sizes and its deflate
 /// stream, then the block count, and each block's compressed and inflated sizes followed by its
@@ -597,25 +601,11 @@ const BLOCK: usize = 32 << 10;
 
 impl Store {
     fn add(&mut self, key: &str, text: &str) {
-        let mut chunks = Vec::new();
-        let mut chunk = String::new();
-        let mut blank = false;
-        for line in text.split_inclusive('\n') {
-            let starts = blank || line.starts_with("struct ") || line.starts_with("const ");
-            if starts && !chunk.is_empty() {
-                chunks.push(std::mem::take(&mut chunk));
-            }
-            blank = line.trim().is_empty();
-            chunk.push_str(line);
-        }
-        if !chunk.is_empty() {
-            chunks.push(chunk);
-        }
-        let ids = chunks
+        let ids = crate::glsl::chunks(text)
             .into_iter()
             .map(|chunk| {
                 let next = self.chunks.len() as u32;
-                *self.index.entry(chunk).or_insert_with_key(|chunk| {
+                *self.index.entry(chunk.to_owned()).or_insert_with_key(|chunk| {
                     self.chunks.push(chunk.clone());
                     next
                 })
@@ -804,6 +794,16 @@ fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
         return false;
     }
     let path = value("PATH");
+    // Only an edge's ends meet its vertices' markers, and a draw reads where they lie from its
+    // records.
+    if value("MEET") == Some(1) {
+        let edges =
+            path.is_some_and(|p| p == type_constant(types, "PATH_ENDS") || p == type_constant(types, "PATH_BENDS"));
+        let strokes = value("PRIMITIVE").is_none_or(|p| p == type_constant(types, "STROKES"));
+        if !edges || !strokes || module.starts_with("draw::") {
+            return false;
+        }
+    }
     // A trace's draws place its segments themselves, so no screen pass writes their records.
     if module == "raster::screen" && path == Some(type_constant(types, "PATH_TRACE")) {
         return false;

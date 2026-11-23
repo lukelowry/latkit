@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::{Areas, Edges, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Error, Expr, Format, Name, Result, Size, Space};
+use crate::{Error, Expr, Format, Length, Name, Place, Result, Size, Space};
 
 /// One table a scene draws. In JSON, the mark's kind is the key that holds its dataset and table,
 /// next to its options: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
@@ -252,7 +252,8 @@ impl MarkKind {
     }
 
     /// The bounds shader entry point that measures its extents for a fit. `None` for edges,
-    /// since their rows lie between their vertices.
+    /// since their rows lie between their vertices. Edges through bends measure as strokes (see
+    /// `MarkVariants::bounds`).
     pub(crate) fn bounds(self) -> Option<&'static str> {
         match self {
             MarkKind::Vertices => Some("points"),
@@ -319,11 +320,14 @@ pub(crate) struct Markers {
     /// The number of inputs, and the extra word holding the first.
     pub(crate) inputs: u32,
     pub(crate) input: u32,
-    /// A pie's packed slice colors. For an icon marker, its image layers, filled in when the icons
-    /// are packed.
+    /// A pie's packed slice colors. For an icon or symbol marker, its pictures' layers, filled in
+    /// when they are packed.
     pub(crate) palette: Vec<u32>,
     /// An icon marker's images.
     pub(crate) icons: Vec<crate::Image>,
+    /// A symbol marker's paths, and the width they are stroked at, or `None` for filled.
+    pub(crate) symbols: Vec<Arc<str>>,
+    pub(crate) stroke: Option<Length>,
 }
 
 /// How a compiled mark's shade reads its rows: how many inputs, the extra word holding the first,
@@ -337,12 +341,15 @@ pub(crate) struct Shading {
 }
 
 /// How a compiled mark's labels draw: the extra word where the label words start, the program
-/// column of the text, and the font size and wrap width in CSS pixels.
+/// column of the text, the font size and the wrap width in the size's unit, and how far the text
+/// moves from its place, right then down. Each frame gives its shaders the size and the offset in
+/// CSS pixels at its zoom.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Labeling {
     pub(crate) extra: u32,
     pub(crate) column: u32,
-    pub(crate) size: f32,
+    pub(crate) size: Length,
+    pub(crate) offset: [Length; 2],
     pub(crate) max_width: Option<f32>,
     /// The label's font, or the theme's when the label sets none.
     pub(crate) font: std::sync::Arc<str>,
@@ -444,7 +451,8 @@ impl Mark {
     /// paths such as coasts, borders, and roads) does not, so hovering never probes it.
     pub(crate) fn picks(&self) -> bool {
         self.style().interaction.pick.unwrap_or(match self {
-            Mark::Vertices(_) | Mark::Edges(_) => true,
+            Mark::Vertices(vertices) => vertices.marker != super::Marker::None,
+            Mark::Edges(_) => true,
             Mark::Lines(lines) => lines.trace.is_some(),
             Mark::Areas(_) => false,
         })
@@ -486,6 +494,21 @@ impl Mark {
         self.dashes() || self.flows()
     }
 
+    /// Whether its rows end where their paths meet their vertices' markers.
+    pub(crate) fn meets(&self) -> bool {
+        matches!(self, Mark::Edges(edges) if edges.meet == super::Meet::Nearest)
+    }
+
+    /// Whether its markers turn by a bearing.
+    pub(crate) fn turns(&self) -> bool {
+        matches!(self, Mark::Vertices(vertices) if vertices.bearing.is_some())
+    }
+
+    /// Whether its labels take a place or an offset.
+    pub(crate) fn places_labels(&self) -> bool {
+        self.style().label.as_ref().is_some_and(|label| label.place.is_some() || label.offset.is_some())
+    }
+
     /// The path a stroke mark's rows follow, or where a triangle's corners come from: one of the
     /// `PATH_` codes its pipelines are built for. A net follows the star the view derives from
     /// its members. On a plot a line traces its samples, and elsewhere it follows its path field.
@@ -522,7 +545,7 @@ impl Mark {
         if let Mark::Vertices(v) = self {
             v.position.iter().flatten().chain([&v.elevation]).for_each(&mut *f);
             v.radius.iter().chain(v.size.iter().flatten()).map(|size| &size.expr).for_each(&mut *f);
-            v.ring.iter().chain(v.marker.inputs()).for_each(&mut *f);
+            v.ring.iter().chain(&v.bearing).chain(v.marker.inputs()).for_each(&mut *f);
         }
     }
 
@@ -643,12 +666,29 @@ fn compile_label(label: &Label, c: &mut Compiler<'_>, context: Context<'_>, draw
         Some(expr) => c.channel("color", expr, color)?,
         None => c.theme("color", wgsl::THEME_TEXT, color)?,
     }
-    drawing.extras += wgsl::LABEL_WORDS;
-    drawing.flags |= wgsl::LABELED;
+    let mut words = wgsl::LABEL_WORDS;
+    let mut flags = wgsl::LABELED;
+    // One place for every row goes in the mark's flags, as a code from 1. A field of names
+    // compiles to the conditional `is` already gives, as a third label word.
+    match &label.place {
+        None => {}
+        Some(super::label::Placed::At(place)) => flags |= place.code() << wgsl::LABEL_PLACE_SHIFT,
+        Some(super::label::Placed::Field(name)) => {
+            let code = Place::ALL.into_iter().fold(Expr::from(0.0), |rest, place| {
+                crate::when(crate::field(name.clone()).is(place.name())).then(f64::from(place.code())).otherwise(rest)
+            });
+            c.channel("place", &code, Store::Number { word: word(wgsl::LABEL_PLACE), fallback: None })?;
+            flags |= wgsl::LABEL_PLACED_BY_ROW;
+            words += 1;
+        }
+    }
+    drawing.extras += words;
+    drawing.flags |= flags;
     drawing.label = Some(Labeling {
         extra,
         column,
-        size: label.size.unwrap_or(theme.text.size),
+        size: label.size.unwrap_or(Length::Px(theme.text.size)),
+        offset: label.offset.unwrap_or([Length::Px(0.0); 2]),
         max_width: label.max_width,
         font: label.font.clone().unwrap_or_else(|| theme.text.font.clone()),
         number,

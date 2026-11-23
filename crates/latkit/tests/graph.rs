@@ -39,7 +39,7 @@ fn edges_joining_the_same_vertices_run_side_by_side_a_step_apart_at_any_zoom() {
         ),
     ))
     .expect("valid");
-    let fan = latkit::Parallel { gap: 3.0, converge: latkit::Converge::Fan };
+    let fan = latkit::Parallel { gap: 3.0.into(), converge: latkit::Converge::Fan };
     let theme =
         latkit::Theme { edge: latkit::EdgeTheme { parallel: Some(fan), ..plain_theme().edge }, ..plain_theme() };
     let scene = Scene::new(plane())
@@ -95,7 +95,7 @@ fn comets_keep_their_spacing_on_screen_along_every_path() {
     data.apply(Patch::new().set(nodes(x.clone(), y.clone())).set(links)).expect("valid");
     let red = latkit::Color::rgb(1.0, 0.0, 0.0);
     let flow = latkit::FlowTheme { color: red, spacing: Length::Px(12.0), length: Length::Px(4.0), width: 4.0 };
-    let fan = latkit::Parallel { gap: 3.0, converge: latkit::Converge::Fan };
+    let fan = latkit::Parallel { gap: 3.0.into(), converge: latkit::Converge::Fan };
     let edge = latkit::EdgeTheme { parallel: Some(fan), ..plain_theme().edge };
     let theme = latkit::Theme { flow, edge, ..plain_theme() };
     let green = latkit::Color::rgb(0.0, 0.3, 0.0);
@@ -337,4 +337,47 @@ fn neighbors_follow_edges_and_nets() {
     assert_eq!(view.neighbors(&node(1)), nodes(&[2]));
     assert_eq!(view.neighbors(&latkit::Row::new("graph", "Link", 0_u64)), nodes(&[2, 3]));
     assert_eq!(view.neighbors(&latkit::Row::new("graph", "Net", 1_u64)), nodes(&[1, 2]));
+}
+
+#[test]
+fn edges_meet_a_bar_where_their_path_leads_and_a_halo_parts_the_edge_under_it() {
+    let Some(gpu) = gpu() else { return };
+    // A bar 100 wide over a small vertex 30 right of its middle, and an edge that crosses theirs.
+    let data = Data::new("graph");
+    let places = nodes(vec![0.0, 30.0, -20.0, 50.0], vec![30.0, -30.0, 0.0, 0.0]);
+    data.apply(Patch::new().set(places.field("w", vec![100.0, 4.0, 4.0, 4.0])).set(
+        Table::new("Link", Ids::count(2)).reference("from", "Node", vec![1_u64, 3]).reference(
+            "to",
+            "Node",
+            vec![2_u64, 4],
+        ),
+    ))
+    .expect("valid");
+    let theme = latkit::Theme { edge: latkit::EdgeTheme { halo: 6.0, ..plain_theme().edge }, ..plain_theme() };
+    let scene = Scene::new(plane())
+        .theme(theme)
+        .draw(
+            Edges::of("graph", "Link")
+                .ends("from", "to")
+                .meet(latkit::Meet::Nearest)
+                .width(2.0)
+                .color(latkit::Color::WHITE),
+        )
+        .draw(
+            Vertices::of("graph", "Node")
+                .position(field("x"), field("y"))
+                .marker(latkit::Shape::Rectangle)
+                .size(field("w"), 4.0),
+        );
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    // The first edge drops square from the bar at the small vertex's x, where their boxes overlap.
+    assert!(lit(at(&pixels, C + 30, C - 15)) && lit(at(&pixels, C + 30, C + 15)), "a square drop at x 30");
+    assert!(!lit(at(&pixels, C + 8, C - 15)), "not aimed at the bar's middle");
+    // The second edge, drawn after it, crosses it at y 0, and its halo parts the first beside it.
+    assert!(lit(at(&pixels, C + 30, C)), "the edge on top");
+    assert!(!lit(at(&pixels, C + 30, C - 4)) && !lit(at(&pixels, C + 30, C + 4)), "parts the one under it");
+    assert_eq!(errors(&mut view), Vec::new());
 }

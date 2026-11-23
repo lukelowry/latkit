@@ -34,6 +34,11 @@ import package::lib::drawn::{drawn_row, drawn_instance};
 // created.
 override PATH: u32 = PATH_ENDS;
 
+// Whether the pipeline's edges end where their paths meet their vertices' markers (`meet:
+// 'nearest'`), fixed when the pipeline is created. Only the pipelines of such edges hold the code,
+// so other edges compile and run as if there were none.
+override MEET: bool = false;
+
 // Keep these constant decisions outside runtime conditions. The module optimizer propagates
 // their literal results, removing unused geometry before the driver compiles a program.
 fn has_end_vertices() -> bool {
@@ -316,6 +321,16 @@ fn exit_marker(v: PathPoint, center: vec2f, p: vec2f, dir: vec2f) -> f32 {
     let outside = dot(q, q) - v.half.x * v.half.x;
     let circle = select(0.0, sqrt(max(along * along - outside, 0.0)) - along, outside <= 0.0);
     return select(circle, boxed, v.boxed);
+}
+
+// Where a path whose next point lies at `next` meets vertex `v`'s marker centered at `center`, all
+// on screen: the point of its box nearest `next`, or of its circle. A path point that is no vertex
+// has no size, and stays where it is.
+fn meet_marker(v: PathPoint, center: vec2f, next: vec2f) -> vec2f {
+    let q = next - center;
+    let boxed = clamp(q, -v.half, v.half);
+    let round = q * min(1.0, v.half.x / max(length(q), 1e-6));
+    return center + select(round, boxed, v.boxed);
 }
 
 // The farthest vertex `v`'s marker reaches from its center, in CSS pixels: its radius, or a box's
@@ -877,27 +892,62 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
         out.shown = (shows(wa) | shows(wb)) & (cut.x < cut.y);
     }
     // The own segment on screen, and its joints. An end cut at the near plane joins nothing.
-    let sa = to_screen(out.ca);
-    let sb = to_screen(out.cb);
+    let center_a = to_screen(out.ca);
+    let center_b = to_screen(out.cb);
+    out.chord = length(center_b - center_a);
+    var sa = center_a;
+    var sb = center_b;
+    // The part of the segment between its points that the drawn piece stands for, as fractions of
+    // it. Where an edge fans, its fans stand for the first and last `reach` of its path, and the
+    // path between them for the rest, so distances along run on through the fans.
+    var span = vec2f(0.0, 1.0);
+    if MEET {
+        // Each end lies on its vertex's marker, at the point nearest the path's next point. A path
+        // of one segment joins the nearest points of its two markers. Two boxes meet where they
+        // face: along an axis they overlap on, at the middle of the overlap. A box meets a round
+        // marker at its point nearest that marker's center, and a round marker aims at where the
+        // other is met, or at another round marker's center. The points beside the segment move
+        // the same way, so both segments that share a first or last bend compute its joint from
+        // the same points. An end cut at the near plane has no vertex to meet.
+        let half_a = select(vec2f(p.ends.a.half.x), p.ends.a.half, p.ends.a.boxed);
+        let half_b = select(vec2f(p.ends.b.half.x), p.ends.b.half, p.ends.b.boxed);
+        let facing = 0.5 * (max(center_a - half_a, center_b - half_b) + min(center_a + half_a, center_b + half_b));
+        let boxes = p.ends.a.boxed & p.ends.b.boxed;
+        let aim_a = select(center_b, facing, boxes);
+        let aim_b = select(center_a, facing, boxes);
+        let box_a = center_a + clamp(aim_a - center_a, -half_a, half_a);
+        let box_b = center_b + clamp(aim_b - center_b, -half_b, half_b);
+        let toward_a = select(center_a, box_a, p.ends.a.boxed);
+        let toward_b = select(center_b, box_b, p.ends.b.boxed);
+        let next_a = select(center_b, select(toward_b, aim_a, p.ends.a.boxed), single);
+        let next_b = select(center_a, select(toward_a, aim_b, p.ends.b.boxed), single);
+        let met_a = meet_marker(p.ends.a, center_a, next_a);
+        let met_b = meet_marker(p.ends.b, center_b, next_b);
+        before = vec3f(meet_marker(p.before, before.xy, center_a), before.z);
+        after = vec3f(meet_marker(p.after, after.xy, center_b), after.z);
+        sa = select(center_a, met_a, p.first & (cut.x == 0.0));
+        sb = select(center_b, met_b, p.last & (cut.y == 1.0));
+        // The piece stands for as much of its segment as it is long, at the end that is no vertex,
+        // so dashes and comets keep their size and run on through the bend.
+        let met = length(sb - sa) / max(out.chord, 1e-6);
+        let both = vec2f(0.5 - 0.5 * met, 0.5 + 0.5 * met);
+        let one = select(vec2f(0.0, met), vec2f(1.0 - met, 1.0), p.first);
+        span = select(span, select(one, both, single), p.first | p.last);
+    }
     let front = vec2f(select(0.0, 1.0, cut.x == 0.0), select(0.0, 1.0, cut.y == 1.0));
     var start = joint(before, vec3f(sa, front.x), vec3f(sb, front.y));
     var end = joint(vec3f(sa, front.x), vec3f(sb, front.y), after);
     let dir = normalize(sb - sa + vec2f(1e-6, 0.0));
-    out.chord = length(sb - sa);
     var a = sa;
     var b = sb;
     // Whether the drawn segment starts or ends at a vertex, which its stroke stops short of.
     var at_from = p.first;
     var at_to = p.last;
-    // The part of the segment from `sa` to `sb` that the drawn piece stands for, as fractions of it.
-    // Where an edge fans, its fans stand for the first and last `reach` of its path, and the path
-    // between them for the rest, so distances along run on through the fans.
-    var span = vec2f(0.0, 1.0);
     if has_end_vertices() {
         var o = 0.0;
         if p.lane.offset != 0.0 {
             // A path of one segment runs between its vertices' centers. A longer one projects them.
-            let step = lane_step(p, select(sa, vertex_a.xy, centers), select(sb, vertex_b.xy, centers));
+            let step = lane_step(p, select(center_a, vertex_a.xy, centers), select(center_b, vertex_b.xy, centers));
             o = p.lane.offset * step;
             out.shown = out.shown & !lane_thinned(p.lane, step * p.lane.step);
         }
@@ -954,8 +1004,8 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
             let u = along / length_along;
             let room = 0.5 * length_along;
             let stops = vec2f(
-                select(0.0, exit_marker(p.ends.a, sa, a, u), at_from & (cut.x == 0.0)),
-                select(0.0, exit_marker(p.ends.b, sb, b, -u), at_to & (cut.y == 1.0)),
+                select(0.0, exit_marker(p.ends.a, center_a, a, u), at_from & (cut.x == 0.0)),
+                select(0.0, exit_marker(p.ends.b, center_b, b, -u), at_to & (cut.y == 1.0)),
             );
             let short = min(stops, vec2f(room));
             a += u * short.x;

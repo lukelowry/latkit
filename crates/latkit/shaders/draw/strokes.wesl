@@ -11,15 +11,17 @@
 // everything, comets included, with quads enlarged for their glow. The shaded variants call an
 // application's `shade` for each pixel.
 
-import package::lib::types::{NONE, PATH_TRACE, ALONG_UNITS, FLOW_UNITS, DRAW_OPAQUE, DRAW_COMETS};
+import package::lib::types::{
+    NONE, PATH_TRACE, ALONG_UNITS, FLOW_UNITS, DRAW_OPAQUE, DRAW_COMETS, MARK_EDGES, THEME_EDGE_HALO, THEME_LINE_HALO,
+};
 import package::lib::path::PATH;
-import package::lib::bind::{frame, mark, eye};
+import package::lib::bind::{frame, mark, eye, theme_word};
 import package::lib::project::{to_clip, nearer, culled};
 import package::lib::hooks::{MarkerColor, ShadeFragment};
 import package::lib::marker::glow;
 import package::lib::shade::shade_fragment;
 import package::lib::focus::focus_of;
-import package::lib::mark::{fringe, px_per_length};
+import package::lib::mark::{coverage, fringe, px_per_length};
 import package::lib::stroke::{
     Stroke, covered, stroke_paint, painted, stroke_distance, owns, comets_on, comet_on, COMET_RIM,
 };
@@ -29,6 +31,12 @@ import package::lib::color::{output, OPAQUE};
 // A scene whose dash and flow expressions are constant zero needs no phase or comet payload.
 // Changing either expression requests the corresponding specialized program.
 override PAINTED: bool = true;
+
+// Whether the theme gives the mark's strokes a halo, fixed when the pipeline is created. Only the
+// pipelines of such marks hold the code, so other strokes compile and draw as if there were none.
+// The lit draw paints no halo, and its programs have no such constant.
+@if(!focused)
+override HALO: bool = false;
 
 struct Varyings {
     // The corner in clip space. In the fragment, the target pixel, which `pixel` reads. Invariant,
@@ -56,6 +64,22 @@ struct Varyings {
 const LIT_DRAW: bool = true;
 @if(!focused)
 const LIT_DRAW: bool = false;
+
+// The width of the halo beside the mark's strokes (`HALO`), in CSS pixels: the theme's for edges,
+// or for lines. The rows' draws paint it. The comets draw and the lit draw paint none.
+@if(!focused)
+fn stroke_halo() -> f32 {
+    return bitcast<f32>(theme_word(select(THEME_LINE_HALO, THEME_EDGE_HALO, mark.kind == MARK_EDGES)));
+}
+
+// `color` (premultiplied) over stroke `s`'s halo at the pixel at `d`: the background's color in a
+// band beside the line, dashes or not, which covers whatever drew before it.
+@if(!focused)
+fn haloed(color: vec4f, d: vec3f, s: Stroke) -> vec4f {
+    let halo = stroke_halo();
+    let band = coverage(d.x - halo) * s.color.a * frame.background.a;
+    return color + vec4f(frame.background.rgb, 1.0) * (band * (1.0 - color.a));
+}
 
 // Where segment `instance` lies on screen: from its record, or for a trace, placed here.
 fn stroke_at(instance: u32) -> ScreenStroke {
@@ -92,7 +116,12 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let comets = select(0.0, 0.5 * max(frame.flow_width, width) + COMET_RIM, flows & (LIT_DRAW | comets_draw));
     // How far the stroke, its comets, and any glow reach from its middle. An arrowhead reaches
     // further, but comets never cover one.
-    let across = select(max(0.5 * width, comets), comets, comets_draw) + select(0.0, frame.glow, LIT_DRAW) + fringe();
+    var across = select(max(0.5 * width, comets), comets, comets_draw) + select(0.0, frame.glow, LIT_DRAW) + fringe();
+    @if(!focused) {
+        if HALO {
+            across += select(stroke_halo(), 0.0, comets_draw);
+        }
+    }
     let reach = across + select(0.0, frame.arrow + width, s.arrow & !comets_draw);
     let dir = normalize(s.b - s.a + vec2f(1e-6, 0.0));
     let normal = vec2f(-dir.y, dir.x);
@@ -210,6 +239,11 @@ fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
         if opaque & ((s.color.a < OPAQUE) | (covered(d, s) < 1.0)) {
             discard;
         }
+        @if(!focused) {
+            if HALO {
+                return output(painted(select(haloed(color, d, s), color, comets)));
+            }
+        }
         return output(painted(color));
     }
     @if(shaded) {
@@ -222,7 +256,13 @@ fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
         if opaque & (straight.a < OPAQUE) {
             discard;
         }
-        return output(painted(vec4f(straight.rgb * straight.a, straight.a)));
+        let shaded = vec4f(straight.rgb * straight.a, straight.a);
+        @if(!focused) {
+            if HALO {
+                return output(painted(select(haloed(shaded, d, s), shaded, comets)));
+            }
+        }
+        return output(painted(shaded));
     }
 }
 

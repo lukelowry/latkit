@@ -154,7 +154,7 @@ impl View {
             let (data, table) = source.table_of(column, &self.snapshots)?;
             (Texts::Field([data.clone(), table.name.clone(), column.name.clone()]), labeling.max_width)
         };
-        Some(Setting { texts, font: labeling.font.clone(), size: labeling.size, max_width })
+        Some(Setting { texts, font: labeling.font.clone(), size: labeling.size.value(), max_width })
     }
 
     /// The text run for code `code` of mark `i`'s label text, at the base size regardless of the
@@ -454,7 +454,7 @@ impl View {
                     &mut raster,
                     &input(i),
                     resources.labels(),
-                    MarkVariants::shown(&self.marks[i], &self.scene.space).label_passes()[0],
+                    MarkVariants::shown(&self.marks[i], &self.scene).label_passes()[0],
                     rows,
                     [slots.metadata, slots.positions],
                 );
@@ -541,7 +541,7 @@ impl View {
                 shown.compiled.as_ref().and_then(|c| c.drawing.label.as_ref()).is_some_and(|l| l.number.is_some());
             let per = if numbered { wgsl::NUMBER_CHARS } else { 1 };
             pass.set_pipeline(
-                &inner.pipelines.render(device, MarkVariants::shown(shown, &self.scene.space).glyphs(format, samples)),
+                &inner.pipelines.render(device, MarkVariants::shown(shown, &self.scene).glyphs(format, samples)),
             );
             pass.set_bind_group(2, glyphs, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);

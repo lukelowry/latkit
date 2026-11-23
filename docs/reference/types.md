@@ -78,10 +78,11 @@ A scene's title: its text, or options with its text, a subtitle, and a place.
 {.signature}
 `type Place = 'top' | 'right' | 'bottom' | 'left' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'`
 
-Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the
-marks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's
-background. Either way, the pointer reaches no row under it. A title and legends in one place
-stack in scene order, the title first.
+Where a title or legend sits, or a label beside its row. For a title or legend, a side (`top`,
+`right`, `bottom`, or `left`) takes room from the marks, which stay clear of it, and a corner
+sits over the marks, on a backdrop of the theme's background. Either way, the pointer reaches no
+row under it. A title and legends in one place stack in scene order, the title first. A label
+sits outside its row: centered on a side, or set diagonally out from a corner.
 
 {#place-top .member}
 **`'top'`** [¶](#place-top){.headerlink}
@@ -125,15 +126,15 @@ stack in scene order, the title first.
 The coordinate space of a scene's positions: a name, or `{ plane | earth | plot: options }`.
 
 {#space-earth .member}
-`{` **`earth`**`:` [`Earth`](#earth) `}` [¶](#space-earth){.headerlink}
+`{ /** Longitude and latitude in degrees, on a flat map or a globe. */` **`earth`**`:` [`Earth`](#earth) `}` [¶](#space-earth){.headerlink}
 : Longitude and latitude in degrees, on a flat map or a globe.
 
 {#space-plane .member}
-`{` **`plane`**`:` [`Plane`](#plane) `}` [¶](#space-plane){.headerlink}
+`{ /** Plane units, with elevation. The camera can turn and tilt. */` **`plane`**`:` [`Plane`](#plane) `}` [¶](#space-plane){.headerlink}
 : Plane units, with elevation. The camera can turn and tilt.
 
 {#space-plot .member}
-`{` **`plot`**`:` [`Plot`](#plot) `}` [¶](#space-plot){.headerlink}
+`{ /** The data's axis horizontally and values vertically. */` **`plot`**`:` [`Plot`](#plot) `}` [¶](#space-plot){.headerlink}
 : The data's axis horizontally and values vertically.
 
 (plane)=
@@ -148,6 +149,28 @@ A plane: positions are in plane units.
 {#plane-grid .member}
 **`grid`**`?:` [`Grid`](#grid) [¶](#plane-grid){.headerlink}
 : The grid on the ground under the marks. Defaults to lines.
+
+{#plane-y .member}
+**`y`**`?:` [`Vertical`](#vertical) [¶](#plane-y){.headerlink}
+: Which way y grows on screen with the camera's bearing at 0. Defaults to `up`. `down` suits
+  positions drafted on a screen or a page, which then need no flipping.
+
+(vertical)=
+
+### `Vertical`
+
+{.signature}
+`type Vertical = 'up' | 'down'`
+
+Which way a plane's y grows on screen.
+
+{#vertical-up .member}
+**`'up'`** [¶](#vertical-up){.headerlink}
+: Toward the top, as on a graph.
+
+{#vertical-down .member}
+**`'down'`** [¶](#vertical-down){.headerlink}
+: Toward the bottom, as on a screen or a page.
 
 (earth)=
 
@@ -533,11 +556,11 @@ A placed row keeps its place. Rows added later are placed around the others, and
 lays out every row again.
 
 {#layout-stress .member}
-`{` **`stress`**`:` [`Stress`](#stress) `}` [¶](#layout-stress){.headerlink}
+`{ /** Drawn distances follow graph distances. */` **`stress`**`:` [`Stress`](#stress) `}` [¶](#layout-stress){.headerlink}
 : Drawn distances follow graph distances.
 
 {#layout-layered .member}
-`{` **`layered`**`:` [`Layered`](#layered) `}` [¶](#layout-layered){.headerlink}
+`{ /** Ranks along a direction, for processes and hierarchies. */` **`layered`**`:` [`Layered`](#layered) `}` [¶](#layout-layered){.headerlink}
 : Ranks along a direction, for processes and hierarchies.
 
 (layered)=
@@ -819,6 +842,13 @@ Defaults for edges, and how parallel edges and arrowheads look.
 **`width`**`?: number` [¶](#edgetheme-width){.headerlink}
 : The edge width, in CSS pixels.
 
+{#edgetheme-halo .member}
+**`halo`**`?: number` [¶](#edgetheme-halo){.headerlink}
+: The width of a band of the background's color beside each edge, in CSS pixels. It covers the
+  strokes drawn under it, so an edge that crosses another parts it, as one that ends on it does.
+  Where depth decides what covers what (a tilted view, the globe, or raised rows), it covers only
+  what lies farther. Defaults to 0, which draws none.
+
 {#edgetheme-parallel .member}
 **`parallel`**`?:` [`Parallel`](#parallel) `| null` [¶](#edgetheme-parallel){.headerlink}
 : How edges joining the same two vertices run side by side. `null` draws them over one another.
@@ -835,13 +865,14 @@ Defaults for edges, and how parallel edges and arrowheads look.
 `interface Parallel`
 
 How edges joining the same two vertices run side by side: each moved sideways from the path
-between its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.
-More than eight edges pack closer, within eight steps, and where neighbors would lie less than a
-pixel apart, only every second edge draws, or every fourth, and so on.
+between its vertices, a step apart. A step is an edge's width plus `gap`. More than eight edges
+pack closer, within eight steps, and where neighbors would lie less than a pixel apart, only
+every second edge draws, or every fourth, and so on.
 
 {#parallel-gap .member}
-**`gap`**`?: number` [¶](#parallel-gap){.headerlink}
-: The space between neighboring edges, in CSS pixels. Defaults to 3.
+**`gap`**`?:` [`Length`](#length) [¶](#parallel-gap){.headerlink}
+: The space between neighboring edges: CSS pixels, the same at any zoom, or `{ units }` to grow
+  with the drawing. Defaults to 3 CSS pixels.
 
 {#parallel-converge .member}
 **`converge`**`?:` [`Converge`](#converge) [¶](#parallel-converge){.headerlink}
@@ -886,6 +917,11 @@ Defaults for lines.
 {#linetheme-width .member}
 **`width`**`?: number` [¶](#linetheme-width){.headerlink}
 : The line width, in CSS pixels.
+
+{#linetheme-halo .member}
+**`halo`**`?: number` [¶](#linetheme-halo){.headerlink}
+: The width of a band of the background's color beside each line, in CSS pixels, as an edge's
+  `halo`. Defaults to 0, which draws none.
 
 (areatheme)=
 
@@ -1008,7 +1044,7 @@ A length: a number in CSS pixels, or `{ units }` in position units (degrees on t
 grow as the view zooms in.
 
 {#length-units .member}
-`{` **`units`**`: number }` [¶](#length-units){.headerlink}
+`{ /** Position` **`units`** `(degrees on the earth), which grow as the view zooms in. */ units: number }` [¶](#length-units){.headerlink}
 : Position units (degrees on the earth), which grow as the view zooms in.
 
 ## Marks
@@ -1144,6 +1180,13 @@ Rows drawn as markers: points of a map, nodes of a graph.
 **`marker`**`?:` [`Marker`](#marker) [¶](#vertices-marker){.headerlink}
 : How each row is drawn. Defaults to an ellipse.
 
+{#vertices-bearing .member}
+**`bearing`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#vertices-bearing){.headerlink}
+: Each row's turn about its position, in degrees clockwise from up. Up is the ground's, as for the
+  camera's `bearing`: north on the earth, and the marker turns with the view. The pointer, labels,
+  and the edges that end on a row still follow its marker's box as it stands unturned. Defaults to
+  none.
+
 {#vertices-ring .member}
 **`ring`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#vertices-ring){.headerlink}
 : A ring around each row's marker in this color. A missing or transparent color draws no ring.
@@ -1174,6 +1217,10 @@ row can instead stand as a pole on its own vertex, or join many vertices as a ne
 **`route`**`?:` [`Route`](#route) `| null` [¶](#edges-route){.headerlink}
 : How each row runs between its ends. Defaults to geodesic on the earth and straight elsewhere.
 
+{#edges-meet .member}
+**`meet`**`?:` [`Meet`](#meet) [¶](#edges-meet){.headerlink}
+: Where each row's ends lie on their vertices. Defaults to `center`.
+
 {#edges-arrows .member}
 **`arrows`**`?: boolean` [¶](#edges-arrows){.headerlink}
 : Whether each row has an arrowhead at its second end. Defaults to `false`.
@@ -1187,6 +1234,27 @@ row can instead stand as a pole on its own vertex, or join many vertices as a ne
 **`joins`**`?: [table: string, reference: string] | null` [¶](#edges-joins){.headerlink}
 : Draws each row as a net on a plane or the earth. The net joins the vertex rows of `table` whose
   `reference` field names it, as a star from their center to each member.
+
+(meet)=
+
+### `Meet`
+
+{.signature}
+`type Meet = 'center' | 'nearest'`
+
+Where an edge's end lies on its vertex.
+
+{#meet-center .member}
+**`'center'`** [¶](#meet-center){.headerlink}
+: Aimed at the vertex's center, stopping at its marker's outline.
+
+{#meet-nearest .member}
+**`'nearest'`** [¶](#meet-nearest){.headerlink}
+: At the point of the marker's outline nearest the path's next point. On a bar or a block, an end
+  lands square on the side that point lies beside, and its parallel edges land side by side. A
+  path without bends joins the nearest points of its two markers: two boxes where they face, at
+  the middle of their overlap along an axis, and a box and a round marker at the box's point
+  nearest the round one's center.
 
 (lines)=
 
@@ -1255,17 +1323,17 @@ areas, add a [`Lines`](#lines) mark of the same table. It draws their rings.
 ### `Marker`
 
 {.signature}
-`type Marker = 'ellipse' | 'rectangle' | 'rounded' | 'diamond' | 'block' | { shape:` [`Shape`](#shape) `} | { block: { … } } | { gauge: { … } } | { pie: { … } } | { icon: { … } } | { wgsl: { … } }`
+`type Marker = 'ellipse' | 'rectangle' | 'rounded' | 'diamond' | 'block' | 'none' | { shape:` [`Shape`](#shape) `} | { block: { … } } | { gauge: { … } } | { pie: { … } } | { icon: { … } } | { symbol: { … } } | { wgsl: { … } }`
 
-How a vertex is drawn: a shape's name, `"block"`, or
-`{ shape | block | gauge | pie | icon | wgsl: options }`. Defaults to an ellipse.
+How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
+`{ shape | block | gauge | pie | icon | symbol | wgsl: options }`. Defaults to an ellipse.
 
 {#marker-shape .member}
-`{` **`shape`**`:` [`Shape`](#shape) `}` [¶](#marker-shape){.headerlink}
+`{ /** A filled` **`shape`**`. */ shape:` [`Shape`](#shape) `}` [¶](#marker-shape){.headerlink}
 : A filled shape.
 
 {#marker-block .member}
-`{` **`block`**`: { corner?: number | null } }` [¶](#marker-block){.headerlink}
+`{ /** A rectangle with rounded corners that holds its label inside where the text fits. */` **`block`**``: { /** Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`. */ corner?: number | null } }`` [¶](#marker-block){.headerlink}
 : A rectangle with rounded corners that holds its label inside where the text fits.
 
   {#marker-block-corner .member}
@@ -1273,7 +1341,7 @@ How a vertex is drawn: a shape's name, `"block"`, or
   : Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`.
 
 {#marker-gauge .member}
-`{` **`gauge`**`: { fill:` [`ExprInput`](#exprinput)`; shape?:` [`Shape`](#shape) `} }` [¶](#marker-gauge){.headerlink}
+``{ /** * A shape's outline, filled to `fill` (0 to 1). A circle fills around its edge, and other shapes * fill upward. */`` **`gauge`**`: { /** How full each row's gauge is, from 0 to 1. */ fill:` [`ExprInput`](#exprinput)`; /** The outline's shape. Defaults to an ellipse. */ shape?:` [`Shape`](#shape) `} }` [¶](#marker-gauge){.headerlink}
 : A shape's outline, filled to `fill` (0 to 1). A circle fills around its edge, and other shapes
   fill upward.
 
@@ -1286,7 +1354,7 @@ How a vertex is drawn: a shape's name, `"block"`, or
   : The outline's shape. Defaults to an ellipse.
 
 {#marker-pie .member}
-`{` **`pie`**`: { slices:` [`ExprInput`](#exprinput)`[]; colors:` [`Color`](#color)`[]; hole?: number } }` [¶](#marker-pie){.headerlink}
+`{ /** A circle divided into slices sized in proportion to their values. */` **`pie`**`: { /** Each slice's value. */ slices:` [`ExprInput`](#exprinput)`[]; /** Each slice's color. */ colors:` [`Color`](#color)`[]; /** The hole in the middle, as a fraction of the radius. Defaults to 0. */ hole?: number } }` [¶](#marker-pie){.headerlink}
 : A circle divided into slices sized in proportion to their values.
 
   {#marker-pie-slices .member}
@@ -1302,7 +1370,7 @@ How a vertex is drawn: a shape's name, `"block"`, or
   : The hole in the middle, as a fraction of the radius. Defaults to 0.
 
 {#marker-icon .member}
-`{` **`icon`**`: { images:` [`Bitmap`](#bitmap)`[]; index:` [`ExprInput`](#exprinput) `} }` [¶](#marker-icon){.headerlink}
+``{ /** One of `images`, fitted to the marker's box. `index` picks the image for each row. */`` **`icon`**`: { /** The images. */ images:` [`Bitmap`](#bitmap)`[]; /** Each row's image index, from 0. */ index:` [`ExprInput`](#exprinput) `} }` [¶](#marker-icon){.headerlink}
 : One of `images`, fitted to the marker's box. `index` picks the image for each row.
 
   {#marker-icon-images .member}
@@ -1313,8 +1381,29 @@ How a vertex is drawn: a shape's name, `"block"`, or
   **`index`**`:` [`ExprInput`](#exprinput) [¶](#marker-icon-index){.headerlink}
   : Each row's image index, from 0.
 
+{#marker-symbol .member}
+``{ /** * A drawing in SVG path data, in the row's color, fitted to the square of the marker's smaller * side. `index` picks each row's path. Coordinates run from -1 to 1 across that square, x right * and y down, as SVG has them. With `stroke` the path is stroked at that width, and without it the * path is filled, by the even-odd rule. Each path is set once as a distance field, so its outline * stays sharp as the marker grows, and glows, rings, and picks follow it. */`` **`symbol`**`: { /** The paths, as SVG path data. */ paths: string[]; /** Each row's path index, from 0. Defaults to 0. */ index?:` [`ExprInput`](#exprinput)``; /** * The stroke's width: a number in CSS pixels, or `{ units }` in position units. Without it, the * path is filled. */ stroke?:`` [`Length`](#length) `| null } }` [¶](#marker-symbol){.headerlink}
+: A drawing in SVG path data, in the row's color, fitted to the square of the marker's smaller
+  side. `index` picks each row's path. Coordinates run from -1 to 1 across that square, x right
+  and y down, as SVG has them. With `stroke` the path is stroked at that width, and without it the
+  path is filled, by the even-odd rule. Each path is set once as a distance field, so its outline
+  stays sharp as the marker grows, and glows, rings, and picks follow it.
+
+  {#marker-symbol-paths .member}
+  **`paths`**`: string[]` [¶](#marker-symbol-paths){.headerlink}
+  : The paths, as SVG path data.
+
+  {#marker-symbol-index .member}
+  **`index`**`?:` [`ExprInput`](#exprinput) [¶](#marker-symbol-index){.headerlink}
+  : Each row's path index, from 0. Defaults to 0.
+
+  {#marker-symbol-stroke .member}
+  **`stroke`**`?:` [`Length`](#length) `| null` [¶](#marker-symbol-stroke){.headerlink}
+  : The stroke's width: a number in CSS pixels, or `{ units }` in position units. Without it, the
+    path is filled.
+
 {#marker-wgsl .member}
-`{` **`wgsl`**`: { source: string; inputs?:` [`ExprInput`](#exprinput)`[] } }` [¶](#marker-wgsl){.headerlink}
+``{ /** * A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It * reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's size * as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It returns * the pixel's straight color and its signed distance in CSS pixels from the outline, negative * inside, which glows and status rings follow. The color's alpha is the pixel's coverage: latkit * blends it as given and smooths no edge, so fade the outline over a pixel, as * `color.a * saturate(0.5 - distance / fwidth(distance))` does. The source may declare its own * functions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and * `MarkerColor`. It compiles once, when a view first draws it. */`` **`wgsl`**``: { /** The WGSL source of the `marker` function. */ source: string; /** Each row's inputs, at most eight. */ inputs?:`` [`ExprInput`](#exprinput)`[] } }` [¶](#marker-wgsl){.headerlink}
 : A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It
   reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's size
   as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It returns
@@ -1449,8 +1538,8 @@ How a line runs between its samples.
 Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
 field, a number, or options. A label shows when its row is visible. A block, or a marker with a
 width and height, holds its label inside where the text fits, and otherwise the label shows
-beside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or
-darker as it needs, and its halo is that color.
+beside it, on the right unless `place` names another side. Text inside a shape or block keeps a
+4.5:1 contrast with the row's color, lighter or darker as it needs, and its halo is that color.
 
 Labels never overlap. Where they would, the row drawn on top keeps its label (so `priority`
 decides), and a dense view labels as many rows as fit. A label inside a marker takes the
@@ -1465,8 +1554,21 @@ under a title or legend in a corner. A row whose text is missing or empty has no
   follow a sampled field.
 
 {#label-size .member}
-**`size`**`?: number | null` [¶](#label-size){.headerlink}
-: Font size in CSS pixels. Defaults to the theme's `text.size`.
+**`size`**`?:` [`Length`](#length) `| null` [¶](#label-size){.headerlink}
+: Font size: a number in CSS pixels, or `{ units }` in position units, so the text grows with the
+  drawing as the view zooms in. Defaults to the theme's `text.size`.
+
+{#label-place .member}
+**`place`**`?:` [`Place`](#place) ``| `$${string}` | null`` [¶](#label-place){.headerlink}
+: The side or corner of its row the text sits outside of, or a text field that names one for each
+  row, as `"$side"`. A side centers the text on it, and a corner sets the text diagonally out from
+  it. A row whose field names no place takes the default: inside a marker that holds it, else
+  right of a marker, and on the middle of a stroke or area.
+
+{#label-offset .member}
+**`offset`**`?: [`[`Length`](#length)`,` [`Length`](#length)`] | null` [¶](#label-offset){.headerlink}
+: How far the text moves from its place on screen, right then down: each a number in CSS pixels,
+  or `{ units }` in position units. Defaults to none.
 
 {#label-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#label-color){.headerlink}
@@ -1475,7 +1577,7 @@ under a title or legend in a corner. A row whose text is missing or empty has no
 
 {#label-maxwidth .member}
 **`maxWidth`**`?: number | null` [¶](#label-maxwidth){.headerlink}
-: The width at which lines wrap, in CSS pixels.
+: The width at which lines wrap, in the unit of `size`.
 
 {#label-font .member}
 **`font`**`?: string | null` [¶](#label-font){.headerlink}
@@ -1561,7 +1663,7 @@ Expressions as JSON: a number, a boolean, `null`, a field as `"$name"`, a CSS co
 ### `ExprNode`
 
 {.signature}
-`type ExprNode = number | boolean | null | string |` [`FieldNode`](#fieldnode) `|` [`StateNode`](#statenode) `|` [`WhenNode`](#whennode) `|` [`ScaleNode`](#scalenode) `|` [`ColormapNode`](#colormapnode) `|` [`CallNode`](#callnode)
+`type ExprNode = number | boolean | null | string |` [`FieldNode`](#fieldnode) `|` [`StateNode`](#statenode) `|` [`WhenNode`](#whennode) `|` [`MatchNode`](#matchnode) `|` [`ScaleNode`](#scalenode) `|` [`ColormapNode`](#colormapnode) `|` [`CallNode`](#callnode)
 
 A value for each row. A number or boolean is a constant and `null` is missing. A string starting
 with `$` reads that field, and any other string is a CSS color. An object computes a value.
@@ -1754,6 +1856,28 @@ The value of the first case whose condition holds, else `otherwise`.
 **`otherwise`**`:` [`ExprInput`](#exprinput) [¶](#whennode-otherwise){.headerlink}
 : The value where no condition holds.
 
+(matchnode)=
+
+### `MatchNode`
+
+{.signature}
+`interface MatchNode`
+
+The result of the first case a value equals, else `otherwise`.
+
+{#matchnode-match .member}
+**`match`**`:` [`ExprInput`](#exprinput) [¶](#matchnode-match){.headerlink}
+: The value compared.
+
+{#matchnode-cases .member}
+**`cases`**`: [value: number | string, result:` [`ExprInput`](#exprinput)`][]` [¶](#matchnode-cases){.headerlink}
+: The cases, as `[value, result]` pairs tried in order. A value is a number, which compares as
+  `eq` does, or a text, which compares as `is` does.
+
+{#matchnode-otherwise .member}
+**`otherwise`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#matchnode-otherwise){.headerlink}
+: The value where no case holds. Defaults to a missing value.
+
 (scalenode)=
 
 ### `ScaleNode`
@@ -1791,7 +1915,8 @@ A value mapped through a colormap.
 
 {#colormapnode-value .member}
 **`value`**`:` [`ExprInput`](#exprinput) [¶](#colormapnode-value){.headerlink}
-: The value mapped. A categorical map takes each value's integer part as its category.
+: The value mapped. A categorical map takes each value's integer part as its category, or with
+  `values`, the place among them of the one it equals.
 
 {#colormapnode-domain .member}
 **`domain`**`?: [low: number, high: number] | 'all'` [¶](#colormapnode-domain){.headerlink}
@@ -1860,7 +1985,8 @@ How a colormap maps values: `sequential` and `diverging` maps clamp, `cyclic` ma
 {.signature}
 `interface CustomColormap`
 
-A custom colormap: its kind, its colors, and for a categorical map, its category names.
+A custom colormap: its kind, its colors, and for a categorical map, its categories' values and
+names.
 
 {#customcolormap-kind .member}
 **`kind`**`:` [`ColormapKind`](#colormapkind) [¶](#customcolormap-kind){.headerlink}
@@ -1872,9 +1998,16 @@ A custom colormap: its kind, its colors, and for a categorical map, its category
   gradient, or a `[place, color]` pair with a place from 0 to 1. Places must ascend. A categorical
   map takes one color per category, without places, at most 256.
 
+{#customcolormap-values .member}
+**`values`**`?: (number | string)[]` [¶](#customcolormap-values){.headerlink}
+: Each category's value in category order, a number or a text. A row whose value equals
+  `values[i]` takes color `i`, and a row whose value is none of them takes the theme's `missing`
+  color. Without it, a value's integer part is its category. Categorical maps only.
+
 {#customcolormap-categories .member}
 **`categories`**`?: string[]` [¶](#customcolormap-categories){.headerlink}
-: The category names in category order, shown in legends. Categorical maps only.
+: The category names in category order, shown in legends. Defaults to the values as written.
+  Categorical maps only.
 
 ## Rows, cameras, and queries
 

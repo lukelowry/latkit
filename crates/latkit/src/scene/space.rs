@@ -143,12 +143,26 @@ impl Default for Earth {
 pub struct Plane {
     /// The grid on the ground under the marks. Defaults to lines.
     pub grid: Grid,
+    /// Which way y grows on screen with the camera's bearing at 0. Defaults to `up`. `down` suits
+    /// positions drafted on a screen or a page, which then need no flipping.
+    pub y: Vertical,
 }
 
 impl Default for Plane {
     fn default() -> Plane {
-        Plane { grid: Grid::lines() }
+        Plane { grid: Grid::lines(), y: Vertical::Up }
     }
+}
+
+/// Which way a plane's y grows on screen.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Vertical {
+    /// Toward the top, as on a graph.
+    #[default]
+    Up,
+    /// Toward the bottom, as on a screen or a page.
+    Down,
 }
 
 /// The grid on the ground of a plane or the earth, under the marks: `"off"`, `"lines"`, `"dots"`,

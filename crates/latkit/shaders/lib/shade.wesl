@@ -4,7 +4,7 @@
 
 import package::lib::hooks::ShadeFragment;
 import package::lib::bind::{frame, eye, mark};
-import package::lib::state::row_inputs;
+import package::lib::state::packed_inputs;
 
 // The pixel at target position `position` of held row `row` of the current mark, colored `color`
 // (straight), at `local` within its row's shape, as its shade sees it.
@@ -17,6 +17,6 @@ fn shade_fragment(color: vec4f, position: vec2f, local: vec2f, row: u32) -> Shad
         local,
         vec3f(frame.pointer, over),
         frame.elapsed,
-        row_inputs(row, mark.shade_input, mark.shade_inputs),
+        packed_inputs(row, mark.shade_inputs),
     );
 }

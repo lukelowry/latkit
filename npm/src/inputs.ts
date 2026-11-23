@@ -342,7 +342,10 @@ export type ColormapName =
 export interface ColormapNode {
   /** The colormap. */
   colormap: Colormap;
-  /** The value mapped. A categorical map takes each value's integer part as its category. */
+  /**
+   * The value mapped. A categorical map takes each value's integer part as its category, or with
+   * `values`, the place among them of the one it equals.
+   */
   value: ExprInput;
   /**
    * The values mapped to the colormap's ends, or `all` for every value a field holds, in every frame
@@ -438,7 +441,10 @@ export type Converge =
      * where they pass it.
      */ 'straight';
 
-/** A custom colormap: its kind, its colors, and for a categorical map, its category names. */
+/**
+ * A custom colormap: its kind, its colors, and for a categorical map, its categories' values and
+ * names.
+ */
 export interface CustomColormap {
   /** How the colors map values. */
   kind: ColormapKind;
@@ -453,7 +459,16 @@ export interface CustomColormap {
      * `transparent`, or `rgb`, `hsl`, `hwb`, `lab`, `lch`, `oklab`, or `oklch`.
      */ Color | [number, Color]
   )[];
-  /** The category names in category order, shown in legends. Categorical maps only. */
+  /**
+   * Each category's value in category order, a number or a text. A row whose value equals
+   * `values[i]` takes color `i`, and a row whose value is none of them takes the theme's `missing`
+   * color. Without it, a value's integer part is its category. Categorical maps only.
+   */
+  values?: (number | string)[];
+  /**
+   * The category names in category order, shown in legends. Defaults to the values as written.
+   * Categorical maps only.
+   */
   categories?: string[];
 }
 
@@ -511,6 +526,13 @@ export interface EdgeTheme {
   color?: Color | null;
   /** The edge width, in CSS pixels. */
   width?: number;
+  /**
+   * The width of a band of the background's color beside each edge, in CSS pixels. It covers the
+   * strokes drawn under it, so an edge that crosses another parts it, as one that ends on it does.
+   * Where depth decides what covers what (a tilted view, the globe, or raised rows), it covers only
+   * what lies farther. Defaults to 0, which draws none.
+   */
+  halo?: number;
   /** How edges joining the same two vertices run side by side. `null` draws them over one another. */
   parallel?: Parallel | null;
   /** How far an arrowhead extends beyond the edge's width. A head's length is this plus the width. */
@@ -530,6 +552,8 @@ export interface Edges extends MarkOptions, StrokeOptions {
   bends?: string | null;
   /** How each row runs between its ends. Defaults to geodesic on the earth and straight elsewhere. */
   route?: Route | null;
+  /** Where each row's ends lie on their vertices. Defaults to `center`. */
+  meet?: Meet;
   /** Whether each row has an arrowhead at its second end. Defaults to `false`. */
   arrows?: boolean;
   /**
@@ -578,6 +602,7 @@ export type ExprNode =
   | FieldNode
   | StateNode
   | WhenNode
+  | MatchNode
   | ScaleNode
   | ColormapNode
   | CallNode;
@@ -759,8 +784,8 @@ export type Interpolation =
  * Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
  * field, a number, or options. A label shows when its row is visible. A block, or a marker with a
  * width and height, holds its label inside where the text fits, and otherwise the label shows
- * beside it. Text inside a shape or block keeps a 4.5:1 contrast with the row's color, lighter or
- * darker as it needs, and its halo is that color.
+ * beside it, on the right unless `place` names another side. Text inside a shape or block keeps a
+ * 4.5:1 contrast with the row's color, lighter or darker as it needs, and its halo is that color.
  *
  * Labels never overlap. Where they would, the row drawn on top keeps its label (so `priority`
  * decides), and a dense view labels as many rows as fit. A label inside a marker takes the
@@ -777,14 +802,29 @@ export type Label =
        * follow a sampled field.
        */
       text: ExprInput;
-      /** Font size in CSS pixels. Defaults to the theme's `text.size`. */
-      size?: number | null;
+      /**
+       * Font size: a number in CSS pixels, or `{ units }` in position units, so the text grows with the
+       * drawing as the view zooms in. Defaults to the theme's `text.size`.
+       */
+      size?: Length | null;
+      /**
+       * The side or corner of its row the text sits outside of, or a text field that names one for each
+       * row, as `"$side"`. A side centers the text on it, and a corner sets the text diagonally out from
+       * it. A row whose field names no place takes the default: inside a marker that holds it, else
+       * right of a marker, and on the middle of a stroke or area.
+       */
+      place?: Place | `$${string}` | null;
+      /**
+       * How far the text moves from its place on screen, right then down: each a number in CSS pixels,
+       * or `{ units }` in position units. Defaults to none.
+       */
+      offset?: [Length, Length] | null;
       /**
        * Each row's text color. Defaults to the theme's text color. Inside a shape or block, it keeps a
        * 4.5:1 contrast with the row's color.
        */
       color?: ExprInput | null;
-      /** The width at which lines wrap, in CSS pixels. */
+      /** The width at which lines wrap, in the unit of `size`. */
       maxWidth?: number | null;
       /** The CSS font family list for the text. Defaults to the theme's `text.font`. */
       font?: string | null;
@@ -866,6 +906,11 @@ export interface LineTheme {
   color?: Color;
   /** The line width, in CSS pixels. */
   width?: number;
+  /**
+   * The width of a band of the background's color beside each line, in CSS pixels, as an edge's
+   * `halo`. Defaults to 0, which draws none.
+   */
+  halo?: number;
 }
 
 /**
@@ -936,8 +981,8 @@ export interface MarkOptions {
 }
 
 /**
- * How a vertex is drawn: a shape's name, `"block"`, or
- * `{ shape | block | gauge | pie | icon | wgsl: options }`. Defaults to an ellipse.
+ * How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
+ * `{ shape | block | gauge | pie | icon | symbol | wgsl: options }`. Defaults to an ellipse.
  */
 export type Marker =
   | 'ellipse'
@@ -945,6 +990,7 @@ export type Marker =
   | 'rounded'
   | 'diamond'
   | 'block'
+  | 'none'
   | {
       /** A filled shape. */
       shape: Shape;
@@ -990,6 +1036,26 @@ export type Marker =
     }
   | {
       /**
+       * A drawing in SVG path data, in the row's color, fitted to the square of the marker's smaller
+       * side. `index` picks each row's path. Coordinates run from -1 to 1 across that square, x right
+       * and y down, as SVG has them. With `stroke` the path is stroked at that width, and without it the
+       * path is filled, by the even-odd rule. Each path is set once as a distance field, so its outline
+       * stays sharp as the marker grows, and glows, rings, and picks follow it.
+       */
+      symbol: {
+        /** The paths, as SVG path data. */
+        paths: string[];
+        /** Each row's path index, from 0. Defaults to 0. */
+        index?: ExprInput;
+        /**
+         * The stroke's width: a number in CSS pixels, or `{ units }` in position units. Without it, the
+         * path is filled.
+         */
+        stroke?: Length | null;
+      };
+    }
+  | {
+      /**
        * A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It
        * reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's size
        * as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It returns
@@ -1008,6 +1074,30 @@ export type Marker =
       };
     };
 
+/** The result of the first case a value equals, else `otherwise`. */
+export interface MatchNode {
+  /** The value compared. */
+  match: ExprInput;
+  /**
+   * The cases, as `[value, result]` pairs tried in order. A value is a number, which compares as
+   * `eq` does, or a text, which compares as `is` does.
+   */
+  cases: [value: number | string, result: ExprInput][];
+  /** The value where no case holds. Defaults to a missing value. */
+  otherwise?: ExprInput | null;
+}
+
+/** Where an edge's end lies on its vertex. */
+export type Meet =
+  | /** Aimed at the vertex's center, stopping at its marker's outline. */ 'center'
+  | /**
+     * At the point of the marker's outline nearest the path's next point. On a bar or a block, an end
+     * lands square on the side that point lies beside, and its parallel edges land side by side. A
+     * path without bends joins the nearest points of its two markers: two boxes where they face, at
+     * the middle of their overlap along an axis, and a box and a round marker at the box's point
+     * nearest the round one's center.
+     */ 'nearest';
+
 /** How much a view animates on its own. */
 export type Motion =
   | /** Follows the system setting: reduced when the user has asked their system for less motion. */ 'system'
@@ -1022,22 +1112,26 @@ export type Order = /** Smallest first. */ 'ascending' | /** Largest first. */ '
 
 /**
  * How edges joining the same two vertices run side by side: each moved sideways from the path
- * between its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.
- * More than eight edges pack closer, within eight steps, and where neighbors would lie less than a
- * pixel apart, only every second edge draws, or every fourth, and so on.
+ * between its vertices, a step apart. A step is an edge's width plus `gap`. More than eight edges
+ * pack closer, within eight steps, and where neighbors would lie less than a pixel apart, only
+ * every second edge draws, or every fourth, and so on.
  */
 export interface Parallel {
-  /** The space between neighboring edges, in CSS pixels. Defaults to 3. */
-  gap?: number;
+  /**
+   * The space between neighboring edges: CSS pixels, the same at any zoom, or `{ units }` to grow
+   * with the drawing. Defaults to 3 CSS pixels.
+   */
+  gap?: Length;
   /** How they come together at the vertices they join. Defaults to `squeeze`. */
   converge?: Converge;
 }
 
 /**
- * Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the
- * marks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's
- * background. Either way, the pointer reaches no row under it. A title and legends in one place
- * stack in scene order, the title first.
+ * Where a title or legend sits, or a label beside its row. For a title or legend, a side (`top`,
+ * `right`, `bottom`, or `left`) takes room from the marks, which stay clear of it, and a corner
+ * sits over the marks, on a backdrop of the theme's background. Either way, the pointer reaches no
+ * row under it. A title and legends in one place stack in scene order, the title first. A label
+ * sits outside its row: centered on a side, or set diagonally out from a corner.
  */
 export type Place =
   | /** Above the marks. */ 'top'
@@ -1053,6 +1147,11 @@ export type Place =
 export interface Plane {
   /** The grid on the ground under the marks. Defaults to lines. */
   grid?: Grid;
+  /**
+   * Which way y grows on screen with the camera's bearing at 0. Defaults to `up`. `down` suits
+   * positions drafted on a screen or a page, which then need no flipping.
+   */
+  y?: Vertical;
 }
 
 /** A plot: x is the data's axis, y the values. */
@@ -1398,6 +1497,11 @@ export interface VertexTheme {
   corner?: number;
 }
 
+/** Which way a plane's y grows on screen. */
+export type Vertical =
+  | /** Toward the top, as on a graph. */ 'up'
+  | /** Toward the bottom, as on a screen or a page. */ 'down';
+
 /** Rows drawn as markers: points of a map, nodes of a graph. */
 export interface Vertices extends MarkOptions {
   /** The dataset and table drawn, `[data, table]`. */
@@ -1429,6 +1533,13 @@ export interface Vertices extends MarkOptions {
   size?: [Size, Size] | null;
   /** How each row is drawn. Defaults to an ellipse. */
   marker?: Marker;
+  /**
+   * Each row's turn about its position, in degrees clockwise from up. Up is the ground's, as for the
+   * camera's `bearing`: north on the earth, and the marker turns with the view. The pointer, labels,
+   * and the edges that end on a row still follow its marker's box as it stands unturned. Defaults to
+   * none.
+   */
+  bearing?: ExprInput | null;
   /** A ring around each row's marker in this color. A missing or transparent color draws no ring. */
   ring?: ExprInput | null;
 }

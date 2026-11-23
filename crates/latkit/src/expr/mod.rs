@@ -7,6 +7,7 @@ mod colormap;
 pub(crate) mod compile;
 pub(crate) mod cpu;
 pub(crate) mod form;
+mod length;
 mod ramp;
 
 use std::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, RangeInclusive, Rem, Sub};
@@ -15,7 +16,8 @@ use std::sync::Arc;
 pub use color::Color;
 #[cfg(feature = "gpu")]
 pub(crate) use colormap::ColormapKey;
-pub use colormap::{Colormap, ColormapKind, Stop};
+pub use colormap::{Category, Colormap, ColormapKind, Stop};
+pub use length::Length;
 
 use crate::Name;
 
@@ -300,6 +302,31 @@ impl Expr {
         node(Node::Is(self, text.into()))
     }
 
+    /// The result of the first case the value equals, else `otherwise`. A number compares as
+    /// [`eq`](Expr::eq) does, and a text as [`is`](Expr::is) does.
+    ///
+    /// ```
+    /// # use latkit::{field, Color, Expr};
+    /// let width = field("kv").matched([(69, 1.9), (138, 2.6)], 1.5);
+    /// let color = field("fuel").matched([("gas", Color::BLACK)], Expr::missing());
+    /// ```
+    #[must_use]
+    pub fn matched<C: Into<Category>, V: Into<Expr>>(
+        self,
+        cases: impl IntoIterator<Item = (C, V)>,
+        otherwise: impl Into<Expr>,
+    ) -> Expr {
+        let cases: Vec<(Category, Expr)> =
+            cases.into_iter().map(|(case, result)| (case.into(), result.into())).collect();
+        cases.into_iter().rev().fold(otherwise.into(), |rest, (case, result)| {
+            let holds = match case {
+                Category::Number(number) => self.clone().eq(number),
+                Category::Text(text) => self.clone().is(&text),
+            };
+            node(Node::When(holds, result, rest))
+        })
+    }
+
     /// Whether a text field contains `text`, ignoring case. In a mark, the field must belong to the
     /// mark's own table. The view recomputes matches on the CPU when the field changes.
     #[must_use]
@@ -335,10 +362,40 @@ impl Expr {
     }
 
     /// The value mapped through `colormap`. The domain defaults to the extent of the values shown.
-    /// Set it with [`Mapped::domain`]. A categorical map ignores the domain and bins values by
-    /// their integer part.
+    /// Set it with [`Mapped::domain`]. A categorical map ignores the domain. It bins values by
+    /// their integer part, or with [`values`](Colormap::values), by which of them each equals.
     pub fn colormap(self, colormap: impl Into<Colormap>) -> Mapped {
         Mapped(node(Node::Colormap { input: self, colormap: colormap.into(), domain: Domain::Fit }))
+    }
+
+    /// The category of each row for a map with `values`: the place among them of the one this
+    /// value equals, through the conditional [`matched`](Expr::matched) writes. A value among none
+    /// of them is missing. `None` for no values, where a value's integer part is its category.
+    pub(crate) fn binned(&self, values: &[Category]) -> Option<Expr> {
+        let places = values.iter().cloned().zip(0_u32..).map(|(value, place)| (value, f64::from(place)));
+        (!values.is_empty()).then(|| self.clone().matched(places, Expr::missing()))
+    }
+
+    /// The number this expression gives a row whose `input` is `value`, where that alone decides
+    /// it: a constant, or a conditional that compares `input` with numbers or texts, as
+    /// [`matched`](Expr::matched) writes. A legend sizes a category's sample with it.
+    pub(crate) fn given(&self, input: &Expr, value: &Category) -> Option<f64> {
+        match &*self.0 {
+            Node::Number(number) => Some(*number),
+            Node::When(condition, then, otherwise) => {
+                let holds = match (&*condition.0, value) {
+                    (Node::Binary(Binary::Eq, a, b), Category::Number(v)) if a == input => match &*b.0 {
+                        Node::Number(number) => number == v,
+                        _ => return None,
+                    },
+                    (Node::Is(a, text), Category::Text(v)) if a == input => text == v,
+                    (Node::Binary(Binary::Eq, a, _) | Node::Is(a, _), _) if a == input => false,
+                    _ => return None,
+                };
+                if holds { then.given(input, value) } else { otherwise.given(input, value) }
+            }
+            _ => None,
+        }
     }
 
     /// The value mapped linearly onto `range`, clamped. The domain defaults to the extent of the

@@ -30,7 +30,7 @@ use super::marks::Shown;
 use crate::gpu::Inner;
 use crate::gpu::atlas::FIELDS;
 use crate::gpu::hooks::Hooks;
-use crate::gpu::pipelines::{Asked, Projection, Urgency, Variant};
+use crate::gpu::pipelines::{Asked, Options, Projection, Urgency, Variant};
 use crate::gpu::shaders::{PATH_BENDS, PATH_ENDS, PATH_GEOMETRY, PATH_POLES, PATH_TRACE, Shader};
 use crate::scene::mark::{MarkKind, Primitive};
 use crate::{Action, Mark, Scene, Space};
@@ -84,28 +84,39 @@ pub(super) struct MarkVariants {
     projection: Projection,
     painted: bool,
     marker: u32,
+    options: Options,
     hooks: Hooks,
 }
 
 impl MarkVariants {
-    /// The variants `mark` uses in `space`, requested before it compiles.
-    fn of(mark: &Mark, space: &Space) -> MarkVariants {
+    /// The variants `mark` uses in `scene`, requested before it compiles.
+    fn of(mark: &Mark, scene: &Scene) -> MarkVariants {
         MarkVariants {
             kind: mark.kind(),
-            path: mark.path(space),
-            projection: Projection::of(space),
+            path: mark.path(&scene.space),
+            projection: Projection::of(&scene.space),
             painted: mark.measures_paths(),
             marker: match mark {
                 Mark::Vertices(vertices) => vertices.marker.code(),
                 _ => 0,
+            },
+            options: Options {
+                meet: mark.meets(),
+                turned: mark.turns(),
+                placed: mark.places_labels(),
+                halo: match mark {
+                    Mark::Edges(_) => scene.theme.edge.halo > 0.0,
+                    Mark::Lines(_) => scene.theme.line.halo > 0.0,
+                    Mark::Vertices(_) | Mark::Areas(_) => false,
+                },
             },
             hooks: mark.hooks(),
         }
     }
 
     /// The variants `shown` runs.
-    pub(super) fn shown(shown: &Shown, space: &Space) -> MarkVariants {
-        MarkVariants { path: shown.path(), ..MarkVariants::of(&shown.mark, space) }
+    pub(super) fn shown(shown: &Shown, scene: &Scene) -> MarkVariants {
+        MarkVariants { path: shown.path(), ..MarkVariants::of(&shown.mark, scene) }
     }
 
     fn primitive(&self) -> u32 {
@@ -127,23 +138,31 @@ impl MarkVariants {
     /// triangles.
     pub(super) fn screen(&self) -> Option<Variant> {
         (self.kind.primitive() == Primitive::Strokes && self.path != PATH_TRACE)
-            .then(|| Variant::raster(Shader::Screen, "record").path(self.path).projection(self.projection))
+            .then(|| self.own(Variant::raster(Shader::Screen, "record")))
+    }
+
+    /// `variant` for this mark's path and projection, with the options its shader holds code for.
+    fn own(&self, variant: Variant) -> Variant {
+        variant.path(self.path).projection(self.projection).options(self.options)
     }
 
     /// The pipeline for draw `draw`. The mark's hooks complete its shader.
     pub(super) fn draw(&self, draw: Draw, format: wgpu::TextureFormat, samples: u32) -> Asked {
-        let variant = Variant::draw(self.shader(draw), format, samples)
-            .mode(draw)
-            .path(self.path)
-            .projection(self.projection)
+        let variant = self
+            .own(Variant::draw(self.shader(draw), format, samples).mode(draw))
             .painted(self.painted)
             .marker(self.marker);
         if self.hooks.is_empty() { Asked::Shader(variant) } else { Asked::Hooked(self.hooks.clone(), variant) }
     }
 
-    /// The pass measuring its rows' extents for a fit. `None` for edges.
+    /// The pass measuring its rows' extents for a fit. `None` for edges between their ends, which
+    /// lie within their vertices' box. Edges through bends measure their points as lines do.
     pub(super) fn bounds(&self) -> Option<Variant> {
-        Some(Variant::raster(Shader::Bounds, self.kind.bounds()?).path(self.path).projection(self.projection))
+        let entry = match self.kind {
+            MarkKind::Edges if self.path == PATH_BENDS => "strokes",
+            kind => kind.bounds()?,
+        };
+        Some(self.own(Variant::raster(Shader::Bounds, entry)))
     }
 
     /// Whether a list may number its instances, for rows whose counts differ: edges between ends
@@ -157,9 +176,9 @@ impl MarkVariants {
     /// [`SCAN`].
     pub(super) fn segments(&self, measured: bool) -> [Variant; 2] {
         [
-            Variant::raster(Shader::Lists, "count_segments").path(self.path).projection(self.projection),
+            self.own(Variant::raster(Shader::Lists, "count_segments")),
             if measured {
-                Variant::raster(Shader::Lists, "segments").path(self.path).projection(self.projection)
+                self.own(Variant::raster(Shader::Lists, "segments"))
             } else if self.kind == MarkKind::Areas {
                 Variant::raster(Shader::Lists, "area_segments")
             } else {
@@ -170,23 +189,20 @@ impl MarkVariants {
 
     /// The pass keying each instance by its height before [`DIGIT_PASSES`] sort its height order.
     pub(super) fn height_keys(&self) -> Variant {
-        Variant::raster(Shader::Lists, "height_keys").path(self.path).projection(self.projection)
+        self.own(Variant::raster(Shader::Lists, "height_keys"))
     }
 
     /// Its program for the probe `shader`, which answers hover, queries, and the depth under the
     /// pointer for its geometry.
     pub(super) fn probe(&self, shader: Shader) -> Variant {
-        Variant::probe(shader, self.primitive()).path(self.path).projection(self.projection)
+        self.own(Variant::probe(shader, self.primitive()))
     }
 
     /// The label passes: `claim`, which claims the screen cells its labels would cover, then
     /// `texts`, which finds the texts needed by the labels that kept their cells.
     pub(super) fn label_passes(&self) -> [Variant; 7] {
         [
-            Variant::raster(Shader::Metadata, "metadata")
-                .path(self.path)
-                .projection(self.projection)
-                .primitive(self.primitive()),
+            self.own(Variant::raster(Shader::Metadata, "metadata").primitive(self.primitive())),
             Variant::raster(Shader::Claims, "claim"),
             Variant::raster(Shader::Requests, "request"),
             Variant::raster(Shader::TextCodes, "bits"),
@@ -198,10 +214,7 @@ impl MarkVariants {
 
     /// The pipeline drawing its labels' glyphs.
     pub(super) fn glyphs(&self, format: wgpu::TextureFormat, samples: u32) -> Variant {
-        Variant::draw(Shader::Glyphs, format, samples)
-            .path(self.path)
-            .projection(self.projection)
-            .primitive(self.primitive())
+        self.own(Variant::draw(Shader::Glyphs, format, samples).primitive(self.primitive()))
     }
 }
 
@@ -499,11 +512,11 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.add(Stage::Draw, draw(Shader::Still));
         stages.add(Stage::Changes, Asked::Shader(CARRY));
     }
-    if any(&|m| MarkVariants::of(m, &scene.space).listed()) {
+    if any(&|m| MarkVariants::of(m, scene).listed()) {
         stages.add_all(Stage::Draw, SCAN.map(Asked::Shader));
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Lists, "pack_counts")));
     }
-    if any(&|m| MarkVariants::of(m, &scene.space).listed() && m.measures_paths()) {
+    if any(&|m| MarkVariants::of(m, scene).listed() && m.measures_paths()) {
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Lists, "pack_segments")));
         for entry in ["totals", "scan"] {
             stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Lengths, entry)));
@@ -525,7 +538,7 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
 /// endpoints light), its opaque draw and height sort where depth varies, the pass measuring it for
 /// a fit, its probe, and its labels.
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
-    let variants = MarkVariants::of(mark, &scene.space);
+    let variants = MarkVariants::of(mark, scene);
     stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
     stages.add_all(Stage::Draw, variants.screen().map(Asked::Shader));
     // Comets draw over their rows with the rows' program. Where the rows have records, a comet a
@@ -631,26 +644,45 @@ mod tests {
     /// would stop the page that draws it, as glowing areas once did.
     #[test]
     fn every_pipeline_a_scene_asks_for_was_built_for_the_browser() {
-        use crate::{Areas, Earth, Label, Legend, Marker, Plot, Shape, field};
+        use crate::{
+            Areas, Earth, EdgeTheme, Label, Legend, LineTheme, Marker, Meet, Place, Plot, Shape, Theme, field,
+        };
         let markers = [
             Marker::Shape(Shape::Diamond),
             Marker::Block { corner: None },
             Marker::Gauge { fill: field("f"), shape: Shape::Ellipse },
             Marker::Pie { slices: vec![field("a")], colors: vec![], hole: 0.0 },
             Marker::Icon { images: vec![], index: field("i") },
+            Marker::symbol(["M0 0V-1"], 0.0),
             Marker::Wgsl { source: "fn marker(f: MarkerFragment) -> MarkerColor { }".into(), inputs: vec![] },
         ];
         let globe = Earth::default().projection(crate::Projection::Globe);
         let spaces = [Space::Plane(Plane::default()), Space::Earth(Earth::default()), Space::Earth(globe)];
         let shade = || crate::Shade::new("fn shade(f: ShadeFragment) -> vec4f { return f.color; }");
-        for space in spaces.into_iter().chain([Space::Plot(Plot::default())]) {
-            let mut scene = Scene::new(space).title("t");
+        // Each space once as its marks draw by default, and once with the options that have
+        // pipelines of their own: a halo, a bearing, a label's place, and ends that meet markers.
+        let dark = Theme::dark();
+        let haloed = Theme {
+            edge: EdgeTheme { halo: 2.0, ..dark.edge },
+            line: LineTheme { halo: 2.0, ..dark.line },
+            ..dark.clone()
+        };
+        let spaces = spaces.into_iter().chain([Space::Plot(Plot::default())]);
+        for (space, theme) in spaces.flat_map(|space| [(space.clone(), dark.clone()), (space, haloed.clone())]) {
+            let options = theme == haloed;
+            let mut scene = Scene::new(space).title("t").theme(theme);
             for marker in &markers {
                 let raised = Vertices::of("g", "V").marker(marker.clone()).elevation(field("z"));
-                let raised = raised.label(Label::new(field("n"))).legend(Legend::new("l")).color(field("c"));
+                let label = Label::new(field("n"));
+                let label = if options { label.place(Place::Top) } else { label };
+                let raised = raised.label(label).legend(Legend::new("l")).color(field("c"));
+                let raised = if options { raised.bearing(field("b")) } else { raised };
                 scene = scene.draw(raised.clone()).draw(raised.shade(shade()));
             }
-            let edges = || Edges::of("g", "E").ends("a", "b");
+            let edges = || {
+                let edges = Edges::of("g", "E").ends("a", "b");
+                if options { edges.meet(Meet::Nearest) } else { edges }
+            };
             for edges in [edges(), edges().poles(), edges().bends("p"), edges().joins("J", "j")] {
                 scene = scene
                     .draw(edges.clone())

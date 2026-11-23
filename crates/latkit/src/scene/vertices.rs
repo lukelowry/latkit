@@ -32,6 +32,11 @@ Vertices("vertices") {
     size: Option<[Size; 2]>,
     /// How each row is drawn. Defaults to an ellipse.
     marker: Marker,
+    /// Each row's turn about its position, in degrees clockwise from up. Up is the ground's, as
+    /// for the camera's `bearing`: north on the earth, and the marker turns with the view. The
+    /// pointer, labels, and the edges that end on a row still follow its marker's box as it
+    /// stands unturned. Defaults to none.
+    bearing: Option<Expr>,
     /// A ring around each row's marker in this color. A missing or transparent color draws no ring.
     ring: Option<Expr>,
 });
@@ -47,6 +52,7 @@ impl Vertices {
             radius: None,
             size: None,
             marker: Marker::default(),
+            bearing: None,
             ring: None,
         }
     }
@@ -101,6 +107,13 @@ impl Vertices {
         self
     }
 
+    /// Sets each row's turn about its position, in degrees clockwise from the ground's up.
+    #[must_use]
+    pub fn bearing(mut self, degrees: impl Into<Expr>) -> Vertices {
+        self.bearing = Some(degrees.into());
+        self
+    }
+
     /// Draws a ring around each row's marker in this color. A missing or transparent color draws
     /// no ring.
     #[must_use]
@@ -119,6 +132,15 @@ impl Vertices {
         if inputs.len() > 8 {
             return Err(crate::Error::invalid("a marker reads at most eight inputs").at("marker"));
         }
+        if let Marker::Symbol { paths, .. } = &self.marker {
+            if paths.is_empty() {
+                return Err(crate::Error::invalid("a symbol needs a path").at("paths").at("marker"));
+            }
+            for (i, path) in paths.iter().enumerate() {
+                let read = super::path::outlines(path).map_err(crate::Error::invalid);
+                read.map_err(|e| e.at(i).at("paths").at("marker"))?;
+            }
+        }
         let mut flags = self.place(c, context)?;
         let color = Store::Color { word: wgsl::VERTEX_COLOR, fallback: wgsl::THEME_VERTEX };
         match &self.style.color {
@@ -135,6 +157,12 @@ impl Vertices {
             let store = Store::Number { word: wgsl::VERTEX_WORDS + i as u32, fallback: None };
             c.within("marker", |c| c.within(i, |c| c.channel(&format!("input{i}"), input, store)))?;
         }
+        // The bearing follows the marker's inputs among the extra words, so a mark that turns
+        // nothing stores nothing.
+        if let Some(bearing) = &self.bearing {
+            let store = Store::Number { word: wgsl::VERTEX_WORDS + inputs.len() as u32, fallback: None };
+            c.channel("bearing", bearing, store)?;
+        }
         let mut drawing = Drawing::new(MarkKind::Vertices);
         // The marker's half-size stays within its size's pixel bounds. A `size` bounds the full
         // width, so its bounds are halved.
@@ -145,7 +173,7 @@ impl Vertices {
         };
         drawing.markers = self.marker.markers(0);
         drawing.flags = flags;
-        drawing.extras = inputs.len() as u32;
+        drawing.extras = inputs.len() as u32 + u32::from(self.bearing.is_some());
         Ok(drawing)
     }
 

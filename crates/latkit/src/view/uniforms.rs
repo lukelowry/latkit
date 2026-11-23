@@ -74,7 +74,7 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     };
     // Without parallel edges no lanes are derived, so nothing reads the gap or how they converge.
     let parallel = theme.edge.parallel.unwrap_or_default();
-    frame.gap = parallel.gap;
+    frame.gap = px(parallel.gap, scene, projected);
     frame.converge = match parallel.converge {
         Converge::Squeeze => wgsl::CONVERGE_SQUEEZE,
         Converge::Fan => wgsl::CONVERGE_FAN,
@@ -99,6 +99,18 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
     frame.theme = theme_slots(theme);
     frame
+}
+
+/// `length` in CSS pixels at the camera's center, where a length in position units follows the zoom.
+fn px(length: Length, scene: &Scene, projected: &Projected) -> f32 {
+    match length {
+        Length::Px(px) => px,
+        // On the earth a position unit is a degree, and `px_per_unit` counts radians.
+        Length::Units(units) => {
+            let degrees = if matches!(scene.space, Space::Earth(_)) { std::f64::consts::PI / 180.0 } else { 1.0 };
+            (f64::from(units) * projected.px_per_unit[0] * degrees) as f32
+        }
+    }
 }
 
 /// Sets the grid `frame` draws on `scene`'s ground: its kind, the two steps its lines lie at, how
@@ -183,6 +195,8 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
     slots[wgsl::THEME_CORNER as usize] = theme.vertex.corner.to_bits();
+    slots[wgsl::THEME_EDGE_HALO as usize] = theme.edge.halo.max(0.0).to_bits();
+    slots[wgsl::THEME_LINE_HALO as usize] = theme.line.halo.max(0.0).to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
@@ -200,13 +214,15 @@ fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     }
 }
 
-/// The uniform of mark `index`, with its label slots from `labels` and its easing progress from
-/// `clock`.
+/// The uniform of mark `index`, with its label slots from `labels`, its easing progress from
+/// `clock`, and its lengths in CSS pixels at `projected`'s zoom.
 pub(crate) fn mark(
     index: usize,
     shown: &Shown,
     labels: &super::labels::Labels,
     clock: &super::clock::Clock,
+    scene: &Scene,
+    projected: &Projected,
 ) -> wgsl::Mark {
     let mut mark: wgsl::Mark = bytemuck::Zeroable::zeroed();
     mark.index = index as u32;
@@ -269,12 +285,12 @@ pub(crate) fn mark(
         mark.marker = markers.marker;
         mark.shape = markers.shape;
         mark.corner = markers.corner;
-        mark.hole = markers.hole;
-        mark.inputs = markers.inputs;
-        mark.input = markers.input;
+        // A symbol's stroke takes the place of a pie's hole.
+        mark.hole = markers.stroke.map_or(markers.hole, |width| px(width, scene, projected).max(0.0));
+        // How many inputs in the low byte, and above it the extra word of the first.
+        mark.inputs = markers.inputs | markers.input << 8;
         if let Some(shading) = &drawing.shade {
-            mark.shade_inputs = shading.inputs;
-            mark.shade_input = shading.input;
+            mark.shade_inputs = shading.inputs | shading.input << 8;
         }
         mark.geometry = drawing.geometry;
         mark.lane = drawing.lane;
@@ -284,7 +300,8 @@ pub(crate) fn mark(
         [mark.size_min, mark.size_max] = drawing.size_px;
         if let Some(labeling) = &drawing.label {
             mark.label = labeling.extra;
-            mark.label_size = labeling.size;
+            mark.label_size = px(labeling.size, scene, projected);
+            [mark.label_right, mark.label_down] = labeling.offset.map(|length| px(length, scene, projected));
             mark.number = labeling.number.as_ref().map_or(wgsl::NONE, |(number, _)| *number);
         }
         if shown.kind() == MarkKind::Lines {
