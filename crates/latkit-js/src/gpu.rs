@@ -22,8 +22,8 @@ impl Gpu {
     /// Creates a view of `scene` (JSON) that sends its events to `tell` from the start, each batch
     /// as a JSON array of `{ type, detail }`. A canvas shows it. A shot draws it with or without
     /// a canvas.
-    pub fn view(&self, scene: &str, tell: js_sys::Function) -> Result<View, Error> {
-        Ok(telling(latkit::View::new(&self.0, json("scene", scene)?), tell))
+    pub fn view(&self, scene: &str, tell: js_sys::Function, tables: Option<crate::TableBatch>) -> Result<View, Error> {
+        Ok(telling(latkit::View::new(&self.0, crate::data::scene(scene, tables)?), tell))
     }
 
     /// Loses the device, as a GPU reset does, so its views move to a new device.

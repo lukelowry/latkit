@@ -60,6 +60,26 @@ impl Snapshot {
         }))
     }
 
+    /// Builds one immutable dataset in table-name order and resolves forward references once.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn from_tables(name: &str, mut tables: Vec<Table>) -> Result<Snapshot> {
+        tables.sort_unstable_by(|a, b| a.name().cmp(b.name()));
+        let mut previous = None;
+        for table in &tables {
+            if previous == Some(table.name()) {
+                return Err(Error::invalid("table declared twice").at(table.name()));
+            }
+            table.check().map_err(|e| e.at(table.name()))?;
+            previous = Some(table.name());
+        }
+        let mut snapshot = Snapshot::new(name);
+        let inner = Arc::get_mut(&mut snapshot.0).expect("new snapshot");
+        inner.tables = tables;
+        inner.resolve()?;
+        inner.schema = inner.signature();
+        Ok(snapshot)
+    }
+
     /// The dataset's name.
     pub fn name(&self) -> &Name {
         &self.0.name

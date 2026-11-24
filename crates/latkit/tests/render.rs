@@ -11,6 +11,40 @@ use latkit::{
 };
 
 #[test]
+fn local_tables_render_like_external_data_and_swap_with_the_scene() {
+    let Some(gpu) = gpu() else { return };
+    let node = |x| Table::columns("Bus").field("x", vec![x]).field("y", vec![0.0]);
+    let picture = |mark: Vertices| {
+        Scene::new(plane())
+            .theme(plain_theme())
+            .ease(std::time::Duration::ZERO)
+            .draw(mark.position(field("x"), field("y")).color(Color::WHITE).radius(6.))
+    };
+    let local = |x| picture(Vertices::local("Bus")).table(node(x));
+    let external = Data::new("$scene");
+    external.apply(node(28.)).unwrap();
+    let named = || picture(Vertices::of("$scene", "Bus"));
+    let mut reference = View::new(&gpu, named());
+    reference.set_sources([&external]).unwrap();
+    reference.set_camera(camera());
+    let right = frame(&gpu, &mut reference);
+    let mut view = View::new(&gpu, local(-28.));
+    view.set_camera(camera());
+    let left = frame(&gpu, &mut view);
+    assert_ne!(left, right);
+    view.set_scene(local(-28.));
+    assert!(!view.needs_render(), "redeclaring identical columns does no GPU work");
+    view.set_sources([&external]).unwrap();
+    assert_eq!(frame(&gpu, &mut view), left, "an external Bus cannot shadow the local Bus");
+    view.set_scene(local(28.));
+    assert_eq!(frame(&gpu, &mut view), right, "replacing inline values draws the new positions");
+    view.set_scene(named());
+    assert_eq!(frame(&gpu, &mut view), right);
+    view.set_scene(local(-28.));
+    assert_eq!(frame(&gpu, &mut view), left);
+}
+
+#[test]
 fn changing_projection_draws_and_picks_like_a_fresh_view() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("d");

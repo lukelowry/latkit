@@ -210,6 +210,49 @@ test('typed arrays for numbered rows write what the same patch writes', () => {
   patched.destroy();
 });
 
+test('mixed column writes agree byte for byte with patches and fail atomically', () => {
+  const direct = new Data('grid');
+  const framed = new Data('grid');
+  const buses = {
+    x: Float32Array.of(1, 2),
+    y: [3, 4],
+    label: ['A', 'B'],
+    vm: [null, 1.01],
+    online: Uint8Array.of(1, 0),
+    point: [
+      [1, 3],
+      [2, 4],
+    ],
+  };
+  const lines = { from: reference('Bus', ['a', null]), mw: Float64Array.of(10, -2) };
+  const update = { label: ['South'], y: [12] };
+  direct
+    .replace('Bus', ['a', 'b'], buses)
+    .replace('Line', [101, 500], lines)
+    .set('Bus', ['b'], update);
+  framed.apply(
+    new Patch()
+      .replace('Bus', ['a', 'b'], buses)
+      .replace('Line', [101, 500], lines)
+      .set('Bus', ['b'], update),
+  );
+  assert.deepEqual(direct.toBytes(), framed.toBytes());
+  assert.throws(() => direct.replace('Bus', ['a', 'b'], { ...buses, x: [1] }), { code: 'invalid' });
+  assert.deepEqual(direct.toBytes(), framed.toBytes());
+  direct.destroy();
+  framed.destroy();
+});
+
+test('text offsets survive adjacent ASCII, Unicode, empty and missing bus names', () => {
+  const name = ['Bus 12', 'A'.repeat(32), 'B'.repeat(33), 'Bus Δ', '⚡', '😀', '', null, 'Bus 13'];
+  const grid = new Data('grid').replace('Bus', { name });
+  assert.deepEqual(
+    name.map((_, i) => grid.get('Bus', i, 'name')),
+    name,
+  );
+  grid.destroy();
+});
+
 test('appended frames retain their values', () => {
   const frame = new Float32Array(2);
   const patch = new Patch().replace('Bus', [1, 2], { x: [1, 2] });

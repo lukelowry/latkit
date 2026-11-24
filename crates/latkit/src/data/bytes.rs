@@ -189,6 +189,17 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Patch> {
     }
 }
 
+/// Reads the table body produced by the browser column writer using the patch table format.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub fn read_table(bytes: &[u8]) -> Result<Table> {
+    let mut reader = Reader { input: In::new(bytes), remaining: DecodeLimits::default().decoded_bytes };
+    let table = reader.table()?;
+    if !reader.input.is_empty() {
+        return Err(malformed("trailing table bytes"));
+    }
+    Ok(table)
+}
+
 /// Decodes back-to-back frames from `read`, yielding each patch once its frame has fully arrived.
 /// Each header is checked against `limits` as it arrives and gives the number of bytes to read.
 /// The iterator ends when the input ends between frames, or after the first error.
@@ -531,6 +542,7 @@ impl Reader<'_> {
         })
     }
 
+    #[inline(never)]
     fn table(&mut self) -> Result<Table> {
         let name = self.name()?;
         let ids = match self.ids()? {

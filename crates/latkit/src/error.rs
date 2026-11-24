@@ -63,6 +63,8 @@ impl Error {
 
     /// Prefixes the path of an [`Error::Invalid`] with `step`. Returns other errors unchanged.
     #[must_use]
+    #[cold]
+    #[inline(never)]
     pub fn at(self, step: impl Into<Step>) -> Error {
         match self {
             Error::Invalid { mut path, reason } => {

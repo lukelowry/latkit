@@ -9,6 +9,14 @@
           "$ref": "#/$defs/Space",
           "description": "The coordinate space for mark positions."
         },
+        "tables": {
+          "type": "object",
+          "additionalProperties": {
+            "description": "The rows and fields of this table.",
+            "$ref": "#/$defs/LocalTable"
+          },
+          "description": "Static tables owned by this scene. A mark draws one by its bare table name."
+        },
         "marks": {
           "type": "array",
           "items": {
@@ -48,7 +56,7 @@
       "required": [
         "space"
       ],
-      "description": "A space and its marks, in drawing order. A scene also sets layout, style, and input controls.\n\nJSON uses camelCase field names. Each mark names a dataset and table, for example\n`{ \"vertices\": [\"grid\", \"Bus\"], \"radius\": 4 }`. A view ignores invalid options and lists\nthem in [`failures`](crate::View::failures).\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage\"))\n    .title(\"Voltage\");\n```"
+      "description": "A space and its marks, in drawing order. A scene also sets layout, style, and input controls.\n\nJSON uses camelCase field names. A mark draws a local table such as `{\"vertices\": \"Bus\"}`\nor a table in a named dataset, such as `{\"vertices\": [\"grid\", \"Bus\"]}`. A view ignores invalid options and lists\nthem in [`failures`](crate::View::failures).\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage\"))\n    .title(\"Voltage\");\n```"
     },
     "Space": {
       "anyOf": [
@@ -371,6 +379,146 @@
       ],
       "description": "How an axis writes its tick values, or a label its number."
     },
+    "LocalTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ids": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ids"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Row ids. Omit to number rows from zero.",
+          "tsType": "RowIds | null"
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "description": "One column of values or row references.",
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "description": "One value: a number, boolean, text, or geometry; null, or an empty geometry, is missing.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/Geometry"
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "reference": {
+                    "type": "string"
+                  },
+                  "ids": {
+                    "$ref": "#/$defs/Ids"
+                  }
+                },
+                "required": [
+                  "reference",
+                  "ids"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "description": "Columns of values or references, one entry per row.",
+          "tsType": "Fields"
+        }
+      },
+      "description": "One inline table. File slices belong to external datasets loaded through a host."
+    },
+    "Ids": {
+      "description": "Row ids: a list of numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null names no row.",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "count": {
+              "description": "The number of rows, whose ids are 0 to count - 1.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          },
+          "required": [
+            "count"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Id": {
+      "description": "A row's id: a whole number from 0, or a text. A number above 2^53 - 1 is written as its decimal text, which names the same row.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "Geometry": {
+      "description": "A point `[x, y]` (a third coordinate is ignored), or a list of geometries one level down: a path is a list of points, parts a list of paths, and polygons a list of parts.",
+      "anyOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 3
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Geometry"
+          }
+        }
+      ]
+    },
     "Mark": {
       "description": "One table a scene draws. The mark's kind is the key that holds its table, next to its options: `{ vertices: [data, table], radius: 4 }`.",
       "oneOf": [
@@ -398,19 +546,26 @@
           "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
             "vertices": {
-              "type": "array",
-              "prefixItems": [
+              "anyOf": [
                 {
                   "type": "string"
                 },
                 {
-                  "type": "string"
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
                 }
               ],
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "The dataset and table drawn, `[data, table]`.",
-              "tsType": "TableInput"
+              "description": "A scene-local table name or an external `[dataset, table]` pair.",
+              "tsType": "string | TableInput"
             },
             "position": {
               "type": [
@@ -2246,19 +2401,26 @@
           "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
             "edges": {
-              "type": "array",
-              "prefixItems": [
+              "anyOf": [
                 {
                   "type": "string"
                 },
                 {
-                  "type": "string"
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
                 }
               ],
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "The dataset and table drawn, `[data, table]`.",
-              "tsType": "TableInput"
+              "description": "A scene-local table name or an external `[dataset, table]` pair.",
+              "tsType": "string | TableInput"
             },
             "ends": {
               "type": [
@@ -2489,19 +2651,26 @@
           "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
             "lines": {
-              "type": "array",
-              "prefixItems": [
+              "anyOf": [
                 {
                   "type": "string"
                 },
                 {
-                  "type": "string"
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
                 }
               ],
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "The dataset and table drawn, `[data, table]`.",
-              "tsType": "TableInput"
+              "description": "A scene-local table name or an external `[dataset, table]` pair.",
+              "tsType": "string | TableInput"
             },
             "geometry": {
               "type": [
@@ -2605,19 +2774,26 @@
           "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
             "areas": {
-              "type": "array",
-              "prefixItems": [
+              "anyOf": [
                 {
                   "type": "string"
                 },
                 {
-                  "type": "string"
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
                 }
               ],
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "The dataset and table drawn, `[data, table]`.",
-              "tsType": "TableInput"
+              "description": "A scene-local table name or an external `[dataset, table]` pair.",
+              "tsType": "string | TableInput"
             },
             "geometry": {
               "type": [
@@ -3741,51 +3917,6 @@
       ],
       "description": "One change in a patch, keyed by the name of the `Patch` method that makes it."
     },
-    "Ids": {
-      "description": "Row ids: a list of numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null names no row.",
-      "anyOf": [
-        {
-          "type": "array",
-          "items": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/Id"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        {
-          "type": "object",
-          "properties": {
-            "count": {
-              "description": "The number of rows, whose ids are 0 to count - 1.",
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 4294967295
-            }
-          },
-          "required": [
-            "count"
-          ],
-          "additionalProperties": false
-        }
-      ]
-    },
-    "Id": {
-      "description": "A row's id: a whole number from 0, or a text. A number above 2^53 - 1 is written as its decimal text, which names the same row.",
-      "anyOf": [
-        {
-          "type": "integer",
-          "minimum": 0
-        },
-        {
-          "type": "string"
-        }
-      ]
-    },
     "Value": {
       "description": "One value: a number, boolean, text, or geometry; null, or an empty geometry, is missing.",
       "anyOf": [
@@ -3803,33 +3934,6 @@
         },
         {
           "$ref": "#/$defs/Geometry"
-        }
-      ]
-    },
-    "Geometry": {
-      "description": "A point `[x, y]` (a third coordinate is ignored), or a list of geometries one level down: a path is a list of points, parts a list of paths, and polygons a list of parts.",
-      "anyOf": [
-        {
-          "type": "array",
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "items": {
-            "type": "number"
-          },
-          "minItems": 2,
-          "maxItems": 3
-        },
-        {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Geometry"
-          }
         }
       ]
     },

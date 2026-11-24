@@ -1,9 +1,9 @@
 //! The WebAssembly binding behind the latkit npm package: data and views in the browser, over
 //! WebGL2.
 //!
-//! Values cross as bytes or JSON, in the forms `latkit` reads and writes. Patches cross as byte
-//! frames, which the package's TypeScript writes. Scenes, cameras, fits, queries, and rows go in as
-//! JSON. Events, hits, stats, and work come out as JSON, with a view's events in batches. A query's
+//! The package sends numeric columns as typed arrays and other columns as patch bytes.
+//! Scene options, cameras, fits, queries, and rows go in as JSON.
+//! Events, hits, stats, and work come out as JSON, with a view's events in batches. A query's
 //! columns come out as typed arrays, copied once. Asynchronous results cross as a cancellable
 //! `Task`.
 
@@ -24,7 +24,7 @@ mod view;
 use wasm_bindgen::prelude::*;
 
 pub use canvas::{Canvas, Handle};
-pub use data::{Data, Snapshot, Source, TileWriter, read_patch};
+pub use data::{Data, Snapshot, Source, TableBatch, TileWriter, read_patch};
 pub use error::Error;
 pub use gpu::{Gpu, Listener};
 pub use pending::Task;

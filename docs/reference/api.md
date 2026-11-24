@@ -209,16 +209,12 @@ grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
 {#data-set .member}
 **`set`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#data-set){.headerlink}
 : Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
-  adding new rows. Typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or
-  not at all, are copied once and become the fields' values as they are. That is the way to
-  write a field every frame.
+  adding new rows. For a numeric field updated every frame, pass a typed array.
 
 {.member}
 **`set`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
 : Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
-  adding new rows. Typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or
-  not at all, are copied once and become the fields' values as they are. That is the way to
-  write a field every frame.
+  adding new rows. For a numeric field updated every frame, pass a typed array.
 
 {#data-remove .member}
 **`remove`**`(table: string, ids:` [`RowIds`](#rowids)`): this` [¶](#data-remove){.headerlink}

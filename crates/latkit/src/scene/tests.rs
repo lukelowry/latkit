@@ -10,6 +10,46 @@ fn scene(json: &str) -> Scene {
 }
 
 #[test]
+fn inline_tables_resolve_ids_and_forward_references() {
+    let doc = r#"{
+        "space":"plane",
+        "tables":{
+            "Line":{"fields":{"from":{"reference":"Bus","ids":["B"]},"to":{"reference":"Bus","ids":["A"]}}},
+            "Bus":{"ids":["A","B"],"fields":{"x":[1,2],"y":[0,0]}}
+        },
+        "marks":[{"edges":"Line","ends":["from","to"]},{"vertices":"Bus","position":["$x","$y"]}]
+    }"#;
+    let mut drawn: Scene = crate::from_json(doc).unwrap();
+    let reordered = Scene::new(Plane::default())
+        .table(crate::Table::new("Bus", ["A", "B"]).field("x", vec![1., 2.]).field("y", vec![0., 0.]))
+        .table(crate::Table::columns("Line").reference("from", "Bus", ["B"]).reference("to", "Bus", ["A"]));
+    assert_eq!(drawn.tables, reordered.tables, "declaration order does not change table values");
+    assert_eq!(drawn.failures(&[]).unwrap(), []);
+    drawn.bind_tables(&[], &[]).unwrap();
+    let snapshot = drawn.local.unwrap();
+    assert_eq!(
+        snapshot.get("Line", 0_u64, "from", None),
+        Some(crate::Value::Row(crate::Row::new(snapshot.name(), "Bus", "B")))
+    );
+    for invalid in [
+        r#"{"Bus":{"fields":{"x":[0],"y":[1,2]}}}"#,
+        r#"{"Bus":{"ids":[1,1]}}"#,
+        r#"{"Bus":{},"Bus":{}}"#,
+        r#"{"Line":{"fields":{"from":{"reference":"missing","ids":[0]}}}}"#,
+        r#"{"Bus":{"fields":{"x":{"file":"x.bin","dtype":"f64le","count":1}}}}"#,
+    ] {
+        let error = crate::from_json::<Scene>(&format!(r#"{{"space":"plane","tables":{invalid}}}"#)).unwrap_err();
+        assert!(error.to_string().contains("tables"), "{error}");
+    }
+    let external = crate::Data::new("grid");
+    external.apply(crate::Table::columns("Bus").field("x", vec![1.0])).unwrap();
+    let missing = scene(r#"{"space":"plane","marks":[{"vertices":"Bus"}]}"#);
+    let failures = missing.failures(&[external.into()]).unwrap();
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].to_string().contains("no scene-local table 'Bus'"));
+}
+
+#[test]
 fn scenes_match_builders() {
     let json = r#"{
         "space": { "earth": { "projection": "globe" } },

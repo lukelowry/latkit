@@ -79,6 +79,27 @@ fn a_table_that_starts_empty_draws_its_rows() {
 }
 
 #[test]
+fn a_million_scene_local_rows_page_in_and_sleep() {
+    let Some(gpu) = gpu() else { return };
+    let rows = 1_000_000;
+    let buses = Table::columns("Bus")
+        .field("x", (0..rows).map(|i| f64::from(i % 1000)).collect::<Vec<_>>())
+        .field("y", (0..rows).map(|i| f64::from(i / 1000)).collect::<Vec<_>>());
+    let scene = Scene::new(plane()).table(buses).draw(Vertices::local("Bus").position(field("x"), field("y")));
+    let mut view = View::new(&gpu, scene.clone());
+    view.set_camera(Camera::Map { center: [500., 500., 0.], zoom: 3., pitch: 0., bearing: 0. });
+    frame(&gpu, &mut view);
+    assert_eq!(errors(&mut view), []);
+    let stats = view.stats();
+    assert_eq!(stats.rows, rows as u64);
+    assert!(stats.drawn > 0 && stats.drawn < stats.rows / 4);
+    let work = gpu.work();
+    view.set_scene(scene);
+    assert!(!view.needs_render());
+    assert_eq!(gpu.work(), work, "no uploads, evaluations, or other GPU work");
+}
+
+#[test]
 fn a_paged_table_draws_the_tiles_in_view_and_its_selected_rows() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);

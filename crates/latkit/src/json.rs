@@ -18,6 +18,7 @@ use crate::{Error, Path, Result, Step};
 /// # }
 /// # Ok::<(), latkit::Error>(())
 /// ```
+#[inline(never)]
 pub fn from_json<T: DeserializeOwned>(text: &str) -> Result<T> {
     // A failed `nested` read leaves the path within its value. Clear one left by a read that did not
     // pass through here, such as a test's `serde_json::from_str`.
@@ -25,18 +26,21 @@ pub fn from_json<T: DeserializeOwned>(text: &str) -> Result<T> {
     let mut deserializer = serde_json::Deserializer::from_str(text);
     let read = serde_path_to_error::deserialize(&mut deserializer);
     let within = WITHIN.take();
-    let value = read.map_err(|error| {
-        let steps = error.path().iter().filter_map(|segment| match segment {
-            Segment::Seq { index } => Some(Step::Index(*index)),
-            Segment::Map { key } => Some(Step::Name(key.as_str().into())),
-            Segment::Enum { variant } => Some(Step::Name(variant.as_str().into())),
-            Segment::Unknown => None,
-        });
-        let path = steps.chain(within.into_iter().flat_map(|path| path.0)).collect();
-        Error::Invalid { path: Path(path), reason: unplaced(error.into_inner().to_string()).into() }
-    })?;
+    let value = read.map_err(|error| read_error(error, within))?;
     deserializer.end().map_err(|e| Error::invalid(e.to_string()))?;
     Ok(value)
+}
+
+#[cold]
+fn read_error(error: serde_path_to_error::Error<serde_json::Error>, within: Option<Path>) -> Error {
+    let steps = error.path().iter().filter_map(|segment| match segment {
+        Segment::Seq { index } => Some(Step::Index(*index)),
+        Segment::Map { key } => Some(Step::Name(key.as_str().into())),
+        Segment::Enum { variant } => Some(Step::Name(variant.as_str().into())),
+        Segment::Unknown => None,
+    });
+    let path = steps.chain(within.into_iter().flat_map(|path| path.0)).collect();
+    Error::Invalid { path: Path(path), reason: unplaced(error.into_inner().to_string()).into() }
 }
 
 /// Deserializes JSON `bytes` as `T`, like [`from_json`]. Bytes that are not UTF-8 are invalid.

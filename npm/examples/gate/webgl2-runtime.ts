@@ -53,6 +53,64 @@ try {
     page.evaluate(async (module) => {
       const { Gpu, Data, View, Shot } = (await import(module)) as typeof import('latkit');
       const gpu = await Gpu.create();
+      const local = {
+        space: 'plane',
+        tables: {
+          Line: {
+            ids: [105, 209],
+            fields: { from: { reference: 'Bus', ids: ['a', null] }, mw: [23, 0] },
+          },
+          Bus: {
+            ids: ['a', 'b'],
+            fields: { x: Float32Array.of(0, 1), y: [0, 1], name: ['A', 'B'] },
+          },
+        },
+        marks: [{ vertices: 'Bus', position: ['$x', '$y'] }],
+      } satisfies import('latkit').Scene;
+      const gridCanvas = document.body.appendChild(document.createElement('canvas'));
+      const gridView = await View.create(gridCanvas, local, {
+        gpu,
+        camera: { zoom: 0 },
+      });
+      await gridView.done();
+      const grid = gridView.snapshot('$scene');
+      if (
+        !grid ||
+        grid.get('Line', 105, 'from') !== 'a' ||
+        grid.get('Line', 209, 'from') !== null ||
+        grid.get('Bus', 'b', 'x') !== 1
+      )
+        throw new Error('inline tables lost a column or reference');
+      grid.destroy();
+      const beforeRepeat = gpu.work;
+      const repeated = structuredClone(local);
+      gridView.scene = repeated;
+      await gridView.done();
+      if (JSON.stringify(gpu.work) !== JSON.stringify(beforeRepeat))
+        throw new Error('identical inline columns did GPU work');
+      let rejected = false;
+      try {
+        gridView.scene = { ...local, tables: { Line: local.tables.Line } };
+      } catch {
+        rejected = true;
+      }
+      if (!rejected || gridView.scene !== repeated)
+        throw new Error('an invalid table replaced the scene');
+      const other = new Data('$scene').replace('Bus', { x: [5], y: [8] });
+      gridView.scene = {
+        ...local,
+        marks: [...local.marks, { vertices: other.table('Bus'), position: ['$x', '$y'] }],
+      };
+      await gridView.done();
+      const externalBus = gridView.snapshot('$scene');
+      const localBus = gridView.snapshot('$scene1');
+      if (externalBus?.get('Bus', 0, 'x') !== 5 || localBus?.get('Bus', 'b', 'x') !== 1)
+        throw new Error('a local table shadowed an external dataset');
+      externalBus.destroy();
+      localBus.destroy();
+      gridView.destroy();
+      other.destroy();
+      gridCanvas.remove();
       const data = new Data('verify').set('Node', [11, 22], {
         x: [-36, 42],
         y: [28, -24],

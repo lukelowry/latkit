@@ -89,9 +89,8 @@ const has = (node, kind) => (ts.getModifiers?.(node) ?? []).some((m) => m.kind =
 function read(file) {
   const raw = withoutModuleDoc(fs.readFileSync(path.join(root, file), 'utf8'));
   const source = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true);
-  const code = uncommented(raw);
   /** The node's code, without comments, on one line. */
-  const text = (node) => code.slice(node.getStart(source), node.end).replace(/\s+/g, ' ').trim();
+  const text = (node) => uncommented(node.getText(source)).replace(/\s+/g, ' ').trim();
   const doc = (node) => docBefore(raw, node.pos);
   /** A declaration's type parameters, in full or (`names`) by name only, as `<…>`. */
   const generics = (node, names = false) =>
@@ -757,6 +756,7 @@ const sections = {
       'A scene: its space, how it responds to input, and how it is laid out.',
       [
         'Scene',
+        'LocalTable',
         'Title',
         'Place',
         'Space',

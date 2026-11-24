@@ -22,25 +22,25 @@ Save this as `index.html` in that folder.
 <title>Six-bus network</title>
 <canvas id="grid" width="720" height="360" style="max-width:100%">Six buses connected by seven lines</canvas>
 <script type="module">
-  import { Data, View, load, reference } from './node_modules/latkit/dist/index.js';
+  import { View, load } from './node_modules/latkit/dist/index.js';
 
   await load();
-  const grid = new Data('grid')
-    .replace('Bus', {
-      name: ['A', 'B', 'C', 'D', 'E', 'F'],
-      x: [-160, -65, -65, 65, 65, 160], y: [0, 58, -58, 58, -58, 0],
-    })
-    .replace('Line', {
-      from: reference('Bus', [0, 0, 1, 2, 2, 3, 4]),
-      to:   reference('Bus', [1, 2, 3, 3, 4, 5, 5]),
-    });
-
   await View.create(document.querySelector('#grid'), {
     space: { plane: { grid: 'off' } },
+    tables: {
+      Bus: { fields: {
+        name: ['A', 'B', 'C', 'D', 'E', 'F'],
+        x: [-160, -65, -65, 65, 65, 160], y: [0, 58, -58, 58, -58, 0],
+      } },
+      Line: { fields: {
+        from: { reference: 'Bus', ids: [0, 0, 1, 2, 2, 3, 4] },
+        to:   { reference: 'Bus', ids: [1, 2, 3, 3, 4, 5, 5] },
+      } },
+    },
     theme: { flow: { color: '#ffce8b', width: 7 } },
     marks: [
-      { edges: grid.table('Line'), ends: ['from', 'to'], color: '#527589', width: 2, flow: 64 },
-      { vertices: grid.table('Bus'), position: ['$x', '$y'], radius: 8, color: '#65d6bb', label: '$name' },
+      { edges: 'Line', ends: ['from', 'to'], color: '#527589', width: 2, flow: 64 },
+      { vertices: 'Bus', position: ['$x', '$y'], radius: 8, color: '#65d6bb', label: '$name' },
     ],
   });
 </script>

@@ -88,9 +88,28 @@ impl From<Areas> for Mark {
 /// The default name of the field a mark reads geometry from, the name geographic tables use.
 pub(crate) const GEOMETRY: &str = "geometry";
 
+/// A bare table name belongs to the scene. A pair always names an external dataset.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+#[schemars(inline)]
+pub(crate) enum TableRef {
+    Local(Name),
+    Named((Name, Name)),
+}
+
+impl TableRef {
+    pub(super) fn names(&self) -> (Name, Name) {
+        match self {
+            Self::Local(table) => (super::tables::LOCAL.into(), table.clone()),
+            Self::Named(names) => names.clone(),
+        }
+    }
+}
+
 /// Options every mark has.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Style {
+    pub(crate) local: bool,
     pub(crate) data: Name,
     pub(crate) table: Name,
     pub(crate) color: Option<Expr>,
@@ -180,6 +199,7 @@ impl Default for Interaction {
 impl Style {
     pub(crate) fn new(data: Name, table: Name) -> Style {
         Style {
+            local: false,
             data,
             table,
             color: None,
@@ -484,7 +504,12 @@ impl Mark {
     pub(crate) fn absent_from(&self, data: &crate::Snapshot) -> Option<Error> {
         let style = self.style();
         data.table(&style.table).is_none().then(|| {
-            Error::invalid(format!("dataset '{}' has no table '{}'", style.data, style.table)).at(self.kind().name())
+            let reason = if style.local {
+                format!("no scene-local table '{}'", style.table)
+            } else {
+                format!("dataset '{}' has no table '{}'", style.data, style.table)
+            };
+            Error::invalid(reason).at(self.kind().name())
         })
     }
 
@@ -998,6 +1023,15 @@ macro_rules! mark {
             }
         }
 
+        impl $name {
+            /// Draws the scene-local table named `table`.
+            pub fn local(table: impl Into<$crate::Name>) -> Self {
+                let mut mark = Self::of($crate::scene::tables::LOCAL, table);
+                mark.style.local = true;
+                mark
+            }
+        }
+
         impl schemars::JsonSchema for $name {
             fn schema_name() -> std::borrow::Cow<'static, str> {
                 stringify!($name).into()
@@ -1059,10 +1093,10 @@ macro_rules! mark {
         #[derive(serde::Deserialize, schemars::JsonSchema)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Form {
-            /// The dataset and table drawn, `[data, table]`.
+            /// A scene-local table name or an external `[dataset, table]` pair.
             #[serde(rename = $key)]
-            #[schemars(extend("tsType" = "TableInput"))]
-            of: ($crate::Name, $crate::Name),
+            #[schemars(extend("tsType" = "string | TableInput"))]
+            of: $crate::scene::mark::TableRef,
             $($(#[$doc])* $(#[schemars(extend("tsType" = $ts))])? #[serde(default $(= $default)?)] $field: $ty,)*
             $($stroke)*
             /// Each row's color: a CSS color, a value through a colormap, or a conditional that
@@ -1100,9 +1134,11 @@ macro_rules! mark {
 
         impl Form {
             fn style(&self) -> $crate::scene::mark::Style {
+                let (data, table) = self.of.names();
                 $crate::scene::mark::Style {
-                    data: self.of.0.clone(),
-                    table: self.of.1.clone(),
+                    local: matches!(self.of, $crate::scene::mark::TableRef::Local(_)),
+                    data,
+                    table,
                     color: self.color.clone(),
                     visible: self.visible.clone(),
                     priority: self.priority.clone(),

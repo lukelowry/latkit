@@ -1,6 +1,7 @@
 /** The types latkit reads, written by `node npm/build.mjs schema` from `npm/schema.json`. Do not edit. */
 
 import type { TableInput } from './data.js';
+import type { Fields, RowIds } from './patch.js';
 import type { Color, ExprInput } from './scene.js';
 
 /** What an input does. See `controls.gestures`. */
@@ -41,8 +42,8 @@ export interface AreaTheme {
  * areas, add a `Lines` mark of the same table. It draws their rings.
  */
 export interface Areas extends MarkOptions {
-  /** The dataset and table drawn, `[data, table]`. */
-  areas: TableInput;
+  /** A scene-local table name or an external `[dataset, table]` pair. */
+  areas: string | TableInput;
   /**
    * The polygon field each row fills. It holds one polygon's rings or several polygons. Defaults to
    * the field named `geometry`.
@@ -543,8 +544,8 @@ export interface EdgeTheme {
  * row can instead stand as a pole on its own vertex, or join many vertices as a net.
  */
 export interface Edges extends MarkOptions, StrokeOptions {
-  /** The dataset and table drawn, `[data, table]`. */
-  edges: TableInput;
+  /** A scene-local table name or an external `[dataset, table]` pair. */
+  edges: string | TableInput;
   /** The reference fields naming each row's two vertices. */
   ends?: [from: string, to: string] | null;
   /** A path field whose points each row passes through between its ends. */
@@ -714,6 +715,12 @@ export type Format =
   | /** Fixed decimals: `1500.0`. */ 'fixed'
   | /** A significand and a power of ten: `1.5e3`. */ 'scientific'
   | /** A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`. */ 'engineering';
+
+/**
+ * A point `[x, y]` (a third coordinate is ignored), or a list of geometries one level down: a path
+ * is a list of points, parts a list of paths, and polygons a list of parts.
+ */
+export type Geometry = [number, number, number?] | Geometry[];
 
 /** What each input does, by the input and the modifier keys held with it. See `controls.gestures`. */
 export type Gestures = {
@@ -931,8 +938,8 @@ export interface LineTheme {
  * monitor. On the earth, paths follow the globe's curve and stay unbroken across the antimeridian.
  */
 export interface Lines extends MarkOptions, StrokeOptions {
-  /** The dataset and table drawn, `[data, table]`. */
-  lines: TableInput;
+  /** A scene-local table name or an external `[dataset, table]` pair. */
+  lines: string | TableInput;
   /**
    * The path or polygon field each row runs along. Defaults to the field named `geometry`. Not
    * allowed on a plot.
@@ -959,6 +966,14 @@ export interface Lines extends MarkOptions, StrokeOptions {
    * which blends from end to end.
    */
   blend?: ExprInput | [from: ExprInput, to: ExprInput];
+}
+
+/** One inline table. File slices belong to external datasets loaded through a host. */
+export interface LocalTable {
+  /** Row ids. Omit to number rows from zero. */
+  ids?: RowIds | null;
+  /** Columns of values or references, one entry per row. */
+  fields?: Fields;
 }
 
 /**
@@ -1303,13 +1318,18 @@ export interface ScaleNode {
 /**
  * A space and its marks, in drawing order. A scene also sets layout, style, and input controls.
  *
- * JSON uses camelCase field names. Each mark names a dataset and table, for example
- * `{ "vertices": ["grid", "Bus"], "radius": 4 }`. A view ignores invalid options and lists them in
- * `failures`.
+ * JSON uses camelCase field names. A mark draws a local table such as `{"vertices": "Bus"}` or a
+ * table in a named dataset, such as `{"vertices": ["grid", "Bus"]}`. A view ignores invalid
+ * options and lists them in `failures`.
  */
 export interface Scene {
   /** The coordinate space for mark positions. */
   space: Space;
+  /** Static tables owned by this scene. A mark draws one by its bare table name. */
+  tables?: {
+    /** The rows and fields of this table. */
+    [name: string]: LocalTable;
+  };
   /** Marks in drawing order, from back to front. */
   marks?: Mark[];
   /** Layout for vertices without positions on a plane or the earth. Defaults to `none`. */
@@ -1574,8 +1594,8 @@ export type Vertical =
 
 /** Rows drawn as markers: points of a map, nodes of a graph. */
 export interface Vertices extends MarkOptions {
-  /** The dataset and table drawn, `[data, table]`. */
-  vertices: TableInput;
+  /** A scene-local table name or an external `[dataset, table]` pair. */
+  vertices: string | TableInput;
   /**
    * Each row's x and y. Rows without a position are placed by the point field `geometry` names. The
    * scene's layout places rows that have neither.

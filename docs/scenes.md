@@ -14,6 +14,12 @@ The [three-bus dataset](data.md) draws a branch between each pair of referenced 
 
 Assign a new scene to `view.scene` to change the drawing. Check `view.failures` if a mark is missing. A title or legend placed on a side reserves space. One placed in a corner overlays the drawing.
 
+## Local tables
+
+For a static drawing, put the columns in `scene.tables`. A mark can draw `"Bus"` by name. Each field has one value per row. Rows are numbered from zero unless you supply `ids` beside `fields`. A reference uses those row IDs, including text IDs and nonconsecutive bus numbers. The [six-bus example](quickstart/cli.md) fits in one JSON file.
+
+In JavaScript, `scene.tables` and `Data.replace` accept the same columns, including typed arrays. Use a dataset when you update rows, share data across views, or load tiles. Draw its table as `["grid", "Bus"]`. A scene can draw both local and external tables.
+
 ## Spaces
 
 | Space     | Positions                                              |

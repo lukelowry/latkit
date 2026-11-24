@@ -36,7 +36,7 @@ parts:
 ```sh
 uv run --project docs --group docs sphinx-build -W -b html docs target/docs   # the site
 LATKIT_BLESS=1 cargo test -p latkit-cli              # the CLI's command tree, docs/reference/cli.json
-pnpm exec tsc -p npm                                 # refresh the shipped declarations
+node npm/build.mjs compile npm                        # refresh declarations and bundle the browser worker
 node npm/docs.mjs                                    # regenerate the three reference pages
 LATKIT_BLESS=1 cargo test -p latkit --test schema    # the palette: latkit's default themes
 cargo build --locked -p latkit-cli --profile cli

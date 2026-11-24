@@ -246,6 +246,20 @@ struct Incoming {
     camera: Option<Camera>,
 }
 
+/// The datasets a pending scene compiles against. External-only scenes borrow the current slice.
+fn scene_snapshots<'a>(current: &'a [Snapshot], drawn: &Scene, next: &Scene) -> std::borrow::Cow<'a, [Snapshot]> {
+    if drawn.local == next.local {
+        return current.into();
+    }
+    current
+        .iter()
+        .filter(|s| Some(*s) != drawn.local.as_ref())
+        .chain(next.local.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .into()
+}
+
 impl Incoming {
     /// Releases what its compiled marks hold, as when a newer scene replaces it.
     fn release(self, inner: &mut crate::gpu::Inner) {
@@ -267,8 +281,8 @@ struct Identity {
 }
 
 impl View {
-    /// Creates a view that draws `scene` with `gpu`. Its marks draw nothing until
-    /// [`set_sources`](View::set_sources) provides their datasets.
+    /// Creates a view that draws `scene` with `gpu`. Scene-local tables are ready to draw.
+    /// Supply external datasets with [`set_sources`](View::set_sources).
     pub fn new(gpu: &Gpu, scene: Scene) -> View {
         let id = VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         View::made(gpu, scene, Identity { id, signal: Arc::default(), job_errors: Arc::default() })
@@ -365,6 +379,7 @@ impl View {
     pub fn move_to(&mut self, gpu: &Gpu) {
         let identity = Identity { id: self.id, signal: self.signal.clone(), job_errors: self.job_errors.clone() };
         let mut moved = View::made(gpu, self.scene().clone(), identity);
+        moved.rebind_local(&self.sources);
         moved.use_sources(self.sources.clone(), &mut gpu.0.lock());
         // The same scene and data, so what was derived from them alone still holds, layouts too.
         moved.scene_version = self.scene_version;
@@ -389,6 +404,7 @@ impl View {
         moved.stats = std::mem::take(&mut self.stats);
         // Sources given since load again on `gpu`, while the moved view draws those it drew.
         if let Some(sources) = self.incoming_sources.take() {
+            moved.rebind_local(&sources);
             moved.give_sources(sources);
         }
         moved.set_at(self.at);
@@ -433,6 +449,10 @@ impl View {
     /// nothing: no swap, no wait, no event, and no frame.
     pub fn set_scene(&mut self, mut scene: Scene) {
         let mut failures = std::mem::take(&mut scene.unread);
+        scene.reuse_tables(self.scene());
+        if let Err(error) = scene.bind_tables(&self.sources, self.incoming_sources.as_deref().unwrap_or_default()) {
+            failures.push(error);
+        }
         failures.extend(scene.sanitize());
         let last = self.incoming.as_ref().map_or(&self.scene_failures, |incoming| &incoming.failures);
         if scene == *self.scene() && failures == *last {
@@ -460,6 +480,8 @@ impl View {
     /// space, or the presence of a layout changed. A twin of an earlier mark draws nothing and takes
     /// over no state.
     fn compile_marks(&self, scene: &Scene, inner: &mut crate::gpu::Inner) -> Vec<Option<Shown>> {
+        let local_changed = scene.local != self.scene.local;
+        let snapshots = scene_snapshots(&self.snapshots, &self.scene, scene);
         let kind_changed = std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
         let context_changed = scene.theme != self.scene.theme
             || kind_changed
@@ -471,13 +493,14 @@ impl View {
                 fresh.push(Some(Shown::twin(mark.clone())));
                 continue;
             }
-            let kept = !context_changed && self.marks.iter().any(|s| !s.twin && s.mark.draws_like(mark));
+            let kept = !(context_changed || local_changed && mark.style().local)
+                && self.marks.iter().any(|s| !s.twin && s.mark.draws_like(mark));
             if kept {
                 fresh.push(None);
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.snapshots, context, inner);
+            shown.compile(&snapshots, context, inner);
             fresh.push(Some(shown));
         }
         fresh
@@ -544,6 +567,15 @@ impl View {
         let kind_changed = std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
+        if scene.local != self.scene.local {
+            if let Some(previous) = self.scene.local.as_ref().map(|s| s.name().clone()) {
+                self.forget(&previous, &mut inner);
+            }
+            if let Some(local) = &scene.local {
+                let i = self.snapshots.partition_point(|s| s.name() < local.name());
+                self.snapshots.insert(i, local.clone());
+            }
+        }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
         let easing = !scene.ease.is_zero() && self.moves_with(&scene.controls);
         // Each new mark's index before, for a mark that keeps its state or takes over another's.
@@ -648,8 +680,36 @@ impl View {
                 return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
             }
         }
+        self.rebind_local(&sources);
         self.give_sources(sources);
         Ok(())
+    }
+
+    /// An external source can use any name, even one previously assigned to local tables.
+    /// Move the local snapshot and its marks together before installing such a source.
+    fn rebind_local(&mut self, sources: &[Source]) {
+        let collides =
+            |scene: &Scene| scene.local.as_ref().is_some_and(|s| sources.iter().any(|x| x.name() == s.name()));
+        if !collides(&self.scene) && !self.incoming.as_ref().is_some_and(|p| collides(&p.scene)) {
+            return;
+        }
+        let pending = self.incoming.take();
+        let gpu = self.gpu.clone();
+        if collides(&self.scene) {
+            let mut scene = self.scene.clone();
+            let _ = scene.bind_tables(&self.sources, sources);
+            let fresh = self.compile_marks(&scene, &mut gpu.0.lock());
+            self.swap(Incoming { scene, fresh, failures: self.scene_failures.clone(), camera: None });
+        }
+        if let Some(mut pending) = pending {
+            let _ = pending.scene.bind_tables(&self.sources, sources);
+            let mut inner = gpu.0.lock();
+            for mark in pending.fresh.iter_mut().flatten() {
+                mark.release(&mut inner);
+            }
+            pending.fresh = self.compile_marks(&pending.scene, &mut inner);
+            self.incoming = Some(pending);
+        }
     }
 
     /// Takes `sources`, whose names differ: at once, or once the tiles among them that the view
@@ -790,11 +850,12 @@ impl View {
         // An incoming scene's marks compiled against the version before.
         if let Some(incoming) = &mut self.incoming {
             let scene = &incoming.scene;
+            let snapshots = scene_snapshots(&self.snapshots, &self.scene, scene);
             let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
             for shown in incoming.fresh.iter_mut().flatten() {
                 if shown.stale(&self.snapshots[at]) {
                     compiled = true;
-                    shown.compile(&self.snapshots, context, inner);
+                    shown.compile(&snapshots, context, inner);
                 }
             }
         }

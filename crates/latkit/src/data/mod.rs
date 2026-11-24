@@ -23,7 +23,11 @@ mod text;
 mod values;
 
 pub use bytes::DecodeLimits;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub use bytes::read_table;
 pub use describe::{Description, Envelope, EnvelopeRequest, FieldDescription, TableDescription};
+#[cfg(feature = "gpu")]
+pub(crate) use forms::LocalTable;
 pub use frames::TileWriter;
 pub use ids::Ids;
 pub use json::{Patches, Reading};
@@ -36,7 +40,7 @@ pub use snapshot::Snapshot;
 pub use source::Data;
 #[cfg(feature = "gpu")]
 pub use source::Source;
-pub use table::Table;
+pub use table::{Columns, Table};
 pub use values::{Kind, Value, Values};
 
 pub(crate) use {geometry::Geometry, table::Field};

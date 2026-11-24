@@ -6,7 +6,7 @@
 
 import type * as bindings from '../pkg/latkit.js';
 import type { Canvas, Rect } from './canvas.js';
-import { Snapshot, sourceOf, Table, type Source } from './data.js';
+import { columns, Snapshot, sourceOf, Table, type Source } from './data.js';
 import { device, Gpu } from './gpu.js';
 import type { Arrange, Camera, Fit, Row, Rows, Scene } from './inputs.js';
 import {
@@ -16,11 +16,12 @@ import {
   onStop,
   thrown,
   waited,
+  wasm,
   type LatkitError,
   type Wait,
 } from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
-import { owned, Patch } from './patch.js';
+import { owned, Patch, rows, type RowIds } from './patch.js';
 import { playhead as bound, type Playhead } from './playhead.js';
 
 /** The region covering a whole canvas or picture. */
@@ -106,7 +107,7 @@ export class View extends Handle {
       if (told.view) told.view.#tell(json);
     };
     const { json, tables } = encoded(scene);
-    super(device(gpu).view(json, tell), 'View');
+    super(device(gpu).view(json, tell, localTables(scene)), 'View');
     told.view = this;
     this.#unstop = onStop((error) => this.#emit('error', error));
     this.#gpu = gpu;
@@ -202,7 +203,7 @@ export class View extends Handle {
     const changed =
       tables.length !== this.#tables.length || tables.some((t, i) => t !== this.#tables[i]);
     const drawn = changed ? this.#drawn(tables, this.#sources) : undefined;
-    view(this).setScene(json);
+    view(this).setScene(json, localTables(scene));
     this.#scene = scene;
     this.#tables = tables;
     if (drawn) view(this).setSources(drawn);
@@ -570,16 +571,81 @@ function detail(event: ViewEvent): unknown {
   return event.detail;
 }
 
-/** `scene` as JSON, and the datasets of the tables it names. */
+/** Encodes scene options and collects external datasets. Local columns cross separately. */
 function encoded(scene: Scene): { json: string; tables: Source[] } {
   const tables = new Set<Source>();
-  const json = JSON.stringify(scene, function (this: Record<string, unknown>, key, value: unknown) {
-    // `value` is what `toJSON` returned. The holder still has the table itself.
-    const held = this[key];
-    if (held instanceof Table) tables.add(held.source);
-    return value;
-  });
+  const options = scene.tables === undefined ? scene : { ...scene, tables: undefined };
+  const json = JSON.stringify(
+    options,
+    function (this: Record<string, unknown>, key, value: unknown) {
+      // `value` is what `toJSON` returned. The holder still has the table itself.
+      const held = this[key];
+      if (held instanceof Table) tables.add(held.source);
+      return value;
+    },
+  );
   return { json, tables: [...tables] };
+}
+
+function record(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    !ArrayBuffer.isView(value)
+  );
+}
+
+function validIds(ids: RowIds): boolean {
+  return (
+    Array.isArray(ids) ||
+    ids instanceof Float64Array ||
+    ids instanceof Uint32Array ||
+    (record(ids) &&
+      'count' in ids &&
+      Object.keys(ids).length === 1 &&
+      Number.isInteger(ids.count) &&
+      ids.count >= 0 &&
+      ids.count <= 0xffffffff)
+  );
+}
+
+/** Owns the pending batch until the binding consumes it or a declaration fails. */
+function localTables(scene: Scene): bindings.TableBatch | undefined {
+  if (scene.tables === undefined) return undefined;
+  const invalid = (path: string, message: string) =>
+    thrown({ code: 'invalid', path, message: `${path}: ${message}` });
+  if (!record(scene.tables)) throw invalid('scene.tables', 'expected tables by name');
+  const batch = new (wasm().TableBatch)();
+  try {
+    for (const [name, table] of Object.entries(scene.tables)) {
+      const path = `scene.tables.${name}`;
+      if (!record(table) || Object.keys(table).some((k) => k !== 'ids' && k !== 'fields'))
+        throw invalid(path, 'expected a table with ids and fields');
+      if (table.fields !== undefined && !record(table.fields))
+        throw invalid(path + '.fields', 'expected fields by name');
+      if (table.ids != null && !validIds(table.ids))
+        throw invalid(path + '.ids', 'invalid row ids');
+      const fields = table.fields ?? {};
+      for (const [key, field] of Object.entries(fields)) {
+        if (Array.isArray(field) || ArrayBuffer.isView(field)) continue;
+        if (
+          !record(field) ||
+          !('reference' in field) ||
+          typeof field.reference !== 'string' ||
+          !validIds(field.ids) ||
+          Object.keys(field).some((k) => k !== 'ids' && k !== 'reference')
+        )
+          throw invalid(`${path}.fields.${key}`, 'expected values or a row reference');
+      }
+      const [ids] = table.ids == null ? rows(fields, undefined) : [table.ids];
+      batch.write(name, ...columns(name, ids, fields));
+    }
+    return batch;
+  } catch (error) {
+    batch.free();
+    throw error;
+  }
 }
 
 /** @internal Returns a new bindings handle to the view, for a canvas to show or a shot to draw. */

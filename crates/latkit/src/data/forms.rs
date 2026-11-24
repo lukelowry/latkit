@@ -167,22 +167,27 @@ impl JsonSchema for Column {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let element = generator.subschema_for::<Element>();
-        let ids = generator.subschema_for::<IdsForm>();
+        let [values, reference] = column_forms(generator, &element);
         let dtype = generator.subschema_for::<Dtype>();
         json_schema!({
             "description": "A field's values: an array of one kind of value; a reference naming another table's rows by id; or a slice of a binary file beside the document.",
-            "anyOf": [
-                { "type": "array", "items": element },
-                { "type": "object", "properties": { "reference": { "type": "string" }, "ids": ids }, "required": ["reference", "ids"], "additionalProperties": false },
-                {
-                    "type": "object",
-                    "properties": { "file": { "type": "string" }, "dtype": dtype, "offset": { "type": "integer", "minimum": 0 }, "count": { "type": "integer", "minimum": 0 } },
-                    "required": ["file", "dtype", "count"],
-                    "additionalProperties": false,
-                },
-            ],
+            "anyOf": [values, reference, {
+                "type": "object",
+                "properties": { "file": { "type": "string" }, "dtype": dtype, "offset": { "type": "integer", "minimum": 0 }, "count": { "type": "integer", "minimum": 0 } },
+                "required": ["file", "dtype", "count"], "additionalProperties": false
+            }]
         })
     }
+}
+
+/// The two column forms that need no file I/O.
+fn column_forms(generator: &mut SchemaGenerator, element: &Schema) -> [Schema; 2] {
+    let ids = generator.subschema_for::<IdsForm>();
+    [
+        json_schema!({ "type": "array", "items": element }),
+        json_schema!({ "type": "object", "properties": { "reference": { "type": "string" }, "ids": ids },
+            "required": ["reference", "ids"], "additionalProperties": false }),
+    ]
 }
 
 impl JsonSchema for Element {
@@ -246,7 +251,7 @@ impl schemars::JsonSchema for Id {
 }
 
 /// Deserializes an id from a non-negative whole number or a text. A number parsed as a float must
-/// be at most 2^53 − 1. Null is an error.
+/// be at most 2^53 âˆ’ 1. Null is an error.
 impl<'de> Deserialize<'de> for Id {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Id, D::Error> {
         Key::deserialize(deserializer)?.0.ok_or_else(|| de::Error::custom("an id must be a whole number or a text"))
@@ -307,9 +312,48 @@ pub(crate) fn patch(ops: Vec<OpForm>) -> Result<Patch> {
 
 impl TableForm {
     fn table(self) -> Result<Table> {
-        let name = self.table;
-        let mut table = Table::new(name.as_str(), self.ids.0);
-        for (field, column) in self.fields.into_columns() {
+        self.fields.fill(Table::new(self.table, self.ids.0))
+    }
+}
+
+/// One inline table. File slices belong to external datasets loaded through a host.
+#[cfg(feature = "gpu")]
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LocalTable {
+    /// Row ids. Omit to number rows from zero.
+    #[serde(default)]
+    #[schemars(extend("tsType" = "RowIds | null"))]
+    ids: Option<IdsForm>,
+    /// Columns of values or references, one entry per row.
+    #[serde(default)]
+    #[schemars(schema_with = "local_fields_schema", extend("tsType" = "Fields"))]
+    fields: Fields,
+}
+
+#[cfg(feature = "gpu")]
+fn local_fields_schema(generator: &mut SchemaGenerator) -> Schema {
+    let element = Element::json_schema(generator);
+    let forms = column_forms(generator, &element);
+    json_schema!({ "type": "object", "additionalProperties": { "description": "One column of values or row references.", "anyOf": forms } })
+}
+
+#[cfg(feature = "gpu")]
+impl LocalTable {
+    pub(crate) fn build(self, name: Name) -> Result<Table> {
+        let count = || match self.fields.0.0.first().map(|(_, column)| column) {
+            Some(Column::Values(values)) => values.len(),
+            Some(Column::Reference { ids, .. }) => ids.len(),
+            _ => 0,
+        };
+        let ids = self.ids.map_or_else(|| Ids::count(u32::try_from(count()).unwrap_or(u32::MAX)), |ids| ids.0);
+        self.fields.fill(Table::new(name, ids))
+    }
+}
+
+impl Fields {
+    fn fill(self, mut table: Table) -> Result<Table> {
+        for (field, column) in self.into_columns() {
             table = match column {
                 Column::Reference { to, ids } => table.reference(field, to, ids),
                 column => {

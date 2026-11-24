@@ -15,13 +15,21 @@ A scene: its space, how it responds to input, and how it is laid out.
 
 A space and its marks, in drawing order. A scene also sets layout, style, and input controls.
 
-JSON uses camelCase field names. Each mark names a dataset and table, for example
-`{ "vertices": ["grid", "Bus"], "radius": 4 }`. A view ignores invalid options and lists them in
-`failures`.
+JSON uses camelCase field names. A mark draws a local table such as `{"vertices": "Bus"}` or a
+table in a named dataset, such as `{"vertices": ["grid", "Bus"]}`. A view ignores invalid
+options and lists them in `failures`.
 
 {#scene-space .member}
 **`space`**`:` [`Space`](#space) [¶](#scene-space){.headerlink}
 : The coordinate space for mark positions.
+
+{#scene-tables .member}
+**`tables`**`?: { [name: string]:` [`LocalTable`](#localtable) `}` [¶](#scene-tables){.headerlink}
+: Static tables owned by this scene. A mark draws one by its bare table name.
+
+  {#scene-tables-name-string .member}
+  **`[name: string]`**`:` [`LocalTable`](#localtable) [¶](#scene-tables-name-string){.headerlink}
+  : The rows and fields of this table.
 
 {#scene-marks .member}
 **`marks`**`?:` [`Mark`](#mark)`[]` [¶](#scene-marks){.headerlink}
@@ -46,6 +54,23 @@ JSON uses camelCase field names. Each mark names a dataset and table, for exampl
 {#scene-title .member}
 **`title`**`?:` [`Title`](#title) `| null` [¶](#scene-title){.headerlink}
 : Title text or title options.
+
+(localtable)=
+
+### `LocalTable`
+
+{.signature}
+`interface LocalTable`
+
+One inline table. File slices belong to external datasets loaded through a host.
+
+{#localtable-ids .member}
+**`ids`**`?:` [`RowIds`](#rowids) `| null` [¶](#localtable-ids){.headerlink}
+: Row ids. Omit to number rows from zero.
+
+{#localtable-fields .member}
+**`fields`**`?:` [`Fields`](#fields) [¶](#localtable-fields){.headerlink}
+: Columns of values or references, one entry per row.
 
 (title)=
 
@@ -123,15 +148,15 @@ sits outside its row: centered on a side, or set diagonally out from a corner.
 The coordinate space of a scene's positions: a name, or `{ plane | earth | plot: options }`.
 
 {#space-earth .member}
-`{ /** Longitude and latitude in degrees, on a flat map or a globe. */` **`earth`**`:` [`Earth`](#earth) `}` [¶](#space-earth){.headerlink}
+`{` **`earth`**`:` [`Earth`](#earth) `}` [¶](#space-earth){.headerlink}
 : Longitude and latitude in degrees, on a flat map or a globe.
 
 {#space-plane .member}
-`{ /** Plane units, with elevation. The camera can turn and tilt. */` **`plane`**`:` [`Plane`](#plane) `}` [¶](#space-plane){.headerlink}
+`{` **`plane`**`:` [`Plane`](#plane) `}` [¶](#space-plane){.headerlink}
 : Plane units, with elevation. The camera can turn and tilt.
 
 {#space-plot .member}
-`{ /** The data's axis horizontally and values vertically. */` **`plot`**`:` [`Plot`](#plot) `}` [¶](#space-plot){.headerlink}
+`{` **`plot`**`:` [`Plot`](#plot) `}` [¶](#space-plot){.headerlink}
 : The data's axis horizontally and values vertically.
 
 (plane)=
@@ -553,11 +578,11 @@ A placed row keeps its place. Rows added later are placed around the others, and
 lays out every row again.
 
 {#layout-stress .member}
-`{ /** Drawn distances follow graph distances. */` **`stress`**`:` [`Stress`](#stress) `}` [¶](#layout-stress){.headerlink}
+`{` **`stress`**`:` [`Stress`](#stress) `}` [¶](#layout-stress){.headerlink}
 : Drawn distances follow graph distances.
 
 {#layout-layered .member}
-`{ /** Ranks along a direction, for processes and hierarchies. */` **`layered`**`:` [`Layered`](#layered) `}` [¶](#layout-layered){.headerlink}
+`{` **`layered`**`:` [`Layered`](#layered) `}` [¶](#layout-layered){.headerlink}
 : Ranks along a direction, for processes and hierarchies.
 
 (layered)=
@@ -1042,7 +1067,7 @@ A length: a number in CSS pixels, or `{ units }` in position units (degrees on t
 grow as the view zooms in.
 
 {#length-units .member}
-`{ /** Position` **`units`** `(degrees on the earth), which grow as the view zooms in. */ units: number }` [¶](#length-units){.headerlink}
+`{` **`units`**`: number }` [¶](#length-units){.headerlink}
 : Position units (degrees on the earth), which grow as the view zooms in.
 
 ## Marks
@@ -1189,8 +1214,8 @@ takes at most four, each a shape, an icon, or a symbol.
 Rows drawn as markers: points of a map, nodes of a graph.
 
 {#vertices-vertices .member}
-**`vertices`**`:` [`TableInput`](#tableinput) [¶](#vertices-vertices){.headerlink}
-: The dataset and table drawn, `[data, table]`.
+**`vertices`**`: string |` [`TableInput`](#tableinput) [¶](#vertices-vertices){.headerlink}
+: A scene-local table name or an external `[dataset, table]` pair.
 
 {#vertices-position .member}
 **`position`**`?: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] | null` [¶](#vertices-position){.headerlink}
@@ -1243,8 +1268,8 @@ Rows drawn as strokes between two vertices named by reference fields: branches, 
 row can instead stand as a pole on its own vertex, or join many vertices as a net.
 
 {#edges-edges .member}
-**`edges`**`:` [`TableInput`](#tableinput) [¶](#edges-edges){.headerlink}
-: The dataset and table drawn, `[data, table]`.
+**`edges`**`: string |` [`TableInput`](#tableinput) [¶](#edges-edges){.headerlink}
+: A scene-local table name or an external `[dataset, table]` pair.
 
 {#edges-ends .member}
 **`ends`**`?: [from: string, to: string] | null` [¶](#edges-ends){.headerlink}
@@ -1317,8 +1342,8 @@ outlines). On a plot, each row traces a sampled field's history across the data'
 monitor. On the earth, paths follow the globe's curve and stay unbroken across the antimeridian.
 
 {#lines-lines .member}
-**`lines`**`:` [`TableInput`](#tableinput) [¶](#lines-lines){.headerlink}
-: The dataset and table drawn, `[data, table]`.
+**`lines`**`: string |` [`TableInput`](#tableinput) [¶](#lines-lines){.headerlink}
+: A scene-local table name or an external `[dataset, table]` pair.
 
 {#lines-geometry .member}
 **`geometry`**`?: string | null` [¶](#lines-geometry){.headerlink}
@@ -1371,8 +1396,8 @@ earth, areas follow the globe's curve and stay unbroken across the antimeridian.
 areas, add a [`Lines`](#lines) mark of the same table. It draws their rings.
 
 {#areas-areas .member}
-**`areas`**`:` [`TableInput`](#tableinput) [¶](#areas-areas){.headerlink}
-: The dataset and table drawn, `[data, table]`.
+**`areas`**`: string |` [`TableInput`](#tableinput) [¶](#areas-areas){.headerlink}
+: A scene-local table name or an external `[dataset, table]` pair.
 
 {#areas-geometry .member}
 **`geometry`**`?: string | null` [¶](#areas-geometry){.headerlink}
@@ -1390,11 +1415,11 @@ How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
 `{ shape | block | gauge | pie | icon | symbol | wgsl: options }`. Defaults to an ellipse.
 
 {#marker-shape .member}
-`{ /** A filled` **`shape`**`. */ shape:` [`Shape`](#shape) `}` [¶](#marker-shape){.headerlink}
+`{` **`shape`**`:` [`Shape`](#shape) `}` [¶](#marker-shape){.headerlink}
 : A filled shape.
 
 {#marker-block .member}
-`{ /** A rectangle with rounded corners that holds its label inside where the text fits. */` **`block`**``: { /** Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`. */ corner?: number | null } }`` [¶](#marker-block){.headerlink}
+`{` **`block`**`: { corner?: number | null } }` [¶](#marker-block){.headerlink}
 : A rectangle with rounded corners that holds its label inside where the text fits.
 
   {#marker-block-corner .member}
@@ -1402,7 +1427,7 @@ How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
   : Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`.
 
 {#marker-gauge .member}
-``{ /** * A shape's outline, filled to `fill` (0 to 1). A circle fills around its edge, and other shapes * fill upward. */`` **`gauge`**`: { /** How full each row's gauge is, from 0 to 1. */ fill:` [`ExprInput`](#exprinput)`; /** The outline's shape. Defaults to an ellipse. */ shape?:` [`Shape`](#shape) `} }` [¶](#marker-gauge){.headerlink}
+`{` **`gauge`**`: { fill:` [`ExprInput`](#exprinput)`; shape?:` [`Shape`](#shape) `} }` [¶](#marker-gauge){.headerlink}
 : A shape's outline, filled to `fill` (0 to 1). A circle fills around its edge, and other shapes
   fill upward.
 
@@ -1415,7 +1440,7 @@ How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
   : The outline's shape. Defaults to an ellipse.
 
 {#marker-pie .member}
-`{ /** A circle divided into slices sized in proportion to their values. */` **`pie`**`: { /** Each slice's value. */ slices:` [`ExprInput`](#exprinput)`[]; /** Each slice's color. */ colors:` [`Color`](#color)`[]; /** The hole in the middle, as a fraction of the radius. Defaults to 0. */ hole?: number } }` [¶](#marker-pie){.headerlink}
+`{` **`pie`**`: { slices:` [`ExprInput`](#exprinput)`[]; colors:` [`Color`](#color)`[]; hole?: number } }` [¶](#marker-pie){.headerlink}
 : A circle divided into slices sized in proportion to their values.
 
   {#marker-pie-slices .member}
@@ -1431,7 +1456,7 @@ How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
   : The hole in the middle, as a fraction of the radius. Defaults to 0.
 
 {#marker-icon .member}
-``{ /** One of `images`, fitted to the marker's box. `index` picks the image for each row. */`` **`icon`**`: { /** The images. */ images:` [`Bitmap`](#bitmap)`[]; /** Each row's image index, from 0. */ index:` [`ExprInput`](#exprinput) `} }` [¶](#marker-icon){.headerlink}
+`{` **`icon`**`: { images:` [`Bitmap`](#bitmap)`[]; index:` [`ExprInput`](#exprinput) `} }` [¶](#marker-icon){.headerlink}
 : One of `images`, fitted to the marker's box. `index` picks the image for each row.
 
   {#marker-icon-images .member}
@@ -1443,7 +1468,7 @@ How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
   : Each row's image index, from 0.
 
 {#marker-symbol .member}
-``{ /** * A drawing in SVG path data, in the row's color, fitted to the square of the marker's smaller * side. `index` picks each row's path. Coordinates run from -1 to 1 across that square, x right * and y down, as SVG has them. With `stroke` the path is stroked at that width, and without it the * path is filled, by the even-odd rule. Each path is set once as a distance field, so its outline * stays sharp as the marker grows, and glows, rings, and picks follow it. */`` **`symbol`**`: { /** The paths, as SVG path data. */ paths: string[]; /** Each row's path index, from 0. Defaults to 0. */ index?:` [`ExprInput`](#exprinput)``; /** * The stroke's width: a number in CSS pixels, or `{ units }` in position units. Without it, the * path is filled. */ stroke?:`` [`Length`](#length) `| null } }` [¶](#marker-symbol){.headerlink}
+`{` **`symbol`**`: { paths: string[]; index?:` [`ExprInput`](#exprinput)`; stroke?:` [`Length`](#length) `| null } }` [¶](#marker-symbol){.headerlink}
 : A drawing in SVG path data, in the row's color, fitted to the square of the marker's smaller
   side. `index` picks each row's path. Coordinates run from -1 to 1 across that square, x right
   and y down, as SVG has them. With `stroke` the path is stroked at that width, and without it the
@@ -1464,7 +1489,7 @@ How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
     path is filled.
 
 {#marker-wgsl .member}
-``{ /** * A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It * reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's size * as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It returns * the pixel's straight color and its signed distance in CSS pixels from the outline, negative * inside, which glows and status rings follow. The color's alpha is the pixel's coverage: latkit * blends it as given and smooths no edge, so fade the outline over a pixel, as * `color.a * saturate(0.5 - distance / fwidth(distance))` does. The source may declare its own * functions, types, and constants. Of latkit's shader code, it sees only `MarkerFragment` and * `MarkerColor`. It compiles once, when a view first draws it. */`` **`wgsl`**``: { /** The WGSL source of the `marker` function. */ source: string; /** Each row's inputs, at most eight. */ inputs?:`` [`ExprInput`](#exprinput)`[] } }` [¶](#marker-wgsl){.headerlink}
+`{` **`wgsl`**`: { source: string; inputs?:` [`ExprInput`](#exprinput)`[] } }` [¶](#marker-wgsl){.headerlink}
 : A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It
   reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's size
   as `f.half`, the row's color as `f.color`, and up to eight `inputs` as `f.input[i]`. It returns

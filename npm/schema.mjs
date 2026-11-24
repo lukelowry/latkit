@@ -38,7 +38,11 @@ const OUTPUTS = [
 ];
 
 /** Hand-written types that a `tsType` names, keyed by the module that declares them. */
-const IMPORTS = { './data.js': ['TableInput'], './scene.js': ['Color', 'ExprInput'] };
+const IMPORTS = {
+  './data.js': ['TableInput'],
+  './patch.js': ['Fields', 'RowIds'],
+  './scene.js': ['Color', 'ExprInput'],
+};
 const OUTPUT_IMPORTS = { './patch.js': ['Patch'] };
 
 /**
