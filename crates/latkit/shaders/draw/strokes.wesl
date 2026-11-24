@@ -27,7 +27,7 @@ import package::lib::mark::{coverage, fringe, px_per_length};
 import package::lib::stroke::{
     Stroke, covered, stroke_paint, painted, stroke_distance, owns, comets_on, comet_on, COMET_RIM,
 };
-import package::lib::screen::{ScreenStroke, read_stroke, screen_stroke, comet_slot, on_target};
+import package::lib::screen::{ScreenStroke, draw_record, read_stroke, trace_stroke, comet_slot, on_target};
 import package::lib::color::{output, OPAQUE};
 
 // A scene whose dash and flow expressions are constant zero needs no phase or comet payload.
@@ -99,9 +99,9 @@ fn haloed(color: vec4f, d: vec3f, s: Stroke) -> vec4f {
 // Where segment `instance` lies on screen: from its record, or for a trace, placed here.
 fn stroke_at(instance: u32) -> ScreenStroke {
     if PATH == PATH_TRACE {
-        return screen_stroke(instance, LIT_DRAW);
+        return trace_stroke(instance, LIT_DRAW);
     }
-    return read_stroke(instance);
+    return read_stroke(draw_record(instance, LIT_DRAW));
 }
 
 @vertex

@@ -1,10 +1,7 @@
 //! A frame's GPU passes.
 //!
-//! Raster passes freeze the rows' current state for transitions starting this frame, expands
-//! paged marks' drawn rows from their runs, evaluates dirty channels over the changed row blocks
-//! (reducing fitted domains first), resolves endpoints, eases marks in transition, moves comets,
-//! number segments, sort rows by height, and measure
-//! extents when asked.
+//! Raster passes expand paged rows, evaluate dirty channels, resolve endpoints, and advance
+//! transitions and comets. They also number segments, sort rows by height, and measure extents.
 //!
 //! The render pass draws the backdrop and a plot's grid lines, then every mark's primitive in scene
 //! order with depth, then the labels and the rest of the overlay. A pending probe then
@@ -24,8 +21,42 @@ use crate::expr::cpu::Rows;
 use crate::gpu::Inner;
 use crate::gpu::pipelines::{Asked, Projection, Variant};
 use crate::gpu::readback::Readback;
+use crate::gpu::screen::StrokeRead;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::{MarkKind, Primitive};
+
+#[derive(Clone, Copy)]
+pub(super) enum StrokeDemand {
+    None,
+    One(u32),
+    Anchors,
+    Segments,
+}
+
+/// Targets and stroke records for one submission. Later views can reuse the GPU stores once
+/// this frame's draws, labels, and input passes have been encoded.
+pub(super) struct PreparedFrame {
+    color: Option<wgpu::TextureView>,
+    depth: wgpu::TextureView,
+    still: Option<(wgpu::TextureView, bool)>,
+    from: Option<Cut>,
+    made: Option<Cut>,
+    keep_depth: bool,
+    pick_targets: Option<((wgpu::TextureView, wgpu::TextureView), [u32; 4])>,
+    firsts: [Vec<Option<u32>>; 2],
+    pub(super) reads: Vec<StrokeRead>,
+}
+
+impl PreparedFrame {
+    pub(super) fn locate_uniforms(&self, uniforms: &mut [u8]) {
+        // Every copy of a mark's uniform uses the same base, including along-marker draws.
+        let at = std::mem::offset_of!(wgsl::Mark, screen_first);
+        for block in uniforms.as_chunks_mut::<{ MARK_STRIDE as usize }>().0 {
+            let index = u32::from_ne_bytes(block[..4].try_into().unwrap()) as usize;
+            block[at..at + 4].copy_from_slice(&self.firsts[0][index].unwrap_or(0).to_ne_bytes());
+        }
+    }
+}
 
 /// The scissor rectangle `[x, y, width, height]`, in target pixels, covering `area`.
 fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
@@ -836,7 +867,8 @@ impl View {
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         drawn: &[bool],
-    ) -> [Vec<Option<u32>>; 2] {
+        demand: &[StrokeDemand],
+    ) -> ([Vec<Option<u32>>; 2], Vec<StrokeRead>) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let lights = !self.unplaced() && self.can_use(Stage::Lit);
@@ -857,33 +889,77 @@ impl View {
                 })
                 .collect()
         });
-        inner.screen.fit(device, records);
+        let mut spans = 0;
+        let mut extra = Vec::new();
+        let reads = self
+            .marks
+            .iter()
+            .zip(demand)
+            .enumerate()
+            .map(|(i, (m, need))| {
+                if matches!(need, StrokeDemand::None)
+                    || m.kind().primitive() != Primitive::Strokes
+                    || m.path() == wgsl::PATH_TRACE
+                    || !m.drawable()
+                {
+                    return StrokeRead::Empty;
+                }
+                // Only displaced bends and geodesics need a different centerline for picking.
+                if let Some((first, _, _)) = placed[0][i]
+                    && !(m.laned() && (m.path() == wgsl::PATH_BENDS || m.geodesic))
+                {
+                    return StrokeRead::Paint(first);
+                }
+                let first = records * 2 + spans;
+                let (start, count, mode, read) = match *need {
+                    StrokeDemand::Segments => {
+                        (0, m.counted_instances(m.instances()), wgsl::PLACE_SPANS, StrokeRead::Segments(first))
+                    }
+                    StrokeDemand::Anchors => (0, m.rows, wgsl::PLACE_ANCHORS, StrokeRead::Anchors(first)),
+                    StrokeDemand::One(row) => (row, 1, wgsl::PLACE_ANCHORS, StrokeRead::One(first)),
+                    StrokeDemand::None => unreachable!(),
+                };
+                spans += count;
+                extra.push((
+                    i,
+                    start,
+                    count,
+                    first,
+                    mode,
+                    MarkVariants::shown(m, &self.scene).screen().expect("recorded stroke"),
+                ));
+                read
+            })
+            .collect();
+        inner.screen.fit(device, records, spans);
         let resources = self.resources.as_mut().expect("created before passes");
         let groups = resources.groups(&gpu.0, inner);
         let Inner { screen, pipelines, arena, .. } = inner;
         let mut raster = crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines, encoder };
-        for (lit, list) in [false, true].into_iter().zip(&placed) {
-            for (i, &(first, count, variant)) in list.iter().enumerate().filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
-            {
-                if count == 0 || !self.marks[i].drawable() {
-                    continue;
-                }
-                let input = crate::gpu::listing::Inputs {
-                    pages: arena.words(),
-                    lists: resources.lists(),
-                    view: &groups.view,
-                    mark: &groups.mark,
-                    offset: offset(i),
-                    path: self.marks[i].path(),
-                    projection: Projection::of(&self.scene.space),
-                    measured: self.marks[i].measures_paths(),
-                };
-                screen.place(&mut raster, &input, variant, [count, first], lit);
+        let paint = [wgsl::PLACE_ROWS, wgsl::PLACE_LIT].into_iter().zip(&placed).flat_map(|(mode, list)| {
+            list.iter()
+                .enumerate()
+                .filter_map(move |(i, p)| p.map(|(first, count, variant)| (i, 0, count, first, mode, variant)))
+        });
+        for (i, start, count, first, mode, variant) in paint.chain(extra) {
+            if count == 0 || !self.marks[i].drawable() {
+                continue;
             }
+            let input = crate::gpu::listing::Inputs {
+                pages: arena.words(),
+                lists: resources.lists(),
+                view: &groups.view,
+                mark: &groups.mark,
+                offset: offset(i),
+                path: self.marks[i].path(),
+                projection: Projection::of(&self.scene.space),
+                measured: self.marks[i].measures_paths(),
+            };
+            screen.place(&mut raster, &input, variant, [start, count, first], mode);
         }
         let firsts = placed.map(|list| list.iter().map(|p| p.map(|(first, ..)| first)).collect::<Vec<_>>());
         self.count_comets(encoder, inner, drawn, &firsts[0]);
-        firsts
+        (firsts, reads)
     }
 
     /// Counts again, from the records [`View::place`] just wrote, the comet slots due (see
@@ -932,6 +1008,32 @@ impl View {
         self.comet_slots_found(encoder, inner, &read);
     }
 
+    pub(super) fn prepare_frame(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        frame: &Frame<'_>,
+        depth: Option<super::camera::Area>,
+        demand: &[StrokeDemand],
+    ) -> PreparedFrame {
+        let gpu = self.gpu.clone();
+        let device = &gpu.0.device;
+        let samples = self.samples(frame.pixel_ratio);
+        let (unplaced, layered) = (self.unplaced(), self.layered());
+        let from = self.still.from.filter(|_| !unplaced);
+        let held = self.still.held();
+        let resources = self.resources.as_mut().expect("created before passes");
+        let read = depth.map(|area| scissor(area, frame));
+        let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
+        let still = resources.still(device, from.is_some() || held.is_some());
+        let pick_targets = read.filter(|_| samples > 1).map(|read| (resources.pick_targets(device), read));
+        // The still is drawn first when it does not hold the cut yet.
+        let made = from.filter(|&cut| still.as_ref().is_some_and(|(_, fresh)| *fresh || held != Some(cut)));
+        let (firsts, reads) =
+            self.place(encoder, inner, &self.drawn_marks(from, made, pick_targets.is_some() && layered), demand);
+        PreparedFrame { color, depth, still, from, made, keep_depth: read.is_some(), pick_targets, firsts, reads }
+    }
+
     /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark
     /// in scene order with its comets, and the lit rows. Once the text pipelines are ready, it also
     /// builds the distance fields of text set this frame, and draws the labels and the overlay's
@@ -949,7 +1051,7 @@ impl View {
         drawn: &mut Drawn,
         frame: &Frame<'_>,
         [under, sprites]: [u32; 2],
-        depth: Option<super::camera::Area>,
+        prepared: &PreparedFrame,
     ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
@@ -963,16 +1065,8 @@ impl View {
         let clip = self.drawn_area().map(|area| scissor(area, frame)).filter(|s| s[2] > 0 && s[3] > 0);
         let samples = self.samples(frame.pixel_ratio);
         let (unplaced, layered) = (self.unplaced(), self.layered());
-        let from = self.still.from.filter(|_| !unplaced);
-        let held = self.still.held();
-        let resources = self.resources.as_mut().expect("created before passes");
-        let read = depth.map(|area| scissor(area, frame));
-        let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
-        let still = resources.still(device, from.is_some() || held.is_some());
-        let pick_targets = read.filter(|_| samples > 1).map(|read| (resources.pick_targets(device), read));
-        // The still is drawn first when it does not hold the cut yet.
-        let made = from.filter(|&cut| still.as_ref().is_some_and(|(_, fresh)| *fresh || held != Some(cut)));
-        let firsts = self.place(encoder, inner, &self.drawn_marks(from, made, pick_targets.is_some() && layered));
+        let PreparedFrame { color, depth, still, pick_targets, firsts, from, made, keep_depth, .. } = prepared;
+        let (from, made) = (*from, *made);
         let resources = self.resources.as_mut().expect("created before passes");
         let groups = resources.groups(&gpu.0, inner);
         let passes: Vec<(Shader, wgpu::BindGroup)> = pass_shaders(&self.marks, &self.scene, still.is_some())
@@ -980,7 +1074,7 @@ impl View {
             .map(|shader| (shader, resources.pass(device, inner, shader)))
             .collect();
         let group = |shader: Shader| &passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
-        let (view, resolve) = match &color {
+        let (view, resolve) = match color {
             Some(color) => (color, Some(frame.target)),
             None => (frame.target, None),
         };
@@ -993,11 +1087,11 @@ impl View {
             passes: &passes,
             count: self.marks.len(),
             layered,
-            firsts: &firsts,
+            firsts,
             markers: &self.marker_uniforms(),
         };
         // Until a fit places the camera, the replayed depth only clears.
-        if let Some((targets, read)) = &pick_targets {
+        if let Some((targets, read)) = pick_targets {
             let read = if unplaced { [0; 4] } else { *read };
             marks.replay(encoder, targets, read, clip, drawn, inner, &self.marks);
         }
@@ -1039,9 +1133,9 @@ impl View {
         // The still holds what its cut's frames draw first, with its depth: the first frame from a cut
         // draws it in a pass of its own. Until a fit places the camera, frames show only the
         // background.
-        if let (Some(cut), Some((still, _))) = (made, &still) {
+        if let (Some(cut), Some((still, _))) = (made, still) {
             let (target, resolved) = color.as_ref().map_or((still, None), |color| (color, Some(still)));
-            let mut pass = main_pass(encoder, target, resolved, &depth, background, depth_ops(false, true));
+            let mut pass = main_pass(encoder, target, resolved, depth, background, depth_ops(false, true));
             // The still holds no comets: frames draw those over it.
             start(&mut pass, drawn, inner, [if cut.opaque { count } else { cut.rows }, cut.rows], false);
         }
@@ -1049,7 +1143,7 @@ impl View {
         // A still holding every opaque pixel keeps its depth for the frames after it, as it does for
         // probes.
         let keeps = from.is_some_and(|cut| cut.opaque);
-        let mut pass = main_pass(encoder, view, resolve, &depth, background, depth_ops(keeps, keeps || read.is_some()));
+        let mut pass = main_pass(encoder, view, resolve, depth, background, depth_ops(keeps, keeps || *keep_depth));
         if unplaced {
             return;
         }
@@ -1079,6 +1173,7 @@ impl View {
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         probe: &super::probe::Probe,
+        reads: &[StrokeRead],
     ) -> Readback {
         let around = match probe {
             super::probe::Probe::Hover(point) => Some((*point, self.probe_radius())),
@@ -1100,6 +1195,8 @@ impl View {
                 projection: Projection::of(&self.scene.space),
                 measured: self.marks[i].measures_paths(),
             },
+            screen: &inner.screen,
+            strokes: reads[i],
             depth: resources.pick_depth(),
             output: resources.probe(),
             variant: MarkVariants::shown(&self.marks[i], &self.scene).probe(Shader::Probe),
@@ -1130,6 +1227,7 @@ impl View {
         kind: super::query::Kind,
         marks: &[(usize, u32, u32)],
         around: Option<([f32; 2], f32)>,
+        reads: &[StrokeRead],
     ) {
         let reached: Vec<_> = marks.iter().map(|&(i, ..)| self.reached(i, around)).collect();
         let gpu = self.gpu.clone();
@@ -1154,6 +1252,8 @@ impl View {
                     projection: Projection::of(&self.scene.space),
                     measured: shown.measures_paths(),
                 },
+                screen: &inner.screen,
+                strokes: reads[i],
                 depth: resources.pick_depth(),
                 output: resources.probe(),
                 variant: MarkVariants::shown(shown, &self.scene).probe(Shader::Probe),

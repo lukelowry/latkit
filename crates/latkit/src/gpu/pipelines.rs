@@ -294,7 +294,9 @@ impl Variant {
         use Shader::{Strokes, StrokesFocus, StrokesShaded, StrokesShadedFocus};
         if self.reads_constant("PATH") {
             let drawn = matches!(self.shader, Strokes | StrokesFocus | StrokesShaded | StrokesShadedFocus);
-            self.path = if drawn && path != super::shaders::PATH_TRACE { PATH_ENDS } else { path };
+            let stored =
+                matches!(self.shader, Shader::Probe | Shader::Metadata) && self.primitive == super::shaders::STROKES;
+            self.path = if (drawn || stored) && path != super::shaders::PATH_TRACE { PATH_ENDS } else { path };
         }
         self
     }
@@ -303,7 +305,15 @@ impl Variant {
     #[must_use]
     pub(crate) fn projection(mut self, projection: Projection) -> Self {
         if self.reads_constant("PROJECTION") {
-            self.projection = projection;
+            self.projection = match self.shader {
+                _ if self.path == super::shaders::PATH_TRACE => Projection::Planar,
+                Shader::Probe | Shader::Metadata
+                    if self.primitive == super::shaders::STROKES && self.path != super::shaders::PATH_TRACE =>
+                {
+                    Projection::Planar
+                }
+                _ => projection,
+            };
         }
         self
     }
@@ -333,7 +343,7 @@ impl Variant {
     #[must_use]
     pub(crate) fn options(mut self, options: Options) -> Self {
         let edges = matches!(self.path, PATH_ENDS | super::shaders::PATH_BENDS);
-        let placing = edges && self.entry != "vertex";
+        let placing = edges && self.entry != "vertex" && !matches!(self.shader, Shader::Metadata | Shader::Probe);
         let recorded = self.path != super::shaders::PATH_TRACE;
         let held = Options::NAMES.iter().enumerate().filter(|(_, name)| self.reads_constant(name));
         let held = held.fold(0, |bits, (bit, _)| bits | 1 << bit);
@@ -1212,15 +1222,12 @@ impl Pipelines {
         let (format, samples) = variant.target.expect("a render variant");
         let raster = variant.entry != "vertex";
         let layout = self.pipeline_layout(device, shader);
-        // Every fragment entry writes one color target but the screen pass's, which writes the four
-        // layers of a record (see `check_targets` in the build). A depth draw writes no color.
-        let screen = shader == Shader::Screen;
         let target = Some(wgpu::ColorTargetState {
             format,
             blend: (!raster).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             write_mask: if variant.draw == Draw::Depth { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL },
         });
-        let targets = vec![target; if screen { 4 } else { 1 }];
+        let targets = [target];
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(&layout),
@@ -1231,7 +1238,7 @@ impl Pipelines {
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState {
-                topology: if screen || matches!(shader, Shader::OrderScatter | Shader::Requests | Shader::Boxed) {
+                topology: if matches!(shader, Shader::OrderScatter | Shader::Requests | Shader::Boxed) {
                     wgpu::PrimitiveTopology::PointList
                 } else if raster {
                     wgpu::PrimitiveTopology::TriangleList
@@ -1414,6 +1421,8 @@ mod tests {
         let edge = Variant::probe(Shader::Probe, STROKES).path(PATH_GEOMETRY).projection(Projection::Globe);
         assert_eq!(finish, edge.entry("finish"));
         assert_eq!(finish, finish.primitive(STROKES).path(PATH_GEOMETRY).projection(Projection::Mercator));
-        assert_ne!(edge, edge.projection(Projection::Planar), "geometry entries retain their actual projection");
+        assert_eq!(edge, edge.projection(Projection::Planar), "stroke queries read projected records");
+        let point = Variant::probe(Shader::Probe, super::super::shaders::POINTS);
+        assert_ne!(point, point.projection(Projection::Globe), "point queries still project their vertices");
     }
 }

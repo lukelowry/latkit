@@ -5,7 +5,7 @@
 // row of runs: a text label's one text, or the characters a number label writes.
 
 import package::lib::types::{
-    NONE, POINTS, MARKER_BLOCK, SIZED, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, LABEL_CELL, LABEL_MARGIN, LABEL_GUESS, NUMBER_CHARS, CHAR_POINT, CHAR_MINUS, CHAR_EXPONENT, CHAR_UNIT,
+    WordStep, NONE, POINTS, MARKER_BLOCK, SIZED, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, LABEL_CELL, LABEL_MARGIN, LABEL_GUESS, NUMBER_CHARS, CHAR_POINT, CHAR_MINUS, CHAR_EXPONENT, CHAR_UNIT,
     FORMAT_AUTO, FORMAT_SCIENTIFIC, FORMAT_ENGINEERING, NUMBER_TRIM, NUMBER_UNIT,
     LABEL_CODE, LABEL_PLACE, LABEL_PLACED_BY_ROW, LABEL_PLACE_SHIFT, LABEL_RIGHT, LABEL_DOWN, LABEL_OFFSET_BY_ROW,
     LABEL_RIGHT_UNITS, LABEL_DOWN_UNITS,
@@ -77,7 +77,7 @@ struct Anchor {
 // The label anchor of drawn row `item`: centered on the row's center, and beside a trace's last
 // sample, or with a place, beside the center on that side. A point's label goes inside or beside
 // its marker once `fit` knows the text's size.
-fn anchor(item: u32) -> Anchor {
+fn anchor(item: u32, params: WordStep) -> Anchor {
     var a = Anchor(vec2f(0.0), vec2f(0.5), vec2f(0.0), vec2f(-1.0), vec2f(1.0, 0.0), false, false, false);
     let text = mark.label_size;
     // How far the label moves from its place on screen, right then down.
@@ -90,7 +90,7 @@ fn anchor(item: u32) -> Anchor {
         offset = label_offset(row);
     }
     if PRIMITIVE != POINTS {
-        let c = row_center(item);
+        let c = row_center(item, params);
         a.at = c.at;
         a.shown = c.shown;
         if PATH == PATH_TRACE {

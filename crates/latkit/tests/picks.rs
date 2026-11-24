@@ -182,6 +182,55 @@ fn locate_finds_a_row_on_screen() {
 }
 
 #[test]
+fn a_bent_parallel_edges_pick_and_anchor_use_its_unjoined_centerline() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("grid");
+    let bends = vec![vec![[20.0, 0.0]]; 2];
+    data.apply(
+        Patch::new()
+            .set(Table::new("Bus", vec![1_u64, 2]).field("x", vec![-40.0, 20.0]).field("y", vec![0.0, 40.0]))
+            .set(
+                Table::new("Line", vec![71_u64, 42])
+                    .reference("from", "Bus", vec![1_u64; 2])
+                    .reference("to", "Bus", vec![2_u64; 2])
+                    .field("bends", bends),
+            ),
+    )
+    .unwrap();
+    let parallel = latkit::Parallel { gap: 6.0.into(), converge: latkit::Converge::Straight };
+    let theme =
+        latkit::Theme { edge: latkit::EdgeTheme { parallel: Some(parallel), ..plain_theme().edge }, ..plain_theme() };
+    let scene = Scene::new(plane())
+        .theme(theme)
+        .draw(Edges::of("grid", "Line").ends("from", "to").bends("bends").width(2.0))
+        .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(1.0));
+    let make = |zoom| {
+        let mut view = View::new(&gpu, scene.clone());
+        view.set_sources([&data]).unwrap();
+        view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
+        view
+    };
+    let (mut near, mut far) = (make(0.0), make(-1.0));
+    let center = SIZE as f32 / 2.0;
+    for id in [42_u64, 71] {
+        let row = latkit::Row::new("grid", "Line", id);
+        for (view, scale) in [(&mut near, 1.0), (&mut far, 0.5)] {
+            frame(&gpu, view);
+            let ask = view.screen_of(&row);
+            let at = answer(&gpu, view, ask).expect("edge anchor");
+            // The representative segment is vertical. Its unjoined endpoint stays at the
+            // bend's y, independently of the miter that connects the two painted segments.
+            assert!((at[1] - (center - scale * 20.0)).abs() < 0.25, "{row:?} at {at:?}");
+            assert!(((at[0] - (center + scale * 20.0)).abs() - 4.0).abs() < 0.25, "{at:?}");
+            let ask = view.pick(at, 0.5);
+            let hits = answer(&gpu, view, ask);
+            assert_eq!(hits.first().map(|hit| &hit.row), Some(&row));
+            assert_eq!(errors(view), Vec::new());
+        }
+    }
+}
+
+#[test]
 fn hidden_rows_have_no_screen_position() {
     let Some(gpu) = gpu() else { return };
     let data = graph();

@@ -20,7 +20,7 @@ import package::lib::mark::{px_per_length, fringe};
 import package::lib::hooks::{MarkerColor, MarkerFragment};
 import package::lib::shade::shade_fragment;
 import package::lib::project::{to_clip, nearer, culled, world, clip_of, to_screen};
-import package::lib::screen::{ScreenPoint, screen_point, point_reach, read_stroke};
+import package::lib::screen::{ScreenPoint, screen_point, point_reach, draw_record, read_stroke};
 import package::lib::marker::{gauge, pie, filled, outline_distance, status_ring, glow, premultiplied};
 import package::lib::color::{output, OPAQUE};
 
@@ -98,7 +98,7 @@ fn turn_of(p: Point) -> vec2f {
 @if(!custom)
 fn on_stroke(corner: u32, instance: u32) -> Varyings {
     var out: Varyings;
-    let s = read_stroke(instance);
+    let s = read_stroke(draw_record(instance, LIT_DRAW));
     // The copy of the mark's uniform this draw binds describes its marker first.
     let on = along(0u, s);
     if !on.shown {

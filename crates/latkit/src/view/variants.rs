@@ -553,7 +553,9 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, scene);
     stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
-    stages.add_all(Stage::Draw, variants.screen().map(Asked::Shader));
+    if let Some(screen) = variants.screen() {
+        stages.add(Stage::Draw, Asked::Shader(screen));
+    }
     // Comets draw over their rows with the rows' program. Where the rows have records, a comet a
     // slot, which the frame counts from the records (see `raster/comets.wesl`).
     if mark.flows() {

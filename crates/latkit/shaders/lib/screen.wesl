@@ -8,16 +8,14 @@
 // two samples, and a point one vertex, which costs less than writing and reading a record, so their
 // draws place them with these same functions.
 //
-// A record is one texel in each layer of a group of four in the screen store, at the same place, so
-// one fragment writes it whole. Record `i` lies at texel `i` of its group, in rows of the store's
-// width. A draw numbers its instances from its mark's first record, so an instance's index is its
-// record's.
+// Four consecutive texels hold a paint record. Height sorting changes draw order while
+// the record address stays tied to the source segment.
 
 import package::lib::types::{NONE, STROKE_MARKED, STROKE_BLENDED, ALONG_UNITS, FLOW_UNITS, PATH_TRACE, STATUS};
 import package::lib::state::{row_at, edge_at, end_vertex};
 import package::lib::bind::{frame, eye, mark};
 import package::lib::path::{
-    PATH, Style, PathEnds, stroke_segment, segment_points, on_screen, stroke_style, ends_part, path_count, path_length,
+    PATH, Style, PathEnds, Segment, OnScreen, stroke_segment, trace_screen, stroke_style, ends_part, path_count, path_length,
     path_total, path_position,
 };
 import package::lib::points::Point;
@@ -25,11 +23,12 @@ import package::lib::project::{to_screen, PI};
 import package::lib::lists::{list, list_entry, list_total};
 import package::lib::mark::{fringe, px_per_length};
 import package::lib::stroke::{rims, comet_reach, COMET_RIM};
+import package::lib::drawn::drawn_instance;
 import package::lib::daylight::daylight;
 
-@group(2) @binding(11) var screen: texture_2d_array<u32>;
+@group(2) @binding(11) var screen_records: texture_2d_array<u32>;
 
-// The four texels of a record, one for each layer of its group.
+// The four texels of a paint record.
 struct ScreenRecord {
     t0: vec4u,
     t1: vec4u,
@@ -116,7 +115,7 @@ const TOTAL_FIRST: u32 = 0x8000u;
 // for their glow and which paints comets with its rows. A stroke without dashes or flow measures no
 // distances along: in a scene whose dash and flow are constant, its draws are specialized to read
 // none (`PAINTED` in `draw/strokes.wesl`), while this reads its row's.
-fn screen_stroke(instance: u32, lit: bool) -> ScreenStroke {
+fn trace_stroke(instance: u32, lit: bool) -> ScreenStroke {
     var out: ScreenStroke;
     if !lit & (mark.per_row == NONE) & (instance >= list_total(mark.list)) {
         return out;
@@ -125,12 +124,14 @@ fn screen_stroke(instance: u32, lit: bool) -> ScreenStroke {
     if lit & ((s.item >= mark.rows) | (s.index >= path_count(s.item))) {
         return out;
     }
-    // A stroke fades and scales with its row's tile.
-    var style = stroke_style(s.row);
+    return paint_stroke(s, trace_screen(s), stroke_style(s.row), ends_part(s), lit);
+}
+
+fn paint_stroke(s: Segment, on: OnScreen, row_style: Style, last: bool, lit: bool) -> ScreenStroke {
+    var out: ScreenStroke;
+    var style = row_style;
     style.color.a *= s.presence;
     style.width *= s.growth;
-    let points = segment_points(s);
-    let on = on_screen(points);
     if !style.shown | !on.shown {
         return out;
     }
@@ -142,7 +143,7 @@ fn screen_stroke(instance: u32, lit: bool) -> ScreenStroke {
     // without a list), and its drawn part covers part of the path's segment it draws or runs
     // beside: in position units, `kept` of its length between its points, else in CSS pixels,
     // `visible` of its `chord` on screen, which is what its list measured. A fan stands for an end
-    // of that segment (see `on_screen`). The list gives a fan no length, so a fan into the first
+    // of that segment (see `fit_segment`). The list gives a fan no length, so a fan into the first
     // vertex starts at 0, and one into the last, listed after its path, starts a segment back. A
     // mark with markers, or one that says where its colors change, places them by these distances
     // too, and where its list measures its paths, by each one's length.
@@ -196,7 +197,7 @@ fn screen_stroke(instance: u32, lit: bool) -> ScreenStroke {
     // The segment on which the stroke leaves its first vertex's marker is its first, and the one on
     // which it reaches its last vertex's marker is its last, wherever in the path they come.
     out.first = (s.index == 0u) | on.stops.x;
-    out.last = ends_part(s) | on.stops.y;
+    out.last = last | on.stops.y;
     out.dash = style.dash;
     out.rim = flows & rims(first.rgb);
     out.row = s.row;
@@ -277,6 +278,12 @@ fn from_half(h: u32) -> f32 {
 // The two half floats of `h`, low then high.
 fn from_halves(h: u32) -> vec2f {
     return vec2f(from_half(h), from_half(h >> 16u));
+}
+
+// Draw positions follow height order. Query and label addresses stay in source order.
+fn draw_record(i: u32, lit: bool) -> u32 {
+    if lit || mark.height_order == NONE { return i; }
+    return mark.screen_first + drawn_instance(i - mark.screen_first);
 }
 
 // Instance `i`'s stroke, from its record.
@@ -381,10 +388,15 @@ fn comet_slot(i: u32) -> vec2u {
     return vec2u(list(at), list(at + 1u));
 }
 
-// Layer `layer` of record `i`.
+// Texel `layer` of paint record `i`.
 fn record_texel(i: u32, layer: u32) -> vec4u {
-    let size = textureDimensions(screen);
+    return record_word(i, layer, 4u);
+}
+
+fn record_word(i: u32, offset: u32, stride: u32) -> vec4u {
+    let size = textureDimensions(screen_records);
+    let texel = i * stride + offset;
     let per = size.x * size.y;
-    let at = i % per;
-    return textureLoad(screen, vec2i(i32(at % size.x), i32(at / size.x)), i32(4u * (i / per) + layer), 0);
+    let at = texel % per;
+    return textureLoad(screen_records, vec2i(i32(at % size.x), i32(at / size.x)), i32(texel / per), 0);
 }

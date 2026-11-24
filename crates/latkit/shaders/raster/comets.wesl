@@ -10,7 +10,7 @@ import package::lib::bind::mark;
 import package::lib::types::{WordStep, NONE, LIST_ITEMS};
 import package::lib::words::{word_index, fullscreen};
 import package::lib::lists::{list, list_start, list_total};
-import package::lib::screen::{read_stroke, comet_slots};
+import package::lib::screen::{draw_record, read_stroke, comet_slots};
 
 @group(2) @binding(19) var<uniform> params: WordStep;
 
@@ -28,7 +28,7 @@ fn count(i: u32) -> u32 {
     if i >= params.count {
         return 0u;
     }
-    return comet_slots(read_stroke(params.source + i));
+    return comet_slots(read_stroke(draw_record(params.source + i, false)));
 }
 
 // Four segments' slot counts a texel.

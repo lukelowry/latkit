@@ -1,24 +1,42 @@
-//! The screen store: where each segment of a stroke mark a frame draws lies on screen. The frame
-//! writes a segment's record once, before it draws the mark, and every draw of the mark reads it
-//! (see `lib/screen.wesl`). A record is one texel in each layer of a group of four, at the same
-//! place, so one point's fragment writes it whole. Each frame writes the records it draws before the
-//! draws that read them, so the store keeps nothing when it grows, and serves every view.
+//! Screen-space stroke records shared by drawing, labels, and queries in one frame.
+//! Each producer writes before its consumers. Views and captures can reuse the same texture.
 
 use super::listing::Inputs;
 use super::pipelines::Variant;
 use super::raster::Raster;
 use super::retired::Retired;
-use super::shaders::{WORD_HEIGHT, WORD_WIDTH, WordStep};
+use super::shaders::{self, WORD_HEIGHT, WORD_WIDTH, WordStep};
 
-/// Texels in a record, one in each layer of its group.
-const RECORD_TEXELS: u32 = 4;
+#[derive(Clone, Copy, Default)]
+pub(crate) enum StrokeRead {
+    #[default]
+    Empty,
+    Paint(u32),
+    Segments(u32),
+    Anchors(u32),
+    One(u32),
+}
 
+impl StrokeRead {
+    pub(crate) fn address(self) -> (u32, u32) {
+        match self {
+            Self::Paint(first) => (first, shaders::READ_PAINT),
+            Self::Segments(first) => (first, shaders::READ_SEGMENTS),
+            Self::Anchors(first) => (first, shaders::READ_ANCHORS),
+            Self::One(first) => (first, shaders::READ_ONE),
+            Self::Empty => (0, shaders::READ_EMPTY),
+        }
+    }
+}
+
+/// Paint takes four consecutive RGBA texels and a query centerline takes two. A frame
+/// allocates paint first, then only the compact spans its consumers need.
 pub(crate) struct Screen {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    /// Each group's four layers, which a pass writing records into the group draws to.
-    layers: Vec<[wgpu::TextureView; RECORD_TEXELS as usize]>,
-    /// The records a layer holds across and down.
+    /// Each layer as a render target.
+    layers: Vec<wgpu::TextureView>,
+    /// Texels across and down each layer.
     size: [u32; 2],
     /// Incremented whenever the texture is replaced, so the pass groups binding it are rebuilt.
     pub(crate) generation: u64,
@@ -26,20 +44,14 @@ pub(crate) struct Screen {
 }
 
 impl Screen {
-    pub(crate) fn new(device: &wgpu::Device, retired: &Retired) -> Screen {
+    pub(crate) fn new(device: &wgpu::Device, retired: &Retired) -> Self {
         let (texture, size) = make(device, 1);
-        Screen {
-            view: view(&texture),
-            layers: layers(&texture),
-            texture,
-            size,
-            generation: 0,
-            retired: retired.clone(),
-        }
+        Self { view: view(&texture), layers: layers(&texture), texture, size, generation: 0, retired: retired.clone() }
     }
 
-    /// Makes room for `records` records.
-    pub(crate) fn fit(&mut self, device: &wgpu::Device, records: u32) {
+    /// Reserves four texels per paint record and two per query span.
+    pub(crate) fn fit(&mut self, device: &wgpu::Device, records: u32, spans: u32) {
+        let records = records + spans.div_ceil(2);
         if records <= self.capacity() {
             return;
         }
@@ -52,37 +64,40 @@ impl Screen {
     }
 
     fn capacity(&self) -> u32 {
-        self.size[0] * self.size[1] * (self.texture.depth_or_array_layers() / RECORD_TEXELS)
+        self.per_layer() / 4 * self.texture.depth_or_array_layers()
     }
 
     pub(crate) fn binding(&self) -> wgpu::BindingResource<'_> {
         wgpu::BindingResource::TextureView(&self.view)
     }
 
-    /// Writes the records of `count` segments of the mark `input` draws, from record `at`, with
-    /// `variant`: a point per segment, one pass for each group of layers they reach. With `lit`,
-    /// the segments are those its lit draw draws.
+    fn per_layer(&self) -> u32 {
+        self.size[0] * self.size[1]
+    }
+
     pub(crate) fn place(
         &self,
         raster: &mut Raster<'_>,
         input: &Inputs<'_>,
         variant: Variant,
-        [count, at]: [u32; 2],
-        lit: bool,
+        [start, count, at]: [u32; 3],
+        mode: u32,
     ) {
         let shader = variant.shader();
         let layout = raster.pipelines.pass_layout(raster.device, shader);
         let pipeline = raster.pipelines.render(raster.device, variant);
-        let per = self.size[0] * self.size[1];
+        let stride = if mode < shaders::PLACE_SPANS { 4 } else { 2 };
+        let per = self.per_layer() / stride;
         let mut first = 0;
         while first < count {
-            let (group, texel) = ((at + first) / per, (at + first) % per);
-            let points = (count - first).min(per - texel);
+            let slot = at + first;
+            let layer = slot / per;
+            let points = (count - first).min(per - slot % per);
             let step = WordStep {
-                source: first,
-                destination: texel,
+                source: start + first,
+                destination: (slot % per) * stride,
                 size: self.size,
-                value: u32::from(lit),
+                value: mode,
                 ..WordStep::of(points)
             };
             let uniform = raster.queue.uniform(raster.device, bytemuck::bytes_of(&step));
@@ -105,17 +120,12 @@ impl Screen {
                 layout: &layout,
                 entries: &entries,
             });
-            let attachments: Vec<Option<wgpu::RenderPassColorAttachment<'_>>> = self.layers[group as usize]
-                .iter()
-                .map(|view| {
-                    Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                    })
-                })
-                .collect();
+            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: &self.layers[layer as usize],
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })];
             let mut pass = raster.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(shader.source().label),
                 color_attachments: &attachments,
@@ -128,23 +138,21 @@ impl Screen {
             pass.set_bind_group(0, input.view, &[]);
             pass.set_bind_group(1, input.mark, &[input.offset]);
             pass.set_bind_group(2, &bindings, &[]);
-            pass.draw(0..points, 0..1);
+            pass.draw(0..3, 0..step.count);
             first += points;
         }
     }
 }
 
-/// A store holding `records` records, and the records a layer holds across and down: a power of two
-/// of them in one row, or rows of the word textures' width, as many as a power of two needs, in
-/// groups of at most their height.
+/// Packs records into power-of-two rows. Additional layers start once a layer reaches `WORD_HEIGHT`.
 fn make(device: &wgpu::Device, records: u32) -> (wgpu::Texture, [u32; 2]) {
-    let width = records.max(1).next_power_of_two().min(WORD_WIDTH);
+    let width = records.max(1).next_power_of_two().min(WORD_WIDTH / 4);
     let rows = records.max(1).div_ceil(width);
     let height = rows.next_power_of_two().min(WORD_HEIGHT);
     let groups = rows.div_ceil(height);
     let desc = wgpu::TextureDescriptor {
         label: Some("latkit screen"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: groups * RECORD_TEXELS },
+        size: wgpu::Extent3d { width: width * 4, height, depth_or_array_layers: groups },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -156,7 +164,7 @@ fn make(device: &wgpu::Device, records: u32) -> (wgpu::Texture, [u32; 2]) {
     let texture = super::gl::array_texture(device, &desc);
     #[cfg(not(target_arch = "wasm32"))]
     let texture = device.create_texture(&desc);
-    (texture, [width, height])
+    (texture, [width * 4, height])
 }
 
 fn view(texture: &wgpu::Texture) -> wgpu::TextureView {
@@ -166,17 +174,14 @@ fn view(texture: &wgpu::Texture) -> wgpu::TextureView {
     })
 }
 
-/// The four layers of each group of `texture`.
-fn layers(texture: &wgpu::Texture) -> Vec<[wgpu::TextureView; RECORD_TEXELS as usize]> {
-    (0..texture.depth_or_array_layers() / RECORD_TEXELS)
-        .map(|group| {
-            std::array::from_fn(|k| {
-                texture.create_view(&wgpu::TextureViewDescriptor {
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    base_array_layer: group * RECORD_TEXELS + k as u32,
-                    array_layer_count: Some(1),
-                    ..Default::default()
-                })
+fn layers(texture: &wgpu::Texture) -> Vec<wgpu::TextureView> {
+    (0..texture.depth_or_array_layers())
+        .map(|layer| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: layer,
+                array_layer_count: Some(1),
+                ..Default::default()
             })
         })
         .collect()

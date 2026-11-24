@@ -166,27 +166,39 @@ impl View {
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
-        let (work, marks) =
+        let (work, mut marks) =
             self.choose_still([measure.is_some(), catch_up, input], &uniform, &eye, &sprites[..under as usize]);
-        self.write_uniforms(&uniform, &eye, &sprites, &marks);
         if let Some(readback) = self.prepare_rows(encoder, &mut inner, work) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
-        self.place_labels(encoder, &mut inner, &eye, &uniform);
+        let labels = self.label_work(&eye, &uniform);
+        let demand = self.stroke_demand(probe.is_some(), labels.is_some_and(|work| work.claim));
         let depth = self.depth_area(probe.as_ref(), query.is_some_and(|(_, depth)| depth));
-        self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
+        let prepared = self.prepare_frame(encoder, &mut inner, frame, depth, &demand);
+        prepared.locate_uniforms(&mut marks);
+        self.write_uniforms(&uniform, &eye, &sprites, &marks);
+        self.place_labels(encoder, &mut inner, &eye, labels, &prepared.reads);
+        self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], &prepared);
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
         if let Some(probe) = probe {
-            let readback = self.probe(encoder, &mut inner, &probe);
+            let readback = self.probe(encoder, &mut inner, &probe, &prepared.reads);
             self.probing(probe, readback);
         }
-        self.run_query(encoder, &mut inner);
+        self.run_query(encoder, &mut inner, &prepared.reads);
         if let Some(timer) = &mut self.timer {
             timer.end(encoder, device);
         }
+        self.settle_row_words();
+        let atlas = std::mem::take(&mut inner.atlas.errors);
+        drop(inner);
+        self.tell_errors(atlas);
+        self.end(started, input);
+    }
+
+    fn settle_row_words(&mut self) {
         for shown in &mut self.marks {
             shown.before = shown.held();
             shown.words.settle();
@@ -195,10 +207,6 @@ impl View {
             shown.frozen = super::marks::Blocks::default();
             shown.settles = false;
         }
-        let atlas = std::mem::take(&mut inner.atlas.errors);
-        drop(inner);
-        self.tell_errors(atlas);
-        self.end(started, input);
     }
 
     /// Reports this frame's errors. Those of the view's derivations, and of the jobs and fetches it

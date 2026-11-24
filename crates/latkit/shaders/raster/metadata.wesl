@@ -20,7 +20,7 @@ struct Labeled {
 
 fn labeled(i: u32) -> Labeled {
     var l: Labeled;
-    l.a = anchor(i);
+    l.a = anchor(i, params);
     let drawn = drawn_row(i);
     let bits = word(extra_at(drawn.row, mark.label + LABEL_CODE));
     let flags = word(row_at(drawn.row) + mark.stride - 1u);

@@ -739,18 +739,13 @@ fn check_swizzle_indexes(module: &naga::Module, name: &str) {
     }
 }
 
-/// Asserts that each fragment entry of `module` writes at most one color target, but the screen
-/// pass's, which writes a record's four. ANGLE on D3D11 builds a pixel shader for the first target
-/// when a program links, and one for more targets on the browser's GPU thread when a frame first
-/// draws with it, stalling the page. The screen pass's fragment only copies its point's outputs, so
-/// that build takes a moment.
+/// All fragment programs write one color target so their first draw uses the linked output layout.
 fn check_targets(module: &naga::Module, name: &str) {
-    let most = if name == "raster::screen" { 4 } else { 1 };
     for entry in module.entry_points.iter().filter(|e| e.stage == naga::ShaderStage::Fragment) {
         let Some(result) = &entry.function.result else { continue };
         if let TypeInner::Struct { members, .. } = &module.types[result.ty].inner {
             let targets = members.iter().filter(|m| matches!(m.binding, Some(naga::Binding::Location { .. }))).count();
-            assert!(targets <= most, "{name}.{} writes {targets} color targets; it may write {most}", entry.name);
+            assert!(targets <= 1, "{name}.{} writes {targets} color targets", entry.name);
         }
     }
 }
@@ -833,6 +828,18 @@ fn made(module: &str, name: &str, constants: &[(&str, u32)], types: &naga::Modul
         if if stroke { unplaced } else { !marker } {
             return false;
         }
+    }
+    let stroke = value("PRIMITIVE") == Some(type_constant(types, "STROKES"));
+    let trace = Some(type_constant(types, "PATH_TRACE"));
+    let ends = Some(type_constant(types, "PATH_ENDS"));
+    // Only plot marks trace samples. Map and globe pipelines never take this path.
+    if path == trace && value("PROJECTION").is_some_and(|p| p != type_constant(types, "PROJECTION_PLANAR")) {
+        return false;
+    }
+    if matches!(module, "raster::metadata" | "raster::probe") && stroke && path != trace {
+        return (path.is_none() || path == ends)
+            && value("PROJECTION").is_none_or(|v| v == type_constant(types, "PROJECTION_PLANAR"))
+            && value("MEET") != Some(1);
     }
     // A trace's draws place its segments themselves, so no screen pass writes their records.
     if module == "raster::screen" && path == Some(type_constant(types, "PATH_TRACE")) {

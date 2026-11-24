@@ -57,7 +57,7 @@ fn probe(@builtin(position) p: vec4f) -> @location(0) vec4u {
         i = lo;
     } else if i >= reached() { return vec4u(0u); }
     // Every step uses exactly the same geometry and reach computation.
-    let s = seen(select(reached_instance(i), i, locating), locating);
+    let s = seen(select(reached_instance(i), i, locating), locating, params);
     if locating {
         var at = s.a.xy;
         if PRIMITIVE == STROKES { at = select(0.5 * (s.a.xy + s.b.xy), s.b.xy, PATH == PATH_TRACE); }

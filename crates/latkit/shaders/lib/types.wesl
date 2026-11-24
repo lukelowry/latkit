@@ -11,6 +11,17 @@ const PROJECTION_MERCATOR: u32 = 1u;
 const PROJECTION_GLOBE: u32 = 2u;
 const PROJECTION_DYNAMIC: u32 = 3u;
 
+// Which segments a placement pass writes, and how consumers address its records.
+const PLACE_ROWS: u32 = 0u;
+const PLACE_LIT: u32 = 1u;
+const PLACE_SPANS: u32 = 2u;
+const PLACE_ANCHORS: u32 = 3u;
+const READ_PAINT: u32 = 0u;
+const READ_SEGMENTS: u32 = 1u;
+const READ_ANCHORS: u32 = 2u;
+const READ_EMPTY: u32 = 3u;
+const READ_ONE: u32 = 4u;
+
 // A word raster pass. Source and destination offsets are words; count excludes padding. The
 // layer selects the physical output layer. Scalar `value` is operation-specific.
 struct WordStep {
@@ -24,8 +35,9 @@ struct WordStep {
     // The segments of each row a probe of a trace reaches: the first, and how many. Every
     // instance when the count is 0.
     reach: vec2u,
-    // Whole 16-byte rows, as a uniform block takes.
-    padding: vec2u,
+    // Frame-local stroke address for a probe or label pass (a READ_* layout).
+    record_first: u32,
+    record_kind: u32,
 }
 
 // The pages one gather pass copies into a layer. Each is a source word, a destination word, and a
@@ -695,6 +707,8 @@ struct Mark {
     // header of its digit counts, then the instance at each position. NONE when they draw in the
     // order they are numbered.
     height_order: u32,
+    // First canonical stroke record of this mark in this frame.
+    screen_first: u32,
     // Where the mark's remap words start, while `gather` freezes its transition.
     remap: u32,
     // The rows the focus draw lights: where they start in the focused buffer, and the
