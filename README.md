@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k grid on a globe as one 765 kV line opens. Buses rise with their frequency, branches that pick up the line's power glow amber, and branches that lose flow glow cyan">
+  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k line outage. Branch color shows the change in active power flow magnitude and bus height shows frequency deviation.">
 </p>
 
 <h1 align="center">
@@ -109,10 +109,10 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
 ## Gallery
 
 <p align="center">
-  <a href="https://latkit.readthedocs.io/en/latest/examples/texas.html"><img src="docs/images/texas.png" width="32%" alt="Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/frequency.html"><img src="docs/images/frequency.png" width="32%" alt="The speed of 1,456 machines over ten seconds after a fault. Machines near the fault are bright and swing hardest, and far ones are dark"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/texas.html"><img src="docs/images/texas.png" width="32%" alt="Generation by bus on the synthetic Texas grid. Disk area represents total generation in MW."></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/frequency.html"><img src="docs/images/frequency.png" width="32%" alt="Rotor speed deviations for 1,456 machines in ACTIVSg10k, colored by geographic proximity to the fault."></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/globe.html"><img src="docs/images/globe.png" width="32%" alt="Great-circle routes between forty of the world's great cities on a globe, with comets flowing along them"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/helios.html"><img src="docs/images/helios.png" width="32%" alt="A synthetic network of 480 buses in five concentric rings, comets flowing along its 896 branches"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/hawaii.html"><img src="docs/images/hawaii.png" width="32%" alt="Drafted 69 kV and 138 kV circuits in the synthetic Hawaii40 one-line diagram"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/torus.html"><img src="docs/images/torus.png" width="32%" alt="Sixty-four filaments in cyan, amber, and coral, twisting around a three-dimensional torus knot"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/clifford.html"><img src="docs/images/clifford.png" width="32%" alt="A Clifford strange attractor of 260,000 translucent points, colored by the direction of each step"></a>
 </p>

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -5,5 +6,12 @@ export default defineConfig({
   preview: { host: '127.0.0.1', port: 5200 },
   // latkit loads its wasm from beside its own module, which prebundling would move.
   optimizeDeps: { exclude: ['latkit'] },
-  build: { target: 'es2022' },
+  build: {
+    target: 'es2022',
+    rollupOptions: {
+      input: ['index.html', 'monitor.html'].map((file) =>
+        fileURLToPath(new URL(file, import.meta.url)),
+      ),
+    },
+  },
 });

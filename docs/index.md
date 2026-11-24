@@ -1,81 +1,108 @@
+---
+hide-toc: true
+---
+
 # latkit
 
 :::{container} lede
-latkit is a GPU-accelerated visualization library for large networks, such as power grids. It
-renders interactive views in the browser with WebGL2, and images and video from the command line.
+latkit draws large networks, including power grids. Explore them in a browser with WebGL2
+or render images and video from the command line.
 :::
+
+<span id="install">[Installation](installation.md)</span> &middot; <span id="quickstart">[Quickstart](quickstart.md)</span>
 
 :::{container} plot
 
 ```{image} images/opening.png
-:alt: The ACTIVSg70k grid on a globe as one 765 kV line opens. Buses rise with their frequency, branches that pick up the line's power glow amber, and branches that lose flow glow cyan
+:alt: ACTIVSg70k after the Little Rock–Newark line outage. Surrounding branches show increases and decreases in active power flow.
 :class: banner
 ```
 
 :::
 
 :::{container} caption
-The 70,000-bus ACTIVSg70k grid as one 765 kV line opens. A DC power flow computes where the line's
-power goes. Branches that pick it up glow amber, and branches that lose flow glow cyan. Each bus
-rises with its frequency. Drawn by the `latkit` command line from `docs/gallery/opening.ts`.
+After the Little Rock–Newark 765 kV line opens, a DC power flow gives the change in branch flow magnitude (MW). Amber marks increases and cyan marks decreases. Bus height shows frequency deviation from 60 Hz about 2.5 s into a dynamic simulation of the same outage.
 :::
-
-## Install
-
-```sh
-npm install latkit          # in the browser
-cargo install latkit-cli    # pictures and video from the command line
-cargo add latkit            # in Rust
-```
-
-## Quickstart
-
-`quickstart(canvas)` draws a dataset on a canvas. Call `destroy()` on the returned `view` and `grid` when the page is done with them.
-
-```{literalinclude} ../npm/test/consumer/quickstart.ts
-:language: typescript
-```
-
-A **dataset** holds named tables. A **scene** describes which rows to draw, where to place
-them, and how they look. A **view** renders the scene on a canvas. To use a scene with the
-CLI, serialize it with `JSON.stringify`.
 
 ## Examples
 
 :::{container} examples
-{doc}`examples/frequency`
-: 1,456 machines swinging after a fault, traced from a recording on a plot.
+{doc}`examples/hawaii`
+: Follow circuits, transformers and generators on the 69 kV and 138 kV systems.
 
-{doc}`examples/globe`
-: Routes along great circles on a globe, with comets flowing along them.
+{doc}`examples/wecc`
+: Compare bus voltage and machine speed during a fault at John Day.
 
-{doc}`examples/helios`
-: 480 buses in five concentric rings, with comets flowing along every branch.
+{doc}`examples/voltage-dip`
+: Read the voltage at John Day before, during and after fault clearing.
 
 {doc}`examples/terrain`
-: A wire mesh of mountain ridges in three dimensions.
-
-{doc}`examples/clifford`
-: 260,000 translucent points of a strange attractor.
+: Draw a three-dimensional surface from a triangle mesh.
 :::
 
-Browse the full {doc}`examples/index` or start with the {doc}`guide`.
+[Browse the example gallery](examples/index.md)
+
+```{raw} html
+<script>
+  const destination = { "#install": "installation.html", "#quickstart": "quickstart.html" }[location.hash];
+  if (destination) location.replace(destination);
+</script>
+```
 
 ```{toctree}
 :hidden:
+:titlesonly:
+:maxdepth: 2
+:caption: Start here
+
+Home <self>
+installation
+quickstart
+```
+
+```{toctree}
+:hidden:
+:titlesonly:
+:maxdepth: 1
+:caption: Examples
 
 examples/index
-guide
-cli
 performance
 ```
 
 ```{toctree}
 :hidden:
+:titlesonly:
+:maxdepth: 1
+:caption: Guides
+
+data
+scenes
+time-series
+views
+pictures-and-video
+```
+
+```{toctree}
+:hidden:
+:titlesonly:
+:maxdepth: 1
+:caption: Tools and deployment
+
+cli
+in-rust
+deploying
+```
+
+```{toctree}
+:hidden:
+:titlesonly:
+:maxdepth: 1
 :caption: Reference
 
 reference/api
 reference/types
 reference/cli
+formats
 Rust API <https://docs.rs/latkit>
 ```

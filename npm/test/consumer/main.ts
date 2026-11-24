@@ -311,7 +311,7 @@ async function run(custom: boolean, compiled: boolean) {
   exampleCanvas.width = exampleCanvas.height = 128;
   document.body.append(exampleCanvas);
   const example = await quickstart(exampleCanvas);
-  await until(() => example.view.stats.drawn === 2);
+  await until(() => example.view.stats.drawn === 5);
   check(
     example.view.gpu !== gpu,
     'a view given no GPU draws with a new one once the first is gone',

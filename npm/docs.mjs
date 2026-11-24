@@ -639,7 +639,7 @@ function cliPage() {
   };
   const render = commands.find((command) => command.name === 'latkit render');
   const out = [
-    '# Command reference',
+    '# CLI commands',
     'Run a command with `--help` to list its options. For examples, see the [command-line guide](../cli.md).',
   ];
   for (const command of commands) {

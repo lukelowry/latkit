@@ -1,4 +1,4 @@
-# Control a view
+# Views and interaction
 
 `View.create(canvas, scene)` draws a scene on a `<canvas>` and fits everything in view once it
 draws. Several views can share a canvas. Each takes a region, `[x, y, width, height]` in fractions
@@ -24,6 +24,8 @@ object reuse its cached tiles.
 
 After device loss, latkit requests a new GPU when the page returns to the foreground.
 Views retain their state, listeners, and pending captures.
+
+The [WECC240 recording](examples/wecc.md) uses one time coordinate for a map and two plots.
 
 ## Camera
 

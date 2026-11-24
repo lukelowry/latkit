@@ -1,4 +1,4 @@
-# Command reference
+# CLI commands
 
 Run a command with `--help` to list its options. For examples, see the [command-line guide](../cli.md).
 

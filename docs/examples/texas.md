@@ -1,11 +1,11 @@
-# ACTIVSg2000
+# Map generation by bus
 
 ```{image} ../images/texas.png
-:alt: Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines
+:alt: Amber disks show generation at buses on the ACTIVSg2000 network in Texas.
 :class: picture
 ```
 
-Generator size follows the square root of output. Labels identify the ten largest generators. On lines rated 345 kV and above, comets keep their spacing in map units as you zoom.
+Disk area represents total active power generation at each bus (MW). Labels identify buses at or above the tenth-highest bus total. Line color and width show voltage class. Moving marks highlight lines at 345 kV and above, all at the same animation speed.
 
 ```sh
 node docs/gallery/render.ts texas

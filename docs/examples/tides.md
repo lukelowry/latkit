@@ -1,4 +1,4 @@
-# Tides
+# Draw nested contours
 
 ```{image} ../images/tides.png
 :alt: One hundred and ten closed contours swelling outward, from deep blue at the center to warm sand at the rim

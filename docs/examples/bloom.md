@@ -1,4 +1,4 @@
-# Golden bloom
+# Color a spiral of points
 
 ```{image} ../images/bloom.png
 :alt: Thirty-two thousand seeds a golden angle apart, in arms of sapphire, rose, and amber

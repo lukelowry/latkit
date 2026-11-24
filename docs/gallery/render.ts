@@ -33,6 +33,9 @@ export interface Picture {
 /** Every piece, in the gallery's order. */
 export const PIECES = [
   'opening',
+  'three-bus',
+  'voltage-dip',
+  'step-response',
   'grid',
   'texas',
   'frequency',

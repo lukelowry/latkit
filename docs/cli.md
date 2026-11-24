@@ -1,31 +1,28 @@
-# Command line
+# Render from the command line
 
-Use `latkit render` to draw a [scene](scenes.md) as an image or video with the browser's
-renderer on a native GPU. Supply datasets as [JSON](formats.md#json), [LATK](formats.md#bytes),
-or GeoJSON (name it with `NAME=`). Use `latkit validate` to check the inputs without a GPU.
-The [command reference](reference/cli.md) lists flags and defaults.
-
-Install the CLI, validate the input files, then render a PNG at twice the layout resolution.
+From the repository root, render the [Hawaiʻi one-line](examples/hawaii.md) from its checked-in scene and drawing data.
 
 ```sh
 cargo install latkit-cli
-latkit validate scene.json -d grid.json
-latkit render scene.json -d grid.json -o grid.png --size 2400x1350 --scale 2
+latkit validate docs/gallery/hawaii/scene.json -d docs/gallery/hawaii/data.json
+latkit render docs/gallery/hawaii/scene.json -d docs/gallery/hawaii/data.json --camera docs/gallery/hawaii/camera.json --size 3804x1842 --scale 2 -o hawaii.png
 ```
 
-To inspect a dataset or select rows before rendering:
+## Render a recording
+
+The [WECC240 example](examples/wecc.md) puts a map and two traces in one frame. With Python 3.10+ and the CLI installed, render a still at 1.12 s. The case and recording are included.
 
 ```sh
-latkit inspect grid.bin
-latkit query grid.bin '{"of":"Branch","filter":{"gt":["$loading",90]},"limit":20}'
+python crates/latkit-cli/examples/wecc240-fault/render.py --preview --at 1.12 --output target/wecc
 ```
 
-Use one scene per panel for a multi-view video. At most one input can read stdin (`-`).
+On Windows, render the first two seconds of playback at 60 fps. The script writes `target/wecc/animation.mp4`. Omit `--limit 120` for the full recording.
 
 ```sh
-latkit render map.json plot.json -d grid.json -d states=usa.geojson \
-  --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4
+python crates/latkit-cli/examples/wecc240-fault/render.py --limit 120 --output target/wecc
 ```
+
+Run the script with `--prepare-only` to inspect its scenes, frame file and CLI command. The [CLI reference](reference/cli.md) lists individual flags.
 
 ## Frames
 

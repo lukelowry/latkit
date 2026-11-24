@@ -1,4 +1,4 @@
-# ACTIVSg70k
+# Map a large power grid
 
 ```{image} ../images/grid.png
 :alt: Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage

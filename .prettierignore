@@ -18,6 +18,8 @@ benchmark/baselines
 npm/schema.json
 npm/colormaps.json
 docs/_static/theme.json
+# Preserve the exported Hawaii40 drawing data from gridparse.
+docs/gallery/hawaii/data.json
 # Written by LATKIT_BLESS=1 cargo test -p latkit-cli, then node npm/docs.mjs, in MyST's definition
 # lists, which Prettier would break.
 docs/reference/cli.json

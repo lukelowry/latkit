@@ -1,9 +1,5 @@
-/**
- * A line opening: ACTIVSg70k as its Little Rock to Newark 765 kV line opens. A DC power flow of the
- * whole grid shows where the line's power goes. Branches that pick it up are amber, branches that
- * lose flow are cyan, and the rest of the grid is a dim web. Each bus's height is its frequency
- * 2.5 s into a simulation of the same opening.
- */
+/** Branch flow magnitude changes after the Little Rock–Newark outage (DC power flow).
+ * Bus heights use frequency deviations about 2.5 s into the dynamic simulation. */
 import fs from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { Data, field, type Mark } from 'latkit';

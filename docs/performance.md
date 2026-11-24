@@ -1,4 +1,4 @@
-# Performance
+# Benchmarks
 
 Each row shows the largest size tested in one Chrome benchmark on an NVIDIA GeForce RTX 2080 SUPER,
 using WebGL2 through ANGLE on Direct3D 11. Times are in milliseconds.

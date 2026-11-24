@@ -8,6 +8,7 @@
 }
 
 body[data-theme] {
+  --docs-header-height: 3.5rem;
   --font-stack--headings: 'Inter', var(--font-stack);
   --radius: 0.5rem;
   --color-sidebar-link-text--top-level: var(--color-foreground-primary);
@@ -41,30 +42,183 @@ article a {
 
 /* Brand and navigation */
 
-.sidebar-brand {
-  flex-direction: row;
+.docs-header {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: var(--color-background-primary);
+  border-bottom: 1px solid var(--color-background-border);
+}
+
+.docs-bar {
+  display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding-block: 1.25rem 1rem;
+  gap: 1.5rem;
+  max-width: 82rem;
+  min-height: var(--docs-header-height);
+  margin-inline: auto;
+  padding-inline: var(--sidebar-item-spacing-horizontal, 1rem);
+  box-sizing: border-box;
 }
 
-.sidebar-logo-container {
-  margin: 0;
+.docs-brand,
+.docs-menu,
+.docs-repo {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--color-foreground-primary);
+  text-decoration: none;
 }
 
-.sidebar-logo {
-  width: 1.75rem;
-}
-
-.sidebar-brand-text {
-  font-family: var(--font-stack--headings);
-  font-size: 1.15rem;
-  font-weight: 600;
+.docs-brand {
+  gap: 0.55rem;
+  font: 600 1.15rem var(--font-stack--headings);
   letter-spacing: -0.015em;
 }
 
-.sidebar-tree .current-page > .reference {
-  color: var(--color-brand-primary);
+.docs-search {
+  margin: 0 0 0 auto;
+}
+
+.docs-search input {
+  box-sizing: border-box;
+  width: 14rem;
+  height: 2.1rem;
+  padding-inline: 0.8rem;
+  border: 1px solid var(--color-background-border);
+  border-radius: 0.375rem;
+  background: var(--color-background-secondary);
+  color: var(--color-foreground-primary);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.docs-search input::placeholder {
+  color: var(--color-foreground-secondary);
+}
+
+.docs-menu,
+.docs-repo {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.docs-menu,
+.page .mobile-header {
+  display: none;
+}
+
+.docs-menu svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  fill: currentColor;
+}
+
+.docs-repo:hover,
+.docs-brand:hover {
+  color: var(--color-brand-content);
+}
+
+.sidebar-sticky,
+.toc-sticky {
+  top: calc(var(--docs-header-height) + 1px);
+  height: calc(100vh - var(--docs-header-height) - 1px);
+}
+
+.sidebar-tree {
+  padding-block: 0.3rem 1rem;
+}
+
+.sidebar-tree .caption {
+  margin: 1.05rem 0 0.25rem;
+  color: var(--color-foreground-secondary);
+  font: 600 0.8rem var(--font-stack--headings);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.sidebar-tree .toctree-l1 > a {
+  padding-block: 0.32rem;
+  line-height: 1.45;
+}
+
+.sidebar-tree li.current > a.reference {
+  background: color-mix(in srgb, var(--color-brand-primary) 9%, transparent);
+  color: var(--color-foreground-primary);
+  font-weight: 600;
+}
+
+.sidebar-tree a:focus-visible {
+  outline-offset: -2px;
+}
+
+:target {
+  scroll-margin-top: 4.5rem;
+}
+
+@media (max-width: 82em) {
+  .docs-bar {
+    max-width: 67rem;
+  }
+}
+
+@media (max-width: 63em) {
+  .docs-bar {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 0.5rem;
+  }
+
+  .docs-menu {
+    display: inline-flex;
+    justify-self: start;
+    gap: 0.35rem;
+    cursor: pointer;
+  }
+
+  .docs-search input {
+    width: clamp(6.75rem, 26vw, 11rem);
+    padding-inline: 0.55rem;
+  }
+
+  .docs-repo {
+    display: none;
+  }
+
+  .theme-toggle-content,
+  .toc-content-icon:not(.no-toc) {
+    display: flex;
+  }
+
+  .sidebar-overlay,
+  #__navigation:checked ~ .page .sidebar-drawer {
+    top: calc(var(--docs-header-height) + 1px);
+  }
+
+  .sidebar-sticky,
+  .page .sidebar-drawer {
+    height: calc(100dvh - var(--docs-header-height) - 1px);
+  }
+
+  .docs-menu[aria-expanded='true'] {
+    text-decoration: underline;
+    text-underline-offset: 0.25em;
+  }
+
+  .sidebar-drawer {
+    visibility: hidden;
+  }
+
+  #__navigation:checked ~ .page .sidebar-drawer {
+    visibility: visible;
+  }
+}
+
+@media print {
+  .docs-header {
+    display: none;
+  }
 }
 
 /* Type */
@@ -113,7 +267,7 @@ article dd {
   margin: 1.75rem 0 1rem;
 }
 
-/* Every picture latkit draws for these pages is 1600 by 1000, so its room is held before it loads. */
+/* Keep plots and one-line diagrams at their original proportions. */
 .plot img,
 article img.picture,
 article video.picture {
@@ -121,7 +275,7 @@ article video.picture {
   box-sizing: border-box;
   width: 100%;
   height: auto;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: auto;
   border: 1px solid var(--color-background-border);
   border-radius: 0.75rem;
 }
@@ -138,7 +292,7 @@ article img.picture.banner {
   aspect-ratio: 12 / 5;
 }
 
-.caption {
+article .caption {
   margin-bottom: 2.5rem;
   font-size: var(--font-size--small);
   color: var(--color-foreground-muted);
@@ -369,6 +523,6 @@ table.numbers :is(th, td):not(:first-child) {
   width: 100%;
   height: auto;
   aspect-ratio: 16 / 10;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 0.5rem;
 }

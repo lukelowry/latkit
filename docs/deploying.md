@@ -1,4 +1,4 @@
-# Deploy latkit
+# Deploy a web app
 
 Install `latkit` from npm for browser or Node use. Install `latkit-cli` for the command line.
 

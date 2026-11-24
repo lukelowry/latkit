@@ -1,4 +1,4 @@
-# Terrain
+# Build a terrain mesh
 
 ```{image} ../images/terrain.png
 :alt: Ridged mountains of 112,000 lit triangles, from deep teal valleys to pale summits, seen from above at an angle

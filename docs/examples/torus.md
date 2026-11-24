@@ -1,4 +1,4 @@
-# Torus silk
+# Draw a torus knot
 
 ```{image} ../images/torus.png
 :alt: Sixty-four filaments in cyan, amber, and coral, twisting around a three-dimensional torus knot

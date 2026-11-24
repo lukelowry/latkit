@@ -1,4 +1,4 @@
-# Globe
+# Draw great-circle routes
 
 ```{image} ../images/globe.png
 :alt: Great-circle routes between forty of the world's great cities on a globe, with comets flowing along them

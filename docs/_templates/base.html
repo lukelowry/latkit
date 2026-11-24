@@ -1,0 +1,30 @@
+{% extends "!base.html" %} {% block body %} {{ super() }}
+<header class="docs-header">
+  <div class="docs-bar">
+    <label class="docs-menu" for="__navigation" id="docs-menu">
+      <svg aria-hidden="true"><use href="#svg-menu"></use></svg> Menu
+    </label>
+    <a class="docs-brand" href="{{ pathto(master_doc) }}" aria-label="latkit home">
+      <img
+        class="only-light"
+        src="{{ pathto('_static/' + theme_light_logo, 1) }}"
+        alt=""
+        width="26"
+        height="26"
+      />
+      <img
+        class="only-dark"
+        src="{{ pathto('_static/' + theme_dark_logo, 1) }}"
+        alt=""
+        width="26"
+        height="26"
+      />
+      latkit
+    </a>
+    <form class="docs-search" action="{{ pathto('search') }}" method="get" role="search">
+      <input type="search" name="q" aria-label="Search docs" placeholder="Search docs" required />
+    </form>
+    <a class="docs-repo" href="https://github.com/lukelowry/latkit">GitHub</a>
+  </div>
+</header>
+{% endblock %}

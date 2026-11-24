@@ -1,4 +1,4 @@
-# Currents
+# Trace streamlines
 
 ```{image} ../images/currents.png
 :alt: Over a thousand streamlines swirling around seven vortices, slow ones deep blue and fast ones pale

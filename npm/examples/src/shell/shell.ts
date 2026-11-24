@@ -26,12 +26,11 @@ declare global {
   }
 }
 
-/** A page in the picker: its id in the URL, and its module. */
-export interface Entry {
+/** An example in the picker, shown in this shell or on a standalone page. */
+export type Entry = {
   readonly id: string;
   readonly title: string;
-  load(): Promise<{ default: Page }>;
-}
+} & ({ load(): Promise<{ default: Page }> } | { href: string });
 
 /** Fields the inspector leaves out: positions, which the view already shows. */
 const HIDDEN = /^(lon|lat|x|y|z|geometry|position)$/;
@@ -41,7 +40,11 @@ const MB = 1 << 20;
 export function start(pages: readonly Entry[]): void {
   const picker = h('select', { 'aria-label': 'Example' });
   picker.append(...pages.map(({ id, title }) => h('option', { value: id }, title)));
-  picker.addEventListener('change', () => (location.hash = picker.value));
+  picker.addEventListener('change', () => {
+    const entry = pages.find((p) => p.id === picker.value)!;
+    if ('href' in entry) location.assign(entry.href);
+    else location.hash = entry.id;
+  });
   const regions = {
     detail: h('p', { class: 'detail' }),
     error: h('div', { role: 'alert', class: 'error', hidden: true }),
@@ -78,6 +81,10 @@ export function start(pages: readonly Entry[]): void {
   const show = async () => {
     const id = location.hash.slice(1).split('?')[0];
     const entry = pages.find((p) => p.id === id) ?? pages[0]!;
+    if ('href' in entry) {
+      location.replace(entry.href);
+      return;
+    }
     const opened = ++opening;
     open?.close();
     open = undefined;

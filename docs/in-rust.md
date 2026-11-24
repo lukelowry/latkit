@@ -6,8 +6,17 @@ For queries and file conversion without GPU dependencies, install the crate with
 cargo add latkit --no-default-features
 ```
 
-The [Rust API overview](https://docs.rs/latkit/latest/latkit/) shows how to create a dataset,
-apply a patch, and query a snapshot. To save that snapshot and read it back:
+## Query a bus table
+
+The crate example below selects buses whose nominal voltage is at least 200 kV. The input contains one 115 kV bus and one 230 kV bus.
+
+````{literalinclude} ../crates/latkit/README.md
+:language: rust
+:start-after: ```rust
+:end-before: ```
+````
+
+To save a snapshot and read it back in an async function:
 
 ```rust
 let saved = grid.snapshot().to_bytes();
