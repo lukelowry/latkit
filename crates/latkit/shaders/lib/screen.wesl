@@ -340,7 +340,7 @@ fn on_target(a: vec2f, b: vec2f) -> vec2f {
     return clip_axis(across, a.y, b.y - a.y, eye.size.y);
 }
 
-// `t`, the fractions of a segment kept so far, within those where `start + d·t` lies from 0 to
+// `t`, the fractions of a segment kept so far, within those where `start + d * t` lies from 0 to
 // `most`.
 fn clip_axis(t: vec2f, start: f32, d: f32, most: f32) -> vec2f {
     if abs(d) < 1e-6 {

@@ -260,7 +260,7 @@ export default page({
       }
     });
     detail(
-      `${mesh.count.toLocaleString()} vertices · ${mesh.springs.a.length.toLocaleString()} wireframe edges`,
+      `${mesh.count.toLocaleString()} vertices, ${mesh.springs.a.length.toLocaleString()} wireframe edges`,
     );
     body.drop(true);
     record();

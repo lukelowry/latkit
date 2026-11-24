@@ -63,7 +63,7 @@ export default page({
         },
       ],
     }));
-    detail('Hawaii40 · 37 buses · 89 branches');
-    credit('Synthetic Oʻahu case · one-line drawing from gridparse');
+    detail('Hawaii40 (37 buses, 89 branches)');
+    credit('Synthetic Oʻahu case');
   },
 });

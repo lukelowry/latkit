@@ -131,7 +131,7 @@ async function canvases(n: number): Promise<HTMLCanvasElement[]> {
 }
 
 /** Describes the browser's high-performance renderer, and the browser, as in
- * `<renderer> · Chrome <n>`. Times compare only on the same renderer and browser. */
+ * `<renderer> - Chrome <n>`. Times compare only on the same renderer and browser. */
 async function machine(): Promise<string> {
   const gl = new OffscreenCanvas(1, 1).getContext('webgl2', {
     powerPreference: 'high-performance',
@@ -151,7 +151,7 @@ async function machine(): Promise<string> {
   )
     .map(([name, pattern]) => [name, pattern.exec(agent)?.[1]] as const)
     .find(([, version]) => version) ?? ['browser', 'unknown'];
-  return `${renderer} · ${browser} ${version}`;
+  return `${renderer} - ${browser} ${version}`;
 }
 
 declare global {

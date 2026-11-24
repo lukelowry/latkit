@@ -80,7 +80,7 @@ class Susceptance {
     return 1 / reactance(this.net, e);
   }
 
-  /** Writes `B·v` into `out`. */
+  /** Writes `B * v` into `out`. */
   times(v: Float64Array, out: Float64Array): void {
     for (let b = 0; b < v.length; b++) {
       let sum = this.diagonal[b]! * v[b]!;
@@ -102,7 +102,7 @@ class Susceptance {
     return p.map((v, b) => v - mean[this.island[b]!]!);
   }
 
-  /** Solves `B·θ = p` for the angles `θ`, after balancing `p` per island, by conjugate gradients
+  /** Solves `B * θ = p` for the angles `θ`, after balancing `p` per island, by conjugate gradients
    * with a diagonal (Jacobi) preconditioner. A bus with no branch in service keeps an angle of 0. */
   solve(injection: Float64Array, tolerance = 1e-10): Float64Array {
     const n = injection.length;

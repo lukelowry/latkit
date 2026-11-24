@@ -92,8 +92,8 @@ const timesFile = (machine: string) =>
   path.join(
     baselines,
     `${machine
-      .replace(/ · Chrome \S+$/, '')
-      .replace(/ · (\w+) \S+$/, ' $1')
+      .replace(/ - Chrome \S+$/, '')
+      .replace(/ - (\w+) \S+$/, ' $1')
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')}.json`,

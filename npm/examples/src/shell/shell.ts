@@ -90,7 +90,7 @@ export function start(pages: readonly Entry[]): void {
     open = undefined;
     regions.error.hidden = true;
     picker.value = entry.id;
-    document.title = `${entry.title} · latkit`;
+    document.title = `${entry.title} | latkit`;
     regions.detail.textContent = 'Loading…';
     try {
       const [{ default: page }] = await Promise.all([entry.load(), load()]);
@@ -445,8 +445,8 @@ class OpenPage implements Context<Record<string, unknown>> {
       const stats = view.stats;
       line.textContent = [
         `${((frames * 1000) / (now - since)).toFixed(0)} fps`,
-        `frame ${stats.cpuMs.toFixed(1)} ms${stats.gpuMs ? ` · GPU ${stats.gpuMs.toFixed(2)} ms` : ''}`,
-        `${stats.drawn.toLocaleString()} rows drawn · ${stats.draws} draws`,
+        `frame ${stats.cpuMs.toFixed(1)} ms${stats.gpuMs ? `, GPU ${stats.gpuMs.toFixed(2)} ms` : ''}`,
+        `${stats.drawn.toLocaleString()} rows drawn, ${stats.draws} draws`,
         `${(gpu.resident / MB).toFixed(0)} of ${(gpu.budget.bytes / MB).toFixed(0)} MB on the GPU`,
         ...(this.#stepMs > 0.05 ? [`page ${this.#stepMs.toFixed(1)} ms a frame`] : []),
         ...(view.waiting.length ? [`waiting on ${view.waiting.join(', ')}`] : []),

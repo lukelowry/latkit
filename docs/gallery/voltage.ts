@@ -22,12 +22,12 @@ export function voltageDip({ times, bus_ids }: Recording, bytes: DataView): Pict
         plot: {
           x: {
             label: 'Time (s)',
-            ticks: [0.8, [1, '1.00 · fault'], [1.15, '1.15 · clear'], 1.4, 1.6],
+            ticks: [0.8, [1, '1.00 (fault)'], [1.15, '1.15 (clear)'], 1.4, 1.6],
           },
           y: { label: 'Voltage (p.u.)', ticks: [0.9, 0.95, 1, 1.05, 1.1], precision: 2 },
         },
       },
-      title: { text: 'John Day', subtitle: 'Bus 4005 · WECC240' },
+      title: { text: 'John Day', subtitle: 'Bus 4005 (WECC240)' },
       theme: {
         background: '#101923',
         text: { color: '#e2eaf1', size: 13, halo: 0 },

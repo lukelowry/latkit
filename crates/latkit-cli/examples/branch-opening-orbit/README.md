@@ -1,7 +1,6 @@
 # Line-opening orbit
 
-[Preview](preview.png) · The video is not in Git: [reproduce it](#reproduce) to write
-`animation.mp4` here.
+[View the preview](preview.png). [Reproduce the video](#reproduce) to write `animation.mp4`.
 
 A close orbit around the network. The bearing turns 108°, from −70° to +38°, while the center
 drifts west from 84.5° W to 87° W at 37.5° N. Zoom stays nearly constant and pitch stays between

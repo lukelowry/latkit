@@ -9,7 +9,7 @@
 
 Follow a circuit from one numbered busbar to the next. Paired windings mark transformers between the 138 kV and 69 kV systems. Parallel strokes are separate circuits. A gap where two strokes cross means they have no electrical connection.
 
-The drawing comes from the Hawaii40 synthetic Oʻahu case. This version has 37 buses, 89 branches and 45 generators. A circle with a sine wave marks a generator, a triangle marks a load, and an open switch marks a disconnected generator. [Case and drafting source](https://github.com/lukelowry/gridparse/blob/de050fb141e79eb4e288ceae9d55a4e35705dc11/examples/hawaii/oneline.py).
+The diagram shows the synthetic Hawaii40 case for Oʻahu, with 37 buses, 89 branches and 45 generators. A circle with a sine wave marks a generator, a triangle marks a load, and an open switch marks a disconnected generator.
 
 ## Explore the diagram
 

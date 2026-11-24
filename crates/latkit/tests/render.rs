@@ -1483,7 +1483,7 @@ fn sizes_in_units_are_degrees_on_the_earth() {
     let ground = Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..plain_theme().earth }, ..plain_theme() };
     let scene = Scene::new(Earth { grid: latkit::Grid::Off, ..Earth::default() }).theme(ground).draw(marker);
     let mut view = View::new(&gpu, scene);
-    // At zoom 6 the world is 256 · 2⁶ pixels around, so a degree spans 45.5 pixels.
+    // At zoom 6 the world is 256 * 2⁶ pixels around, so a degree spans 45.5 pixels.
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 6.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);

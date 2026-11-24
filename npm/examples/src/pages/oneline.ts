@@ -188,7 +188,7 @@ export default page({
   async open({ settings, view, detail }) {
     const data = new Data('grid');
     const count = (buses: number) =>
-      detail(`${buses.toLocaleString()} buses · ${grid(data, buses).toLocaleString()} branches`);
+      detail(`${buses.toLocaleString()} buses, ${grid(data, buses).toLocaleString()} branches`);
     count(settings.buses);
     const kv = field('kv').colormap({ kind: 'categorical', colors: COLORS, values: LEVELS });
     const shown = await view((s) => ({

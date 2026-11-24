@@ -9,7 +9,7 @@ latkit draws large networks, including power grids. Explore them in a browser wi
 or render images and video from the command line.
 :::
 
-<span id="install">[Installation](installation.md)</span> &middot; <span id="quickstart">[Quickstart](quickstart.md)</span>
+<span id="install">[Installation](installation.md)</span> | <span id="quickstart">[Quickstart](quickstart.md)</span>
 
 :::{container} plot
 
@@ -41,6 +41,12 @@ After the Little Rock–Newark 765 kV line opens, a DC power flow gives the chan
 :::
 
 [Browse the example gallery](examples/index.md)
+
+## Author
+
+```{include} ../README.md
+:start-after: "## Author"
+```
 
 ```{raw} html
 <script>
