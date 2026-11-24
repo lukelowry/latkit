@@ -1,14 +1,13 @@
-//! Columnar data drawn on the GPU as vertices, edges, lines, and areas.
+#![doc = include_str!("../README.md")]
 //!
-//! A [`Data`] is a named collection of [`Table`]s, changed in place by [`Patch`]es. A [`Snapshot`]
-//! is one immutable version of a `Data`, taken in O(1). A [`Scene`] describes what to draw and how
-//! it responds to input: marks that reference tables of datasets, a space, a theme, and controls. A
-//! [`View`] draws a scene into any wgpu frame from its [`Source`]s, one per dataset name, and turns
-//! platform [`Input`] into [`Event`]s.
+//! ## Rust API
 //!
-//! Every input is plain data that deserializes. [`from_json`] reads one from JSON text and reports
-//! errors with the path to the part it could not read. [`schema`] returns its JSON Schema.
-
+//! - Store rows in a [`Data`], apply a [`Patch`], and run a [`Query`] on a [`Snapshot`].
+//! - Parse JSON with [`from_json`] or inspect a type's JSON Schema with [`schema`].
+#![cfg_attr(
+    feature = "gpu",
+    doc = "- Draw a [`Scene`] with a [`View`], then export an [`Image`] or [`Video`] with a [`Shot`]."
+)]
 // Without `gpu`, the parts of data, expressions, and sorts that only drawing uses are dead code.
 // Builds with `gpu` lint every feature, so they still catch code nothing uses.
 #![cfg_attr(not(feature = "gpu"), allow(dead_code))]
@@ -59,14 +58,14 @@ mod wire;
 #[cfg(feature = "gpu")]
 pub use data::Source;
 pub use data::{
-    Data, DecodeLimits, Description, Envelope, EnvelopeRequest, FieldDescription, Id, Ids, Kind, Name, Patch, Row,
-    Rows, Snapshot, Table, TableDescription, TileWriter, Value, Values,
+    Columns, Data, DecodeLimits, Description, Envelope, EnvelopeRequest, FieldDescription, Id, Ids, Kind, Name, Patch,
+    Row, Rows, Snapshot, Table, TableDescription, TileWriter, Value, Values,
 };
 pub use data::{Order, Patches, Query, QueryResult, Reading};
 pub use error::{Error, Path, Result, Step};
 pub use expr::{
-    Color, Colormap, ColormapKind, Expr, Format, Mapped, Size, Stop, Then, When, elapsed, field, hovered, meters,
-    pointer, related, selected, units, when, zoom,
+    Category, Color, Colormap, ColormapKind, Expr, Format, Length, Mapped, Size, Stop, Then, When, elapsed, field,
+    hovered, meters, pointer, related, selected, units, when, zoom,
 };
 pub use image::{Image, ImageFormat};
 pub use json::from_json;
@@ -80,9 +79,9 @@ pub use {
     panels::Panels,
     scene::{
         Action, AreaTheme, Areas, Axis, Controls, Converge, Direction, Earth, EarthTheme, EdgeTheme, Edges, FlowTheme,
-        FocusTheme, Gestures, Grid, GridTheme, Interpolation, Label, Layered, Layout, Legend, Length, LineTheme, Lines,
-        Mark, Marker, Motion, Parallel, Place, Plane, Plot, PlotTheme, Projection, Reach, Route, Scene, Shade, Shape,
-        Space, Stress, TextTheme, Theme, Title, Trace, VertexTheme, Vertices,
+        FocusTheme, Gestures, Grid, GridTheme, Interpolation, Label, Layered, Layout, Legend, LineTheme, Lines, Mark,
+        Marker, Meet, Motion, Parallel, Place, Plane, Plot, PlotTheme, Projection, Reach, Route, Scene, Shade, Shape,
+        Space, Stress, StrokeMarker, TextTheme, Theme, Title, Trace, VertexTheme, Vertical, Vertices,
     },
     shot::{Capture, Shot},
     tiles::{LayerDescription, Tiles, TilesDescription},

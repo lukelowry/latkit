@@ -147,6 +147,13 @@ impl View {
         self.wake();
     }
 
+    /// The box of positions that fits have framed, which the camera's limits stay near: its least
+    /// and greatest x, y, and elevation. A fit to everything replaces it, and a fit to part grows
+    /// it. `None` on a plot, and until a fit frames one.
+    pub fn bounds(&self) -> Option<([f64; 3], [f64; 3])> {
+        self.rig.bounds.map(|bounds| (bounds.min, bounds.max))
+    }
+
     /// Resolves once the last fit asked for applies, to the camera it framed, or to `None` when a
     /// camera move or another fit replaces it, or no fit is due.
     pub fn framed(&mut self) -> Pending<Option<Camera>> {
@@ -235,8 +242,7 @@ impl View {
         }
         // A plot with traces fits everything to their whole span once their data is available.
         // Measuring instead would frame only what is drawn up to the coordinate shown.
-        let plot = matches!(self.scene.space, Space::Plot(_));
-        if plot && matches!(self.fitting.wanted, Some(Fit::All)) && self.traces() {
+        if self.fits_trace_span() {
             return None;
         }
         // Positions settle once data has streamed, shapes are triangulated and bent, any layout has
@@ -300,11 +306,16 @@ impl View {
         None
     }
 
+    fn fits_trace_span(&self) -> bool {
+        matches!(self.scene.space, Space::Plot(_)) && matches!(self.fitting.wanted, Some(Fit::All)) && self.traces()
+    }
+
     /// Whether a fit will measure rows on the GPU: one asked for that is not a box, or a plot's value
     /// range following marks the CPU cannot fit it to (see `fits_traces`). Its passes are then as
     /// urgent as drawing.
     pub(super) fn measures(&self) -> bool {
-        let asked = self.fitting.wanted.as_ref().is_some_and(|fit| !matches!(fit, Fit::Bounds { .. }));
+        let asked = self.fitting.wanted.as_ref().is_some_and(|fit| !matches!(fit, Fit::Bounds { .. }))
+            && !self.fits_trace_span();
         let traced = matches!(self.camera, Camera::Plot { y: None, .. })
             && self.marks.iter().any(|m| m.kind() == MarkKind::Lines)
             && !self.fits_traces();
@@ -355,7 +366,15 @@ impl View {
         let mut hi = [f64::NEG_INFINITY; 3];
         let mut margin = 0.0_f64;
         for (i, shown) in self.marks.iter().enumerate() {
-            if !shown.measured() || !fits_table(fit, shown) {
+            if !fits_table(fit, shown) {
+                continue;
+            }
+            // A stroke reaches half its width from its path, its halo beyond that, and its markers
+            // half their size, whether or not the fit measures its rows.
+            if shown.drawable() {
+                margin = margin.max(self.stroke_reach(&shown.mark));
+            }
+            if !shown.measured() {
                 continue;
             }
             if let Some([w, s, e, n]) =
@@ -390,6 +409,30 @@ impl View {
             return None;
         }
         measured().filter_map(|m| self.tiled_bounds(m)).reduce(union)
+    }
+
+    /// How far the strokes of `mark` reach from their paths, in CSS pixels: half the width a stroke
+    /// has unless its row says otherwise, the theme's halo beyond that, and half the size of the
+    /// largest marker along it. Lengths in position units follow the zoom, so they count for
+    /// nothing here.
+    fn stroke_reach(&self, mark: &crate::Mark) -> f64 {
+        use crate::Length::Px;
+        let theme = &self.scene.theme;
+        let (width, halo) = match mark {
+            crate::Mark::Edges(_) => (theme.edge.width, theme.edge.halo),
+            crate::Mark::Lines(_) => (theme.line.width, theme.line.halo),
+            crate::Mark::Vertices(_) | crate::Mark::Areas(_) => return 0.0,
+        };
+        let halo = if let Px(halo) = halo { halo.max(0.0) } else { 0.0 };
+        let marker = |marker: &crate::StrokeMarker| match &marker.size {
+            None => 2.0 * theme.vertex.radius,
+            Some(size) => match &*size.expr.0 {
+                crate::expr::Node::Number(px) if !size.units => size.px[0].max(*px as f32),
+                _ => size.px[0],
+            },
+        };
+        let markers = mark.stroke_markers().iter().map(marker).fold(0.0, f32::max);
+        f64::from((0.5 * width + halo).max(0.5 * markers))
     }
 
     /// Frames `lo..hi` as `fit` asks, keeping `margin` CSS pixels clear around it. With no fit, fits
@@ -524,8 +567,9 @@ impl View {
 }
 
 impl super::marks::Shown {
-    /// Whether fits frame this mark's extents, which depends on its kind.
+    /// Whether fits frame this mark's extents: every kind's but edges', which lie between their
+    /// vertices unless they pass through bends.
     pub(crate) fn measured(&self) -> bool {
-        self.kind().bounds().is_some()
+        self.kind().bounds().is_some() || self.path() == wgsl::PATH_BENDS
     }
 }

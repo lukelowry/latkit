@@ -191,6 +191,16 @@ const flowing: Scene = {
   ],
 };
 
+/** Dataset `g`'s lines, each with a marker at its end, and its buses. */
+const marked: Scene = {
+  space: 'plane',
+  ease: 0,
+  marks: [
+    { edges: ['g', 'Line'], ends: ['from', 'to'], width: 1.5, markers: ['rectangle'] },
+    { vertices: ['g', 'Bus'], position: ['$lon', '$lat'], radius: 2 },
+  ],
+};
+
 /** Two 2×2 icons: a red one and a blue one. */
 const ICONS: Bitmap[] = [
   { size: [2, 2], rgba: Array.from({ length: 4 }, () => [220, 60, 60, 255]).flat() },
@@ -748,6 +758,13 @@ export const scenarios: Record<string, Scenario> = {
     build: (n) => ({ scene: referenced(), data: { g: make.lattice(n) } }),
     // A bus written changes the lines that name it.
     phases: [pan(), one('g', 'Bus', 'load'), feed('g', 'Bus', 'load')],
+  },
+  along: {
+    about: 'a lattice grid on a plane whose lines each carry a marker along them',
+    unit: 'buses',
+    sizes: REGIMES,
+    build: (n) => ({ scene: marked, data: { g: make.lattice(n) } }),
+    phases: [pan(), zoom(), ...pick()],
   },
   lanes: {
     about: 'edges by the thousand between the same sixteen pairs of vertices',

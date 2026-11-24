@@ -561,6 +561,36 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// Emits a conditional whose alternative is another conditional, as a chain of `when`s and
+    /// [`matched`](Expr::matched) write. The last conditional compiles first, and each case before
+    /// it then selects over what follows, so the stack holds three values however long the chain.
+    fn chain(&mut self, e: &Expr) -> Result<Ty> {
+        let mut cases = Vec::new();
+        let mut last = e;
+        while let Node::When(condition, value, rest) = &*last.0
+            && matches!(&*rest.0, Node::When(..))
+        {
+            cases.push((condition, value));
+            last = rest;
+        }
+        let mut ty = self.emit(last)?;
+        for (condition, value) in cases.into_iter().rev() {
+            self.expect(condition, Ty::Bool).map_err(|e| e.at("when"))?;
+            if self.missing(value) {
+                self.expect(value, ty)?;
+            } else {
+                ty = match (self.emit(value)?, ty) {
+                    (a, b) if a == b => a,
+                    (Ty::Bool, Ty::Number) | (Ty::Number, Ty::Bool) => Ty::Number,
+                    (a, b) => return Err(invalid(format!("when mixes {} and {}", ty_name(a), ty_name(b)))),
+                };
+            }
+            // The alternative lies under the condition and the value: `SELECT_OVER`.
+            self.op(wgsl::OP_SELECT, wgsl::SELECT_OVER, 0, 0, 3, 1)?;
+        }
+        Ok(ty)
+    }
+
     fn emit(&mut self, e: &Expr) -> Result<Ty> {
         match &*e.0 {
             Node::Number(v) => self.constant((*v as f32).to_bits(), Ty::Number),
@@ -586,6 +616,7 @@ impl<'a> Compiler<'a> {
                 Ok(ty)
             }
             Node::Binary(op, a, b) => self.binary(*op, a, b),
+            Node::When(_, _, rest) if matches!(&*rest.0, Node::When(..)) => self.chain(e),
             Node::When(c, a, b) => {
                 self.expect(c, Ty::Bool).map_err(|e| e.at("when"))?;
                 // A missing value takes the other branch's type, so it must compile second. A
@@ -647,6 +678,9 @@ impl<'a> Compiler<'a> {
                 Ok(Ty::Number)
             }
             Node::Colormap { input, colormap, domain } => {
+                // A map with values bins rows by which of them each equals.
+                let binned = input.binned(colormap.category_values());
+                let input = binned.as_ref().unwrap_or(input);
                 self.expect(input, Ty::Number)?;
                 // A categorical map bins values by their integer part, so it has nothing to fit.
                 let domain = match domain {

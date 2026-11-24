@@ -9,7 +9,7 @@
  * slow page slows them all. Every wait races a deadline.
  *
  * On SwiftShader (`--software`, and always on Linux) the CPU draws, slower than any budget, so the
- * gate only checks that every pipeline compiles. Pages and times are judged only on a GPU.
+ * gate checks pipeline compilation and the standalone monitors' traces. Timing requires a GPU.
  *
  * Usage: `node gate/gate.ts <dir holding shaders.json> [--software] [--shaders] [page...]`, which
  * `cargo xtask browser` runs. Naming pages visits only those and skips timing the shaders. Chrome
@@ -62,6 +62,48 @@ const examples = path.dirname(here);
 const args = process.argv.slice(2);
 const software = args.includes('--software') || process.platform === 'linux';
 const shadersOnly = args.includes('--shaders');
+
+// The standalone monitors have no inspector or export shortcut. Check the trace on their canvas.
+const monitors = new Map([
+  ['voltage-dip', [0x6edac9]],
+  ['step-response', [0xffca86, 0x80c7ff]],
+]);
+
+async function monitor(page: Page, colors: number[]): Promise<void> {
+  await page.waitForFunction(
+    (colors) => {
+      if (!location.pathname.endsWith('/monitor.html')) return false;
+      const error = document.querySelector('[role="alert"]');
+      if (error) throw new Error(error.textContent ?? 'Monitor failed');
+      const canvas = document.querySelector('canvas');
+      if (!canvas?.width || !canvas.height) return false;
+      const copy = document.createElement('canvas');
+      copy.width = canvas.width;
+      copy.height = canvas.height;
+      const ctx = copy.getContext('2d', { willReadFrequently: true })!;
+      ctx.drawImage(canvas, 0, 0);
+      const pixels = ctx.getImageData(0, 0, copy.width, copy.height).data;
+      return colors.every((color) => {
+        const r = color >> 16;
+        const g = (color >> 8) & 255;
+        const b = color & 255;
+        let matches = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          if (
+            Math.abs(pixels[i]! - r) < 8 &&
+            Math.abs(pixels[i + 1]! - g) < 8 &&
+            Math.abs(pixels[i + 2]! - b) < 8 &&
+            ++matches >= 50
+          )
+            return true;
+        }
+        return false;
+      });
+    },
+    colors,
+    { timeout: STEP, polling: 50 },
+  );
+}
 
 /** Generated modules and each translated entry's GLSL ES 3.00 source. */
 interface Module {
@@ -319,6 +361,19 @@ async function open(url: string, id: string): Promise<Opened> {
     };
     const started = performance.now();
     await deadline(page.goto(`${url}#${id}`), STEP, `open ${id}`);
+    const colors = monitors.get(id);
+    if (colors) {
+      try {
+        await monitor(page, colors);
+        const ms = performance.now() - started;
+        console.log(`${id}: trace visible in ${ms.toFixed(0)} ms`);
+        if (!software && ms > FIRST_FRAME_BUDGET)
+          slow.push(`trace visible after ${ms.toFixed(0)} ms`);
+      } catch (error) {
+        wrong.push(`could not draw the trace: ${String(error)}`);
+      }
+      return opened;
+    }
     /** Waits up to `budget` ms until every view has drawn more than `frames` frames. */
     const drawn = (frames: number, budget: number) =>
       page.waitForFunction(
@@ -332,16 +387,13 @@ async function open(url: string, id: string): Promise<Opened> {
         { timeout: budget, polling: 50 },
       );
     try {
-      await deadline(
-        drawn(0, FIRST_FRAME_BUDGET),
-        FIRST_FRAME_BUDGET + 1000,
-        `${id}'s first frame`,
-      );
-    } catch {
-      slow.push(`no frame within ${FIRST_FRAME_BUDGET} ms`);
+      await deadline(drawn(0, STEP), STEP + 1000, `${id}'s first frame`);
+    } catch (error) {
+      wrong.push(`no first frame: ${String(error)}`);
       return opened;
     }
     const first = performance.now() - started;
+    if (first > FIRST_FRAME_BUDGET) slow.push(`first frame after ${first.toFixed(0)} ms`);
     // Stalls count from the views' first frames, since the page shows nothing that could stall
     // while it loads.
     await page.evaluate(() => (window as unknown as { resetGap(): void }).resetGap());
@@ -474,7 +526,7 @@ async function suite(only: string[]): Promise<string[]> {
     } finally {
       await chrome.close();
     }
-    const failures: string[] = [];
+    const failures = only.filter((id) => !ids.includes(id)).map((id) => `unknown example: ${id}`);
     for (const id of only.length ? ids.filter((id) => only.includes(id)) : ids) {
       failures.push(...(await visit(url, id)).map((f) => `${id}: ${f}`));
     }
@@ -491,12 +543,20 @@ if (!dir) {
   );
   process.exit(2);
 }
-if (software)
-  console.log('SwiftShader draws on the CPU, so the gate only checks that pipelines compile');
+if (software) console.log('SwiftShader checks rendering without GPU timing budgets');
 const shaders =
-  only.length && !software && !shadersOnly
-    ? []
-    : (await compileBudget(dir)).map((f) => `shaders: ${f}`);
-const failures = [...shaders, ...(software || shadersOnly ? [] : await suite(only))];
+  shadersOnly || !only.length ? (await compileBudget(dir)).map((f) => `shaders: ${f}`) : [];
+const pages = software
+  ? only.length
+    ? only.filter((id) => monitors.has(id))
+    : [...monitors.keys()]
+  : only;
+const failures = [
+  ...shaders,
+  ...(software && !shadersOnly
+    ? only.filter((id) => !monitors.has(id)).map((id) => `no SwiftShader page check for ${id}`)
+    : []),
+  ...(shadersOnly || (software && !pages.length) ? [] : await suite(pages)),
+];
 for (const failure of failures) console.error(`FAIL ${failure}`);
 process.exit(failures.length ? 1 : 0);

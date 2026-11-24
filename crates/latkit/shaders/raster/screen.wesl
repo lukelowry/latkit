@@ -1,42 +1,49 @@
-// Writes the record of each segment of a stroke mark this frame draws (see `lib/screen.wesl`): a
-// point per segment, at its record's texel. Its vertex places the segment, and its fragment writes
-// the record's four texels, one into each layer of its group, so the work lies in the vertex and the
-// fragment only copies. Records the lit draw draws, the segments of the rows the mark's focus
-// lights, are written by the same program when `params.value` is 1.
-//
-// `params.source` is the first segment, `params.destination` the texel of its record within its
-// group, and `params.size` the store's width and height.
-
-import package::lib::types::WordStep;
-import package::lib::screen::{screen_stroke, stroke_record};
+import package::lib::types::{WordStep, NONE, PLACE_SPANS, PLACE_LIT};
+import package::lib::record::{ProjectedStroke, projected_stroke, placed_stroke, record_position, PART_END, BEFORE, AFTER};
+import package::lib::path::{Segment, segment_points,
+    project_segment, ends_part, stroke_style};
+import package::lib::placement::placement;
+@if(projected) import package::lib::point_page::from_page;
+import package::lib::screen::{paint_stroke, stroke_record};
 
 @group(2) @binding(19) var<uniform> params: WordStep;
 
-struct Written {
-    @builtin(position) at: vec4f,
-    @location(0) @interpolate(flat) t0: vec4u,
-    @location(1) @interpolate(flat) t1: vec4u,
-    @location(2) @interpolate(flat) t2: vec4u,
-    @location(3) @interpolate(flat) t3: vec4u,
-}
-
-struct Texels {
-    @location(0) t0: vec4u,
-    @location(1) t1: vec4u,
-    @location(2) t2: vec4u,
-    @location(3) t3: vec4u,
-}
-
 @vertex
-fn vertex(@builtin(vertex_index) i: u32) -> Written {
-    let r = stroke_record(screen_stroke(params.source + i, params.value != 0u));
-    let texel = params.destination + i;
-    let xy = vec2f(f32(texel % params.size.x), f32(texel / params.size.x)) + 0.5;
-    let at = vec4f(xy / vec2f(params.size) * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), 0.0, 1.0);
-    return Written(at, r.t0, r.t1, r.t2, r.t3);
+fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) i: u32) -> ProjectedStroke {
+    let instance = params.source + i;
+    let at = record_position(i, corner, params);
+    var empty: ProjectedStroke;
+    empty.at = at;
+    // Flat data comes from the first or last vertex, depending on the graphics backend.
+    if corner == 1u { return empty; }
+    let s = placement(instance, params.value);
+    if s.item == NONE { return empty; }
+    @if(projected) { return from_page(at, s, i, params); }
+    @if(!projected) {
+        let p = segment_points(s);
+        return projected_stroke(at, s, p, project_segment(p), ends_part(s));
+    }
 }
 
 @fragment
-fn record(v: Written) -> Texels {
-    return Texels(v.t0, v.t1, v.t2, v.t3);
+fn record(v: ProjectedStroke) -> @location(0) vec4u {
+    let query = params.value >= PLACE_SPANS;
+    var q = v;
+    if query { q.row.w &= ~(BEFORE | AFTER); }
+    let on = placed_stroke(q);
+    let word = u32(v.at.x);
+    // Both layouts start with the endpoints. Visibility lives in the record's flags, so
+    // this texel needs no row style, colors or comet data.
+    if (word & select(3u, 1u, query)) == 0u { return bitcast<vec4u>(vec4f(on.a, on.b)); }
+    let style = stroke_style(v.row.x);
+    if query {
+        return vec4u(bitcast<vec3u>(vec3f(on.ca.z / on.ca.w, on.cb.z / on.cb.w, style.width)), u32(on.shown && style.shown));
+    }
+    let s = Segment(v.row.x, v.row.y, v.row.z, v.lengths.y, v.lengths.z, v.lengths.w, false);
+    let r = stroke_record(paint_stroke(s, on, style, (v.row.w & PART_END) != 0u, params.value == PLACE_LIT));
+    switch word & 3u {
+        case 1u: { return r.t1; }
+        case 2u: { return r.t2; }
+        default: { return r.t3; }
+    }
 }

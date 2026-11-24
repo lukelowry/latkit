@@ -3,19 +3,22 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::form::{preset_schema, presets};
+use super::form::{Presets, preset_schema, presets};
 use super::mark::Markers;
 use crate::gpu::shaders as wgsl;
-use crate::{Color, Expr, Image};
+use crate::{Color, Expr, Image, Length, Size};
 
-/// How a vertex is drawn: a shape's name, `"block"`, or
-/// `{ shape | block | gauge | pie | icon | wgsl: options }`. Defaults to an ellipse.
+/// How a vertex is drawn: a shape's name, `"block"`, `"none"`, or
+/// `{ shape | block | gauge | pie | icon | symbol | wgsl: options }`. Defaults to an ellipse.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = preset_schema::<Marker>)]
 pub enum Marker {
     /// A filled shape.
     Shape(Shape),
+    /// Nothing. The row keeps its place, its label, and the edges that end on it, and unless the
+    /// mark sets `pick`, the pointer does not reach it.
+    None,
     /// A rectangle with rounded corners that holds its label inside where the text fits.
     Block {
         /// Corner radius in CSS pixels. Defaults to the theme's `vertex.corner`.
@@ -47,6 +50,23 @@ pub enum Marker {
         images: Vec<Image>,
         /// Each row's image index, from 0.
         index: Expr,
+    },
+    /// A drawing in SVG path data, in the row's color, fitted to the square of the marker's
+    /// smaller side. `index` picks each row's path. Coordinates run from -1 to 1 across that
+    /// square, x right and y down, as SVG has them. With `stroke` the path is stroked at that
+    /// width, and without it the path is filled, by the even-odd rule. Each path is set once as a
+    /// distance field, so its outline stays sharp as the marker grows, and glows, rings, and picks
+    /// follow it.
+    Symbol {
+        /// The paths, as SVG path data.
+        paths: Vec<Arc<str>>,
+        /// Each row's path index, from 0. Defaults to 0.
+        #[serde(default = "crate::scene::mark::zero")]
+        index: Expr,
+        /// The stroke's width: a number in CSS pixels, or `{ units }` in position units. Without
+        /// it, the path is filled.
+        #[serde(default)]
+        stroke: Option<Length>,
     },
     /// A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`. It
     /// reads the pixel's offset from the vertex in CSS pixels, y up, as `f.p`, half the marker's
@@ -87,6 +107,7 @@ presets!(Marker {
     "rounded" => Marker::Shape(Shape::Rounded),
     "diamond" => Marker::Shape(Shape::Diamond),
     "block" => Marker::block(),
+    "none" => Marker::None,
 });
 
 impl Default for Marker {
@@ -107,13 +128,28 @@ impl Marker {
         Marker::Block { corner: None }
     }
 
+    /// A symbol of `paths`, SVG path data in a box from -1 to 1, filled. `index` picks each
+    /// row's path.
+    pub fn symbol<P: Into<Arc<str>>>(paths: impl IntoIterator<Item = P>, index: impl Into<Expr>) -> Marker {
+        Marker::Symbol { paths: paths.into_iter().map(Into::into).collect(), index: index.into(), stroke: None }
+    }
+
+    /// A symbol stroked at `width` instead of filled. Other markers are unchanged.
+    #[must_use]
+    pub fn stroke(self, width: impl Into<Length>) -> Marker {
+        match self {
+            Marker::Symbol { paths, index, .. } => Marker::Symbol { paths, index, stroke: Some(width.into()) },
+            other => other,
+        }
+    }
+
     /// The expressions each row's marker reads, in input order.
     pub(crate) fn inputs(&self) -> Vec<&Expr> {
         match self {
-            Marker::Shape(_) | Marker::Block { .. } => Vec::new(),
+            Marker::Shape(_) | Marker::Block { .. } | Marker::None => Vec::new(),
             Marker::Gauge { fill, .. } => vec![fill],
             Marker::Pie { slices, .. } => slices.iter().collect(),
-            Marker::Icon { index, .. } => vec![index],
+            Marker::Icon { index, .. } | Marker::Symbol { index, .. } => vec![index],
             Marker::Wgsl { inputs, .. } => inputs.iter().collect(),
         }
     }
@@ -130,7 +166,8 @@ impl Marker {
                 Markers { hole: *hole, palette: colors.iter().map(|c| c.packed()).collect(), ..base }
             }
             Marker::Icon { images, .. } => Markers { icons: images.clone(), ..base },
-            Marker::Wgsl { .. } => base,
+            Marker::Symbol { paths, stroke, .. } => Markers { symbols: paths.clone(), stroke: *stroke, ..base },
+            Marker::Wgsl { .. } | Marker::None => base,
         }
     }
 
@@ -145,6 +182,8 @@ impl Marker {
     pub(crate) fn code(&self) -> u32 {
         match self {
             Marker::Shape(_) => wgsl::MARKER_SHAPE,
+            Marker::None => wgsl::MARKER_NONE,
+            Marker::Symbol { .. } => wgsl::MARKER_SYMBOL,
             Marker::Block { .. } => wgsl::MARKER_BLOCK,
             Marker::Gauge { .. } => wgsl::MARKER_GAUGE,
             Marker::Pie { .. } => wgsl::MARKER_PIE,
@@ -162,5 +201,194 @@ impl Shape {
             Shape::Rounded => wgsl::SHAPE_ROUNDED,
             Shape::Diamond => wgsl::SHAPE_DIAMOND,
         }
+    }
+}
+
+/// A marker on a stroke: at a place along each row's path, turned so that its up is the way the
+/// path runs there. It lies wholly on the path, so at the start its near edge sits on the start,
+/// and at the end its far edge on the end. The stroke stops at its box and goes on after it, as it
+/// stops at the markers of its end vertices. A stroke takes at most four, each a shape, an icon,
+/// or a symbol.
+///
+/// JSON takes a shape's name alone, for one at the path's end, or options with a `marker`.
+///
+/// ```
+/// # use latkit::{Edges, Shape, StrokeMarker};
+/// let breakers = Edges::of("grid", "Line").ends("from", "to").markers([
+///     StrokeMarker::new(Shape::Rectangle).at(0.0).offset(14.0),
+///     StrokeMarker::new(Shape::Rectangle).offset(-14.0),
+/// ]);
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+pub struct StrokeMarker {
+    pub(crate) marker: Marker,
+    pub(crate) at: Expr,
+    pub(crate) offset: Size,
+    pub(crate) size: Option<Size>,
+    pub(crate) color: Option<Expr>,
+    pub(crate) visible: Expr,
+}
+
+impl StrokeMarker {
+    /// `marker` at the path's end, as large as a vertex's marker, in the stroke's color.
+    pub fn new(marker: impl Into<Marker>) -> StrokeMarker {
+        StrokeMarker {
+            marker: marker.into(),
+            at: 1.0.into(),
+            offset: 0.0.into(),
+            size: None,
+            color: None,
+            visible: true.into(),
+        }
+    }
+
+    /// Sets how far along each row's path it sits, from 0 at the path's start to 1 at its end. On
+    /// a path of one segment that is a fraction of the stroke as drawn, and on a longer one, of
+    /// the path between its first and last points. At 0 it sits where the stroke leaves its first
+    /// vertex's marker, and at 1 where it reaches its last's.
+    #[must_use]
+    pub fn at(mut self, fraction: impl Into<Expr>) -> StrokeMarker {
+        self.at = fraction.into();
+        self
+    }
+
+    /// Sets how far each row's moves along the path from its place, toward the path's end, in CSS
+    /// pixels unless given in [`units`](crate::units).
+    #[must_use]
+    pub fn offset(mut self, offset: impl Into<Size>) -> StrokeMarker {
+        self.offset = offset.into();
+        self
+    }
+
+    /// Sets its width and height in CSS pixels, unless given in [`units`](crate::units). Defaults
+    /// to twice the theme's `vertex.radius`, the size of a vertex's marker.
+    #[must_use]
+    pub fn size(mut self, size: impl Into<Size>) -> StrokeMarker {
+        self.size = Some(size.into());
+        self
+    }
+
+    /// Sets each row's color. Without one, a marker takes its stroke's color pixel by pixel along
+    /// the path, so where the stroke changes color, the change runs through the marker.
+    #[must_use]
+    pub fn color(mut self, color: impl Into<Expr>) -> StrokeMarker {
+        self.color = Some(color.into());
+        self
+    }
+
+    /// Sets which rows show it.
+    #[must_use]
+    pub fn visible(mut self, visible: impl Into<Expr>) -> StrokeMarker {
+        self.visible = visible.into();
+        self
+    }
+
+    /// Whether it sits at the start of every row's path (`Some(false)`) or at the end
+    /// (`Some(true)`), where it reads only its own segment. `None` for any other place, which a
+    /// path of several segments measures.
+    pub(crate) fn end(&self) -> Option<bool> {
+        match &*self.at.0 {
+            crate::expr::Node::Number(fraction) if *fraction <= 0.0 => Some(false),
+            crate::expr::Node::Number(fraction) if *fraction >= 1.0 => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Every expression in its options.
+    pub(crate) fn exprs(&self) -> impl Iterator<Item = &Expr> {
+        self.size
+            .iter()
+            .map(|size| &size.expr)
+            .chain([&self.at, &self.offset.expr, &self.visible])
+            .chain(&self.color)
+            .chain(self.marker.inputs())
+    }
+}
+
+impl<M: Into<Marker>> From<M> for StrokeMarker {
+    fn from(marker: M) -> StrokeMarker {
+        StrokeMarker::new(marker)
+    }
+}
+
+// A stroke marker's options as JSON writes them.
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(inline)]
+struct StrokeMarkerForm {
+    /// How it is drawn: a shape, an icon, or a symbol.
+    marker: Marker,
+    /// How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a
+    /// path of one segment that is a fraction of the stroke as drawn, and on a longer one, of the
+    /// path between its first and last points. At 0 it sits where the stroke leaves its first
+    /// vertex's marker, and at 1 where it reaches its last's. Defaults to 1.
+    #[serde(default = "at_end")]
+    at: Expr,
+    /// How far each row's moves along the path from there, toward the path's end: a value in CSS
+    /// pixels, or `{ units }` in position units. Defaults to 0.
+    #[serde(default = "nowhere")]
+    offset: Size,
+    /// Its width and height in CSS pixels, unless given in `units`. Defaults to twice the theme's
+    /// `vertex.radius`, the size of a vertex's marker.
+    #[serde(default)]
+    size: Option<Size>,
+    /// Each row's color. Without one, it takes the stroke's color pixel by pixel along the path, so
+    /// where the stroke changes color, the change runs through it.
+    #[serde(default)]
+    color: Option<Expr>,
+    /// Which rows show it. Defaults to all.
+    #[serde(default = "crate::scene::mark::yes")]
+    visible: Expr,
+}
+
+fn nowhere() -> Size {
+    0.0.into()
+}
+
+fn at_end() -> Expr {
+    1.0.into()
+}
+
+impl Presets for StrokeMarker {
+    const NAMES: &'static [&'static str] = &["ellipse", "rectangle", "rounded", "diamond"];
+
+    fn preset(name: &str) -> Option<StrokeMarker> {
+        Self::NAMES.contains(&name).then(|| Marker::preset(name)).flatten().map(StrokeMarker::new)
+    }
+
+    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<StrokeMarker, D::Error> {
+        let form = StrokeMarkerForm::deserialize(deserializer)?;
+        Ok(StrokeMarker {
+            marker: form.marker,
+            at: form.at,
+            offset: form.offset,
+            size: form.size,
+            color: form.color,
+            visible: form.visible,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for StrokeMarker {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<StrokeMarker, D::Error> {
+        super::form::preset_or(deserializer)
+    }
+}
+
+impl JsonSchema for StrokeMarker {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "StrokeMarker".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = generator.subschema_for::<StrokeMarkerForm>();
+        preset_schema::<StrokeMarker>(&mut schema);
+        let about = "A marker on a stroke: at a place along each row's path, turned so that its up is the way the \
+            path runs there. It lies wholly on the path, so at the start its near edge sits on the start, and at the \
+            end its far edge on the end. The stroke stops at its box and goes on after it, as it stops at the \
+            markers of its end vertices. A shape's name alone sits at the path's end. A stroke takes at most four, \
+            each a shape, an icon, or a symbol.";
+        schema.insert("description".into(), about.into());
+        schema
     }
 }

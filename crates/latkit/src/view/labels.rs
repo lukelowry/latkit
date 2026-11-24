@@ -77,6 +77,13 @@ enum Texts {
     Number(Option<Arc<str>>),
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct LabelWork {
+    stamp: u64,
+    pub(super) claim: bool,
+    gather: bool,
+}
+
 impl Setting {
     /// The text of `code`.
     fn text(&self, code: u32, inner: &mut Inner) -> Option<Arc<str>> {
@@ -154,7 +161,7 @@ impl View {
             let (data, table) = source.table_of(column, &self.snapshots)?;
             (Texts::Field([data.clone(), table.name.clone(), column.name.clone()]), labeling.max_width)
         };
-        Some(Setting { texts, font: labeling.font.clone(), size: labeling.size, max_width })
+        Some(Setting { texts, font: labeling.font.clone(), size: labeling.size.value(), max_width })
     }
 
     /// The text run for code `code` of mark `i`'s label text, at the base size regardless of the
@@ -385,20 +392,9 @@ impl View {
     /// Claims run in every such frame, since that frame's labels show from them. The texts pass
     /// waits while its last readback is in flight, and while a fit is about to move the camera.
     /// Both wait until the text pipelines have compiled.
-    pub(super) fn place_labels(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        inner: &mut Inner,
-        eye: &wgsl::Eye,
-        frame: &wgsl::Frame,
-    ) {
-        if !self.can_use(Stage::Text) {
-            return;
-        }
-        let labeled: Vec<(usize, Slots)> =
-            self.labels.slots.iter().enumerate().filter_map(|(i, s)| s.map(|s| (i, s))).collect();
-        if labeled.is_empty() {
-            return;
+    pub(super) fn label_work(&self, eye: &wgsl::Eye, frame: &wgsl::Frame) -> Option<LabelWork> {
+        if !self.can_use(Stage::Text) || self.labels.slots.iter().all(Option::is_none) {
+            return None;
         }
         // What the passes read: a color changing every frame moves no label.
         // An edge label also follows the marks supplying its endpoints. Transitions and tile
@@ -426,9 +422,20 @@ impl View {
         ));
         let claim = self.labels.claimed != Some(stamp);
         let gather = self.labels.gathered.due(stamp) && !self.labels.gathered.busy() && !self.fitting.framing();
-        if !claim && !gather {
-            return;
-        }
+        (claim || gather).then_some(LabelWork { stamp, claim, gather })
+    }
+
+    pub(super) fn place_labels(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        eye: &wgsl::Eye,
+        work: Option<LabelWork>,
+        reads: &[crate::gpu::screen::StrokeRead],
+    ) {
+        let Some(LabelWork { stamp, claim, gather }) = work else { return };
+        let labeled: Vec<(usize, Slots)> =
+            self.labels.slots.iter().enumerate().filter_map(|(i, s)| s.map(|s| (i, s))).collect();
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let resources = self.resources.as_mut().expect("created before labels");
@@ -454,9 +461,13 @@ impl View {
                     &mut raster,
                     &input(i),
                     resources.labels(),
-                    MarkVariants::shown(&self.marks[i], &self.scene.space).label_passes()[0],
-                    rows,
-                    [slots.metadata, slots.positions],
+                    &inner.screen,
+                    crate::gpu::texts::Metadata {
+                        variant: MarkVariants::shown(&self.marks[i], &self.scene).label_passes()[0],
+                        rows,
+                        destination: [slots.metadata, slots.positions],
+                        strokes: reads[i],
+                    },
                 );
                 crate::gpu::texts::Texts::claim(
                     &mut raster,
@@ -541,7 +552,7 @@ impl View {
                 shown.compiled.as_ref().and_then(|c| c.drawing.label.as_ref()).is_some_and(|l| l.number.is_some());
             let per = if numbered { wgsl::NUMBER_CHARS } else { 1 };
             pass.set_pipeline(
-                &inner.pipelines.render(device, MarkVariants::shown(shown, &self.scene.space).glyphs(format, samples)),
+                &inner.pipelines.render(device, MarkVariants::shown(shown, &self.scene).glyphs(format, samples)),
             );
             pass.set_bind_group(2, glyphs, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);

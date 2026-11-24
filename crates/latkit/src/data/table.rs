@@ -294,7 +294,34 @@ impl Reference {
     }
 }
 
+/// A table whose first column sets its row count. The rows have ids from zero.
+pub struct Columns(Name);
+
+impl Columns {
+    /// Adds the first value column, assigning one row per value.
+    pub fn field(self, name: impl Into<Name>, values: impl Into<Values>) -> Table {
+        let values = values.into();
+        self.rows(values.len()).field(name, values)
+    }
+
+    /// Adds the first reference column, assigning one row per target id.
+    pub fn reference(self, name: impl Into<Name>, to: impl Into<Name>, ids: impl Into<Ids>) -> Table {
+        let ids = ids.into();
+        self.rows(ids.len()).reference(name, to, ids)
+    }
+
+    fn rows(self, count: usize) -> Table {
+        // Table::check reports a length mismatch if a column exceeds the row limit.
+        Table::new(self.0, Ids::count(u32::try_from(count).unwrap_or(u32::MAX)))
+    }
+}
+
 impl Table {
+    /// Starts a table with consecutive row ids inferred from the first field or reference.
+    pub fn columns(name: impl Into<Name>) -> Columns {
+        Columns(name.into())
+    }
+
     /// A table named `name` with rows `ids`. `ids` is a count for rows `0..n`, or a list of numbers
     /// or texts.
     pub fn new(name: impl Into<Name>, ids: impl Into<Ids>) -> Table {
@@ -329,6 +356,31 @@ impl Table {
         };
         self.insert(name.into(), Field::Reference(Reference::new(to.into(), ids)));
         self
+    }
+
+    /// Whether two scene declarations contain the same rows and static columns. Shared pages
+    /// compare by identity. Separately parsed inputs compare in place without copying columns.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn same_columns(&self, other: &Self) -> bool {
+        let same = |a: &Column, b: &Column| {
+            a.len() == b.len()
+                && a.kind() == b.kind()
+                && a.pages()
+                    .iter()
+                    .zip(b.pages())
+                    .all(|(x, y)| x.id == y.id || (0..x.values.len()).all(|i| x.values.same_row(i, &y.values, i)))
+        };
+        self.name == other.name
+            && self.ids.same(&other.ids)
+            && self.fields.len() == other.fields.len()
+            && self.fields.iter().zip(&other.fields).all(|((key, a), (other_key, b))| {
+                key == other_key
+                    && match (a, b) {
+                        (Field::Values(a, _), Field::Values(b, _)) => same(a, b),
+                        (Field::Reference(a), Field::Reference(b)) => a.to == b.to && same(&a.ids, &b.ids),
+                        _ => false,
+                    }
+            })
     }
 
     /// The table's name.

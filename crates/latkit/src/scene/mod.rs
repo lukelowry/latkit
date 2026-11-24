@@ -12,8 +12,10 @@ mod layout;
 pub(crate) mod lines;
 pub(crate) mod mark;
 mod marker;
+pub(crate) mod path;
 mod shade;
 mod space;
+mod tables;
 #[cfg(test)]
 mod tests;
 mod theme;
@@ -24,33 +26,31 @@ use std::time::Duration;
 pub use areas::Areas;
 pub(crate) use controls::Control;
 pub use controls::{Action, Controls, Gestures, Motion, Reach};
-pub use edges::Edges;
+pub use edges::{Edges, Meet};
 pub(crate) use form::seconds;
 pub use guide::{Legend, Place, Title};
 pub use label::Label;
 pub use layout::{Direction, Interpolation, Layered, Layout, Route, Stress};
 pub use lines::{Lines, Trace};
 pub use mark::Mark;
-pub use marker::{Marker, Shape};
+pub use marker::{Marker, Shape, StrokeMarker};
 pub use shade::Shade;
 pub(crate) use space::sun;
-pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space};
+pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space, Vertical};
 pub use theme::{
-    AreaTheme, Converge, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, GridTheme, Length, LineTheme, Parallel,
-    PlotTheme, TextTheme, Theme, VertexTheme,
+    AreaTheme, Converge, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, GridTheme, LineTheme, Parallel, PlotTheme,
+    TextTheme, Theme, VertexTheme,
 };
 pub use vertices::Vertices;
 
 use self::mark::MarkKind;
 use crate::{Error, Path, Result, Snapshot, Source, Step};
 
-/// A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
-/// ease duration, and an optional title.
+/// A space and its marks, in drawing order. A scene also sets layout, style, and input controls.
 ///
-/// A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
-/// its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`. An option that can't be
-/// read, or that the scene can't use, draws as if unset, and views list why in their
-/// [`failures`](crate::View::failures).
+/// JSON uses camelCase field names. A mark draws a local table such as `{"vertices": "Bus"}`
+/// or a table in a named dataset, such as `{"vertices": ["grid", "Bus"]}`. A view ignores invalid options and lists
+/// them in [`failures`](crate::View::failures).
 ///
 /// ```
 /// # use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};
@@ -64,13 +64,20 @@ use crate::{Error, Path, Result, Snapshot, Source, Step};
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 pub struct Scene {
-    /// The coordinate space positions are in.
+    /// The coordinate space for mark positions.
     pub(crate) space: Space,
-    /// The marks, in drawing order: each draws over the marks before it.
+    /// Static tables owned by this scene. A mark draws one by its bare table name.
+    #[serde(default)]
+    #[schemars(schema_with = "tables::schema", default)]
+    pub(crate) tables: tables::Tables,
+    /// The snapshot bound for this view. Only scene and source changes can replace it.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) local: Option<Snapshot>,
+    /// Marks in drawing order, from back to front.
     #[serde(default)]
     pub(crate) marks: Vec<Mark>,
-    /// How the view places vertex rows that have no position, on a plane or the earth. Defaults to
-    /// `none`.
+    /// Layout for vertices without positions on a plane or the earth. Defaults to `none`.
     #[serde(default)]
     pub(crate) layout: Layout,
     /// Default colors and sizes, and the look of text, focus, and each space. Defaults to `dark`.
@@ -79,12 +86,11 @@ pub struct Scene {
     /// How the view responds to the pointer and keyboard.
     #[serde(default)]
     pub(crate) controls: Controls,
-    /// How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to
-    /// 0.3.
+    /// Animation duration in seconds for scene and data changes. Defaults to 0.3. Use 0 to disable.
     #[serde(default = "ease", deserialize_with = "form::seconds")]
     #[schemars(with = "f64")]
     pub(crate) ease: Duration,
-    /// The title: its text, or title options.
+    /// Title text or title options.
     #[serde(default)]
     pub(crate) title: Option<Title>,
     /// Why options read from JSON were left out, each at its path.
@@ -97,8 +103,12 @@ pub struct Scene {
 /// isn't an object, or its space, its marks, or a mark's dataset and table can't be read.
 impl<'de> serde::Deserialize<'de> for Scene {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Scene, D::Error> {
-        let form = serde_json::Value::deserialize(deserializer)?;
+        let (form, tables) = tables::read(deserializer)?;
         let (Strict(mut scene), unread) = crate::json::lenient(form, option)?;
+        scene.tables = tables;
+        if scene.marks.iter().any(|m| m.style().local) {
+            scene.tables.declare();
+        }
         scene.unread = unread;
         Ok(scene)
     }
@@ -143,6 +153,8 @@ impl Scene {
     pub fn new(space: impl Into<Space>) -> Scene {
         Scene {
             space: space.into(),
+            tables: tables::Tables::default(),
+            local: None,
             marks: Vec::new(),
             layout: Layout::None,
             theme: Theme::default(),
@@ -153,10 +165,32 @@ impl Scene {
         }
     }
 
+    /// Adds a local table. Its references may target any table declared in this scene.
+    ///
+    /// ```
+    /// use latkit::{Plane, Scene, Table, Vertices, field};
+    ///
+    /// let scene = Scene::new(Plane::default())
+    ///     .table(Table::columns("Bus").field("x", vec![0., 50.]).field("y", vec![0., 0.]))
+    ///     .draw(Vertices::local("Bus").position(field("x"), field("y")));
+    /// assert!(scene.failures(&[])?.is_empty());
+    /// # Ok::<(), latkit::Error>(())
+    /// ```
+    #[must_use]
+    pub fn table(mut self, table: crate::Table) -> Scene {
+        self.tables.push(table);
+        self.local = None;
+        self
+    }
+
     /// Adds `mark`, drawn over the marks added before it.
     #[must_use]
     pub fn draw(mut self, mark: impl Into<Mark>) -> Scene {
-        self.marks.push(mark.into());
+        let mark = mark.into();
+        if mark.style().local {
+            self.tables.declare();
+        }
+        self.marks.push(mark);
         self
     }
 
@@ -204,14 +238,11 @@ impl Scene {
     /// What a view drawing this scene from `sources` lists in its
     /// [`failures`](crate::View::failures), found without a GPU, and each mark whose dataset no
     /// source provides. A mark of a dataset from [`Source::Tiles`] is checked as its tiles arrive,
-    /// so it is left out. Errors when two sources share a name.
+    /// so it is left out. Returns an error for invalid scene-local tables or duplicate source names.
     pub fn failures(&self, sources: &[Source]) -> Result<Vec<Error>> {
-        for (i, source) in sources.iter().enumerate() {
-            if sources[..i].iter().any(|other| other.name() == source.name()) {
-                return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
-            }
-        }
+        Source::check_names(sources)?;
         let mut scene = self.clone();
+        scene.bind_tables(sources, &[])?;
         let mut failures = std::mem::take(&mut scene.unread);
         failures.extend(scene.sanitize());
         let snapshots: Vec<Snapshot> = sources
@@ -221,6 +252,7 @@ impl Scene {
                 Source::Snapshot(snapshot) => Some(snapshot.clone()),
                 Source::Tiles(_) => None,
             })
+            .chain(scene.local.iter().cloned())
             .collect();
         let context = mark::Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
         for (i, mark) in scene.marks.iter().enumerate() {

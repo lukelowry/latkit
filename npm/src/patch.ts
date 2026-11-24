@@ -492,6 +492,13 @@ function writeAppend(
   }
 }
 
+/** @internal The same table body sent by a patch, without its frame or operation header. */
+export function tableBytes(table: string, ids: RowIds, fields: Fields): Uint8Array {
+  const writer = new Writer();
+  writeTable(writer, table, ids, fields);
+  return writer.view();
+}
+
 /** Writes a table's body: its name, its ids, and its fields, each values or a reference. */
 function writeTable(w: Writer, table: string, ids: RowIds, fields: Fields): void {
   const entries = Object.entries(fields);
@@ -723,7 +730,17 @@ function writeTexts(w: Writer, texts: readonly (string | null)[]): void {
   for (let i = 0; i < n; i++) {
     offsets[i] = at;
     const text = texts[i];
-    if (text) at += utf8.encodeInto(text, bytes.subarray(at)).written;
+    if (!text) continue;
+    // Short ASCII names need no encoder call or per-row buffer view.
+    if (text.length <= 32) {
+      let j = 0;
+      while (j < text.length && text.charCodeAt(j) < 128) {
+        bytes[at++] = text.charCodeAt(j++);
+      }
+      if (j === text.length) continue;
+      at -= j;
+    }
+    at += utf8.encodeInto(text, bytes.subarray(at)).written;
   }
   offsets[n] = at;
   w.u8(STORE.text);

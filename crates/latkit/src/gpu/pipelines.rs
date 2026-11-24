@@ -134,9 +134,55 @@ pub(crate) struct Variant {
     projection: Projection,
     painted: bool,
     marker: u32,
+    options: Options,
     reads: Reads,
     target: Option<(wgpu::TextureFormat, u32)>,
     draw: Draw,
+}
+
+/// What a mark's shaders hold only when the mark uses it, each a constant its shaders read: edges
+/// that end where their paths meet their vertices' markers (`MEET`), markers turned by a bearing
+/// (`TURNED`), labels with a place or an offset (`LABEL_PLACED`), strokes with a halo (`HALO`), and
+/// places along a stroke (`ALONG`): in a stroke's draw, parting under its markers and changing
+/// color where its row says, and in a marker's, drawing it there. A pipeline without one compiles
+/// none of its code, so a mark that uses none draws with the shaders it would without them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub(crate) struct Options(u8);
+
+impl Options {
+    pub(crate) const NONE: Options = Options(0);
+    pub(crate) const MEET: Options = Options(1);
+    pub(crate) const TURNED: Options = Options(2);
+    pub(crate) const PLACED: Options = Options(4);
+    pub(crate) const HALO: Options = Options(8);
+    pub(crate) const ALONG: Options = Options(16);
+
+    /// Each option's constant, in the order of its bit.
+    const NAMES: [&'static str; 5] = ["MEET", "TURNED", "LABEL_PLACED", "HALO", "ALONG"];
+
+    /// These options, or none unless `on`.
+    #[must_use]
+    pub(crate) fn when(self, on: bool) -> Options {
+        if on { self } else { Options::NONE }
+    }
+
+    /// The value of the constant `name`, if it is an option's.
+    fn value(self, name: &str) -> Option<u32> {
+        Self::NAMES.iter().position(|option| *option == name).map(|bit| u32::from(self.0 >> bit & 1))
+    }
+
+    /// The constants of the options set.
+    fn names(self) -> impl Iterator<Item = &'static str> {
+        Self::NAMES.into_iter().enumerate().filter(move |(bit, _)| self.0 >> bit & 1 != 0).map(|(_, name)| name)
+    }
+}
+
+impl std::ops::BitOr for Options {
+    type Output = Options;
+
+    fn bitor(self, other: Options) -> Options {
+        Options(self.0 | other.0)
+    }
 }
 
 /// What a mark's channels read besides its own table's static fields: other tables' fields by row
@@ -177,7 +223,7 @@ impl Variant {
         if !self.reads_constant("MARKER") {
             self.marker = 0;
         }
-        self
+        self.options(self.options)
     }
     /// An integer raster operation. Its vertex entry covers the target; `entry` computes one
     /// output texel. It has no depth, blending, storage bindings, or compute dispatch.
@@ -195,6 +241,7 @@ impl Variant {
             projection: if matches!(shader, Shader::State) { Projection::Dynamic } else { Projection::Planar },
             painted: true,
             marker: 0,
+            options: Options::NONE,
             reads: Reads::ALL,
             target: Some((format, 1)),
             draw: Draw::Rows,
@@ -211,6 +258,7 @@ impl Variant {
             projection: Projection::Planar,
             painted: true,
             marker: 0,
+            options: Options::NONE,
             reads: Reads::ALL,
             target: Some((format, samples)),
             draw: Draw::Rows,
@@ -237,11 +285,18 @@ impl Variant {
         self
     }
 
-    /// This variant with strokes reading `path` (a `PATH_` code), if its shader reads `PATH`.
+    /// This variant with strokes reading `path` (a `PATH_` code), if its shader reads `PATH`. A
+    /// stroke's draw reads where its segments lie from their records, whatever path they follow,
+    /// so every such path draws with the program of edges between their ends. Only a trace's draw
+    /// places its own segments.
     #[must_use]
     pub(crate) fn path(mut self, path: u32) -> Variant {
+        use Shader::{Strokes, StrokesFocus, StrokesShaded, StrokesShadedFocus};
         if self.reads_constant("PATH") {
-            self.path = path;
+            let drawn = matches!(self.shader, Strokes | StrokesFocus | StrokesShaded | StrokesShadedFocus);
+            let stored =
+                matches!(self.shader, Shader::Probe | Shader::Metadata) && self.primitive == super::shaders::STROKES;
+            self.path = if (drawn || stored) && path != super::shaders::PATH_TRACE { PATH_ENDS } else { path };
         }
         self
     }
@@ -250,7 +305,15 @@ impl Variant {
     #[must_use]
     pub(crate) fn projection(mut self, projection: Projection) -> Self {
         if self.reads_constant("PROJECTION") {
-            self.projection = projection;
+            self.projection = match self.shader {
+                _ if self.path == super::shaders::PATH_TRACE => Projection::Planar,
+                Shader::Probe | Shader::Metadata
+                    if self.primitive == super::shaders::STROKES && self.path != super::shaders::PATH_TRACE =>
+                {
+                    Projection::Planar
+                }
+                _ => projection,
+            };
         }
         self
     }
@@ -264,11 +327,28 @@ impl Variant {
         self
     }
 
-    /// Compile only the marker family the scene draws. Blocks use the shape program.
+    /// Compile only the marker family the scene draws. Blocks use the shape program, and so does a
+    /// marker that draws nothing, which no draw runs for.
     pub(crate) fn marker(mut self, marker: u32) -> Self {
+        use super::shaders::{MARKER_BLOCK, MARKER_NONE, MARKER_SHAPE};
         if self.reads_constant("MARKER") {
-            self.marker = if marker == super::shaders::MARKER_BLOCK { super::shaders::MARKER_SHAPE } else { marker };
+            self.marker = if marker == MARKER_BLOCK || marker == MARKER_NONE { MARKER_SHAPE } else { marker };
         }
+        self
+    }
+
+    /// This variant with those of a mark's `options` that its shader holds code for. Only an edge's
+    /// ends meet markers, and a draw reads where they lie from its records, so it takes its path
+    /// first. A trace has no records, so its strokes carry no markers.
+    #[must_use]
+    pub(crate) fn options(mut self, options: Options) -> Self {
+        let edges = matches!(self.path, PATH_ENDS | super::shaders::PATH_BENDS);
+        let placing = edges && self.entry != "vertex" && !matches!(self.shader, Shader::Metadata | Shader::Probe);
+        let recorded = self.path != super::shaders::PATH_TRACE;
+        let held = Options::NAMES.iter().enumerate().filter(|(_, name)| self.reads_constant(name));
+        let held = held.fold(0, |bits, (bit, _)| bits | 1 << bit);
+        let refused = Options::MEET.when(!placing) | Options::ALONG.when(!recorded);
+        self.options = Options(options.0 & held & !refused.0);
         self
     }
 
@@ -302,6 +382,7 @@ impl Variant {
             projection: self.projection,
             painted: self.painted,
             marker: self.marker,
+            options: self.options,
             reads: self.reads,
         }
     }
@@ -322,8 +403,9 @@ impl Variant {
     fn label(&self) -> String {
         let Reads { joined, timed, viewed } = self.reads;
         let target = self.target.map(|(format, samples)| format!(" {format:?}x{samples}")).unwrap_or_default();
+        let options: String = self.options.names().flat_map(|name| [" ", name]).collect();
         format!(
-            "latkit {:?} {} PRIMITIVE={} PATH={} JOINED={} TIMED={} VIEWED={} PROJECTION={:?} PAINTED={} MARKER={} DRAW={:?}{target}",
+            "latkit {:?} {} PRIMITIVE={} PATH={} JOINED={} TIMED={} VIEWED={} PROJECTION={:?} PAINTED={} MARKER={} DRAW={:?}{options}{target}",
             self.shader,
             self.entry,
             self.primitive,
@@ -350,6 +432,7 @@ struct Specialized {
     projection: Projection,
     painted: bool,
     marker: u32,
+    options: Options,
     reads: Reads,
 }
 
@@ -365,7 +448,7 @@ impl Specialized {
             "PROJECTION" => self.projection.code(),
             "PAINTED" => self.painted.into(),
             "MARKER" => self.marker,
-            other => unreachable!("no value for the constant {other}"),
+            other => self.options.value(other).unwrap_or_else(|| unreachable!("no value for the constant {other}")),
         }
     }
 
@@ -1139,15 +1222,12 @@ impl Pipelines {
         let (format, samples) = variant.target.expect("a render variant");
         let raster = variant.entry != "vertex";
         let layout = self.pipeline_layout(device, shader);
-        // Every fragment entry writes one color target but the screen pass's, which writes the four
-        // layers of a record (see `check_targets` in the build). A depth draw writes no color.
-        let screen = shader == Shader::Screen;
         let target = Some(wgpu::ColorTargetState {
             format,
             blend: (!raster).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             write_mask: if variant.draw == Draw::Depth { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL },
         });
-        let targets = vec![target; if screen { 4 } else { 1 }];
+        let targets = [target];
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(&layout),
@@ -1158,7 +1238,7 @@ impl Pipelines {
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState {
-                topology: if screen || matches!(shader, Shader::OrderScatter | Shader::Requests | Shader::Boxed) {
+                topology: if matches!(shader, Shader::OrderScatter | Shader::Requests | Shader::Boxed) {
                     wgpu::PrimitiveTopology::PointList
                 } else if raster {
                     wgpu::PrimitiveTopology::TriangleList
@@ -1329,7 +1409,10 @@ mod tests {
         // Pipelines of one shader and values share a module, whatever their entry points or targets.
         let samples = Variant::draw(Shader::Strokes, wgpu::TextureFormat::Rgba8Unorm, 4);
         assert_eq!(strokes.specialized(), samples.specialized());
-        assert_ne!(strokes.specialized(), strokes.path(PATH_GEOMETRY).specialized());
+        // A stroke's draw reads its segments' records, so every path shares the module of edges
+        // between their ends, except a trace, whose draw places its own segments.
+        assert_eq!(strokes.specialized(), strokes.path(PATH_GEOMETRY).specialized());
+        assert_ne!(strokes.specialized(), strokes.path(super::super::shaders::PATH_TRACE).specialized());
     }
 
     #[test]
@@ -1338,6 +1421,8 @@ mod tests {
         let edge = Variant::probe(Shader::Probe, STROKES).path(PATH_GEOMETRY).projection(Projection::Globe);
         assert_eq!(finish, edge.entry("finish"));
         assert_eq!(finish, finish.primitive(STROKES).path(PATH_GEOMETRY).projection(Projection::Mercator));
-        assert_ne!(edge, edge.projection(Projection::Planar), "geometry entries retain their actual projection");
+        assert_eq!(edge, edge.projection(Projection::Planar), "stroke queries read projected records");
+        let point = Variant::probe(Shader::Probe, super::super::shaders::POINTS);
+        assert_ne!(point, point.projection(Projection::Globe), "point queries still project their vertices");
     }
 }

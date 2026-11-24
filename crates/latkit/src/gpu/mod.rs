@@ -222,6 +222,8 @@ const PLANNED: f64 = 0.5;
 pub(crate) struct Ledger {
     /// Each view's request for drawing everything, by view.
     asks: rustc_hash::FxHashMap<u64, Ask>,
+    /// Changes when any view joins, leaves, or requests a different share.
+    pub(crate) revision: u64,
 }
 
 /// A view's memory request for drawing everything: its own bytes, plus the pieces it shares with
@@ -241,7 +243,10 @@ impl Ledger {
     /// full first, and once an ask exceeds an even split of what is left, each remaining view gets
     /// that split.
     pub(crate) fn grant(&mut self, view: u64, whole: f64, ask: Ask, budget: u64) -> f64 {
-        self.asks.insert(view, ask);
+        if self.asks.get(&view) != Some(&ask) {
+            self.asks.insert(view, ask);
+            self.revision = self.revision.wrapping_add(1);
+        }
         let mut sharing: rustc_hash::FxHashMap<u64, f64> = rustc_hash::FxHashMap::default();
         for ask in self.asks.values() {
             for (piece, _) in &ask.shared {
@@ -265,7 +270,9 @@ impl Ledger {
 
     /// Forgets view `view`, which no longer draws.
     pub(crate) fn leave(&mut self, view: u64) {
-        self.asks.remove(&view);
+        if self.asks.remove(&view).is_some() {
+            self.revision = self.revision.wrapping_add(1);
+        }
     }
 }
 

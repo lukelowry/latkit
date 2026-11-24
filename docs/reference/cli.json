@@ -149,7 +149,7 @@
         "required": false,
         "many": false,
         "global": false,
-        "help": "The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down to a multiple of 4 and its height to an even number",
+        "help": "The picture's width and height in pixels, such as `1920x1080`. With one side, as `1920x` or `x1080`, the other follows what the scene's fit frames, with the same room around it. A video rounds its width down to a multiple of 4 and its height to an even number",
         "defaults": [
           "1600x900"
         ],
@@ -274,7 +274,7 @@
         "required": false,
         "many": false,
         "global": false,
-        "help": "The axis coordinate to show. Sampled fields show their last frame at or before it",
+        "help": "The axis coordinate to render. Marks interpolate between samples by default",
         "defaults": [],
         "values": []
       },
@@ -479,7 +479,7 @@
         "required": false,
         "many": false,
         "global": false,
-        "help": "The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down to a multiple of 4 and its height to an even number",
+        "help": "The picture's width and height in pixels, such as `1920x1080`. With one side, as `1920x` or `x1080`, the other follows what the scene's fit frames, with the same room around it. A video rounds its width down to a multiple of 4 and its height to an even number",
         "defaults": [
           "1600x900"
         ],
@@ -604,7 +604,7 @@
         "required": false,
         "many": false,
         "global": false,
-        "help": "The axis coordinate to show. Sampled fields show their last frame at or before it",
+        "help": "The axis coordinate to render. Marks interpolate between samples by default",
         "defaults": [],
         "values": []
       },

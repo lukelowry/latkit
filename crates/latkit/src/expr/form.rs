@@ -14,6 +14,7 @@
 //! | `{ "add": [a, b] }`, `{ "not": [a] }`                        | `a + b`, `!a`, `a.min(b)`, …       |
 //! | `{ "is": [a, "text"] }`, `{ "contains": [a, "text"] }`       | `a.is("text")`, `a.contains(..)`   |
 //! | `{ "when": [[c, v], …], "otherwise": e }`                    | `when(c).then(v)…otherwise(e)`     |
+//! | `{ "match": a, "cases": [[69, v], …], "otherwise": e }`      | `a.matched([(69, v), …], e)`       |
 //! | `{ "scale": [0, 1], "value": a, "domain": [lo, hi] }`        | `a.scale(..).domain(..)`           |
 //! | `{ "colormap": "viridis", "value": a, "domain": [lo, hi] }`  | `a.colormap(..).domain(..)`        |
 //! | `{ "units": a, "atLeast": 2, "atMost": 20 }` (sizes only)    | `units(a).at_least(..)`            |
@@ -24,7 +25,8 @@
 //! color. A field whose name starts with `$` is written `{ "field": "$x" }`. An object may have
 //! only its kind's keys, and a key of another kind is an error. A colormap is a catalog name or
 //! `{ "kind": "sequential", "colors": ["black", [0.2, "red"], "white"] }`. A `[place, color]` pair
-//! places a color, and `categories` names a categorical map's colors.
+//! places a color. `values` gives a categorical map's categories their values, and `categories`
+//! names them.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -35,7 +37,7 @@ use serde::Deserialize;
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
-use super::{Binary, Color, Colormap, ColormapKind, Expr, Node, Size, State, Stop, Unary, node};
+use super::{Binary, Category, Color, Colormap, ColormapKind, Expr, Length, Node, Size, State, Stop, Unary, node};
 use crate::Name;
 
 impl<'de> Deserialize<'de> for Expr {
@@ -109,6 +111,73 @@ impl<'de> Visitor<'de> for Reading {
     }
 }
 
+/// Reads one expression as a pair of it, or a pair of expressions. `null` reads as none.
+pub(crate) fn one_or_two<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<[Expr; 2]>, D::Error> {
+    struct Pair;
+
+    fn both<E: de::Error>(written: Written) -> Result<Option<[Expr; 2]>, E> {
+        let expr = written.expr().map_err(E::custom)?;
+        Ok(Some([expr.clone(), expr]))
+    }
+
+    impl<'de> Visitor<'de> for Pair {
+        type Value = Option<[Expr; 2]>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an expression, or a pair of them")
+        }
+
+        fn visit_bool<E: de::Error>(self, b: bool) -> Result<Self::Value, E> {
+            both(Reading.visit_bool(b)?)
+        }
+
+        fn visit_i64<E: de::Error>(self, n: i64) -> Result<Self::Value, E> {
+            both(Reading.visit_i64(n)?)
+        }
+
+        fn visit_u64<E: de::Error>(self, n: u64) -> Result<Self::Value, E> {
+            both(Reading.visit_u64(n)?)
+        }
+
+        fn visit_f64<E: de::Error>(self, n: f64) -> Result<Self::Value, E> {
+            both(Reading.visit_f64(n)?)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, text: &str) -> Result<Self::Value, E> {
+            both(Reading.visit_str(text)?)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            both(Reading.visit_map(map)?)
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let short = |n| de::Error::invalid_length(n, &"two expressions");
+            let from = seq.next_element::<Expr>()?.ok_or_else(|| short(0))?;
+            let to = seq.next_element::<Expr>()?.ok_or_else(|| short(1))?;
+            if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                return Err(short(3));
+            }
+            Ok(Some([from, to]))
+        }
+    }
+
+    deserializer.deserialize_any(Pair)
+}
+
+/// The schema of a value read by [`one_or_two`].
+pub(crate) fn one_or_two_schema(generator: &mut SchemaGenerator) -> Schema {
+    let expr = generator.subschema_for::<Expr>();
+    json_schema!({
+        "anyOf": [expr, { "type": "array", "prefixItems": [expr, expr], "minItems": 2, "maxItems": 2 }],
+        "tsType": "ExprInput | [from: ExprInput, to: ExprInput]",
+    })
+}
+
 /// The expression a string writes: `$name` reads field `name`, and any other string is a CSS
 /// color.
 fn string(text: &str) -> Result<Expr, String> {
@@ -176,6 +245,8 @@ form! {
     field "field": Name,
     state "state": State,
     when "when": Vec<(Expr, Expr)>,
+    r#match "match": Expr as value,
+    cases "cases": Vec<(Category, Expr)>,
     scale "scale": [f64; 2],
     colormap "colormap": Colormap,
     from "from": (Name, Name),
@@ -188,7 +259,9 @@ form! {
     pub(crate) at_least "atLeast": f32,
     pub(crate) at_most "atMost": f32,
     pub(crate) text "text": Expr as value,
-    pub(crate) size "size": f32,
+    pub(crate) size "size": Length,
+    pub(crate) place "place": Arc<str>,
+    pub(crate) offset "offset": [Size; 2],
     pub(crate) color "color": Expr as value,
     pub(crate) max_width "maxWidth": f32,
     pub(crate) font "font": Arc<str>,
@@ -256,7 +329,9 @@ impl Form {
         };
         let kind = own[0];
         self.only(kind, own)?;
-        let Form { field, state, when, scale, colormap, from, of, step, otherwise, value, domain, .. } = self;
+        let Form {
+            field, state, when, r#match, cases, scale, colormap, from, of, step, otherwise, value, domain, ..
+        } = self;
         let needs = |key: &str| format!("{kind} needs {key}");
         Ok(match kind {
             "field" => {
@@ -274,6 +349,10 @@ impl Form {
                 let otherwise = otherwise.ok_or_else(|| needs("otherwise"))?;
                 let cases = when.expect("present");
                 cases.into_iter().rev().fold(otherwise, |rest, (c, v)| node(Node::When(c, v, rest)))
+            }
+            "match" => {
+                let cases = cases.ok_or_else(|| needs("cases"))?;
+                r#match.expect("present").matched(cases, otherwise.unwrap_or_else(Expr::missing))
             }
             "scale" => {
                 let [lo, hi] = scale.expect("present");
@@ -350,7 +429,13 @@ const OPERATIONS: [(&str, Operation, &str); 28] = [
 /// built, since reading goes through `Form`) and the list of keys an object of that kind may have,
 /// its own key first.
 macro_rules! kinds {
-    ($($(#[$meta:meta])* $node:ident { $($(#[$attr:meta])* $key:ident: $ty:ty),+ $(,)? })+) => {
+    (@key $key:ident) => {
+        stringify!($key)
+    };
+    (@key $key:ident $json:literal) => {
+        $json
+    };
+    ($($(#[$meta:meta])* $node:ident { $($(#[$attr:meta])* $key:ident $($json:literal)?: $ty:ty),+ $(,)? })+) => {
         $(
             $(#[$meta])*
             #[derive(JsonSchema)]
@@ -362,7 +447,7 @@ macro_rules! kinds {
         )+
 
         /// Each kind's keys, its own key first.
-        const KINDS: &[&[&str]] = &[$(&[$(stringify!($key)),+]),+];
+        const KINDS: &[&[&str]] = &[$(&[$(kinds!(@key $key $($json)?)),+]),+];
 
         /// Each kind's schema, in `KINDS` order.
         fn kinds(generator: &mut SchemaGenerator) -> Vec<Schema> {
@@ -404,6 +489,19 @@ kinds! {
         /// The value where no condition holds.
         otherwise: Expr,
     }
+    /// The result of the first case a value equals, else `otherwise`.
+    MatchNode {
+        /// The value compared.
+        #[serde(rename = "match")]
+        r#match "match": Expr,
+        /// The cases, as `[value, result]` pairs tried in order. A value is a number, which
+        /// compares as `eq` does, or a text, which compares as `is` does.
+        #[schemars(extend("tsType" = "[value: number | string, result: ExprInput][]"))]
+        cases: Vec<(Category, Expr)>,
+        /// The value where no case holds. Defaults to a missing value.
+        #[serde(default)]
+        otherwise: Option<Expr>,
+    }
     /// A value mapped linearly onto a range, clamped to the range.
     ScaleNode {
         /// The range.
@@ -421,7 +519,8 @@ kinds! {
     ColormapNode {
         /// The colormap.
         colormap: Colormap,
-        /// The value mapped. A categorical map takes each value's integer part as its category.
+        /// The value mapped. A categorical map takes each value's integer part as its category, or
+        /// with `values`, the place among them of the one it equals.
         value: Expr,
         /// The values mapped to the colormap's ends, or `all` for every value a field holds, in
         /// every frame of a sampled field. Defaults to the extent of the values shown. A categorical
@@ -622,7 +721,8 @@ impl JsonSchema for Color {
     }
 }
 
-/// A custom colormap: its kind, its colors, and for a categorical map, its category names.
+/// A custom colormap: its kind, its colors, and for a categorical map, its categories' values and
+/// names.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct CustomColormap {
@@ -632,7 +732,14 @@ struct CustomColormap {
     /// CSS gradient, or a `[place, color]` pair with a place from 0 to 1. Places must ascend. A
     /// categorical map takes one color per category, without places, at most 256.
     colors: Vec<Stop>,
-    /// The category names in category order, shown in legends. Categorical maps only.
+    /// Each category's value in category order, a number or a text. A row whose value equals
+    /// `values[i]` takes color `i`, and a row whose value is none of them takes the theme's
+    /// `missing` color. Without it, a value's integer part is its category. Categorical maps only.
+    #[serde(default)]
+    #[schemars(extend("tsType" = "(number | string)[]"))]
+    values: Vec<Category>,
+    /// The category names in category order, shown in legends. Defaults to the values as written.
+    /// Categorical maps only.
     #[serde(default)]
     categories: Vec<String>,
 }
@@ -653,15 +760,16 @@ impl<'de> Deserialize<'de> for Colormap {
             }
 
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Colormap, A::Error> {
-                let CustomColormap { kind, colors, categories } =
+                let CustomColormap { kind, colors, values, categories } =
                     CustomColormap::deserialize(MapAccessDeserializer::new(map))?;
-                if kind != ColormapKind::Categorical && !categories.is_empty() {
-                    return Err(de::Error::custom("only a categorical map has categories"));
+                if kind != ColormapKind::Categorical && !(categories.is_empty() && values.is_empty()) {
+                    return Err(de::Error::custom("only a categorical map has values and categories"));
                 }
                 let map = Colormap::new(kind, colors).map_err(|e| match e {
                     crate::Error::Invalid { reason, .. } => de::Error::custom(reason),
                     e => de::Error::custom(e),
                 })?;
+                let map = if values.is_empty() { map } else { map.values(values) };
                 Ok(if categories.is_empty() { map } else { map.categories(categories) })
             }
         }

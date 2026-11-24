@@ -726,7 +726,9 @@ pub async fn surfaces(canvas: JsValue, external: JsValue) -> Result<JsValue, JsV
     use wasm_bindgen::JsCast;
     let error = |e: latkit::Error| JsValue::from_str(&e.to_string());
     let gpu = latkit::Gpu::new().await.map_err(error)?;
-    let scene = |color| Scene::new(Plane { grid: Grid::Off }).theme(Theme { background: color, ..Theme::dark() });
+    let scene = |color| {
+        Scene::new(Plane { grid: Grid::Off, ..Plane::default() }).theme(Theme { background: color, ..Theme::dark() })
+    };
     let view = PageView::new(View::new(&gpu, scene(Color::rgb(0.0, 0.0, 1.0))));
     let canvas = canvas.dyn_into().map_err(|_| JsValue::from_str("expected an offscreen canvas"))?;
     let _painted = Canvas::offscreen(&gpu, &canvas, vec![Panel { view: view.clone(), at: [0.0, 0.0, 1.0, 1.0] }], 1.0)
@@ -788,7 +790,9 @@ pub async fn exports() -> Result<JsValue, JsValue> {
     }
     let error = |e: latkit::Error| JsValue::from_str(&e.to_string());
     let gpu = latkit::Gpu::new().await.map_err(error)?;
-    let scene = |color| Scene::new(Plane { grid: Grid::Off }).theme(Theme { background: color, ..Theme::dark() });
+    let scene = |color| {
+        Scene::new(Plane { grid: Grid::Off, ..Plane::default() }).theme(Theme { background: color, ..Theme::dark() })
+    };
     let mut view = View::new(&gpu, scene(Color::rgb(1.0, 0.0, 0.0)));
     // Both NV12 planes have 260 live bytes in each 512-byte mapped row. Reuse the
     // pooled mapping across a changed frame and then a held frame.

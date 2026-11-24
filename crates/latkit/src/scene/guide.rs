@@ -7,10 +7,11 @@ use serde::{Deserialize, Deserializer};
 
 use super::form::{Text, text_or, text_schema};
 
-/// Where a title or legend sits. A side (`top`, `right`, `bottom`, or `left`) takes room from the
-/// marks, which stay clear of it. A corner sits over the marks, on a backdrop of the theme's
-/// background. Either way, the pointer reaches no row under it. A title and legends in one place
-/// stack in scene order, the title first.
+/// Where a title or legend sits, or a label beside its row. For a title or legend, a side (`top`,
+/// `right`, `bottom`, or `left`) takes room from the marks, which stay clear of it, and a corner
+/// sits over the marks, on a backdrop of the theme's background. Either way, the pointer reaches
+/// no row under it. A title and legends in one place stack in scene order, the title first. A
+/// label sits outside its row: centered on a side, or set diagonally out from a corner.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Place {
@@ -30,6 +31,39 @@ pub enum Place {
     BottomLeft,
     /// Over the marks, at the bottom right.
     BottomRight,
+}
+
+impl Place {
+    /// Every place, in the order of their codes from 1.
+    pub(crate) const ALL: [Place; 8] = [
+        Place::Top,
+        Place::Right,
+        Place::Bottom,
+        Place::Left,
+        Place::TopLeft,
+        Place::TopRight,
+        Place::BottomLeft,
+        Place::BottomRight,
+    ];
+
+    /// The code a label's shaders know the place by, from 1. They read 0 as no place.
+    pub(crate) fn code(self) -> u32 {
+        Place::ALL.iter().position(|place| *place == self).expect("every place is listed") as u32 + 1
+    }
+
+    /// The place's name in JSON.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Place::Top => "top",
+            Place::Right => "right",
+            Place::Bottom => "bottom",
+            Place::Left => "left",
+            Place::TopLeft => "top-left",
+            Place::TopRight => "top-right",
+            Place::BottomLeft => "bottom-left",
+            Place::BottomRight => "bottom-right",
+        }
+    }
 }
 
 /// A scene's title: its text, or options with its text, a subtitle, and a place.

@@ -1,15 +1,17 @@
-//! Icons on the GPU. Each image an icon marker shows is scaled to a common size and stored as one
-//! layer of a texture array. Markers showing the same image share its layer.
+//! Marker pictures on the GPU: each image an icon marker shows, scaled to a common size, and each
+//! path a symbol marker shows, set as a distance field. Each is one layer of a texture array, and
+//! markers showing the same picture share its layer.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use super::layers::Layers;
-use crate::Result;
+use super::shaders::{ICON_SIZE, SYMBOL_MARGIN, SYMBOL_SPREAD};
 use crate::gpu::work::Queue;
+use crate::{Error, Result};
 
-/// Texels across an icon layer.
-const SIZE: u32 = 64;
+/// Texels across a layer.
+const SIZE: u32 = ICON_SIZE as u32;
 
 /// An image's pixels, compared by address so that markers showing one image share its layer.
 /// Holding the pixels keeps the address from being reused.
@@ -29,7 +31,14 @@ impl Hash for Pixels {
     }
 }
 
-pub(crate) type Icons = Layers<Pixels>;
+/// What a layer holds: an image's pixels, or a path's distance field, stroked or filled.
+#[derive(PartialEq, Eq, Hash)]
+pub(crate) enum Picture {
+    Pixels(Pixels),
+    Path(Arc<str>, bool),
+}
+
+pub(crate) type Icons = Layers<Picture>;
 
 impl Icons {
     pub(crate) fn icons(device: &wgpu::Device) -> Icons {
@@ -38,8 +47,61 @@ impl Icons {
 
     /// The layer of each of `images`, uploading the ones not yet on the GPU.
     pub(crate) fn of(&mut self, device: &wgpu::Device, queue: &Queue, images: &[crate::Image]) -> Result<Vec<u32>> {
-        images.iter().map(|image| self.layer(device, queue, Pixels(image.rgba.clone()), || fit(image))).collect()
+        let layer = |image: &crate::Image| {
+            self.layer(device, queue, Picture::Pixels(Pixels(image.rgba.clone())), || fit(image))
+        };
+        images.iter().map(layer).collect()
     }
+
+    /// The layer of each of `paths`, SVG path data, setting the fields not yet on the GPU: a
+    /// path's distance from its curve when `stroked`, else its signed distance from its outline.
+    pub(crate) fn symbols(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &Queue,
+        paths: &[Arc<str>],
+        stroked: bool,
+    ) -> Result<Vec<u32>> {
+        paths
+            .iter()
+            .map(|path| {
+                let outlines = crate::scene::path::outlines(path).map_err(Error::invalid)?;
+                self.layer(device, queue, Picture::Path(path.clone(), stroked), || field(&outlines, stroked))
+            })
+            .collect()
+    }
+}
+
+/// The distance field of `outlines` over a layer, which reaches `SYMBOL_MARGIN` past their box of
+/// -1 to 1. Each texel holds its distance from the nearest segment, negative inside a filled path
+/// by the even-odd rule, with the outline at one half and `SYMBOL_SPREAD` texels to 0 and to 1.
+fn field(outlines: &[Vec<[f32; 2]>], stroked: bool) -> Vec<u8> {
+    let reach = 1.0 + SYMBOL_MARGIN;
+    let at = |i: u32| ((i as f32 + 0.5) / SIZE as f32 * 2.0 - 1.0) * reach;
+    let mut out = vec![0_u8; (SIZE * SIZE * 4) as usize];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let p = [at(x), at(y)];
+            let (mut nearest, mut inside) = (f32::INFINITY, false);
+            for pair in outlines.iter().flat_map(|outline| outline.windows(2)) {
+                let (a, b) = (pair[0], pair[1]);
+                let (ab, ap) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
+                let along =
+                    ((ap[0] * ab[0] + ap[1] * ab[1]) / (ab[0] * ab[0] + ab[1] * ab[1]).max(1e-12)).clamp(0.0, 1.0);
+                nearest = nearest.min((ap[0] - ab[0] * along).hypot(ap[1] - ab[1] * along));
+                // A ray to the right of the texel crosses this segment.
+                if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * ab[0] {
+                    inside = !inside;
+                }
+            }
+            let signed = if inside && !stroked { -nearest } else { nearest };
+            let texels = signed * SIZE as f32 / (2.0 * reach);
+            let value = ((0.5 + texels / (2.0 * SYMBOL_SPREAD)).clamp(0.0, 1.0) * 255.0).round() as u8;
+            let texel = ((y * SIZE + x) * 4) as usize;
+            out[texel..texel + 4].fill(value);
+        }
+    }
+    out
 }
 
 /// Scales `image` into a `SIZE` square by nearest texel, centered with its aspect ratio kept.

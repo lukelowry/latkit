@@ -53,6 +53,115 @@ try {
     page.evaluate(async (module) => {
       const { Gpu, Data, View, Shot } = (await import(module)) as typeof import('latkit');
       const gpu = await Gpu.create();
+      const local = {
+        space: 'plane',
+        tables: {
+          Line: {
+            ids: [105, 209],
+            fields: { from: { reference: 'Bus', ids: ['a', null] }, mw: [23, 0] },
+          },
+          Bus: {
+            ids: ['a', 'b'],
+            fields: { x: Float32Array.of(0, 1), y: [0, 1], name: ['A', 'B'] },
+          },
+        },
+        marks: [{ vertices: 'Bus', position: ['$x', '$y'] }],
+      } satisfies import('latkit').Scene;
+      const gridCanvas = document.body.appendChild(document.createElement('canvas'));
+      const gridView = await View.create(gridCanvas, local, {
+        gpu,
+        camera: { zoom: 0 },
+      });
+      await gridView.done();
+      const grid = gridView.snapshot('$scene');
+      if (
+        !grid ||
+        grid.get('Line', 105, 'from') !== 'a' ||
+        grid.get('Line', 209, 'from') !== null ||
+        grid.get('Bus', 'b', 'x') !== 1
+      )
+        throw new Error('inline tables lost a column or reference');
+      grid.destroy();
+      const beforeRepeat = gpu.work;
+      const repeated = structuredClone(local);
+      gridView.scene = repeated;
+      await gridView.done();
+      if (JSON.stringify(gpu.work) !== JSON.stringify(beforeRepeat))
+        throw new Error('identical inline columns did GPU work');
+      let rejected = false;
+      try {
+        gridView.scene = { ...local, tables: { Line: local.tables.Line } };
+      } catch {
+        rejected = true;
+      }
+      if (!rejected || gridView.scene !== repeated)
+        throw new Error('an invalid table replaced the scene');
+      const other = new Data('$scene').replace('Bus', { x: [5], y: [8] });
+      gridView.scene = {
+        ...local,
+        marks: [...local.marks, { vertices: other.table('Bus'), position: ['$x', '$y'] }],
+      };
+      await gridView.done();
+      const externalBus = gridView.snapshot('$scene');
+      const localBus = gridView.snapshot('$scene1');
+      if (externalBus?.get('Bus', 0, 'x') !== 5 || localBus?.get('Bus', 'b', 'x') !== 1)
+        throw new Error('a local table shadowed an external dataset');
+      externalBus.destroy();
+      localBus.destroy();
+      gridView.destroy();
+      other.destroy();
+      gridCanvas.remove();
+      // Moving a path must invalidate both the paint and the centerline used for picking.
+      const path = new Data('path');
+      const movePath = (y: number) =>
+        path.set('Line', [41], {
+          geometry: [
+            [
+              [-40, y],
+              [0, y],
+              [40, y],
+            ],
+          ],
+        });
+      movePath(0);
+      const pathCanvas = document.body.appendChild(document.createElement('canvas'));
+      pathCanvas.style.cssText = 'width:160px;height:100px;display:block';
+      const pathView = await View.create(
+        pathCanvas,
+        {
+          space: { plane: { grid: 'off' } },
+          ease: 0,
+          theme: { background: '#000000' },
+          marks: [{ lines: path.table('Line'), width: 6, color: '#ff0000', pick: true }],
+        },
+        { gpu, camera: { center: [0, 0], zoom: 0 } },
+      );
+      const pathRow = async () => {
+        await pathView.done();
+        const image = await Shot.of(pathView).image();
+        try {
+          const x = Math.floor(image.width / 2);
+          const pixels = image.rgba;
+          for (let y = 2; y < image.height - 2; y++) {
+            const at = (y * image.width + x) * 4;
+            if (pixels[at]! < 220 || pixels[at + 1]! > 15) continue;
+            const hits = await pathView.pick([x, y], { radius: 2 });
+            if (!hits.some((hit) => Number(hit.row.id) === 41))
+              throw new Error('the projected line was visible but could not be picked');
+            return y;
+          }
+          throw new Error('the projected line did not cross the center column');
+        } finally {
+          image.destroy();
+        }
+      };
+      const beforeMove = await pathRow();
+      movePath(18);
+      if (Math.abs((await pathRow()) - beforeMove) < 8)
+        throw new Error('changing geometry left the previous line on screen');
+      pathView.destroy();
+      path.destroy();
+      pathCanvas.remove();
       const data = new Data('verify').set('Node', [11, 22], {
         x: [-36, 42],
         y: [28, -24],

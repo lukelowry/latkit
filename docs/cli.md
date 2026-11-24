@@ -1,30 +1,28 @@
-# Command line
+# Render from the command line
 
-The `latkit` executable draws [scenes](guide.md#scenes) of datasets to images, image sequences, raw
-frames, and video on the machine's GPU, with the same renderer as the browser. Its inputs are
-latkit's JSON, so any language can write them. A dataset can be a [JSON document](guide.md#json),
-latkit's [bytes](guide.md#bytes), or GeoJSON named with `NAME=`. The
-[command reference](reference/cli.md) documents every command and option.
+From the repository root, render the [Hawaiʻi one-line](examples/hawaii.md) from its checked-in scene and drawing data.
 
 ```sh
-cargo install latkit-cli   # or, from the repository: cargo build --locked -p latkit-cli --profile cli
-latkit validate scene.json -d grid.json        # check every input without a GPU
-latkit render scene.json -d grid.json -o grid.png --size 2400x1350 --scale 2
-latkit render scene.json -d grid.json --camera '{"center":[-97,31],"zoom":5,"pitch":0,"bearing":0}' -o tx.png
-latkit render map.json plot.json -d grid.json -d states=usa.geojson \
-  --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4
-latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i - film.webm
-latkit render scene.json -d grid.json --frames frames.jsonl -o frames/%04d.png
-latkit render scene.json -d run.latk -o run.mp4   # plays the recording's span
-latkit render scene.json -d run.latk --frames frames.jsonl --span 0.6,10 --rate 0.4 -o run.mp4
-latkit inspect grid.bin                        # tables, fields, and the axis, as JSON
-latkit query grid.bin '{"of":"Branch","filter":{"gt":["$loading",90]},"limit":20}'
-latkit tile history.bin -o history/            # time tiles, which --tiles opens
-latkit render plot.json --tiles grid=history/frames.json -o year.png
-latkit schema scene > scene.schema.json
+cargo install latkit-cli
+latkit validate docs/gallery/hawaii/scene.json -d docs/gallery/hawaii/data.json
+latkit render docs/gallery/hawaii/scene.json -d docs/gallery/hawaii/data.json --camera docs/gallery/hawaii/camera.json --size 3804x1842 --scale 2 -o hawaii.png
 ```
 
-At most one input can read stdin (`-`).
+## Render a recording
+
+The [WECC240 example](examples/wecc.md) puts a map and two traces in one frame. With Python 3.10+ and the CLI installed, render a still at 1.12 s. The case and recording are included.
+
+```sh
+python crates/latkit-cli/examples/wecc240-fault/render.py --preview --at 1.12 --output target/wecc
+```
+
+On Windows, render the first two seconds of playback at 60 fps. The script writes `target/wecc/animation.mp4`. Omit `--limit 120` for the full recording.
+
+```sh
+python crates/latkit-cli/examples/wecc240-fault/render.py --limit 120 --output target/wecc
+```
+
+Run the script with `--prepare-only` to inspect its scenes, frame file and CLI command. The [CLI reference](reference/cli.md) lists individual flags.
 
 ## Frames
 

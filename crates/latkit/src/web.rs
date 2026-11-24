@@ -21,7 +21,13 @@ use web_sys::{
     WheelEvent,
 };
 
+pub use crate::data::read_table;
 pub use crate::room::keep_room;
+
+/// Attaches the browser's columns after validating all tables together.
+pub fn with_tables(scene: crate::Scene, tables: Vec<crate::Table>) -> Result<crate::Scene> {
+    scene.with_columns(tables).map_err(|e| e.at("scene"))
+}
 
 use crate::gpu::FORMAT;
 use crate::panels::{self, Rect};

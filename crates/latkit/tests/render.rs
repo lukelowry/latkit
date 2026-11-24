@@ -11,6 +11,40 @@ use latkit::{
 };
 
 #[test]
+fn local_tables_render_like_external_data_and_swap_with_the_scene() {
+    let Some(gpu) = gpu() else { return };
+    let node = |x| Table::columns("Bus").field("x", vec![x]).field("y", vec![0.0]);
+    let picture = |mark: Vertices| {
+        Scene::new(plane())
+            .theme(plain_theme())
+            .ease(std::time::Duration::ZERO)
+            .draw(mark.position(field("x"), field("y")).color(Color::WHITE).radius(6.))
+    };
+    let local = |x| picture(Vertices::local("Bus")).table(node(x));
+    let external = Data::new("$scene");
+    external.apply(node(28.)).unwrap();
+    let named = || picture(Vertices::of("$scene", "Bus"));
+    let mut reference = View::new(&gpu, named());
+    reference.set_sources([&external]).unwrap();
+    reference.set_camera(camera());
+    let right = frame(&gpu, &mut reference);
+    let mut view = View::new(&gpu, local(-28.));
+    view.set_camera(camera());
+    let left = frame(&gpu, &mut view);
+    assert_ne!(left, right);
+    view.set_scene(local(-28.));
+    assert!(!view.needs_render(), "redeclaring identical columns does no GPU work");
+    view.set_sources([&external]).unwrap();
+    assert_eq!(frame(&gpu, &mut view), left, "an external Bus cannot shadow the local Bus");
+    view.set_scene(local(28.));
+    assert_eq!(frame(&gpu, &mut view), right, "replacing inline values draws the new positions");
+    view.set_scene(named());
+    assert_eq!(frame(&gpu, &mut view), right);
+    view.set_scene(local(-28.));
+    assert_eq!(frame(&gpu, &mut view), left);
+}
+
+#[test]
 fn changing_projection_draws_and_picks_like_a_fresh_view() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("d");
@@ -301,7 +335,7 @@ fn edges_join_their_ends_and_colormaps_fit_the_values() {
 }
 
 #[test]
-fn an_edge_whose_color_is_missing_blends_its_ends() {
+fn an_edge_whose_color_is_missing_blends_its_ends_where_its_blend_says() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("grid");
     data.apply(
@@ -309,7 +343,8 @@ fn an_edge_whose_color_is_missing_blends_its_ends() {
             .set(
                 Table::new("Bus", Ids::count(4))
                     .field("x", vec![-40.0, 40.0, -40.0, 40.0])
-                    .field("y", vec![-20.0, -20.0, 20.0, 20.0]),
+                    .field("y", vec![-20.0, -20.0, 20.0, 20.0])
+                    .field("left", vec![true, false, true, false]),
             )
             .set(
                 Table::new("Line", Ids::count(2))
@@ -322,20 +357,39 @@ fn an_edge_whose_color_is_missing_blends_its_ends() {
     let plain = plain_theme();
     let theme = Theme { edge: latkit::EdgeTheme { color: None, ..plain.edge }, ..plain };
     let blue = latkit::when(field("open")).then(Color::rgb(0.0, 0.0, 1.0)).otherwise(latkit::Expr::missing());
-    let scene = Scene::new(plane())
-        .theme(theme)
-        .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0).color(blue))
-        .draw(
-            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(3.0).color(Color::rgb(0.0, 1.0, 0.0)),
-        );
-    let mut view = View::new(&gpu, scene);
-    view.set_camera(camera());
-    view.set_sources([&data]).expect("a source");
-    let pixels = frame(&gpu, &mut view);
+    // Buses on the left are red, and those on the right green.
+    let sides = latkit::when(field("left")).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(Color::rgb(0.0, 1.0, 0.0));
+    let drawn = |edges: Edges| {
+        let scene = Scene::new(plane())
+            .theme(theme.clone())
+            .draw(edges.ends("from", "to").width(4.0).color(blue.clone()))
+            .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(3.0).color(sides.clone()));
+        let mut view = View::new(&gpu, scene);
+        view.set_camera(camera());
+        view.set_sources([&data]).expect("a source");
+        frame(&gpu, &mut view)
+    };
     let center = SIZE / 2;
-    // Y points up on the plane: the open line is above the middle, the other below.
+    // Y points up on the plane: the open line is above the middle, the other below. A line with a
+    // color of its own keeps it, and one without blends its ends' colors from end to end.
+    let pixels = drawn(Edges::of("grid", "Line"));
     assert!(close(at(&pixels, center, center - 20), [0, 0, 255, 255]), "{:?}", at(&pixels, center, center - 20));
+    let middle = at(&pixels, center, center + 20);
+    assert!(middle[0] > 90 && middle[1] > 90 && middle[2] < 10, "red and green meet halfway: {middle:?}");
+    // With a blend at one place, a quarter of the way along, the color changes sharply there. A
+    // marker without a color of its own, set on the change, takes the line's color pixel by pixel:
+    // red before the change and green after it.
+    let square = latkit::StrokeMarker::new(latkit::Shape::Rectangle).at(0.25).size(10.0);
+    let pixels = drawn(Edges::of("grid", "Line").blend(0.25, 0.25).markers([square]));
+    let beside = |dx: i32| at(&pixels, (center as i32 + dx) as u32, center + 24);
+    assert!(close(beside(-22), [255, 0, 0, 255]) && close(beside(-15), [0, 255, 0, 255]), "{:?}", beside(-22));
+    assert!(
+        close(at(&pixels, center - 30, center + 20), [255, 0, 0, 255]),
+        "{:?}",
+        at(&pixels, center - 30, center + 20)
+    );
     assert!(close(at(&pixels, center, center + 20), [0, 255, 0, 255]), "{:?}", at(&pixels, center, center + 20));
+    assert!(close(at(&pixels, center, center - 20), [0, 0, 255, 255]), "a color of its own has no second to change to");
 }
 
 #[test]
@@ -610,7 +664,7 @@ fn a_fit_of_rows_bounds_how_far_the_camera_goes() {
 }
 
 #[test]
-fn a_fit_frames_data_regardless_of_units_and_marker_sizes() {
+fn a_fit_frames_what_its_rows_draw_regardless_of_units_and_marker_sizes() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 1.0])).expect("valid");
@@ -641,6 +695,38 @@ fn a_fit_frames_data_regardless_of_units_and_marker_sizes() {
     };
     let (far, near) = (fitted(1.0), fitted(12.0));
     assert!((far - near).abs() < 1e-6, "fitted at zoom {far} from afar and {near} from close in");
+    // A fit keeps what its rows draw in view: a marker's box as its bearing turns it, and beside a
+    // stroke, half its width and its halo. Two nodes a unit apart on a line show how many pixels a
+    // unit takes.
+    let line = Data::new("line");
+    let nodes = Table::new("Node", Ids::count(2)).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 0.0]);
+    let link =
+        Table::new("Link", Ids::count(1)).reference("a", "Node", vec![1_u64]).reference("b", "Node", vec![2_u64]);
+    line.apply(latkit::Patch::new().set(nodes).set(link)).expect("valid");
+    let unit = |scene: Scene| {
+        let mut view = View::new(&gpu, scene);
+        view.set_sources([&line]).expect("a source");
+        view.fit(latkit::Fit::All);
+        for _ in 0..4 {
+            frame(&gpu, &mut view);
+        }
+        let [a, b] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]].map(|p| view.screen(p).expect("in view"));
+        (b[0] - a[0]).abs()
+    };
+    // A fit pads its box by 24 pixels on each side.
+    let room = SIZE as f32 - 48.0;
+    let node = || Vertices::of("line", "Node").position(field("x"), field("y"));
+    // Markers two units tall, turned a quarter turn, reach a unit past each node along the line.
+    let tall = node().size(latkit::units(0.02), latkit::units(2.0)).bearing(90.0);
+    let turned = unit(Scene::new(plane()).theme(plain_theme()).draw(tall));
+    assert!((turned - room / 3.0).abs() < 2.0, "a unit spans {turned} pixels of {room} between turned markers");
+    let edge = latkit::EdgeTheme { width: 2.0, halo: 20.0.into(), ..plain_theme().edge };
+    let haloed = Scene::new(plane())
+        .theme(latkit::Theme { edge, ..plain_theme() })
+        .draw(latkit::Edges::of("line", "Link").ends("a", "b"))
+        .draw(node().radius(1.0));
+    let haloed = unit(haloed);
+    assert!((haloed - (room - 42.0)).abs() < 2.0, "a unit spans {haloed} pixels of {room} beside a 20 pixel halo");
 }
 
 #[test]
@@ -1199,6 +1285,24 @@ fn frames_report_gpu_time_where_timestamps_are_supported() {
 }
 
 #[test]
+fn a_long_polyline_joins_its_segments_across_projection_pages() {
+    let Some(gpu) = gpu() else { return };
+    // Center a long row's page boundary on the canvas. A missing endpoint leaves a 12-pixel gap.
+    let boundary = (1 << 20) / (3 * 32) - 4;
+    let points: Vec<[f64; 2]> = (0..=boundary + 8).map(|i| [f64::from((i - boundary) * 12), 0.0]).collect();
+    let data = Data::new("d");
+    data.apply(Table::new("Path", Ids::count(1)).field("geometry", vec![points])).unwrap();
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(Lines::of("d", "Path").width(3.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).unwrap();
+    let pixels = frame(&gpu, &mut view);
+    for x in 4..SIZE - 4 {
+        assert!(at(&pixels, x, SIZE / 2)[0] > 200, "gap at x={x}");
+    }
+}
+
+#[test]
 fn dashes_run_on_across_a_paths_segments() {
     let Some(gpu) = gpu() else { return };
     // A dashed path of a hundred segments, each a pixel long. If each segment restarted its dashes,
@@ -1231,8 +1335,12 @@ fn comets(gpu: &latkit::Gpu, units: bool, speed: Option<f64>) -> View {
 
 fn comets_scene(units: bool, speed: Option<f64>) -> Scene {
     let length = |v| if units { latkit::Length::Units(v) } else { latkit::Length::Px(v) };
-    let flow =
-        latkit::FlowTheme { color: Color::rgb(1.0, 0.0, 0.0), spacing: length(30.0), length: length(8.0), width: 8.0 };
+    let flow = latkit::FlowTheme {
+        color: Color::rgb(1.0, 0.0, 0.0),
+        spacing: length(30.0),
+        length: length(8.0),
+        width: 8.0.into(),
+    };
     let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25));
     let line = match speed {
         Some(speed) => line.flow(speed),
@@ -1304,7 +1412,7 @@ fn comets_follow_their_rows_when_rows_move_without_easing() {
         color: Color::rgb(1.0, 0.0, 0.0),
         spacing: latkit::Length::Px(30.0),
         length: latkit::Length::Px(8.0),
-        width: 8.0,
+        width: 8.0.into(),
     };
     let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25)).flow(field("speed"));
     let scene = Scene::new(plane()).theme(Theme { flow, ..plain_theme() }).ease(std::time::Duration::ZERO).draw(line);
@@ -1375,7 +1483,7 @@ fn sizes_in_units_are_degrees_on_the_earth() {
     let ground = Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..plain_theme().earth }, ..plain_theme() };
     let scene = Scene::new(Earth { grid: latkit::Grid::Off, ..Earth::default() }).theme(ground).draw(marker);
     let mut view = View::new(&gpu, scene);
-    // At zoom 6 the world is 256 · 2⁶ pixels around, so a degree spans 45.5 pixels.
+    // At zoom 6 the world is 256 * 2⁶ pixels around, so a degree spans 45.5 pixels.
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 6.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
@@ -1757,4 +1865,43 @@ fn nets_join_their_members_as_stars() {
     assert!(red(c, c), "the star's middle");
     assert!(red(c, c - 15), "the spoke up to the member at the top (y up)");
     assert!(!red(c + 20, c - 20), "nothing where no spoke runs");
+}
+
+#[test]
+fn a_categorical_map_with_values_colors_each_row_by_the_value_it_equals() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    let rows = Table::new("V", Ids::count(3)).field("x", vec![-30.0, 0.0, 30.0]).field("y", vec![0.0; 3]);
+    data.apply(rows.field("kind", vec!["gas", "wind", "coal"])).expect("valid");
+    let (red, green, blue) = (Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 1.0, 0.0), Color::rgb(0.0, 0.0, 1.0));
+    let kinds = Colormap::new(latkit::ColormapKind::Categorical, [red, green]).expect("colors").values(["gas", "wind"]);
+    let scene = Scene::new(plane())
+        .theme(Theme { missing: blue, ..plain_theme() })
+        .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(8.0).color(field("kind").colormap(kinds)));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    let colors = [-30_i32, 0, 30].map(|x| at(&pixels, (c as i32 + x) as u32, c));
+    assert!(close(colors[0], [255, 0, 0, 255]) && close(colors[1], [0, 255, 0, 255]), "each value's color: {colors:?}");
+    assert!(close(colors[2], [0, 0, 255, 255]), "a value among none takes the missing color: {colors:?}");
+}
+
+#[test]
+fn a_plane_whose_y_grows_down_draws_greater_y_lower() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    data.apply(Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![30.0])).expect("valid");
+    let down = latkit::Plane { y: latkit::Vertical::Down, ..plane() };
+    let scene = Scene::new(down)
+        .theme(plain_theme())
+        .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(6.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    assert!(close(at(&pixels, c, c + 30), [255; 4]), "below the middle: {:?}", at(&pixels, c, c + 30));
+    assert!(close(at(&pixels, c, c - 30), [0, 0, 0, 255]), "and not above it");
 }

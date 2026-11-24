@@ -153,7 +153,7 @@ impl Limits {
             Space::Earth(earth) => Some(earth.projection),
             _ => None,
         };
-        // The world is 256 · 2^zoom CSS pixels across, and the globe 1/π of that.
+        // The world is 256 * 2^zoom CSS pixels across, and the globe 1/π of that.
         let least = match (projection, room) {
             (Some(crate::Projection::Mercator), Some([w, h])) => (w.min(h) / 256.0).log2(),
             (Some(crate::Projection::Globe), Some([w, h])) => (w.min(h) / 3.0 * PI / 256.0).log2(),
@@ -339,7 +339,7 @@ impl Camera {
             center = [across(0), across(1), center[2].clamp(framed.min[2], framed.max[2])];
         }
         if let Some([w, h]) = limits.world {
-            // The world is 256 · 2^zoom CSS pixels across. Its edges stay outside the framed area
+            // The world is 256 * 2^zoom CSS pixels across. Its edges stay outside the framed area
             // while the center stays half the area's width and height from them.
             let world = 256.0 * zoom.exp2();
             let east = 180.0 * (1.0 - w / world).max(0.0);
@@ -513,6 +513,10 @@ impl Projected {
             }
             _ => unreachable!("the camera matches the space"),
         };
+        // A plane whose y grows down mirrors its positions about the camera's center. World
+        // coordinates stay position units, so everything that reads this projection follows.
+        let down = matches!(space, Space::Plane(plane) if plane.y == crate::Vertical::Down);
+        let mirror = if down { -1.0 } else { 1.0 };
         let distance = 0.5 * h / (0.5 * FOV).tan();
         let pitch = pitch.clamp(0.0, MAX_PITCH);
         // Reversed depth: the near plane maps to 1 and the far plane to 0.
@@ -520,7 +524,7 @@ impl Projected {
         let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -distance))
             * DMat4::from_rotation_x(-pitch.to_radians())
             * DMat4::from_rotation_z(bearing.to_radians())
-            * DMat4::from_scale(DVec3::new(px_per_unit[0], px_per_unit[1], px_per_unit[0]))
+            * DMat4::from_scale(DVec3::new(px_per_unit[0], mirror * px_per_unit[1], px_per_unit[0]))
             * DMat4::from_translation(DVec3::new(0.0, 0.0, -height(space_code, center[2])));
         let middle = [area[0].midpoint(area[2]) / w * 2.0 - 1.0, 1.0 - area[1].midpoint(area[3]) / h * 2.0];
         let offset = DMat4::from_cols(DVec4::X, DVec4::Y, DVec4::Z, DVec4::new(middle[0], middle[1], 0.0, 1.0));
@@ -997,7 +1001,7 @@ mod tests {
             "a view without a size"
         );
         let limits = Limits::new(&flat(), Some(SIZE), None, Reach::default());
-        // The world is 256 · 2^zoom pixels across. All the way out, it fits the view's 600 pixels
+        // The world is 256 * 2^zoom pixels across. All the way out, it fits the view's 600 pixels
         // of height, and the center sits on the world's middle.
         assert!((limits.zoom[0] - (600.0_f64 / 256.0).log2()).abs() < 1e-12, "{:?}", limits.zoom);
         let out = Camera::Map { center: [170.0, 80.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 };
@@ -1043,7 +1047,7 @@ mod tests {
     #[test]
     fn the_globe_zooms_out_until_it_spans_a_third_of_the_view() {
         let limits = Limits::new(&globe(), Some(SIZE), None, Reach::default());
-        // The globe is 256 · 2^zoom / π pixels across.
+        // The globe is 256 * 2^zoom / π pixels across.
         let across = 256.0 * limits.zoom[0].exp2() / PI;
         assert!((across - 200.0).abs() < 1e-9, "{across}");
         // Its longitude wraps, so any center is within the limits.

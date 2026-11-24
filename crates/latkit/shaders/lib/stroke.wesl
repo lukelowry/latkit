@@ -1,4 +1,4 @@
-// Strokes: antialiased segments of a path, with dashes, flowing comets, and arrowheads, in CSS
+// Strokes: antialiased segments of a path, with dashes and flowing comets, in CSS
 // pixels. Where a path runs on through a segment's end, the segment draws only its own side of the
 // joint there, so a path draws as one stroke.
 
@@ -28,17 +28,12 @@ struct Stroke {
     flow: f32,
     travel: f32,
     dash: bool,
-    // Whether the segment ends in an arrowhead at `b`.
-    arrow: bool,
     // The normals of the lines splitting the pixels at `a` and at `b` with the segments beyond, and
     // whether it shares each end that way (see `Joints` in `lib/path.wesl`).
     split: vec4f,
     shares: vec2<bool>,
     // Whether its comets take a rim (see `COMET_CONTRAST`).
     rim: bool,
-    // How far past `b` along its path the tip of its row's arrowhead lies, in CSS pixels: 0 on the
-    // segment ending in it, and negative where comets keep clear of none.
-    tip: f32,
 }
 
 // Whether comets on a stroke of color `line` (straight) take a rim: the flow color contrasts too
@@ -55,46 +50,18 @@ fn owns(p: vec2f, s: Stroke) -> bool {
     return start & end;
 }
 
-// Signed distance to the arrowhead at `b`, a triangle `frame.arrow + width` long along `dir`.
-fn head_distance(p: vec2f, b: vec2f, dir: vec2f, width: f32) -> f32 {
-    let length = frame.arrow + width;
-    let q = p - b;
-    let along = dot(q, dir);
-    let across = abs(dot(q, vec2f(-dir.y, dir.x)));
-    let half = 0.5 * length * 0.9;
-    // Inside where it lies behind the tip and within the widening flanks.
-    let slope = half / length;
-    let flank = (across - (-along) * slope) / sqrt(1.0 + slope * slope);
-    return max(max(flank, along), -along - length);
-}
-
 // For pixel `p`: (distance outside the stroke's edge, distance along the line, fraction of the way
 // from `a` to `b`).
 fn stroke_distance(p: vec2f, s: Stroke) -> vec3f {
     let ab = s.b - s.a;
-    if !s.arrow {
-        let squared = dot(ab, ab);
-        let projected = dot(p - s.a, ab);
-        let t = clamp(projected / max(squared, 1e-6), 0.0, 1.0);
-        let d = length(p - (s.a + ab * t)) - 0.5 * s.width;
-        // A solid stroke only needs distance. Avoid the second division and phase interpolation
-        // for every covered pixel when neither dashes nor comets consume them.
-        if !s.dash && s.flow == 0.0 { return vec3f(d, 0.0, 0.0); }
-        let along = clamp(projected / max(squared, 1e-12), 0.0, 1.0);
-        return vec3f(d, mix(s.phase.x, s.phase.y, along), along);
-    }
-    let len = length(ab);
-    let dir = ab / max(len, 1e-6);
-    // An arrowhead's stroke stops where the head begins.
-    let end = select(s.b, s.b - dir * (frame.arrow + s.width) * 0.8, s.arrow && len > frame.arrow);
-    let ae = end - s.a;
-    let t = clamp(dot(p - s.a, ae) / max(dot(ae, ae), 1e-6), 0.0, 1.0);
-    let line = length(p - (s.a + ae * t)) - 0.5 * s.width;
-    // The head is drawn whole: its base can reach back past a joint, where the segment before draws
-    // the line.
-    let head = head_distance(p, s.b, dir, s.width);
-    let d = select(head, min(line, head), owns(p, s));
-    let along = clamp(dot(p - s.a, dir) / max(len, 1e-6), 0.0, 1.0);
+    let squared = dot(ab, ab);
+    let projected = dot(p - s.a, ab);
+    let t = clamp(projected / max(squared, 1e-6), 0.0, 1.0);
+    let d = length(p - (s.a + ab * t)) - 0.5 * s.width;
+    // A solid stroke only needs distance. Avoid the second division and phase interpolation
+    // for every covered pixel when neither dashes nor comets consume them.
+    if !s.dash && s.flow == 0.0 { return vec3f(d, 0.0, 0.0); }
+    let along = clamp(projected / max(squared, 1e-12), 0.0, 1.0);
     return vec3f(d, mix(s.phase.x, s.phase.y, along), along);
 }
 
@@ -111,11 +78,10 @@ fn covered(d: vec3f, s: Stroke) -> f32 {
 // Coverage of the pixel at `d` by stroke `s`'s line, without its dashes. A line thinner than a
 // target pixel covers as a line one pixel wide does, at its width's share: pixels along it, which
 // lie at every distance from its middle up to half a pixel diagonally, then sum to one brightness.
-// At its own width it would cover only pixels near its middle, and look dotted. An arrowhead's
-// segment covers at its own width.
+// At its own width it would cover only pixels near its middle, and look dotted.
 fn line_coverage(d: vec3f, s: Stroke) -> f32 {
     let thin = s.width * eye.pixel_ratio;
-    if s.arrow | (thin >= 1.0) {
+    if thin >= 1.0 {
         return coverage(d.x);
     }
     return thin * coverage(d.x + 0.5 * (s.width - fringe()));
@@ -124,10 +90,8 @@ fn line_coverage(d: vec3f, s: Stroke) -> f32 {
 // Coverage of the pixel at `d` by comets (x), and by their rims (y). Comets are
 // `frame.flow_spacing` apart, offset by stroke `s`'s travel. Each has a round head
 // `frame.flow_width` wide (at least the stroke's width), brightest at its middle, and a tail
-// `frame.flow_length` long that thins and fades. A rim rings the front of the head. A comet never
-// covers an arrowhead: on every segment of a row ending in one, a comet fades out before its part
-// nearest the arrowhead (its head's front, or its tail where comets run away from the arrowhead)
-// reaches where the head begins. A stub too short for a comet carries none.
+// `frame.flow_length` long that thins and fades. A rim rings the front of the head. A stub too
+// short for a comet carries none.
 fn comet(d: vec3f, s: Stroke) -> vec2f {
     if s.flow == 0.0 || frame.flow.a <= 0.0 {
         return vec2f(0.0);
@@ -152,19 +116,7 @@ fn comet(d: vec3f, s: Stroke) -> vec2f {
     let distance = select(across, length(vec2f(lead * px, across)), cap);
     let head = 1.0 - smoothstep(0.35 * reach, reach, distance);
     let rim = saturate(1.0 - smoothstep(reach, reach + COMET_RIM, distance) - head);
-    var clear = 1.0;
-    if s.tip >= 0.0 {
-        // Where this pixel's comet has its head, in CSS pixels from `a`: behind the pixel by `lead`
-        // in the direction comets run, or ahead of it by `trail`. It reaches toward the arrowhead
-        // by its head's front, or where comets run away from the arrowhead, by its tail.
-        let len = length(s.b - s.a);
-        let head_at = d.z * len - select(-trail, lead, cap) * px * sign(s.flow);
-        let radius = 0.5 * max(frame.flow_width, s.width);
-        let reach = head_at + select(radius, frame.flow_length * px, s.flow < 0.0) + COMET_RIM;
-        let base = len + s.tip - frame.arrow - s.width;
-        clear = saturate((base - reach) / radius);
-    }
-    return fade * fade * clear * vec2f(head, select(0.0, rim, s.rim & cap));
+    return fade * fade * vec2f(head, select(0.0, rim, s.rim & cap));
 }
 
 // Which part of a segment comets cover this frame, as fractions of it from `a` to `b` (x and y), and

@@ -10,7 +10,8 @@ use crate::{Error, Result};
 /// Colors for a range of values: a catalog colormap or a custom one.
 ///
 /// Sequential and diverging maps clamp, cyclic maps wrap, and categorical maps bin values by their
-/// integer part: category `i` takes color `i`. [`Colormap::categories`] names the categories.
+/// integer part: category `i` takes color `i`. [`Colormap::values`] bins by value instead, a number
+/// or a text for each category, and [`Colormap::categories`] names the categories.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Colormap(Map);
 
@@ -26,6 +27,53 @@ struct Custom {
     count: u32,
     texels: [[u8; 4]; 256],
     categories: Vec<Arc<str>>,
+    values: Vec<Category>,
+}
+
+/// A value that a category of a colormap or a case of [`Expr::matched`](crate::Expr::matched)
+/// names: a number, which a row's value equals, or a text, which a row's text field equals exactly.
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+#[schemars(inline)]
+pub enum Category {
+    /// A number.
+    Number(f64),
+    /// A text.
+    Text(Arc<str>),
+}
+
+impl Category {
+    /// The value as a legend writes it.
+    fn written(&self) -> Arc<str> {
+        match self {
+            Category::Number(number) => number.to_string().into(),
+            Category::Text(text) => text.clone(),
+        }
+    }
+}
+
+impl From<f64> for Category {
+    fn from(number: f64) -> Category {
+        Category::Number(number)
+    }
+}
+
+impl From<i32> for Category {
+    fn from(number: i32) -> Category {
+        Category::Number(f64::from(number))
+    }
+}
+
+impl From<&str> for Category {
+    fn from(text: &str) -> Category {
+        Category::Text(text.into())
+    }
+}
+
+impl From<Arc<str>> for Category {
+    fn from(text: Arc<str>) -> Category {
+        Category::Text(text)
+    }
 }
 
 /// How a colormap maps values: `sequential` and `diverging` maps clamp, `cyclic` maps wrap, and
@@ -135,7 +183,8 @@ impl Colormap {
             return Err(Error::invalid(reason));
         }
         let texels = ramp::texels(kind.spread(), &stops);
-        Ok(Colormap(Map::Custom(Arc::new(Custom { kind, count: stops.len() as u32, texels, categories: Vec::new() }))))
+        let custom = Custom { kind, count: stops.len() as u32, texels, categories: Vec::new(), values: Vec::new() };
+        Ok(Colormap(Map::Custom(Arc::new(custom))))
     }
 
     /// This categorical map with its categories named in order from category 0, for its legend.
@@ -144,12 +193,35 @@ impl Colormap {
     pub fn categories<S: Into<Arc<str>>>(&self, names: impl IntoIterator<Item = S>) -> Colormap {
         assert_eq!(self.kind(), ColormapKind::Categorical, "only a categorical map has categories");
         let categories = names.into_iter().map(Into::into).collect();
-        Colormap(Map::Custom(Arc::new(Custom {
+        Colormap(Map::Custom(Arc::new(Custom { categories, ..self.custom() })))
+    }
+
+    /// This categorical map with a value for each category, in order from category 0: a number or
+    /// a text. A row whose value equals `values[i]` takes color `i`, and a row whose value is none
+    /// of them takes the theme's `missing` color. A legend names each category by its value, unless
+    /// [`categories`](Colormap::categories) names it. Panics if the map is not categorical.
+    ///
+    /// ```
+    /// # use latkit::{field, Colormap};
+    /// let color = field("kv").colormap(Colormap::TAB10.values([69, 138]));
+    /// let fuel = field("fuel").colormap(Colormap::TAB10.values(["gas", "wind", "solar"]));
+    /// ```
+    #[must_use]
+    pub fn values<V: Into<Category>>(&self, values: impl IntoIterator<Item = V>) -> Colormap {
+        assert_eq!(self.kind(), ColormapKind::Categorical, "only a categorical map has values");
+        let values = values.into_iter().map(Into::into).collect();
+        Colormap(Map::Custom(Arc::new(Custom { values, ..self.custom() })))
+    }
+
+    /// The map as a custom one, with its colors, names, and values.
+    fn custom(&self) -> Custom {
+        Custom {
             kind: self.kind(),
             count: self.count(),
             texels: *self.texels(),
-            categories,
-        })))
+            categories: self.named_categories().to_vec(),
+            values: self.category_values().to_vec(),
+        }
     }
 
     /// The names of the categories, from category 0. Empty unless named.
@@ -158,6 +230,23 @@ impl Colormap {
             Map::Catalog(_) => &[],
             Map::Custom(c) => &c.categories,
         }
+    }
+
+    /// The value of each category, from category 0. Empty when a value's integer part is its
+    /// category.
+    pub(crate) fn category_values(&self) -> &[Category] {
+        match &self.0 {
+            Map::Catalog(_) => &[],
+            Map::Custom(c) => &c.values,
+        }
+    }
+
+    /// The name a legend gives each category: its own, else its value as written. Empty when the
+    /// map has neither.
+    pub(crate) fn category_names(&self) -> Vec<Arc<str>> {
+        let (names, values) = (self.named_categories(), self.category_values());
+        let name = |i: usize| names.get(i).cloned().unwrap_or_else(|| values[i].written());
+        (0..names.len().max(values.len())).map(name).collect()
     }
 
     /// How the colormap maps values.
@@ -192,8 +281,7 @@ impl Colormap {
             return self.clone();
         }
         let texels = ramp::legible(self.texels(), background.to_array(), ratio);
-        let categories = self.named_categories().to_vec();
-        Colormap(Map::Custom(Arc::new(Custom { kind: self.kind(), count: self.count(), texels, categories })))
+        Colormap(Map::Custom(Arc::new(Custom { texels, ..self.custom() })))
     }
 
     /// The same colors in reverse order.
@@ -210,8 +298,7 @@ impl Colormap {
                 texels[i] = texels[i % n];
             }
         }
-        let categories = self.named_categories().to_vec();
-        Colormap(Map::Custom(Arc::new(Custom { kind: self.kind(), count: self.count(), texels, categories })))
+        Colormap(Map::Custom(Arc::new(Custom { texels, ..self.custom() })))
     }
 
     /// The color at `t`. A continuous map takes `t` in `0..=1`, clamping it, or wrapping it for a
@@ -303,6 +390,9 @@ mod tests {
         assert_eq!(named.reversed().named_categories(), named.named_categories());
         assert_eq!(&*named.named_categories()[1], "b");
         assert_eq!(named.key(), Colormap::TAB10.categories(["c"]).key());
+        let valued = Colormap::TAB10.values([69, 138]);
+        assert_eq!(valued.category_names().iter().map(|n| &**n).collect::<Vec<_>>(), ["69", "138"]);
+        assert_eq!(&*valued.categories(["low"]).category_names()[0], "low", "a name stands for its value");
     }
 
     #[test]

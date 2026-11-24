@@ -87,11 +87,13 @@ pub(crate) struct Planning {
     /// pages do not fit in a full arena or exceed the share. Reset when the share changes.
     fit: f64,
     share: f64,
+    /// Cost stamp, ledger revision and budget that produced this grant.
+    grant: Option<(u64, u64, u64)>,
 }
 
 impl Default for Planning {
     fn default() -> Planning {
-        Planning { costs: Derived::default(), plan: Derived::default(), fit: 1.0, share: 0.0 }
+        Planning { costs: Derived::default(), plan: Derived::default(), fit: 1.0, share: 0.0, grant: None }
     }
 }
 
@@ -148,17 +150,21 @@ impl View {
             self.planning.costs.make(stamp, costs);
         }
         let costs = &self.planning.costs.value;
-        let traced: f64 = costs.tables.values().map(|c| c.traced).sum();
-        let whole = costs.tables.values().map(Cost::bytes).sum::<f64>() + traced * ASKED_ENTRIES;
-        let counted: f64 = costs.shared.values().map(|(counted, _)| counted).sum();
-        let ask = Ask {
-            own: (whole - counted).max(0.0),
-            shared: costs.shared.iter().map(|(piece, (_, bytes))| (*piece, *bytes)).collect(),
-        };
-        let share = ledger.grant(self.id, whole, ask, budget);
-        if share != self.planning.share {
-            (self.planning.share, self.planning.fit) = (share, 1.0);
+        if self.planning.grant != Some((stamp, ledger.revision, budget)) {
+            let traced: f64 = costs.tables.values().map(|c| c.traced).sum();
+            let whole = costs.tables.values().map(Cost::bytes).sum::<f64>() + traced * ASKED_ENTRIES;
+            let counted: f64 = costs.shared.values().map(|(counted, _)| counted).sum();
+            let ask = Ask {
+                own: (whole - counted).max(0.0),
+                shared: costs.shared.iter().map(|(piece, (_, bytes))| (*piece, *bytes)).collect(),
+            };
+            let share = ledger.grant(self.id, whole, ask, budget);
+            if share != self.planning.share {
+                (self.planning.share, self.planning.fit) = (share, 1.0);
+            }
+            self.planning.grant = Some((stamp, ledger.revision, budget));
         }
+        let share = self.planning.share;
         let stamp = stamp_of((self.planning.costs.stamp(), share.to_bits(), self.planning.fit.to_bits()));
         if self.planning.plan.due(stamp) {
             let planned = self.plan(costs, share, self.planning.fit);

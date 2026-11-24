@@ -1,7 +1,6 @@
 # WECC240 fault with GridKit and the latkit CLI
 
-[Preview](preview.png) · The video is not in Git: [reproduce it](#reproduce) to write
-`animation.mp4` here.
+[View the preview](preview.png). [Reproduce the video](#reproduce) to write `animation.mp4`.
 
 The reference WECC240 fault is applied at **John Day, bus 4005**, at 1.00 s and cleared at 1.15 s,
 with fault impedance R = 0, X = 0.01 p.u. The model has 243 buses, 447 branches, 103 synchronous

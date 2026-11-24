@@ -27,8 +27,8 @@ impl View {
 
     /// Replaces the scene with `scene` (JSON). A scene that can't be read changes nothing.
     #[wasm_bindgen(js_name = setScene)]
-    pub fn set_scene(&self, scene: &str) -> Result<(), Error> {
-        let scene = json("scene", scene)?;
+    pub fn set_scene(&self, scene: &str, tables: Option<crate::TableBatch>) -> Result<(), Error> {
+        let scene = crate::data::scene(scene, tables)?;
         self.view.with(|v| v.set_scene(scene));
         Ok(())
     }

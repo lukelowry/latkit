@@ -89,9 +89,8 @@ const has = (node, kind) => (ts.getModifiers?.(node) ?? []).some((m) => m.kind =
 function read(file) {
   const raw = withoutModuleDoc(fs.readFileSync(path.join(root, file), 'utf8'));
   const source = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true);
-  const code = uncommented(raw);
   /** The node's code, without comments, on one line. */
-  const text = (node) => code.slice(node.getStart(source), node.end).replace(/\s+/g, ' ').trim();
+  const text = (node) => uncommented(node.getText(source)).replace(/\s+/g, ' ').trim();
   const doc = (node) => docBefore(raw, node.pos);
   /** A declaration's type parameters, in full or (`names`) by name only, as `<…>`. */
   const generics = (node, names = false) =>
@@ -600,7 +599,8 @@ async function render(entry) {
 async function page(head, entries, sections) {
   const out = [linked(head)];
   for (const [title, about, names] of sections) {
-    out.push(`## ${title}`, linked(about));
+    out.push(`## ${title}`);
+    if (about) out.push(linked(about));
     for (const name of names) out.push(await render(entries.get(name)));
   }
   return `${out.join('\n\n')}\n`;
@@ -638,8 +638,8 @@ function cliPage() {
   };
   const render = commands.find((command) => command.name === 'latkit render');
   const out = [
-    '# Command reference',
-    "Every command and option of the `latkit` command line, generated from its help. The [command-line guide](../cli.md) shows them in use. `--help` prints a command's help, and `latkit --version` prints the version.",
+    '# CLI commands',
+    'Run a command with `--help` to list its options. For examples, see the [command-line guide](../cli.md).',
   ];
   for (const command of commands) {
     const top = command.name === 'latkit';
@@ -698,103 +698,70 @@ function cliPage() {
 
 // The pages
 
-const API = [
-  'load',
-  'internal',
-  'data',
-  'patch',
-  'scene',
-  'colormap',
-  'gpu',
-  'view',
-  'playhead',
-  'canvas',
-  'shot',
+// Derive the JS reference from the public entry point, including named and wildcard re-exports.
+const entryPoint = path.join(root, 'npm/dist/index.d.ts');
+const program = ts.createProgram([entryPoint], { module: ts.ModuleKind.NodeNext });
+const checker = program.getTypeChecker();
+const entryModule = checker.getSymbolAtLocation(program.getSourceFile(entryPoint));
+const schemaModules = ['inputs', 'outputs'];
+const declarations = new Map();
+const api = new Map();
+const schemaTypes = new Map();
+const topics = [
+  ['Loading, errors, and lifetimes', ['load', 'internal']],
+  ['Data and patches', ['data', 'patch']],
+  ['Expressions', ['scene', 'colormap']],
+  ['Views', ['view', 'canvas', 'playhead', 'gpu']],
+  ['Pictures and video', ['shot']],
 ];
-const TYPES = ['inputs', 'outputs'];
-
+const apiSections = topics.map(([title]) => [title, '', []]);
+for (const symbol of checker.getExportsOfModule(entryModule)) {
+  const target = symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+  const file = target.declarations?.[0]?.getSourceFile().fileName;
+  assert(file, `Cannot find the declaration of ${symbol.name}`);
+  const module = path.basename(file, '.d.ts');
+  const schema = schemaModules.includes(module);
+  // Read schema types before tsc strips comments from union branches.
+  const source = schema ? `npm/src/${module}.ts` : path.relative(root, file);
+  if (!declarations.has(source)) declarations.set(source, read(source));
+  const entry = declarations.get(source).get(target.name);
+  assert(
+    entry && entry.name === symbol.name,
+    `Cannot document export ${symbol.name} from ${module}`,
+  );
+  if (schema) {
+    schemaTypes.set(entry.name, entry);
+  } else {
+    const topic = topics.findIndex(([, modules]) => modules.includes(module));
+    assert(topic >= 0, `Assign public module ${module} to a reference section`);
+    api.set(entry.name, entry);
+    apiSections[topic][2].push(entry.name);
+  }
+}
+// These conditional builders are returned by when(), then(), and when() on a chain.
+// Callers use their methods even though the package does not export their classes by name.
+const sceneDeclarations = declarations.get(path.join('npm', 'dist', 'scene.d.ts'));
+for (const name of ['When', 'Then', 'Next']) {
+  assert(sceneDeclarations.has(name), `Missing conditional builder ${name}`);
+  if (!api.has(name)) {
+    api.set(name, sceneDeclarations.get(name));
+    apiSections[topics.findIndex(([, modules]) => modules.includes('scene'))][2].push(name);
+  }
+}
 const sections = {
-  'api.md': [
-    [
-      'Loading, errors, and lifetimes',
-      'What every part of the package shares.',
-      ['load', 'LatkitError', 'Wait', 'Handle'],
-    ],
-    [
-      'Data and patches',
-      'Datasets, the tables in them that marks draw, and the patches that change them. Patches are written without WebAssembly.',
-      [
-        'Dataset',
-        'Data',
-        'Snapshot',
-        'Tiles',
-        'TilesOptions',
-        'TileWriter',
-        'Source',
-        'Table',
-        'TableInput',
-        'QueryResult',
-        'Envelope',
-        'Patch',
-        'ByteSource',
-        'ReadableBytes',
-        'RowIds',
-        'Values',
-        'Geometry',
-        'Reference',
-        'reference',
-        'Fields',
-        'Run',
-      ],
-    ],
-    [
-      'Expressions',
-      'Builders for the per-row expressions that scene options take, including colors.',
-      [
-        'Expr',
-        'ExprInput',
-        'Mapped',
-        'Color',
-        'field',
-        'when',
-        'When',
-        'Then',
-        'Next',
-        'units',
-        'meters',
-        'selected',
-        'hovered',
-        'related',
-        'pointer',
-        'zoom',
-        'elapsed',
-        'icon',
-        'RgbaImage',
-        'colormaps',
-        'colormapCss',
-      ],
-    ],
-    [
-      'Views',
-      'Views, which draw scenes on canvases, the playheads they follow, and the GPU they draw with.',
-      ['View', 'Rect', 'ViewEvents', 'Insets', 'Area', 'Point', 'Position', 'Playhead', 'Gpu'],
-    ],
-    [
-      'Pictures and video',
-      'Shots draw views into images and video.',
-      ['Shot', 'ShotOptions', 'Placed', 'Image', 'ImageFormat', 'Video'],
-    ],
-  ],
+  'api.md': apiSections,
   'types.md': [
     [
       'Scenes',
       'A scene: its space, how it responds to input, and how it is laid out.',
       [
         'Scene',
+        'LocalTable',
         'Title',
         'Place',
         'Space',
         'Plane',
+        'Vertical',
         'Earth',
         'Projection',
         'Plot',
@@ -842,8 +809,10 @@ const sections = {
         'Mark',
         'MarkOptions',
         'StrokeOptions',
+        'StrokeMarker',
         'Vertices',
         'Edges',
+        'Meet',
         'Lines',
         'Trace',
         'Areas',
@@ -868,6 +837,7 @@ const sections = {
         'StateNode',
         'CallNode',
         'WhenNode',
+        'MatchNode',
         'ScaleNode',
         'ColormapNode',
         'State',
@@ -913,31 +883,22 @@ const sections = {
 const heads = {
   'api.md': `# JavaScript API
 
-Every class, function, and type the \`latkit\` package exports. Scenes and their options use the
-[scene and result types](types.md). These rules apply everywhere, so the entries below don't
-repeat them:
+For scene options and return types, see [Scene and result types](types.md).
 
-- Scenes, expressions, and patches are plain data. Datasets, views, pictures, the colormap
-  functions, and \`Patch.read()\` of JSON need latkit's WebAssembly, and throw an \`unloaded\` error
-  until \`load()\` finishes. \`View.create()\`, \`Gpu.create()\`, and \`Data.read()\` call it
-  themselves.
-- Everything latkit throws or rejects with is a \`LatkitError\`. Input it can't use fails with an
-  \`invalid\` error and changes nothing. The error's \`path\` names the bad part, such as
-  \`marks[2].color\`.
-- Every promise waits until its \`Wait\` signal aborts, or for 30 seconds without one.
-- A \`Handle\` holds memory until \`destroy()\` or the end of a \`using\` block frees it.`,
+- Call \`load()\` before working with datasets, views, images, \`colormapCss()\`, or \`Patch.read()\` on JSON.
+  \`View.create()\`, \`Gpu.create()\`, and \`Data.read()\` load WebAssembly for you. Scene,
+  expression, and patch builders work without it.
+- A \`LatkitError\` has a code. For invalid input, its path identifies the problem,
+  for example \`marks[2].color\`.
+- Operations that accept \`Wait\` time out after 30 seconds by default. Supply an abort signal
+  to control the deadline.
+- Release a \`Handle\` with \`destroy()\` or a \`using\` block.`,
   'types.md': `# Scene and result types
 
-The types of the scenes latkit draws and the results it reports, generated from the same schema as
-the package's types. Each property gives its meaning and default.`,
+Scene options, expressions, and the values latkit returns. The npm types use the same schema.`,
 };
 
-/** The declarations of every file in `files`, read from `dir`. */
-const readAll = (files, dir, ext) => new Map(files.flatMap((f) => [...read(`${dir}/${f}${ext}`)]));
-const entries = {
-  'api.md': readAll(API, 'npm/dist', '.d.ts'),
-  'types.md': readAll(TYPES, 'npm/src', '.ts'),
-};
+const entries = { 'api.md': api, 'types.md': schemaTypes };
 
 // Anchors ignore case, so a builder named like a type on either page, such as `zoom()` and `Zoom`,
 // gets `-function` appended to its anchor.

@@ -166,27 +166,41 @@ impl View {
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let (sprites, under) = self.overlay(&mut inner);
         self.lay_out_blocks();
-        let (work, marks) =
+        let (work, mut marks) =
             self.choose_still([measure.is_some(), catch_up, input], &uniform, &eye, &sprites[..under as usize]);
-        self.write_uniforms(&uniform, &eye, &sprites, &marks);
         if let Some(readback) = self.prepare_rows(encoder, &mut inner, work) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
-        self.place_labels(encoder, &mut inner, &eye, &uniform);
+        let labels = self.label_work(&eye, &uniform);
+        let demand = self.stroke_demand(probe.is_some(), labels.is_some_and(|work| work.claim));
         let depth = self.depth_area(probe.as_ref(), query.is_some_and(|(_, depth)| depth));
-        self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], depth);
+        let prepared = self.prepare_frame(encoder, &mut inner, frame, depth, &demand);
+        prepared.locate_uniforms(&mut marks);
+        self.write_uniforms(&uniform, &eye, &sprites, &marks);
+        self.place_labels(encoder, &mut inner, &eye, labels, &prepared.reads);
+        self.draw(encoder, &mut inner, &mut drawn, frame, [under, sprites.len() as u32], &prepared);
         self.stats.draws = drawn.draws;
         self.stats.instances = drawn.instances;
         if let Some(probe) = probe {
-            let readback = self.probe(encoder, &mut inner, &probe);
+            let readback = self.probe(encoder, &mut inner, &probe, &prepared.reads);
             self.probing(probe, readback);
         }
-        self.run_query(encoder, &mut inner);
+        self.run_query(encoder, &mut inner, &prepared.reads);
         if let Some(timer) = &mut self.timer {
             timer.end(encoder, device);
         }
+        #[cfg(target_arch = "wasm32")]
+        self.recorded(&mut inner, frame, input);
+        self.settle_row_words();
+        let atlas = std::mem::take(&mut inner.atlas.errors);
+        drop(inner);
+        self.tell_errors(atlas);
+        self.end(started, input);
+    }
+
+    fn settle_row_words(&mut self) {
         for shown in &mut self.marks {
             shown.before = shown.held();
             shown.words.settle();
@@ -195,10 +209,6 @@ impl View {
             shown.frozen = super::marks::Blocks::default();
             shown.settles = false;
         }
-        let atlas = std::mem::take(&mut inner.atlas.errors);
-        drop(inner);
-        self.tell_errors(atlas);
-        self.end(started, input);
     }
 
     /// Reports this frame's errors. Those of the view's derivations, and of the jobs and fetches it
@@ -230,13 +240,14 @@ impl View {
     ///
     /// In a frame the user steers (`input`), comets rest while the camera moves by anything but an
     /// orbit: they fade out over [`FADE`] seconds as they slow to a stop, and once the camera has
-    /// held still for [`REST`] seconds, they fade back in and travel on. Hidden, they cost a frame
-    /// nothing. Pictures and videos, and reduced motion, keep them.
+    /// held still for [`REST`] seconds, they fade back in and travel on. Comets too small to see
+    /// rest as well (see [`View::comets_tiny`]). Hidden, they cost a frame nothing. Pictures and
+    /// videos, and reduced motion, keep them.
     fn comets_travel(&mut self, uniform: &mut wgsl::Frame, step: f64, input: bool) -> bool {
         let fades = input && self.moves();
         let resting = fades && self.rig.moved_at.is_some_and(|at| self.clock.now() - at < REST);
         let most = if fades { step / FADE } else { 1.0 };
-        let toward = if resting { 0.0 } else { 1.0 };
+        let toward = if resting || self.comets_tiny() { 0.0 } else { 1.0 };
         self.comets_shown += (toward - self.comets_shown).clamp(-most, most);
         uniform.flow[3] *= self.comets_shown as f32;
         self.comet_clock += step * self.comets_shown;
@@ -302,8 +313,7 @@ impl View {
     fn lay_out(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let fans =
-            matches!(self.scene.theme.edge.parallel, Some(crate::Parallel { converge: crate::Converge::Fan, .. }));
+        let fans = self.scene.theme.edge.fans();
         // Comets in position units place themselves along a path in those units. On a plane seen
         // straight down, the screen only scales and turns positions, so every distance along is
         // measured in units too, once, and the draw scales it: a zoom or pan measures nothing.
@@ -323,8 +333,9 @@ impl View {
         self.transitions(inner);
         self.attach_ends();
         let domains = self.place_domains();
+        let (marks, markers) = (self.marks.len() as u64, self.stroke_markers() as u64);
         let resources = self.resources.as_mut().expect("created");
-        resources.fit(device, self.marks.len() as u64, domains);
+        resources.fit(device, marks, markers, domains);
         self.pack(encoder, inner);
         self.lay_out_labels(inner);
         fresh
@@ -493,8 +504,6 @@ impl View {
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.job_errors.clone();
         let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
-        let budget = inner.budget.bytes;
-        self.update_plan(&mut inner.ledger, budget);
         self.trace_entries = self.planning.trace_entries();
         let ask = derive::tiled::Ask {
             data: &self.snapshots,
@@ -582,32 +591,63 @@ impl View {
     /// Every mark's uniform at its dynamic offset, then each one's copy for its opaque draw, then,
     /// where any mark has comets, for its comets' draw (see [`passes::offset`](super::passes::offset)).
     /// The comets draw of a mark whose segments have records numbers its instances by its comet
-    /// slots, so its copy's `list` is theirs, or `NONE` while it has none.
+    /// slots, so its copy's `list` is theirs, or `NONE` while it has none. After those come the
+    /// copies for the markers along each mark's strokes, in mark order (see
+    /// [`marker_uniforms`](View::marker_uniforms)).
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
         let count = self.marks.len();
-        let blocks = if self.marks.iter().any(|shown| shown.mark.flows()) { 3 } else { 2 };
-        let mut marks = vec![0_u8; blocks * count * MARK_STRIDE as usize];
+        let blocks = self.uniform_blocks();
+        let firsts = self.marker_uniforms();
+        let mut marks = vec![0_u8; (blocks * count + self.stroke_markers()) * MARK_STRIDE as usize];
         let mut write = |at: usize, uniform: &wgsl::Mark| {
             let at = at * MARK_STRIDE as usize;
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(uniform));
         };
+        let projected = self.projected();
         for (i, shown) in self.marks.iter().enumerate() {
-            let mut uniform = uniforms::mark(i, shown, &self.labels, &self.clock);
+            let mut uniform = uniforms::mark(i, shown, &self.labels, &self.clock, &self.scene, &projected);
             if !self.focus.has_words() {
                 uniform.focus = wgsl::NONE;
             }
             write(i, &uniform);
+            let markings = shown.compiled.as_ref().map_or(&[][..], |compiled| &compiled.drawing.stroke_markers);
+            for (k, marking) in markings.iter().enumerate() {
+                write(firsts[i] + k, &uniforms::stroke_marker(uniform, marking, &self.scene, &projected));
+            }
             uniform.draw = wgsl::DRAW_OPAQUE;
             write(count + i, &uniform);
             if blocks == 3 {
                 uniform.draw = wgsl::DRAW_COMETS;
-                if MarkVariants::shown(shown, &self.scene.space).screen().is_some() {
+                if MarkVariants::shown(shown, &self.scene).screen().is_some() {
                     uniform.list = shown.comets.list.map_or(wgsl::NONE, |list| list.header);
                 }
                 write(2 * count + i, &uniform);
             }
         }
         marks
+    }
+
+    /// How many markers the marks' strokes carry in all, each with a uniform of its own.
+    fn stroke_markers(&self) -> usize {
+        self.marks.iter().map(|shown| shown.mark.stroke_markers().len()).sum()
+    }
+
+    /// How many uniforms each mark's own draws bind: its rows', its opaque draw's, and where any
+    /// mark has comets, its comets'.
+    fn uniform_blocks(&self) -> usize {
+        if self.marks.iter().any(|shown| shown.mark.flows()) { 3 } else { 2 }
+    }
+
+    /// For each mark, the index of the uniform its first stroke marker's draw binds. A mark's
+    /// markers take one each, after every mark's own uniforms.
+    pub(super) fn marker_uniforms(&self) -> Vec<usize> {
+        let mut next = self.uniform_blocks() * self.marks.len();
+        let first = |shown: &super::marks::Shown| {
+            let at = next;
+            next += shown.mark.stroke_markers().len();
+            at
+        };
+        self.marks.iter().map(first).collect()
     }
 
     /// What traces show: the plot's x range, its width in device pixel columns, and the most

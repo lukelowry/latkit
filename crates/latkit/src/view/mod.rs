@@ -246,6 +246,20 @@ struct Incoming {
     camera: Option<Camera>,
 }
 
+/// The datasets a pending scene compiles against. External-only scenes borrow the current slice.
+fn scene_snapshots<'a>(current: &'a [Snapshot], drawn: &Scene, next: &Scene) -> std::borrow::Cow<'a, [Snapshot]> {
+    if drawn.local == next.local {
+        return current.into();
+    }
+    current
+        .iter()
+        .filter(|s| Some(*s) != drawn.local.as_ref())
+        .chain(next.local.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .into()
+}
+
 impl Incoming {
     /// Releases what its compiled marks hold, as when a newer scene replaces it.
     fn release(self, inner: &mut crate::gpu::Inner) {
@@ -267,8 +281,8 @@ struct Identity {
 }
 
 impl View {
-    /// Creates a view that draws `scene` with `gpu`. Its marks draw nothing until
-    /// [`set_sources`](View::set_sources) provides their datasets.
+    /// Creates a view that draws `scene` with `gpu`. Scene-local tables are ready to draw.
+    /// Supply external datasets with [`set_sources`](View::set_sources).
     pub fn new(gpu: &Gpu, scene: Scene) -> View {
         let id = VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         View::made(gpu, scene, Identity { id, signal: Arc::default(), job_errors: Arc::default() })
@@ -365,6 +379,7 @@ impl View {
     pub fn move_to(&mut self, gpu: &Gpu) {
         let identity = Identity { id: self.id, signal: self.signal.clone(), job_errors: self.job_errors.clone() };
         let mut moved = View::made(gpu, self.scene().clone(), identity);
+        moved.rebind_local(&self.sources);
         moved.use_sources(self.sources.clone(), &mut gpu.0.lock());
         // The same scene and data, so what was derived from them alone still holds, layouts too.
         moved.scene_version = self.scene_version;
@@ -389,6 +404,7 @@ impl View {
         moved.stats = std::mem::take(&mut self.stats);
         // Sources given since load again on `gpu`, while the moved view draws those it drew.
         if let Some(sources) = self.incoming_sources.take() {
+            moved.rebind_local(&sources);
             moved.give_sources(sources);
         }
         moved.set_at(self.at);
@@ -433,6 +449,10 @@ impl View {
     /// nothing: no swap, no wait, no event, and no frame.
     pub fn set_scene(&mut self, mut scene: Scene) {
         let mut failures = std::mem::take(&mut scene.unread);
+        scene.reuse_tables(self.scene());
+        if let Err(error) = scene.bind_tables(&self.sources, self.incoming_sources.as_deref().unwrap_or_default()) {
+            failures.push(error);
+        }
         failures.extend(scene.sanitize());
         let last = self.incoming.as_ref().map_or(&self.scene_failures, |incoming| &incoming.failures);
         if scene == *self.scene() && failures == *last {
@@ -460,6 +480,8 @@ impl View {
     /// space, or the presence of a layout changed. A twin of an earlier mark draws nothing and takes
     /// over no state.
     fn compile_marks(&self, scene: &Scene, inner: &mut crate::gpu::Inner) -> Vec<Option<Shown>> {
+        let local_changed = scene.local != self.scene.local;
+        let snapshots = scene_snapshots(&self.snapshots, &self.scene, scene);
         let kind_changed = std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
         let context_changed = scene.theme != self.scene.theme
             || kind_changed
@@ -471,13 +493,14 @@ impl View {
                 fresh.push(Some(Shown::twin(mark.clone())));
                 continue;
             }
-            let kept = !context_changed && self.marks.iter().any(|s| !s.twin && s.mark.draws_like(mark));
+            let kept = !(context_changed || local_changed && mark.style().local)
+                && self.marks.iter().any(|s| !s.twin && s.mark.draws_like(mark));
             if kept {
                 fresh.push(None);
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.snapshots, context, inner);
+            shown.compile(&snapshots, context, inner);
             fresh.push(Some(shown));
         }
         fresh
@@ -544,6 +567,15 @@ impl View {
         let kind_changed = std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
+        if scene.local != self.scene.local {
+            if let Some(previous) = self.scene.local.as_ref().map(|s| s.name().clone()) {
+                self.forget(&previous, &mut inner);
+            }
+            if let Some(local) = &scene.local {
+                let i = self.snapshots.partition_point(|s| s.name() < local.name());
+                self.snapshots.insert(i, local.clone());
+            }
+        }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
         let easing = !scene.ease.is_zero() && self.moves_with(&scene.controls);
         // Each new mark's index before, for a mark that keeps its state or takes over another's.
@@ -619,7 +651,8 @@ impl View {
         // If the GPU's sample count is known, start compiling now. Otherwise the first frame asks.
         if let Some(most) = gpu.samples() {
             let samples = variants::samples(&self.scene, most);
-            self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
+            let needs = self.draw_work();
+            self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true, &needs);
         }
         self.focus.dirty = true;
         if let Some(camera) = camera {
@@ -643,13 +676,37 @@ impl View {
     /// set since. A view that has not drawn yet takes them at once.
     pub fn set_sources<S: Into<Source>>(&mut self, sources: impl IntoIterator<Item = S>) -> Result<()> {
         let sources: Vec<Source> = sources.into_iter().map(Into::into).collect();
-        for (i, source) in sources.iter().enumerate() {
-            if sources[..i].iter().any(|other| other.name() == source.name()) {
-                return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
-            }
-        }
+        Source::check_names(&sources)?;
+        self.rebind_local(&sources);
         self.give_sources(sources);
         Ok(())
+    }
+
+    /// An external source can use any name, even one previously assigned to local tables.
+    /// Move the local snapshot and its marks together before installing such a source.
+    fn rebind_local(&mut self, sources: &[Source]) {
+        let collides =
+            |scene: &Scene| scene.local.as_ref().is_some_and(|s| sources.iter().any(|x| x.name() == s.name()));
+        if !collides(&self.scene) && !self.incoming.as_ref().is_some_and(|p| collides(&p.scene)) {
+            return;
+        }
+        let pending = self.incoming.take();
+        let gpu = self.gpu.clone();
+        if collides(&self.scene) {
+            let mut scene = self.scene.clone();
+            let _ = scene.bind_tables(&self.sources, sources);
+            let fresh = self.compile_marks(&scene, &mut gpu.0.lock());
+            self.swap(Incoming { scene, fresh, failures: self.scene_failures.clone(), camera: None });
+        }
+        if let Some(mut pending) = pending {
+            let _ = pending.scene.bind_tables(&self.sources, sources);
+            let mut inner = gpu.0.lock();
+            for mark in pending.fresh.iter_mut().flatten() {
+                mark.release(&mut inner);
+            }
+            pending.fresh = self.compile_marks(&pending.scene, &mut inner);
+            self.incoming = Some(pending);
+        }
     }
 
     /// Takes `sources`, whose names differ: at once, or once the tiles among them that the view
@@ -790,11 +847,12 @@ impl View {
         // An incoming scene's marks compiled against the version before.
         if let Some(incoming) = &mut self.incoming {
             let scene = &incoming.scene;
+            let snapshots = scene_snapshots(&self.snapshots, &self.scene, scene);
             let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
             for shown in incoming.fresh.iter_mut().flatten() {
                 if shown.stale(&self.snapshots[at]) {
                     compiled = true;
-                    shown.compile(&self.snapshots, context, inner);
+                    shown.compile(&snapshots, context, inner);
                 }
             }
         }
@@ -834,14 +892,13 @@ impl View {
         }
     }
 
-    /// The axis coordinate shown. Every sampled field shows its last frame at or before it.
+    /// The current axis coordinate. Marks interpolate between samples unless the expression uses [`step`](crate::Expr::step).
     pub fn at(&self) -> f64 {
         self.at
     }
 
-    /// Shows axis coordinate `at`. Only options that read sampled fields evaluate again. A canvas
-    /// draws the coordinate moving, as a playhead plays, at most
-    /// [`Controls::fps`](crate::Controls) times a second.
+    /// Sets the axis coordinate. Only options that read sampled fields are reevaluated.
+    /// During playback, [`Controls::fps`](crate::Controls) limits the canvas frame rate.
     pub fn set_at(&mut self, at: f64) {
         if at.to_bits() != self.at.to_bits() {
             self.at = at;
@@ -1166,8 +1223,8 @@ impl View {
     /// Whether the view can draw frames into `format` at `pixel_ratio` now, because the scene's
     /// draw pipelines for that target are compiled.
     ///
-    /// The first call for a target requests every pipeline the scene uses, draw pipelines first. In
-    /// a browser they compile in parallel off the GPU thread, and each one that finishes wakes the
+    /// Requests the pipelines this target needs. Browser views with animated flows start compiling
+    /// text and interaction after recording their first frame. Each completed pipeline wakes the
     /// view. Until the draw pipelines are ready, the view draws nothing new, so a canvas keeps
     /// showing the last frame. Until each other stage is ready, frames do without it: text, easing,
     /// the glow of lit rows, and layers where depth varies. Probes and queries wait for theirs.
@@ -1183,10 +1240,13 @@ impl View {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
-        let at = self.ask(&mut inner, (format, self.samples(pixel_ratio)), input);
-        let (unready, asked) = self.unready(&inner, at);
+        let budget = inner.budget.bytes;
+        self.update_plan(&mut inner.ledger, budget);
+        let needs = self.draw_work();
+        let at = self.ask(&mut inner, (format, self.samples(pixel_ratio)), input, &needs);
+        let (unready, asked) = self.unready(&inner, at, &needs);
         let landed = inner.pipelines.landed();
-        let refused = if inner.pipelines.refusing() { self.refusal(&inner) } else { None };
+        let refused = if inner.pipelines.refusing() { self.refusal(&inner, &needs) } else { None };
         drop(inner);
         if let Some(error) = refused {
             // The view can't draw what its scene describes, so it draws nothing, which also keeps
@@ -1334,10 +1394,19 @@ impl View {
         self.needs_render() || (self.can_use(Stage::Draw) && self.holding())
     }
 
-    /// Whether comets travel along some mark's rows: a flowing mark is drawable, and the theme's
-    /// flow color is visible.
+    /// Whether comets travel along some mark's rows: a flowing mark is drawable, the theme's flow
+    /// color is visible, and comets are large enough to see.
     fn flowing(&self) -> bool {
-        self.scene.theme.flow.color.a > 0.0 && self.marks.iter().any(|m| m.drawable() && m.mark.flows())
+        let visible = self.scene.theme.flow.color.a > 0.0 && !self.comets_tiny();
+        visible && self.marks.iter().any(|m| m.drawable() && m.mark.flows())
+    }
+
+    /// Whether comets are too small to see. Sized in position units, they shrink with the drawing
+    /// as the view zooms out. With tails under two CSS pixels they show nothing, so they rest, and
+    /// the view asks for no frames on their account.
+    pub(super) fn comets_tiny(&self) -> bool {
+        let length = self.scene.theme.flow.length;
+        matches!(length, crate::Length::Units(_)) && uniforms::px(length, &self.scene, &self.projected()) < 2.0
     }
 
     /// Whether this frame left work for the next one (taking `input` or not): pages over the

@@ -26,12 +26,11 @@ declare global {
   }
 }
 
-/** A page in the picker: its id in the URL, and its module. */
-export interface Entry {
+/** An example in the picker, shown in this shell or on a standalone page. */
+export type Entry = {
   readonly id: string;
   readonly title: string;
-  load(): Promise<{ default: Page }>;
-}
+} & ({ load(): Promise<{ default: Page }> } | { href: string });
 
 /** Fields the inspector leaves out: positions, which the view already shows. */
 const HIDDEN = /^(lon|lat|x|y|z|geometry|position)$/;
@@ -41,7 +40,11 @@ const MB = 1 << 20;
 export function start(pages: readonly Entry[]): void {
   const picker = h('select', { 'aria-label': 'Example' });
   picker.append(...pages.map(({ id, title }) => h('option', { value: id }, title)));
-  picker.addEventListener('change', () => (location.hash = picker.value));
+  picker.addEventListener('change', () => {
+    const entry = pages.find((p) => p.id === picker.value)!;
+    if ('href' in entry) location.assign(entry.href);
+    else location.hash = entry.id;
+  });
   const regions = {
     detail: h('p', { class: 'detail' }),
     error: h('div', { role: 'alert', class: 'error', hidden: true }),
@@ -78,12 +81,16 @@ export function start(pages: readonly Entry[]): void {
   const show = async () => {
     const id = location.hash.slice(1).split('?')[0];
     const entry = pages.find((p) => p.id === id) ?? pages[0]!;
+    if ('href' in entry) {
+      location.replace(entry.href);
+      return;
+    }
     const opened = ++opening;
     open?.close();
     open = undefined;
     regions.error.hidden = true;
     picker.value = entry.id;
-    document.title = `${entry.title} · latkit`;
+    document.title = `${entry.title} | latkit`;
     regions.detail.textContent = 'Loading…';
     try {
       const [{ default: page }] = await Promise.all([entry.load(), load()]);
@@ -438,8 +445,8 @@ class OpenPage implements Context<Record<string, unknown>> {
       const stats = view.stats;
       line.textContent = [
         `${((frames * 1000) / (now - since)).toFixed(0)} fps`,
-        `frame ${stats.cpuMs.toFixed(1)} ms${stats.gpuMs ? ` · GPU ${stats.gpuMs.toFixed(2)} ms` : ''}`,
-        `${stats.drawn.toLocaleString()} rows drawn · ${stats.draws} draws`,
+        `frame ${stats.cpuMs.toFixed(1)} ms${stats.gpuMs ? `, GPU ${stats.gpuMs.toFixed(2)} ms` : ''}`,
+        `${stats.drawn.toLocaleString()} rows drawn, ${stats.draws} draws`,
         `${(gpu.resident / MB).toFixed(0)} of ${(gpu.budget.bytes / MB).toFixed(0)} MB on the GPU`,
         ...(this.#stepMs > 0.05 ? [`page ${this.#stepMs.toFixed(1)} ms a frame`] : []),
         ...(view.waiting.length ? [`waiting on ${view.waiting.join(', ')}`] : []),

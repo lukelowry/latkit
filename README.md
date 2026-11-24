@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k grid on a globe as one 765 kV line opens. Buses rise with their frequency, branches that pick up the line's power glow amber, and branches that lose flow glow cyan">
+  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k line outage. Branch color shows the change in active power flow magnitude and bus height shows frequency deviation.">
 </p>
 
 <h1 align="center">
@@ -61,11 +61,10 @@ command line reads.
 
 ## On the command line
 
-Write the same scene and data as JSON to render a picture, or a video with `--frames`:
+Save the two JSON files below in the same folder, then render the buses to `grid.png`.
 
 ```sh
 latkit render scene.json --data grid.json --output grid.png
-latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --output grid.mp4
 ```
 
 <details>
@@ -106,13 +105,15 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
 
 </details>
 
+To animate flow on a six-bus network, follow the [CLI quickstart](docs/quickstart/cli.md).
+
 ## Gallery
 
 <p align="center">
-  <a href="https://latkit.readthedocs.io/en/latest/examples/texas.html"><img src="docs/images/texas.png" width="32%" alt="Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/frequency.html"><img src="docs/images/frequency.png" width="32%" alt="The speed of 1,456 machines over ten seconds after a fault. Machines near the fault are bright and swing hardest, and far ones are dark"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/texas.html"><img src="docs/images/texas.png" width="32%" alt="Generation by bus on the synthetic Texas grid. Disk area represents total generation in MW."></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/frequency.html"><img src="docs/images/frequency.png" width="32%" alt="Rotor speed deviations for 1,456 machines in ACTIVSg10k, colored by geographic proximity to the fault."></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/globe.html"><img src="docs/images/globe.png" width="32%" alt="Great-circle routes between forty of the world's great cities on a globe, with comets flowing along them"></a>
-  <a href="https://latkit.readthedocs.io/en/latest/examples/helios.html"><img src="docs/images/helios.png" width="32%" alt="A synthetic network of 480 buses in five concentric rings, comets flowing along its 896 branches"></a>
+  <a href="docs/examples/hawaii.md"><img src="docs/images/hawaii.png" width="32%" alt="Drafted 69 kV and 138 kV circuits in the synthetic Hawaii40 one-line diagram"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/torus.html"><img src="docs/images/torus.png" width="32%" alt="Sixty-four filaments in cyan, amber, and coral, twisting around a three-dimensional torus knot"></a>
   <a href="https://latkit.readthedocs.io/en/latest/examples/clifford.html"><img src="docs/images/clifford.png" width="32%" alt="A Clifford strange attractor of 260,000 translucent points, colored by the direction of each step"></a>
 </p>
@@ -125,4 +126,8 @@ Guides, examples, and the reference are on [Read the Docs](https://latkit.readth
 Rust API is on [docs.rs](https://docs.rs/latkit). [Contributing](CONTRIBUTING.md) covers the
 repository and how to build it.
 
-Created by [Luke Lowery](https://lukelowry.github.io/). [MIT License](LICENSE).
+## Author
+
+[Luke Lowery](https://lukelowry.github.io/), PhD student in the [Birchfield Research Group](https://birchfield.engr.tamu.edu/) at Texas A&M University. [Google Scholar](https://scholar.google.com/citations?user=CTynuRMAAAAJ&hl=en), [ORCID](https://orcid.org/0009-0000-0029-3403)
+
+I also work on [GridKit Web](https://github.com/lukelowry/gridkit-web) and [GridKit Studio](https://github.com/lukelowry/gridkit-studio), which bring [GridKit](https://github.com/ORNL/GridKit) to the browser and VS Code.

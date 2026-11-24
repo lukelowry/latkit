@@ -2,13 +2,14 @@
 import package::lib::types::{
     NONE, FADE_OUT, POINTS, STROKES, MARK_EDGES, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH, PROBE_X, PROBE_Y,
     PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED,
-    HIT_WORDS, PATH_TRACE,
+    HIT_WORDS, WordStep,
 };
 import package::lib::bind::{frame, eye, mark, word};
 import package::lib::state::row_at;
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::point;
-import package::lib::path::{PATH, Segment, segment, path_segment, segment_screen, stroke_style, stroke_instances, path_count};
+import package::lib::path::{Segment, segment, stroke_instances, path_count};
+import package::lib::span::{stroke_span, representative};
 import package::lib::triangles::{area_source, area_anchor, triangle_corner, triangle_instances};
 import package::lib::marker::outline_distance;
 import package::lib::mark::PRIMITIVE;
@@ -95,13 +96,13 @@ fn seen_point(instance: u32, locating: bool) -> Seen {
 }
 
 // A stroke segment.
-fn seen_segment(instance: u32, locating: bool) -> Seen {
+fn seen_segment(instance: u32, locating: bool, params: WordStep) -> Seen {
     var s: Seen;
     var g: Segment;
     if locating {
         let count = path_count(instance);
         if count == 0u { return s; }
-        g = path_segment(instance, select(count / 2u, count - 1u, PATH == PATH_TRACE), 0.0);
+        g = representative(instance, count);
     } else {
         g = segment(instance);
     }
@@ -112,13 +113,12 @@ fn seen_segment(instance: u32, locating: bool) -> Seen {
     if !s.kept {
         return s;
     }
-    let style = stroke_style(g.row);
-    let on = segment_screen(g);
-    s.shown = style.shown && on.shown;
-    s.front = vec3<bool>(on.shown);
-    s.a = vec3f(on.a, on.ca.z / on.ca.w);
-    s.b = vec3f(on.b, on.cb.z / on.cb.w);
-    s.half = vec2f(style.width, 0.0);
+    let span = stroke_span(g, params);
+    s.shown = span.shown;
+    s.front = vec3<bool>(span.shown);
+    s.a = vec3f(span.ends.xy, span.depth.x);
+    s.b = vec3f(span.ends.zw, span.depth.y);
+    s.half = vec2f(span.width, 0.0);
     return s;
 }
 
@@ -160,10 +160,10 @@ fn seen_triangle(instance: u32, locating: bool) -> Seen {
 
 // One primitive instance, or the representative primitive of drawn row `instance` when locating.
 // Both select their source first, then share the same projection and visibility calculation.
-fn seen(instance: u32, locating: bool) -> Seen {
+fn seen(instance: u32, locating: bool, params: WordStep) -> Seen {
     switch PRIMITIVE {
         case POINTS: { return seen_point(instance, locating); }
-        case STROKES: { return seen_segment(instance, locating); }
+        case STROKES: { return seen_segment(instance, locating, params); }
         default: { return seen_triangle(instance, locating); }
     }
 }

@@ -36,13 +36,33 @@ parts:
 ```sh
 uv run --project docs --group docs sphinx-build -W -b html docs target/docs   # the site
 LATKIT_BLESS=1 cargo test -p latkit-cli              # the CLI's command tree, docs/reference/cli.json
-node npm/docs.mjs                                    # the API, type, and command references
+node npm/build.mjs compile npm                        # refresh declarations and bundle the browser worker
+node npm/docs.mjs                                    # regenerate the three reference pages
 LATKIT_BLESS=1 cargo test -p latkit --test schema    # the palette: latkit's default themes
 cargo build --locked -p latkit-cli --profile cli
 node docs/gallery/render.ts [name...]                # the pictures, drawn by the latkit CLI
 node benchmark/docs.ts                               # the performance table, from a baseline
 ```
 
+Edit JavaScript API comments in `npm/src`, scene and result descriptions in Rust, and CLI help
+in `crates/latkit-cli/src/args.rs`. The reference generator reads public package exports and
+groups them by module. The schema types have their own topic order.
+
 Drawing the pictures also needs the npm package, built with `cargo xtask wasm`.
+
+## Browser performance checks
+
+The browser gate compiles each pipeline cold in Chrome (800 ms limit), then opens each example
+without a shader cache. It checks the traces on standalone monitors and exercises input and
+image export on pages with the example controls. Console errors, first-use
+pipeline compilation, and missing exports fail immediately. A page gets one cold retry if a
+view takes over 1,000 ms to draw its first frame or the page misses consecutive display frames.
+SwiftShader checks shader compilation and monitor rendering without GPU timing limits.
+
+latkit requests pipelines before drawing and polls
+[`KHR_parallel_shader_compile`](https://registry.khronos.org/webgl/extensions/KHR_parallel_shader_compile/)
+where available. Without the extension, checking link status can block. Built-in shaders are
+translated to GLSL at build time. Custom markers and shades are translated on first use.
+See the [benchmark notes](benchmark/README.md) for workloads and thresholds.
 
 [Releasing](RELEASING.md) covers versions and publishing.

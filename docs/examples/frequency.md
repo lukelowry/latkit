@@ -1,14 +1,17 @@
-# ACTIVSg10k
+# Plot rotor speed after a fault
 
 ```{image} ../images/frequency.png
-:alt: The speed of 1,456 machines over ten seconds after a fault. Machines near the fault are bright and swing hardest, and far ones are dark
+:alt: Rotor speed deviations for 1,456 machines. Two vertical grid lines mark the fault interval near the start of the recording.
 :class: picture
 ```
 
-A simulated fault on the ACTIVSg10k case: every machine's speed over ten seconds, traced directly from the recording's sampled field and colored by distance from the fault.
+Each trace is one machine’s rotor speed deviation from synchronous speed, expressed in mHz on a 60 Hz base. The two grid lines near 1 s mark fault application at 1.00 s and clearing at 1.15 s in the ACTIVSg10k simulation.
 
-The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. Run `node docs/gallery/render.ts frequency` to draw it again.
+Warm colors identify machines geographically close to the faulted bus. The color scale uses differences in longitude and latitude.
+
+```sh
+node docs/gallery/render.ts frequency
+```
 
 ```{literalinclude} ../gallery/frequency.ts
 :language: typescript

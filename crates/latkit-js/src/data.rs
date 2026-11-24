@@ -13,6 +13,55 @@ use wasm_bindgen::prelude::*;
 use crate::pending::{Task, task};
 use crate::{Error, convert, json, to_json};
 
+/// Columns collected for one scene, including references to tables declared later.
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct TableBatch(Vec<latkit::Table>);
+
+#[wasm_bindgen]
+impl TableBatch {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn write(
+        &mut self,
+        name: &str,
+        base: &JsValue,
+        names: Vec<String>,
+        columns: Vec<JsValue>,
+    ) -> Result<(), Error> {
+        self.0.push(read_table(name, base, names, columns)?);
+        Ok(())
+    }
+}
+
+pub(crate) fn scene(text: &str, tables: Option<TableBatch>) -> Result<latkit::Scene, Error> {
+    let scene = json("scene", text)?;
+    match tables {
+        Some(batch) => Ok(latkit::web::with_tables(scene, batch.0)?),
+        None => Ok(scene),
+    }
+}
+
+/// The base holds the row count, explicit numeric ids, or a table body with ids and general fields.
+fn read_table(name: &str, base: &JsValue, names: Vec<String>, columns: Vec<JsValue>) -> Result<latkit::Table, Error> {
+    let mut table = if let Some(count) = base.as_f64() {
+        latkit::Table::new(name, latkit::Ids::count(count as u32))
+    } else if let Some(ids) = base.dyn_ref::<js_sys::Uint32Array>() {
+        latkit::Table::new(name, ids.to_vec())
+    } else if let Some(bytes) = base.dyn_ref::<js_sys::Uint8Array>() {
+        latkit::web::read_table(&bytes.to_vec())?
+    } else {
+        return Err(latkit::Error::invalid("expected a row count, ids, or an encoded table").into());
+    };
+    for (name, column) in names.into_iter().zip(columns) {
+        table = table.field(name, convert::numbers(&column)?);
+    }
+    Ok(table)
+}
+
 /// A dataset changed in place. Clones share it.
 #[wasm_bindgen]
 pub struct Data(pub(crate) latkit::Data);
@@ -43,23 +92,16 @@ impl Data {
         Ok(applied?)
     }
 
-    /// Writes number `columns`, named `names`, for rows `ids` of `table`, or for rows `0..count`
-    /// without ids: as a patch's `set` does, or with `replace`, as its `replace`. Each typed array
-    /// crosses once and becomes its column's values as it is, with no frame written or read.
+    /// Applies a single table replacement or update.
     pub fn write(
         &self,
         replace: bool,
         table: &str,
-        ids: Option<Vec<u32>>,
-        count: u32,
+        base: &JsValue,
         names: Vec<String>,
         columns: Vec<JsValue>,
     ) -> Result<(), Error> {
-        let ids = ids.map_or_else(|| latkit::Ids::count(count), latkit::Ids::from);
-        let mut rows = latkit::Table::new(table, ids);
-        for (name, column) in names.into_iter().zip(columns) {
-            rows = rows.field(name, convert::numbers(&column)?);
-        }
+        let rows = read_table(table, base, names, columns)?;
         let patch = latkit::Patch::new();
         let applied = self.0.apply(if replace { patch.replace(rows) } else { patch.set(rows) });
         latkit::web::keep_room();

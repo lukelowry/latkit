@@ -1,10 +1,7 @@
 //! A frame's GPU passes.
 //!
-//! Raster passes freeze the rows' current state for transitions starting this frame, expands
-//! paged marks' drawn rows from their runs, evaluates dirty channels over the changed row blocks
-//! (reducing fitted domains first), resolves endpoints, eases marks in transition, moves comets,
-//! number segments, sort rows by height, and measure
-//! extents when asked.
+//! Raster passes expand paged rows, evaluate dirty channels, resolve endpoints, and advance
+//! transitions and comets. They also number segments, sort rows by height, and measure extents.
 //!
 //! The render pass draws the backdrop and a plot's grid lines, then every mark's primitive in scene
 //! order with depth, then the labels and the rest of the overlay. A pending probe then
@@ -24,8 +21,55 @@ use crate::expr::cpu::Rows;
 use crate::gpu::Inner;
 use crate::gpu::pipelines::{Asked, Projection, Variant};
 use crate::gpu::readback::Readback;
+use crate::gpu::screen::StrokeRead;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::{MarkKind, Primitive};
+
+#[derive(Clone, Copy)]
+pub(super) enum StrokeDemand {
+    None,
+    One(u32),
+    Anchors,
+    Segments,
+}
+
+#[derive(Hash)]
+struct Placement {
+    mark: usize,
+    // Source instance, instance count, and first output record.
+    range: [u32; 3],
+    mode: u32,
+    variant: Variant,
+}
+
+/// Targets and stroke records for one submission. Later views can reuse the GPU stores once
+/// this frame's draws, labels, and input passes have been encoded.
+pub(super) struct PreparedFrame {
+    color: Option<wgpu::TextureView>,
+    depth: wgpu::TextureView,
+    still: Option<(wgpu::TextureView, bool)>,
+    from: Option<Cut>,
+    made: Option<Cut>,
+    keep_depth: bool,
+    pick_targets: Option<((wgpu::TextureView, wgpu::TextureView), [u32; 4])>,
+    firsts: [Vec<Option<u32>>; 2],
+    pub(super) reads: Vec<StrokeRead>,
+}
+
+impl PreparedFrame {
+    pub(super) fn locate_uniforms(&self, uniforms: &mut [u8]) {
+        // Every copy of a mark's uniform uses the same base, including along-marker draws.
+        let at = std::mem::offset_of!(wgsl::Mark, screen_first);
+        for block in uniforms.as_chunks_mut::<{ MARK_STRIDE as usize }>().0 {
+            let index = u32::from_ne_bytes(block[..4].try_into().unwrap()) as usize;
+            let first = match self.reads[index] {
+                StrokeRead::Trace(texel) => texel,
+                _ => self.firsts[0][index].unwrap_or(wgsl::NONE),
+            };
+            block[at..at + 4].copy_from_slice(&first.to_ne_bytes());
+        }
+    }
+}
 
 /// The scissor rectangle `[x, y, width, height]`, in target pixels, covering `area`.
 fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
@@ -117,7 +161,7 @@ impl Drawn {
 /// the lists buffer, and the plot area that lines clip to.
 #[derive(Clone, Copy)]
 struct Marks<'a> {
-    space: &'a crate::Space,
+    scene: &'a crate::Scene,
     device: &'a wgpu::Device,
     format: wgpu::TextureFormat,
     samples: u32,
@@ -131,6 +175,9 @@ struct Marks<'a> {
     /// Where each mark's records start in the screen store, for a recorded stroke mark this frame
     /// draws, for its draws and for its lit draw (see [`View::place`]).
     firsts: &'a [Vec<Option<u32>>; 2],
+    /// For each mark, the uniform its first stroke marker's draw binds (see
+    /// [`View::marker_uniforms`]).
+    markers: &'a [usize],
 }
 
 impl Marks<'_> {
@@ -140,7 +187,7 @@ impl Marks<'_> {
         let draw = if depth { Draw::Depth } else { Draw::Rows };
         let variant = Variant::draw(Shader::Backdrop, self.format, self.samples)
             .mode(draw)
-            .projection(Projection::of(self.space));
+            .projection(Projection::of(&self.scene.space));
         let group = &self.passes.iter().find(|(shader, _)| *shader == Shader::Backdrop).expect("listed").1;
         pass.set_bind_group(0, &self.groups.view, &[]);
         pass.set_bind_group(1, &self.groups.mark, &[0]);
@@ -203,7 +250,53 @@ impl Marks<'_> {
             if comets && shown.mark.flows() {
                 self.draw(pass, drawn, inner, i, shown, Draw::Comets);
             }
+            self.stroke_markers(pass, drawn, inner, i, shown, Draw::Rows);
         }
+    }
+
+    /// Draws the lit rows of `marks` again, glowing: each mark's rows, then the markers along them.
+    fn lit(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        marks: &[super::marks::Shown],
+    ) {
+        for (i, shown) in marks.iter().enumerate().filter(|(_, shown)| shown.drawable() && shown.lit.rows > 0) {
+            self.draw(pass, drawn, inner, i, shown, Draw::Lit);
+            self.stroke_markers(pass, drawn, inner, i, shown, Draw::Lit);
+        }
+    }
+
+    /// Draws the markers along the strokes of mark `i`, each an instance a segment record: over its
+    /// rows, or with [`Draw::Lit`], over its lit rows, glowing.
+    fn stroke_markers(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        i: usize,
+        shown: &super::marks::Shown,
+        draw: Draw,
+    ) {
+        let lit = draw == Draw::Lit;
+        let count = shown.compiled.as_ref().map_or(0, |compiled| compiled.drawing.stroke_markers.len());
+        let Some(first) = self.firsts[usize::from(lit)][i].filter(|_| count > 0) else { return };
+        let variants = MarkVariants::shown(shown, self.scene);
+        let shader = if lit { Shader::PointsFocus } else { Shader::Points };
+        for k in 0..count {
+            let Some(variant) = variants.marker(k, draw, self.format, self.samples) else { continue };
+            self.bind(pass, &inner.pipelines.render(self.device, variant), shader, self.markers[i] + k);
+            shown.record(pass, drawn, Primitive::Points.corners(), first, lit);
+        }
+    }
+
+    /// Binds the marks' uniform `at` and `pipeline`, with `shader`'s pass group.
+    fn bind(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline, shader: Shader, at: usize) {
+        let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
+        pass.set_bind_group(1, &self.groups.mark, &[offset(at)]);
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(2, group, &[]);
     }
 
     /// Draws a frame that starts from the still at `cut`: the still, then within `clip` the comets
@@ -223,7 +316,7 @@ impl Marks<'_> {
         comets: bool,
         clip: Option<[u32; 4]>,
     ) {
-        if !cut.opaque && Projection::of(self.space) == Projection::Globe {
+        if !cut.opaque && Projection::of(&self.scene.space) == Projection::Globe {
             self.backdrop(pass, drawn, inner, true);
         }
         self.still(pass, drawn, inner);
@@ -279,10 +372,10 @@ impl Marks<'_> {
         shown: &super::marks::Shown,
         draw: Draw,
     ) {
-        if shown.compiled.is_none() {
+        if shown.compiled.is_none() || !shown.mark.draws_rows() {
             return;
         }
-        let variants = MarkVariants::shown(shown, self.space);
+        let variants = MarkVariants::shown(shown, self.scene);
         let shader = variants.shader(draw);
         let asked = variants.draw(draw, self.format, self.samples);
         let pipeline = match asked {
@@ -292,7 +385,6 @@ impl Marks<'_> {
         };
         let Some(pipeline) = pipeline else { return };
         let corners = shown.kind().primitive().corners();
-        let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         // An opaque draw and a comets draw share the rows' program and bind the copy of the uniform
         // that says which they are.
         let at = match draw {
@@ -300,9 +392,7 @@ impl Marks<'_> {
             Draw::Comets => 2 * self.count + i,
             Draw::Rows | Draw::Lit | Draw::Depth => i,
         };
-        pass.set_bind_group(1, &self.groups.mark, &[offset(at)]);
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(2, group, &[]);
+        self.bind(pass, &pipeline, shader, at);
         // A recorded mark's instances are numbered from its first record for the draw, which they
         // read. Other marks place their own instances, from 0.
         let first = match variants.screen() {
@@ -310,12 +400,10 @@ impl Marks<'_> {
             None => 0,
         };
         // A comets draw with comet slots draws a slot an instance, each naming its record.
-        if draw == Draw::Lit {
-            drawn.draw_range(pass, corners, first..first + shown.lit.rows * shown.lit.pieces);
-        } else if draw == Draw::Comets && shown.comets.list.is_some() {
+        if draw == Draw::Comets && shown.comets.list.is_some() {
             drawn.draw(pass, corners, shown.comets.drawn());
         } else {
-            shown.record(pass, drawn, corners, first);
+            shown.record(pass, drawn, corners, first, draw == Draw::Lit);
         }
     }
 }
@@ -387,15 +475,18 @@ fn listed(shown: &super::marks::Shown) -> Vec<u32> {
 
 /// The shaders whose pass groups a frame binds, each group built once per resource generation: the
 /// backdrop, text, and overlay, the still when the view keeps one, and each mark's.
-fn pass_shaders(marks: &[super::marks::Shown], space: &crate::Space, still: bool) -> Vec<Shader> {
+fn pass_shaders(marks: &[super::marks::Shown], scene: &crate::Scene, still: bool) -> Vec<Shader> {
     let mut shaders = vec![Shader::Backdrop, Shader::Glyphs, Shader::Overlay];
     if still {
         shaders.push(Shader::Still);
     }
     for shown in marks {
-        let variants = MarkVariants::shown(shown, space);
-        for draw in [Draw::Rows, Draw::Lit] {
-            let shader = variants.shader(draw);
+        let variants = MarkVariants::shown(shown, scene);
+        // The markers along a mark's strokes draw with the points' shaders.
+        let markers = if shown.mark.marked() { &[Shader::Points, Shader::PointsFocus][..] } else { &[] };
+        for shader in
+            [Draw::Rows, Draw::Lit].map(|draw| variants.shader(draw)).into_iter().chain(markers.iter().copied())
+        {
             if !shaders.contains(&shader) {
                 shaders.push(shader);
             }
@@ -499,10 +590,19 @@ impl super::marks::Shown {
         }
     }
 
-    /// Records a bounded instance draw, numbering its instances from `first`. Listed shaders reject
-    /// the unused tail before geometry reads.
-    pub(super) fn record(&self, pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, corners: u32, first: u32) {
-        drawn.draw_range(pass, corners, first..first + self.counted_instances(self.instances()));
+    /// Records a bounded instance draw, numbering its instances from `first`: those of the rows its
+    /// focus lights with `lit`, else every one. Listed shaders reject the unused tail before
+    /// geometry reads.
+    pub(super) fn record(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        corners: u32,
+        first: u32,
+        lit: bool,
+    ) {
+        let count = if lit { self.lit.rows * self.lit.pieces } else { self.counted_instances(self.instances()) };
+        drawn.draw_range(pass, corners, first..first + count);
     }
 }
 
@@ -558,7 +658,7 @@ impl View {
             raster.fill(inner.arena.words(), At::new(resources.extents(), 0), extent_words, 0);
             for &i in &measured {
                 let shown = &self.marks[i];
-                let Some(variant) = MarkVariants::shown(shown, &self.scene.space).bounds() else { continue };
+                let Some(variant) = MarkVariants::shown(shown, &self.scene).bounds() else { continue };
                 let input = crate::gpu::listing::Inputs {
                     pages: inner.arena.words(),
                     lists: resources.lists(),
@@ -778,7 +878,8 @@ impl View {
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         drawn: &[bool],
-    ) -> [Vec<Option<u32>>; 2] {
+        demand: &[StrokeDemand],
+    ) -> ([Vec<Option<u32>>; 2], Vec<StrokeRead>) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let lights = !self.unplaced() && self.can_use(Stage::Lit);
@@ -786,7 +887,7 @@ impl View {
         let placed: [Vec<Option<(u32, u32, Variant)>>; 2] = [false, true].map(|lit| {
             (self.marks.iter().zip(drawn))
                 .map(|(shown, &drawn)| {
-                    let variant = MarkVariants::shown(shown, &self.scene.space).screen()?;
+                    let variant = MarkVariants::shown(shown, &self.scene).screen()?;
                     let (count, drawn) = if lit {
                         (shown.lit.rows * shown.lit.pieces, lights && shown.drawable() && shown.lit.rows > 0)
                     } else {
@@ -799,33 +900,129 @@ impl View {
                 })
                 .collect()
         });
-        inner.screen.fit(device, records);
+        let mut extra = Vec::new();
+        let (mut reads, spans) = self.query_spans(demand, &placed[0], records * 2, &mut extra);
+        // Trace points are one texel each. Limit the optional cache across all marks;
+        // very wide plots or many series can always read their visible sample rings directly.
+        let mut samples = 0;
+        let page_bytes = (inner.budget.bytes / 16).clamp(1, 1 << 20) as u32;
+        let page_bytes = 1 << page_bytes.ilog2();
+        let limit = page_bytes / 16;
+        for (i, m) in self.marks.iter().enumerate() {
+            if m.path() != wgsl::PATH_TRACE || !drawn[i] || !m.drawable() {
+                continue;
+            }
+            let n = m.tables.traced().saturating_mul(m.rows + m.exits);
+            if n == 0 || n > limit - samples {
+                continue;
+            }
+            let first = records * 4 + spans * 2 + samples;
+            reads[i] = StrokeRead::Trace(first);
+            extra.push(Placement {
+                mark: i,
+                range: [0, n, first],
+                mode: 0,
+                variant: Variant::raster(wgsl::Shader::TracePoints, "point"),
+            });
+            samples += n;
+        }
+        inner.screen.fit(device, records, spans, samples);
+        // Focus changes which rows are addressed. A streaming trace can append samples
+        // independently of row paint. Always refresh these two cases.
+        #[cfg(target_arch = "wasm32")]
+        let key = (samples == 0 && placed[1].iter().all(Option::is_none)).then(|| {
+            stamp_of((
+                self.id,
+                self.still.placement_version,
+                self.still.view(),
+                self.comets_shown > 0.0,
+                inner.screen.generation,
+                &placed,
+                &extra,
+            ))
+        });
+        #[cfg(target_arch = "wasm32")]
+        let before = crate::gpu::gl::PlacementCache::begin(encoder);
         let resources = self.resources.as_mut().expect("created before passes");
         let groups = resources.groups(&gpu.0, inner);
-        let Inner { screen, pipelines, arena, .. } = inner;
+        let Inner { screen, pipelines, arena, listing, .. } = inner;
         let mut raster = crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines, encoder };
-        for (lit, list) in [false, true].into_iter().zip(&placed) {
-            for (i, &(first, count, variant)) in list.iter().enumerate().filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
-            {
-                if count == 0 || !self.marks[i].drawable() {
-                    continue;
-                }
-                let input = crate::gpu::listing::Inputs {
-                    pages: arena.words(),
-                    lists: resources.lists(),
-                    view: &groups.view,
-                    mark: &groups.mark,
-                    offset: offset(i),
-                    path: self.marks[i].path(),
-                    projection: Projection::of(&self.scene.space),
-                    measured: self.marks[i].measures_paths(),
-                };
-                screen.place(&mut raster, &input, variant, [count, first], lit);
+        let paint = [wgsl::PLACE_ROWS, wgsl::PLACE_LIT].into_iter().zip(&placed).flat_map(|(mode, list)| {
+            list.iter().enumerate().filter_map(move |(i, p)| {
+                p.map(|(first, count, variant)| Placement { mark: i, range: [0, count, first], mode, variant })
+            })
+        });
+        for Placement { mark: i, range, mode, variant } in paint.chain(extra) {
+            if range[1] == 0 || !self.marks[i].drawable() {
+                continue;
             }
+            let input = crate::gpu::listing::Inputs {
+                pages: arena.words(),
+                lists: resources.lists(),
+                view: &groups.view,
+                mark: &groups.mark,
+                offset: offset(i),
+                path: self.marks[i].path(),
+                projection: Projection::of(&self.scene.space),
+                measured: self.marks[i].measures_paths(),
+            };
+            screen.place(&mut raster, &input, variant, range, mode, (listing.scratch(), page_bytes));
         }
+        #[cfg(target_arch = "wasm32")]
+        screen.cache.end(encoder, before, key);
         let firsts = placed.map(|list| list.iter().map(|p| p.map(|(first, ..)| first)).collect::<Vec<_>>());
         self.count_comets(encoder, inner, drawn, &firsts[0]);
-        firsts
+        (firsts, reads)
+    }
+
+    /// Resolve each query against paint records or reserve its exact centerline after them.
+    fn query_spans(
+        &self,
+        demand: &[StrokeDemand],
+        painted: &[Option<(u32, u32, Variant)>],
+        base: u32,
+        extra: &mut Vec<Placement>,
+    ) -> (Vec<StrokeRead>, u32) {
+        let mut spans = 0;
+        let reads = self
+            .marks
+            .iter()
+            .zip(demand)
+            .enumerate()
+            .map(|(i, (m, need))| {
+                if matches!(need, StrokeDemand::None)
+                    || m.kind().primitive() != Primitive::Strokes
+                    || m.path() == wgsl::PATH_TRACE
+                    || !m.drawable()
+                {
+                    return StrokeRead::Empty;
+                }
+                // Only displaced bends and geodesics need a different centerline for picking.
+                if let Some((first, _, _)) = painted[i]
+                    && !(m.laned() && (m.path() == wgsl::PATH_BENDS || m.geodesic))
+                {
+                    return StrokeRead::Paint(first);
+                }
+                let first = base + spans;
+                let (start, count, mode, read) = match *need {
+                    StrokeDemand::Segments => {
+                        (0, m.counted_instances(m.instances()), wgsl::PLACE_SPANS, StrokeRead::Segments(first))
+                    }
+                    StrokeDemand::Anchors => (0, m.rows, wgsl::PLACE_ANCHORS, StrokeRead::Anchors(first)),
+                    StrokeDemand::One(row) => (row, 1, wgsl::PLACE_ANCHORS, StrokeRead::One(first)),
+                    StrokeDemand::None => unreachable!(),
+                };
+                spans += count;
+                extra.push(Placement {
+                    mark: i,
+                    range: [start, count, first],
+                    mode,
+                    variant: MarkVariants::shown(m, &self.scene).screen().expect("recorded stroke"),
+                });
+                read
+            })
+            .collect();
+        (reads, spans)
     }
 
     /// Counts again, from the records [`View::place`] just wrote, the comet slots due (see
@@ -874,6 +1071,32 @@ impl View {
         self.comet_slots_found(encoder, inner, &read);
     }
 
+    pub(super) fn prepare_frame(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        frame: &Frame<'_>,
+        depth: Option<super::camera::Area>,
+        demand: &[StrokeDemand],
+    ) -> PreparedFrame {
+        let gpu = self.gpu.clone();
+        let device = &gpu.0.device;
+        let samples = self.samples(frame.pixel_ratio);
+        let (unplaced, layered) = (self.unplaced(), self.layered());
+        let from = self.still.from.filter(|_| !unplaced);
+        let held = self.still.held();
+        let resources = self.resources.as_mut().expect("created before passes");
+        let read = depth.map(|area| scissor(area, frame));
+        let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
+        let still = resources.still(device, from.is_some() || held.is_some());
+        let pick_targets = read.filter(|_| samples > 1).map(|read| (resources.pick_targets(device), read));
+        // The still is drawn first when it does not hold the cut yet.
+        let made = from.filter(|&cut| still.as_ref().is_some_and(|(_, fresh)| *fresh || held != Some(cut)));
+        let (firsts, reads) =
+            self.place(encoder, inner, &self.drawn_marks(from, made, pick_targets.is_some() && layered), demand);
+        PreparedFrame { color, depth, still, from, made, keep_depth: read.is_some(), pick_targets, firsts, reads }
+    }
+
     /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark
     /// in scene order with its comets, and the lit rows. Once the text pipelines are ready, it also
     /// builds the distance fields of text set this frame, and draws the labels and the overlay's
@@ -891,7 +1114,7 @@ impl View {
         drawn: &mut Drawn,
         frame: &Frame<'_>,
         [under, sprites]: [u32; 2],
-        depth: Option<super::camera::Area>,
+        prepared: &PreparedFrame,
     ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
@@ -905,29 +1128,21 @@ impl View {
         let clip = self.drawn_area().map(|area| scissor(area, frame)).filter(|s| s[2] > 0 && s[3] > 0);
         let samples = self.samples(frame.pixel_ratio);
         let (unplaced, layered) = (self.unplaced(), self.layered());
-        let from = self.still.from.filter(|_| !unplaced);
-        let held = self.still.held();
-        let resources = self.resources.as_mut().expect("created before passes");
-        let read = depth.map(|area| scissor(area, frame));
-        let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
-        let still = resources.still(device, from.is_some() || held.is_some());
-        let pick_targets = read.filter(|_| samples > 1).map(|read| (resources.pick_targets(device), read));
-        // The still is drawn first when it does not hold the cut yet.
-        let made = from.filter(|&cut| still.as_ref().is_some_and(|(_, fresh)| *fresh || held != Some(cut)));
-        let firsts = self.place(encoder, inner, &self.drawn_marks(from, made, pick_targets.is_some() && layered));
+        let PreparedFrame { color, depth, still, pick_targets, firsts, from, made, keep_depth, .. } = prepared;
+        let (from, made) = (*from, *made);
         let resources = self.resources.as_mut().expect("created before passes");
         let groups = resources.groups(&gpu.0, inner);
-        let passes: Vec<(Shader, wgpu::BindGroup)> = pass_shaders(&self.marks, &self.scene.space, still.is_some())
+        let passes: Vec<(Shader, wgpu::BindGroup)> = pass_shaders(&self.marks, &self.scene, still.is_some())
             .into_iter()
             .map(|shader| (shader, resources.pass(device, inner, shader)))
             .collect();
         let group = |shader: Shader| &passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
-        let (view, resolve) = match &color {
+        let (view, resolve) = match color {
             Some(color) => (color, Some(frame.target)),
             None => (frame.target, None),
         };
         let marks = Marks {
-            space: &self.scene.space,
+            scene: &self.scene,
             device,
             format: frame.format,
             samples,
@@ -935,10 +1150,11 @@ impl View {
             passes: &passes,
             count: self.marks.len(),
             layered,
-            firsts: &firsts,
+            firsts,
+            markers: &self.marker_uniforms(),
         };
         // Until a fit places the camera, the replayed depth only clears.
-        if let Some((targets, read)) = &pick_targets {
+        if let Some((targets, read)) = pick_targets {
             let read = if unplaced { [0; 4] } else { *read };
             marks.replay(encoder, targets, read, clip, drawn, inner, &self.marks);
         }
@@ -980,9 +1196,9 @@ impl View {
         // The still holds what its cut's frames draw first, with its depth: the first frame from a cut
         // draws it in a pass of its own. Until a fit places the camera, frames show only the
         // background.
-        if let (Some(cut), Some((still, _))) = (made, &still) {
+        if let (Some(cut), Some((still, _))) = (made, still) {
             let (target, resolved) = color.as_ref().map_or((still, None), |color| (color, Some(still)));
-            let mut pass = main_pass(encoder, target, resolved, &depth, background, depth_ops(false, true));
+            let mut pass = main_pass(encoder, target, resolved, depth, background, depth_ops(false, true));
             // The still holds no comets: frames draw those over it.
             start(&mut pass, drawn, inner, [if cut.opaque { count } else { cut.rows }, cut.rows], false);
         }
@@ -990,7 +1206,7 @@ impl View {
         // A still holding every opaque pixel keeps its depth for the frames after it, as it does for
         // probes.
         let keeps = from.is_some_and(|cut| cut.opaque);
-        let mut pass = main_pass(encoder, view, resolve, &depth, background, depth_ops(keeps, keeps || read.is_some()));
+        let mut pass = main_pass(encoder, view, resolve, depth, background, depth_ops(keeps, keeps || *keep_depth));
         if unplaced {
             return;
         }
@@ -1000,10 +1216,8 @@ impl View {
         }
         // Lit rows draw again, glowing, over every mark but labels, and where depth varies, over all
         // but the opaque rows nearer than them. They draw once their pipelines have compiled.
-        for (i, shown) in self.marks.iter().enumerate() {
-            if self.can_use(Stage::Lit) && shown.drawable() && shown.lit.rows > 0 {
-                marks.draw(&mut pass, drawn, inner, i, shown, Draw::Lit);
-            }
+        if self.can_use(Stage::Lit) {
+            marks.lit(&mut pass, drawn, inner, &self.marks);
         }
         if texts {
             self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, group(Shader::Glyphs));
@@ -1022,6 +1236,7 @@ impl View {
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         probe: &super::probe::Probe,
+        reads: &[StrokeRead],
     ) -> Readback {
         let around = match probe {
             super::probe::Probe::Hover(point) => Some((*point, self.probe_radius())),
@@ -1043,9 +1258,11 @@ impl View {
                 projection: Projection::of(&self.scene.space),
                 measured: self.marks[i].measures_paths(),
             },
+            screen: &inner.screen,
+            strokes: reads[i],
             depth: resources.pick_depth(),
             output: resources.probe(),
-            variant: MarkVariants::shown(&self.marks[i], &self.scene.space).probe(Shader::Probe),
+            variant: MarkVariants::shown(&self.marks[i], &self.scene).probe(Shader::Probe),
         };
         let mut raster =
             crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines: &mut inner.pipelines, encoder };
@@ -1073,6 +1290,7 @@ impl View {
         kind: super::query::Kind,
         marks: &[(usize, u32, u32)],
         around: Option<([f32; 2], f32)>,
+        reads: &[StrokeRead],
     ) {
         let reached: Vec<_> = marks.iter().map(|&(i, ..)| self.reached(i, around)).collect();
         let gpu = self.gpu.clone();
@@ -1097,9 +1315,11 @@ impl View {
                     projection: Projection::of(&self.scene.space),
                     measured: shown.measures_paths(),
                 },
+                screen: &inner.screen,
+                strokes: reads[i],
                 depth: resources.pick_depth(),
                 output: resources.probe(),
-                variant: MarkVariants::shown(shown, &self.scene.space).probe(Shader::Probe),
+                variant: MarkVariants::shown(shown, &self.scene).probe(Shader::Probe),
             };
             let instances = shown.counted_instances(shown.live_instances());
             match kind {

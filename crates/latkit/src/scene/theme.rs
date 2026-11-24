@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::de::{self, Deserializer};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::form::{Presets, preset_schema, presets};
-use crate::Color;
+use crate::{Color, Length};
 
 /// Default colors and sizes for marks, and the look of text, focus, comets, and each space, grouped
 /// by subject: a base theme's name (`"dark"` or `"light"`), or options that change a base. `base`
@@ -27,8 +27,9 @@ pub struct Theme {
     /// keep. A color with less is made lighter or darker, keeping its hue. Defaults to 1, which
     /// changes no color. 3 is WCAG's minimum for graphics.
     pub contrast: f32,
-    /// The dash period: one dash and one gap of equal length.
-    pub dash: f32,
+    /// The dash period, one dash and one gap of equal length: a number in CSS pixels, or
+    /// `{ units }` in position units.
+    pub dash: Length,
     /// The space between the view's edge, inside its insets, and the guides beside it: titles,
     /// legends, and a plot's axes. Defaults to 1.5 times the text size.
     pub padding: Option<f32>,
@@ -36,7 +37,7 @@ pub struct Theme {
     pub text: TextTheme,
     /// Defaults for vertices.
     pub vertex: VertexTheme,
-    /// Defaults for edges, and how parallel edges and arrowheads look.
+    /// Defaults for edges, and how parallel edges look.
     pub edge: EdgeTheme,
     /// Defaults for lines.
     pub line: LineTheme,
@@ -78,8 +79,9 @@ pub struct TextTheme {
     pub font: Arc<str>,
     /// The font size, in CSS pixels.
     pub size: f32,
-    /// Width of the background-colored halo around label text, in CSS pixels.
-    pub halo: f32,
+    /// The width of the halo of the background's color around label text: a number in CSS pixels,
+    /// or `{ units }` in position units.
+    pub halo: Length,
 }
 
 /// Defaults for vertices.
@@ -91,11 +93,12 @@ pub struct VertexTheme {
     pub color: Color,
     /// The vertex radius, in CSS pixels.
     pub radius: f32,
-    /// The corner radius of block markers, in CSS pixels. A block marker can set its own.
-    pub corner: f32,
+    /// The corner radius of block markers: a number in CSS pixels, or `{ units }` in position
+    /// units. A block marker can set its own.
+    pub corner: Length,
 }
 
-/// Defaults for edges, and how parallel edges and arrowheads look.
+/// Defaults for edges, and how parallel edges look.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
@@ -105,31 +108,41 @@ pub struct EdgeTheme {
     pub color: Option<Color>,
     /// The edge width, in CSS pixels.
     pub width: f32,
+    /// The width of a band of the background's color beside each edge: a number in CSS pixels, or
+    /// `{ units }` in position units. It covers the strokes drawn under it, so an edge that
+    /// crosses another parts it, as one that ends on it does. Where depth decides what covers what
+    /// (a tilted view, the globe, or raised rows), it covers only what lies farther. Defaults to
+    /// 0, which draws none.
+    pub halo: Length,
     /// How edges joining the same two vertices run side by side. `None` draws them over one
     /// another.
     pub parallel: Option<Parallel>,
-    /// How far an arrowhead extends beyond the edge's width. A head's length is this plus the
-    /// width.
-    pub arrow: f32,
+}
+
+impl EdgeTheme {
+    pub(crate) fn fans(&self) -> bool {
+        matches!(self.parallel, Some(Parallel { converge: Converge::Fan, .. }))
+    }
 }
 
 /// How edges joining the same two vertices run side by side: each moved sideways from the path
-/// between its vertices, a step apart on screen at any zoom. A step is an edge's width plus `gap`.
+/// between its vertices, a step apart. A step is an edge's width plus `gap`.
 /// More than eight edges pack closer, within eight steps, and where neighbors would lie less than a
 /// pixel apart, only every second edge draws, or every fourth, and so on.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
 pub struct Parallel {
-    /// The space between neighboring edges, in CSS pixels. Defaults to 3.
-    pub gap: f32,
+    /// The space between neighboring edges: CSS pixels, the same at any zoom, or `{ units }` to
+    /// grow with the drawing. Defaults to 3 CSS pixels.
+    pub gap: Length,
     /// How they come together at the vertices they join. Defaults to `squeeze`.
     pub converge: Converge,
 }
 
 impl Default for Parallel {
     fn default() -> Parallel {
-        Parallel { gap: 3.0, converge: Converge::Squeeze }
+        Parallel { gap: Length::Px(3.0), converge: Converge::Squeeze }
     }
 }
 
@@ -157,6 +170,9 @@ pub struct LineTheme {
     pub color: Color,
     /// The line width, in CSS pixels.
     pub width: f32,
+    /// The width of a band of the background's color beside each line, as an edge's
+    /// [`halo`](EdgeTheme::halo). Defaults to 0, which draws none.
+    pub halo: Length,
 }
 
 /// Defaults for areas.
@@ -188,9 +204,9 @@ pub struct FocusTheme {
 
 /// How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
 /// tail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a
-/// thin rim of the background color ahead of its head, which parts it from the line. Comets end
-/// before an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,
-/// and they come back once it rests.
+/// thin rim of the background color ahead of its head, which parts it from the line. Comets pass
+/// under a stroke's markers. While the camera moves, comets fade out and hold still, and they come
+/// back once it rests.
 ///
 /// `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
 /// In position units (degrees on the earth), comets scale with the zoom and stay in place along
@@ -206,8 +222,9 @@ pub struct FlowTheme {
     pub spacing: Length,
     /// The length of a comet's tail behind its head.
     pub length: Length,
-    /// The width of a comet's head, in CSS pixels. A head is never narrower than its stroke.
-    pub width: f32,
+    /// The width of a comet's head: a number in CSS pixels, or `{ units }` in position units. A
+    /// head is never narrower than its stroke.
+    pub width: Length,
 }
 
 /// How the earth looks.
@@ -232,86 +249,6 @@ pub struct PlotTheme {
     pub playhead: Color,
 }
 
-/// A theme length: a plain number in CSS pixels, the same at any zoom, or `{ "units": n }` in
-/// position units (degrees on the earth), which scale with the zoom.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Length {
-    /// CSS pixels.
-    Px(f32),
-    /// Position units (degrees on the earth).
-    Units(f32),
-}
-
-impl Length {
-    /// The number, in the length's own unit.
-    pub(crate) fn value(self) -> f32 {
-        match self {
-            Length::Px(v) | Length::Units(v) => v,
-        }
-    }
-
-    /// Whether `other` is in the same unit.
-    pub(crate) fn alike(self, other: Length) -> bool {
-        std::mem::discriminant(&self) == std::mem::discriminant(&other)
-    }
-}
-
-/// A length's JSON form: a number, or `{ "units": n }` with no other keys.
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-enum LengthForm {
-    Px(f32),
-    Units(UnitsLength),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UnitsLength {
-    units: f32,
-}
-
-impl Serialize for Length {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match *self {
-            Length::Px(px) => LengthForm::Px(px),
-            Length::Units(units) => LengthForm::Units(UnitsLength { units }),
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Length {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Length, D::Error> {
-        LengthForm::deserialize(deserializer)
-            .map(|form| match form {
-                LengthForm::Px(px) => Length::Px(px),
-                LengthForm::Units(UnitsLength { units }) => Length::Units(units),
-            })
-            .map_err(|_| de::Error::custom("a length must be a number or { units: n }"))
-    }
-}
-
-impl JsonSchema for Length {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "Length".into()
-    }
-
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "description": "A length: a number in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow as the view zooms in.",
-            "anyOf": [
-                { "type": "number" },
-                {
-                    "type": "object",
-                    "properties": { "units": { "type": "number", "description": "Position units (degrees on the earth), which grow as the view zooms in." } },
-                    "required": ["units"],
-                    "additionalProperties": false,
-                },
-            ],
-        })
-    }
-}
-
 impl Theme {
     /// Light marks on a dark background. The default theme.
     pub fn dark() -> Theme {
@@ -321,17 +258,17 @@ impl Theme {
             grid: GridTheme { color: Color::WHITE.alpha(0.07), width: 1.0, spacing: 24.0 },
             missing: hex("#6b7480"),
             contrast: 1.0,
-            dash: 8.0,
+            dash: Length::Px(8.0),
             padding: None,
             text: TextTheme {
                 color: hex("#a8b2c2"),
                 font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),
                 size: 11.0,
-                halo: 2.0,
+                halo: Length::Px(2.0),
             },
-            vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0, corner: 6.0 },
-            edge: EdgeTheme { color: None, width: 1.5, parallel: Some(Parallel::default()), arrow: 7.0 },
-            line: LineTheme { color: hex("#7cc4ff"), width: 1.5 },
+            vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0, corner: Length::Px(6.0) },
+            edge: EdgeTheme { color: None, width: 1.5, halo: Length::Px(0.0), parallel: Some(Parallel::default()) },
+            line: LineTheme { color: hex("#7cc4ff"), width: 1.5, halo: Length::Px(0.0) },
             area: AreaTheme { color: hex("#2b3d50") },
             focus: FocusTheme {
                 hover: Color::WHITE.alpha(0.6),
@@ -344,7 +281,7 @@ impl Theme {
                 color: Color::WHITE.alpha(0.85),
                 spacing: Length::Px(64.0),
                 length: Length::Px(24.0),
-                width: 4.0,
+                width: Length::Px(4.0),
             },
             earth: EarthTheme { ground: hex("#18212b"), atmosphere: hex("#5aa9ff").alpha(0.55), night: 0.3 },
             plot: PlotTheme { playhead: hex("#ffe5d4").alpha(0.8) },

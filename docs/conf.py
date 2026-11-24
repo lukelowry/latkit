@@ -66,6 +66,17 @@ GITHUB = (
 )
 
 html_theme = "furo"
+templates_path = ["_templates"]
+html_sidebars = {
+    "**": [
+        "sidebar/scroll-start.html",
+        "sidebar/navigation.html",
+        "sidebar/ethical-ads.html",
+        "sidebar/scroll-end.html",
+        "sidebar/variant-selector.html",
+    ]
+}
+html_js_files = ["navigation.js"]
 html_title = "latkit"
 pygments_style = "github-light"
 pygments_dark_style = "github-dark"

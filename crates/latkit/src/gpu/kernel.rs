@@ -14,7 +14,7 @@ use super::shaders::{
     OP_EXP, OP_FALLBACK, OP_FIELD, OP_FILL_POSITION, OP_FLOOR, OP_GE, OP_GT, OP_HOVERED, OP_LE, OP_LOG, OP_LT, OP_MAX,
     OP_MIN, OP_MISSING, OP_MOD, OP_MUL, OP_NE, OP_NEG, OP_NOT, OP_OR, OP_POINTER, OP_POSITION, OP_POW, OP_REDUCE,
     OP_RELATED, OP_SCALE, OP_SELECT, OP_SELECTED, OP_SIN, OP_SQRT, OP_STORE, OP_STORE_CODE, OP_STORE_COLOR,
-    OP_STORE_FLAG, OP_STORE_POSITION, OP_SUB, OP_THEME, OP_ZOOM, PLACED, VERTEX_ELEVATION, VERTEX_FLAGS,
+    OP_STORE_FLAG, OP_STORE_POSITION, OP_SUB, OP_THEME, OP_ZOOM, PLACED, SELECT_OVER, VERTEX_ELEVATION, VERTEX_FLAGS,
     VERTEX_POSITION,
 };
 use crate::expr::compile::Program;
@@ -346,6 +346,7 @@ fn channel(out: &mut String, program: &Program, index: usize, start: u32, end: u
             }
             OP_ADD | OP_SUB | OP_MUL | OP_DIV | OP_MIN | OP_MAX | OP_MOD | OP_POW | OP_LT | OP_LE | OP_GT | OP_GE
             | OP_EQ | OP_NE | OP_AND | OP_OR => Some(format!("k_bits({})", binary(op, &number(x), &number(y), syntax))),
+            OP_SELECT if a == SELECT_OVER => Some(syntax.select(x, z, &format!("{} > 0.5", number(y)))),
             OP_SELECT => Some(syntax.select(z, y, &format!("{} > 0.5", number(x)))),
             OP_FALLBACK => {
                 let missing = if a == 1 { format!("{x} == {MISSING_COLOR}u") } else { format!("k_missing_bits({x})") };

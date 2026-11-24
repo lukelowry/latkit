@@ -223,8 +223,45 @@ impl View {
         Some((words, depth))
     }
 
+    pub(super) fn stroke_demand(&self, probe: bool, claim: bool) -> Vec<super::passes::StrokeDemand> {
+        use super::passes::StrokeDemand;
+        let mut demand: Vec<_> = self
+            .marks
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                if probe && m.probed() {
+                    StrokeDemand::Segments
+                } else if claim && self.labels.slots(i).is_some() {
+                    StrokeDemand::Anchors
+                } else {
+                    StrokeDemand::None
+                }
+            })
+            .collect();
+        if let Some(q) = &self.queries.running {
+            for f in &q.found {
+                match &q.ask {
+                    Ask::Locate { row, .. } if matches!(demand[f.mark], StrokeDemand::None) => {
+                        if let Some(i) = self.row_index(f.mark, row) {
+                            demand[f.mark] = StrokeDemand::One(i);
+                        }
+                    }
+                    Ask::Locate { .. } => {}
+                    _ => demand[f.mark] = StrokeDemand::Segments,
+                }
+            }
+        }
+        demand
+    }
+
     /// Records the running query's step over every mark it covers, and the copy of its results.
-    pub(super) fn run_query(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
+    pub(super) fn run_query(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        reads: &[crate::gpu::screen::StrokeRead],
+    ) {
         let Some(Running { ask, found, words }) = self.queries.running.take() else { return };
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
@@ -233,7 +270,7 @@ impl View {
             Ask::Hits { point, radius, .. } => Some((*point, *radius)),
             _ => None,
         };
-        self.probe_pass(encoder, inner, ask.kind(), &marks, around);
+        self.probe_pass(encoder, inner, ask.kind(), &marks, around, reads);
         let (at, count) = match &ask {
             Ask::Locate { .. } => (wgsl::PROBE_LOCATE_X, 4),
             _ => (wgsl::PROBE_WORDS, words.max(1)),

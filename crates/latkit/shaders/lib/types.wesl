@@ -11,6 +11,17 @@ const PROJECTION_MERCATOR: u32 = 1u;
 const PROJECTION_GLOBE: u32 = 2u;
 const PROJECTION_DYNAMIC: u32 = 3u;
 
+// Which segments a placement pass writes, and how consumers address its records.
+const PLACE_ROWS: u32 = 0u;
+const PLACE_LIT: u32 = 1u;
+const PLACE_SPANS: u32 = 2u;
+const PLACE_ANCHORS: u32 = 3u;
+const READ_PAINT: u32 = 0u;
+const READ_SEGMENTS: u32 = 1u;
+const READ_ANCHORS: u32 = 2u;
+const READ_EMPTY: u32 = 3u;
+const READ_ONE: u32 = 4u;
+
 // A word raster pass. Source and destination offsets are words; count excludes padding. The
 // layer selects the physical output layer. Scalar `value` is operation-specific.
 struct WordStep {
@@ -24,8 +35,9 @@ struct WordStep {
     // The segments of each row a probe of a trace reaches: the first, and how many. Every
     // instance when the count is 0.
     reach: vec2u,
-    // Whole 16-byte rows, as a uniform block takes.
-    padding: vec2u,
+    // Frame-local stroke address for a probe or label pass (a READ_* layout).
+    record_first: u32,
+    record_kind: u32,
 }
 
 // The pages one gather pass copies into a layer. Each is a source word, a destination word, and a
@@ -92,7 +104,11 @@ const OP_EQ: u32 = 24u;
 const OP_NE: u32 = 25u;
 const OP_AND: u32 = 26u;
 const OP_OR: u32 = 27u;
+// Takes a condition, the value where it holds, and the alternative, in that order. With
+// `SELECT_OVER` as its first operand, the alternative comes first: a chain of conditionals then
+// selects over what it has computed so far, at a fixed depth.
 const OP_SELECT: u32 = 28u;
+const SELECT_OVER: u32 = 1u;
 const OP_SCALE: u32 = 29u;
 const OP_COLORMAP: u32 = 30u;
 const OP_STORE: u32 = 31u;
@@ -252,6 +268,13 @@ const AREA_FLAGS: u32 = 1u;
 const LABEL_WORDS: u32 = 2u;
 const LABEL_CODE: u32 = 0u;
 const LABEL_COLOR: u32 = 1u;
+// Each row's place, as a number from 1 to 8 in `Place`'s order, or 0 for none: a third label word
+// only where a field names each row's place (`LABEL_PLACED_BY_ROW`).
+const LABEL_PLACE: u32 = 2u;
+// How far each row's label moves right, then down: a fourth and fifth label word only where the
+// offset reads data (`LABEL_OFFSET_BY_ROW`).
+const LABEL_RIGHT: u32 = 3u;
+const LABEL_DOWN: u32 = 4u;
 
 // A number label writes its number as runs of its run table: digits 0–9 at codes 0–9, then these.
 // It writes at most `NUMBER_CHARS` of them.
@@ -323,7 +346,8 @@ const PATH_BENDS: u32 = 4u;
 
 // Mark flags.
 const SIZED: u32 = 1u;
-const ARROWS: u32 = 2u;
+// The mark's strokes carry markers (see `lib/along.wesl`), so its records measure distances along.
+const STROKE_MARKED: u32 = 2u;
 const ENDS_COLOR: u32 = 4u;
 const GEODESIC: u32 = 8u;
 const STATUS: u32 = 16u;
@@ -334,6 +358,24 @@ const STEP_AFTER: u32 = 128u;
 // seen straight down, where the screen scales them evenly. Otherwise they are in CSS pixels on
 // screen.
 const ALONG_UNITS: u32 = 256u;
+// Label words hold each row's offset, each in position units where its flag says, and otherwise in
+// CSS pixels. Without them, the mark's uniform holds the offset of every row.
+const LABEL_OFFSET_BY_ROW: u32 = 512u;
+const LABEL_RIGHT_UNITS: u32 = 1024u;
+const LABEL_DOWN_UNITS: u32 = 2048u;
+// The mark's markers turn by each row's bearing, which follows the marker's inputs among the row's
+// extra words.
+const TURNS: u32 = 4096u;
+// The mark says where along its path a row's color goes from its first to its second (see
+// `blend_on` in `lib/along.wesl`). A place is the same for every row, or where its `_ROW` flag is
+// set, a row word holds each row's.
+const STROKE_BLENDED: u32 = 262144u;
+const BLEND_FROM_ROW: u32 = 524288u;
+const BLEND_TO_ROW: u32 = 1048576u;
+// A label word holds each row's place. Otherwise the four bits from `LABEL_PLACE_SHIFT` hold the
+// place of every row, as a number from 1 to 8 in `Place`'s order, or 0 for none.
+const LABEL_PLACED_BY_ROW: u32 = 8192u;
+const LABEL_PLACE_SHIFT: u32 = 14u;
 
 // The draws that bind a copy of a mark's uniform. ROWS: its rows, and every pass but the draws.
 // OPAQUE: only the pixels its rows cover fully, which draw first where depth varies. COMETS: only
@@ -406,10 +448,51 @@ const MARKER_PIE: u32 = 2u;
 const MARKER_BLOCK: u32 = 3u;
 const MARKER_ICON: u32 = 4u;
 const MARKER_CUSTOM: u32 = 5u;
+const MARKER_SYMBOL: u32 = 6u;
+// Draws nothing: the row keeps its place and its label.
+const MARKER_NONE: u32 = 7u;
+// Texels across a layer of the marker pictures: an icon's image, or a symbol's distance field. A
+// field reaches `SYMBOL_MARGIN` of its box's half size past the box, so a stroke on the box's edge
+// keeps its outer half, and holds `SYMBOL_SPREAD` texels of distance each side of the outline.
+const ICON_SIZE: f32 = 64.0;
+const SYMBOL_MARGIN: f32 = 0.25;
+const SYMBOL_SPREAD: f32 = 8.0;
 const SHAPE_ELLIPSE: u32 = 0u;
 const SHAPE_RECTANGLE: u32 = 1u;
 const SHAPE_ROUNDED: u32 = 2u;
 const SHAPE_DIAMOND: u32 = 3u;
+
+// A stroke mark's markers (see `lib/along.wesl`): at most `STROKE_MARKERS`, each described in the
+// mark's uniform by `STROKE_MARKER_WORDS` words, two texels. A descriptor holds its flags, with
+// the row word of its `visible` flag above `ALONG_VISIBLE_SHIFT`, the fraction of the path it sits
+// at, how far it moves from there along the path, and its size, then its color and the least and
+// greatest size it takes, in CSS pixels. A word holds a value, or where its `_ROW` flag is set, the
+// row word that holds each row's.
+const STROKE_MARKERS: u32 = 4u;
+const STROKE_MARKER_WORDS: u32 = 8u;
+const ALONG_FLAGS: u32 = 0u;
+const ALONG_AT: u32 = 1u;
+const ALONG_OFFSET: u32 = 2u;
+const ALONG_SIZE: u32 = 3u;
+const ALONG_COLOR: u32 = 4u;
+const ALONG_SIZE_MIN: u32 = 5u;
+const ALONG_SIZE_MAX: u32 = 6u;
+const ALONG_VISIBLE_SHIFT: u32 = 16u;
+// It sits where the stroke starts, or ends, not at a fraction.
+const ALONG_START: u32 = 1u;
+const ALONG_END: u32 = 2u;
+const ALONG_AT_ROW: u32 = 4u;
+const ALONG_OFFSET_ROW: u32 = 1024u;
+const ALONG_SIZE_ROW: u32 = 8u;
+const ALONG_COLOR_ROW: u32 = 16u;
+const ALONG_VISIBLE_ROW: u32 = 32u;
+// Its size, or its offset, is in position units.
+const ALONG_SIZE_UNITS: u32 = 64u;
+const ALONG_OFFSET_UNITS: u32 = 128u;
+// It has a color of its own. Otherwise it takes the stroke's there.
+const ALONG_COLOR_OWN: u32 = 256u;
+// The descriptor describes a marker. A mark with fewer markers leaves the rest unset.
+const ALONG_PRESENT: u32 = 512u;
 
 // Colormap kinds.
 const COLORMAP_SEQUENTIAL: u32 = 0u;
@@ -432,6 +515,9 @@ const THEME_MISSING: u32 = 8u;
 const THEME_CLEAR: u32 = 9u;
 // The corner radius of block markers, in CSS pixels.
 const THEME_CORNER: u32 = 10u;
+// The width of the background-colored band beside edges, and beside lines, in CSS pixels.
+const THEME_EDGE_HALO: u32 = 11u;
+const THEME_LINE_HALO: u32 = 12u;
 const THEME_SLOTS: u32 = 16u;
 
 // The unit of comet spacing and length: CSS pixels or position units.
@@ -488,7 +574,6 @@ struct Frame {
     gap: f32,
     // Scale factor for a hovered vertex sized in CSS pixels.
     grow: f32,
-    arrow: f32,
     halo: f32,
     zoom: f32,
     // How parallel edges come together at their vertices: a `CONVERGE_` code.
@@ -600,15 +685,14 @@ struct Mark {
     marker: u32,
     shape: u32,
     corner: f32,
+    // A pie's hole. For a symbol, the width its path is stroked at, in CSS pixels.
     hole: f32,
-    // Marker inputs: how many, the extra word of the first, and where the marker's palette starts
-    // in the program.
+    // Marker inputs: how many in the low byte, and above it the extra word of the first (see
+    // `packed_inputs`). `palette` is where the marker's palette starts in the program.
     inputs: u32,
-    input: u32,
     palette: u32,
-    // Shade inputs: how many, and the extra word of the first.
+    // Shade inputs, packed as the marker's.
     shade_inputs: u32,
-    shade_input: u32,
     // Absolute trace-cursor address (or NONE), visible points, and resident row blocks.
     trace: u32,
     trace_points: u32,
@@ -623,6 +707,8 @@ struct Mark {
     // header of its digit counts, then the instance at each position. NONE when they draw in the
     // order they are numbered.
     height_order: u32,
+    // First paint record or, for traces, the first projected sample texel (NONE for direct reads).
+    screen_first: u32,
     // Where the mark's remap words start, while `gather` freezes its transition.
     remap: u32,
     // The rows the focus draw lights: where they start in the focused buffer, and the
@@ -638,19 +724,29 @@ struct Mark {
     // `label`: the extra word holding the label's code or number, or NONE. The next three are
     // offsets in the labels texture: four words per text run, per-row claim metadata, and
     // per-row screen placement. `number` says how a number label writes its number, NONE for
-    // a text label. The size is in CSS pixels.
+    // a text label. The size, and how far a label moves from its place (right, then down), are in
+    // CSS pixels at this frame's zoom.
     label: u32,
     runs: u32,
     label_metadata: u32,
     label_positions: u32,
     number: u32,
     label_size: f32,
+    label_right: f32,
+    label_down: f32,
     // The range of CSS pixels the mark's size is clamped to at any zoom: a vertex's half size, or a
     // stroke's width.
     size_min: f32,
     size_max: f32,
     // The draw that binds this copy of the mark's uniform: a `DRAW_` code.
     draw: u32,
+    // Where a stroke mark's rows change color (`STROKE_BLENDED`): the fractions of the path where
+    // the change starts and ends, or the row words that hold each row's.
+    blend_from: u32,
+    blend_to: u32,
+    // The markers along a stroke mark's strokes: `STROKE_MARKER_WORDS` words each (see
+    // `lib/along.wesl`). The copy a marker's draw binds describes that marker first.
+    markers: array<vec4u, 8>,
 }
 
 // An overlay sprite in CSS pixels: a line, box, fill, or run of text, drawn over the marks.

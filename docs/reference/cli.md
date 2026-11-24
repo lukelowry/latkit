@@ -1,6 +1,6 @@
-# Command reference
+# CLI commands
 
-Every command and option of the `latkit` command line, generated from its help. The [command-line guide](../cli.md) shows them in use. `--help` prints a command's help, and `latkit --version` prints the version.
+Run a command with `--help` to list its options. For examples, see the [command-line guide](../cli.md).
 
 (cli-latkit)=
 
@@ -118,7 +118,7 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
 {#cli-render-size .member}
 **`--size`** `<SIZE>` [¶](#cli-render-size){.headerlink}
-: The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down to a multiple of 4 and its height to an even number. Defaults to `1600x900`.
+: The picture's width and height in pixels, such as `1920x1080`. With one side, as `1920x` or `x1080`, the other follows what the scene's fit frames, with the same room around it. A video rounds its width down to a multiple of 4 and its height to an even number. Defaults to `1600x900`.
 
 {#cli-render-scale .member}
 **`--scale`** `<SCALE>` [¶](#cli-render-scale){.headerlink}
@@ -154,7 +154,7 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
 {#cli-render-at .member}
 **`--at`** `<AT>` [¶](#cli-render-at){.headerlink}
-: The axis coordinate to show. Sampled fields show their last frame at or before it.
+: The axis coordinate to render. Marks interpolate between samples by default.
 
 {#cli-render-elapsed .member}
 **`--elapsed`** `<ELAPSED>` [¶](#cli-render-elapsed){.headerlink}

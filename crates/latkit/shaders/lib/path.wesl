@@ -1,15 +1,14 @@
 // Paths: the segments a stroke draws, for any mark kind. A row's path runs between an edge's ends
 // (straight, through the bends of a geometry column, or along a great circle on the earth), through
 // a line's samples across the axis, or through a geometry column's points (a net's star, or a path
-// field). Edges joining the same two vertices run beside their path on screen (see `Lane`). Draws,
-// probes, bounds, and labels all read segments through `segment_ends` and `segment_screen`, which
-// also gives the joints where segments meet, so a path draws as one stroke (see `Joints`). A
+// field). Edges joining the same two vertices run beside their path on screen (see `Lane`). Bounds and lengths read
+// source endpoints. Drawing and queries read the records produced from projected segments. A
 // pipeline's `PATH` selects one kind of path, so each pipeline compiles only that kind.
 //
 // As in `lib/read.wesl`, paths read every word they might need and select the answer, with no early
 // return and no short-circuit test (`&&`, `||`) around a read: the D3D compiler behind WebGL takes
 // several times longer on code that branches around reads. That compiler also inlines every call,
-// so a segment reads its points at one call (`path_points`) and projects them at one (`on_screen`),
+// so a segment reads its points at one call (`path_points`) and projects them at one (`project_segment`),
 // each in a loop: a pipeline compiles a path's geometry and its projection once, however many
 // points it takes.
 
@@ -23,7 +22,8 @@ import package::lib::bind::{frame, eye, mark, focused};
 import package::lib::state::{row_at, edge_at, line_at, end_vertex, same_vertex, Vertex, Edge};
 import package::lib::project::{world, clip_of, plot_clip, shows, to_screen, geographic, PROJECTION};
 import package::lib::read::{missing_bits, bits_value, points_of, point_bits, Points};
-import package::lib::trace::{trace_sample, trace_pair, trace_around};
+import package::lib::trace::{trace_sample, trace_pair, trace_cursor, trace_read, projected_sample};
+import package::lib::atlas::record_word;
 import package::lib::focus::{faded, growth};
 import package::lib::mark::{px, px_per_length};
 import package::lib::points::vertex_half;
@@ -34,11 +34,21 @@ import package::lib::drawn::{drawn_row, drawn_instance};
 // created.
 override PATH: u32 = PATH_ENDS;
 
+// Whether the pipeline's edges end where their paths meet their vertices' markers (`meet:
+// 'nearest'`), fixed when the pipeline is created. Only the pipelines of such edges hold the code,
+// so other edges compile and run as if there were none.
+override MEET: bool = false;
+
 // Keep these constant decisions outside runtime conditions. The module optimizer propagates
 // their literal results, removing unused geometry before the driver compiles a program.
 fn has_end_vertices() -> bool {
     if PATH == PATH_ENDS { return true; }
     return PATH == PATH_BENDS;
+}
+
+fn straight_planar() -> bool {
+    if PATH != PATH_ENDS { return false; }
+    return PROJECTION == PROJECTION_PLANAR;
 }
 
 fn clips_outlines() -> bool {
@@ -80,7 +90,7 @@ fn path_segment(item: u32, index: u32, along: f32) -> Segment {
     return Segment(d.row, item, index, along, d.presence, d.growth, d.leaving);
 }
 
-// A point on a path, in source coordinates. Projection happens once in `segment_screen`, after
+// A point on a path, in source coordinates. Projection happens in `project_segment`, after
 // the geometry has chosen both points. Bounds and lengths never need projection.
 struct PathPoint {
     hi: vec2f,
@@ -133,11 +143,13 @@ struct Joints {
 
 // A segment on screen: its end points in position units, its ends in CSS pixels and in clip space,
 // whether it shows, the drawn part as fractions along it, and where it meets the segments beside it.
-// The drawn part is cut at the near plane and stops at the markers of the vertices at its ends.
+// The drawn part is cut at the near plane and stops at the markers of its path's end vertices
+// (`stops` says at which of its ends it does), on whichever segment the path leaves or reaches
+// them: a segment that lies wholly on one draws nothing.
 // `chord` is the length in CSS pixels, between its points and cut at the near plane, of the path's
 // segment it draws or runs beside, as a segment list measures it (see `screen_length`), and
 // `visible` the drawn part as fractions of that cut segment. A fan (`fan`, see `SegmentPoints`)
-// keeps the ends of the segment it fans from, and stands for one end of it (see `on_screen`).
+// keeps the ends of the segment it fans from, and stands for one end of it (see `fit_segment`).
 struct OnScreen {
     ends: PathEnds,
     a: vec2f,
@@ -150,6 +162,7 @@ struct OnScreen {
     visible: vec2f,
     joints: Joints,
     fan: u32,
+    stops: vec2<bool>,
 }
 
 // Segment `instance` as the mark numbers them. Rows have a fixed number of segments, or the mark's
@@ -272,9 +285,6 @@ fn row_segments(row: u32) -> u32 {
 }
 
 fn end_segments(row: u32) -> u32 {
-    let e = edge_at(row_at(row));
-    let a = end_vertex(0u, e.a);
-    let b = end_vertex(1u, e.b);
     let fan = select(0u, 2u, fans(lane_of(row)));
     if PATH == PATH_BENDS {
         let middle = geometry_count(row);
@@ -285,6 +295,9 @@ fn end_segments(row: u32) -> u32 {
         if !geographic() { return 1u + fan; }
     }
     if (mark.flags & GEODESIC) == 0u { return 1u + fan; }
+    let e = edge_at(row_at(row));
+    let a = end_vertex(0u, e.a);
+    let b = end_vertex(1u, e.b);
     return select(0u, arcs(a.hi + a.lo, b.hi + b.lo) + fan, (e.a != NONE) & (e.b != NONE));
 }
 
@@ -316,6 +329,16 @@ fn exit_marker(v: PathPoint, center: vec2f, p: vec2f, dir: vec2f) -> f32 {
     let outside = dot(q, q) - v.half.x * v.half.x;
     let circle = select(0.0, sqrt(max(along * along - outside, 0.0)) - along, outside <= 0.0);
     return select(circle, boxed, v.boxed);
+}
+
+// Where a path whose next point lies at `next` meets vertex `v`'s marker centered at `center`, all
+// on screen: the point of its box nearest `next`, or of its circle. A path point that is no vertex
+// has no size, and stays where it is.
+fn meet_marker(v: PathPoint, center: vec2f, next: vec2f) -> vec2f {
+    let q = next - center;
+    let boxed = clamp(q, -v.half, v.half);
+    let round = q * min(1.0, v.half.x / max(length(q), 1e-6));
+    return center + select(round, boxed, v.boxed);
 }
 
 // The farthest vertex `v`'s marker reaches from its center, in CSS pixels: its radius, or a box's
@@ -367,9 +390,9 @@ fn along_circle(a: vec2f, b: vec2f, t: f32) -> vec2f {
 // The point a fraction `t` from vertex `a` to `b`. A `GEODESIC` mark follows the great circle.
 // Otherwise the point is offset from `a`'s high and low parts along a straight line, which keeps
 // their precision.
-fn between(a: Vertex, b: Vertex, t: f32) -> PathPoint {
+fn between(a: PathPoint, b: PathPoint, t: f32) -> PathPoint {
     var p: PathPoint;
-    p.z = mix(a.elevation, b.elevation, t);
+    p.z = mix(a.z, b.z, t);
     if PROJECTION != PROJECTION_PLANAR {
         if geographic() {
             if (mark.flags & GEODESIC) != 0u {
@@ -391,16 +414,13 @@ fn own_segments(bends: Points, count: u32, fanned: bool) -> u32 {
 }
 
 // Shared endpoint state is read once for a segment, including when both points lie on its path.
-fn edge_point(a: Vertex, b: Vertex, bends: Points, last: u32, i: u32) -> PathPoint {
+fn edge_point(a: PathPoint, b: PathPoint, bends: Points, last: u32, i: u32) -> PathPoint {
     let t = f32(i) / f32(max(last, 1u));
+    if i == 0u { return a; }
+    if i >= last { return b; }
     var p = middle_point(a, b, bends, t, i);
-    p.color = mix(unpack4x8unorm(a.color), unpack4x8unorm(b.color), t);
-    p.shown = p.shown & ((a.flags & PLACED) != 0u) & ((b.flags & PLACED) != 0u);
-    if i == 0u {
-        p = vertex_shape(a);
-    } else if i >= last {
-        p = vertex_shape(b);
-    }
+    p.color = mix(a.color, b.color, t);
+    p.shown = p.shown & a.shown & b.shown;
     return p;
 }
 
@@ -412,19 +432,18 @@ fn bends_of(row: u32) -> Points {
     return empty;
 }
 
-fn middle_point(a: Vertex, b: Vertex, bends: Points, t: f32, i: u32) -> PathPoint {
-    var p = between(a, b, t);
-    p.shown = true;
+fn middle_point(a: PathPoint, b: PathPoint, bends: Points, t: f32, i: u32) -> PathPoint {
     if PATH == PATH_BENDS {
-        // The bend is read whatever the count, and taken only where there are bends.
-        let w = point_bits(bends, i - 1u);
         if bends.count > 0u {
+            let w = point_bits(bends, i - 1u);
             var bend: PathPoint;
             bend.hi = bitcast<vec2f>(w);
             bend.shown = !missing_bits(w.x) & !missing_bits(w.y);
             return bend;
         }
     }
+    var p = between(a, b, t);
+    p.shown = true;
     return p;
 }
 
@@ -450,12 +469,10 @@ fn sample_point(sample: vec3u) -> PathPoint {
 // Point `i` of a geometry column's path: polylines whose parts are separated by missing points.
 // During a transition, each point moves from the path at the transition's start: from the same
 // point when both paths have the same count, else from the old point at the same fraction along.
-fn geometry_point(row: u32, i: u32) -> PathPoint {
+fn geometry_point(now: Points, was: Points, i: u32) -> PathPoint {
     // Like column reads, this reads both paths' points and selects (see `lib/read.wesl`).
-    let now = points_of(mark.geometry, row);
     let w = point_bits(now, i);
     let xy = bitcast<vec2f>(w);
-    let was = points_of(mark.frozen_geometry, row);
     let along = f32(i) * f32(max(was.count, 1u) - 1u) / f32(max(now.count, 2u) - 1u);
     let k = select(u32(round(along)), i, was.count == now.count);
     let o = point_bits(was, min(k, max(was.count, 1u) - 1u));
@@ -480,23 +497,12 @@ fn pole_point(row: u32, i: u32) -> PathPoint {
     return p;
 }
 
-// Point `i` of held row `row`'s path, for a path that does not run between an edge's ends: those
-// read their points through `edge_path`.
-fn path_point(row: u32, i: u32) -> PathPoint {
-    switch PATH {
-        case PATH_TRACE: { return trace_point(row, i); }
-        case PATH_GEOMETRY: { return geometry_point(row, i); }
-        case PATH_POLES: { return pole_point(row, i); }
-        default: { return hidden(); }
-    }
-}
-
 // An edge's path, read once for every point a segment takes from it: its ends, its bends, its own
 // segments (`last`, without fans), its lane, whether it fans into its vertices, whether it draws,
 // and its width before focus and fading, which its lane's step adds to.
 struct EdgePath {
-    a: Vertex,
-    b: Vertex,
+    a: PathPoint,
+    b: PathPoint,
     bends: Points,
     last: u32,
     lane: Lane,
@@ -507,8 +513,8 @@ struct EdgePath {
 
 fn edge_path(s: Segment, count: u32) -> EdgePath {
     let e = edge_at(row_at(s.row));
-    let a = end_vertex(0u, e.a);
-    let b = end_vertex(1u, e.b);
+    let a = vertex_point(0u, e.a);
+    let b = vertex_point(1u, e.b);
     let bends = bends_of(s.row);
     let l = lane_of(s.row);
     let fanned = fans(l);
@@ -534,9 +540,14 @@ fn piece_of(e: EdgePath, index: u32) -> vec2u {
 }
 
 // Point `i` of segment `s`'s row path: through its edge path `e` for an edge, else from its row.
-fn path_at(s: Segment, e: EdgePath, i: u32) -> PathPoint {
+fn path_at(s: Segment, e: EdgePath, now: Points, was: Points, i: u32) -> PathPoint {
     if has_end_vertices() { return edge_path_point(e, i); }
-    return path_point(s.row, i);
+    switch PATH {
+        case PATH_TRACE: { return trace_point(s.row, i); }
+        case PATH_GEOMETRY: { return geometry_point(now, was, i); }
+        case PATH_POLES: { return pole_point(s.row, i); }
+        default: { return hidden(); }
+    }
 }
 
 // Points of a row's path that a segment reads (see `path_points`). Those not read stay hidden.
@@ -555,12 +566,19 @@ struct PathPoints {
 // segments, which only the row knows, so the loop stays a loop.
 fn path_points(s: Segment, count: u32, e: EdgePath, at: vec4u) -> PathPoints {
     var out: PathPoints;
+    var now: Points;
+    var was: Points;
+    if PATH == PATH_GEOMETRY {
+        now = points_of(mark.geometry, s.row);
+        was = points_of(mark.frozen_geometry, s.row);
+    }
     let wanted = 2u + select(0u, 1u, at.z != NONE) + select(0u, 1u, at.w != NONE);
     let n = min(wanted, count + 1u);
     for (var j = 0u; j < n; j++) {
         // In order: `a`, `b`, `before` where read, then `after`.
         let k = select(j, 3u, (j == 2u) & (at.z == NONE));
-        let p = path_at(s, e, select(select(select(at.x, at.y, k == 1u), at.z, k == 2u), at.w, k == 3u));
+        let i = select(select(select(at.x, at.y, k == 1u), at.z, k == 2u), at.w, k == 3u);
+        let p = path_at(s, e, now, was, i);
         if k == 0u { out.a = p; }
         if k == 1u { out.b = p; }
         if k == 2u { out.before = p; }
@@ -607,6 +625,8 @@ struct SegmentPoints {
     vertex_a: PathPoint,
     vertex_b: PathPoint,
     width: f32,
+    // Whether its row's path passes through bends, which may lie on the markers of its end vertices.
+    bent: bool,
 }
 
 // Segment `s`'s points, from one read of its row's path. Like every path read, it reads whatever it
@@ -616,38 +636,36 @@ fn segment_points(s: Segment) -> SegmentPoints {
     var out: SegmentPoints;
     var i = s.index;
     var last = count;
-    if PATH == PATH_TRACE {
-        @if(joined) {
-            let samples = trace_around(s.row, s.index);
-            out.before = sample_point(samples[0]);
-            out.ends = PathEnds(sample_point(samples[1]), sample_point(samples[2]));
-            out.after = sample_point(samples[3]);
+    var e: EdgePath;
+    if has_end_vertices() {
+        e = edge_path(s, count);
+        let piece = piece_of(e, s.index);
+        i = piece.x;
+        last = e.last;
+        out.fan = piece.y;
+        out.lane = e.lane;
+        out.vertex_a = e.a;
+        out.vertex_b = e.b;
+        out.width = e.width;
+        out.bent = e.bends.count > 0u;
+        // A straight planar edge has one segment between its vertices. Fans reuse
+        // those endpoints and turn on screen. No neighboring points need a lookup.
+        if straight_planar() {
+            out.ends = PathEnds(out.vertex_a, out.vertex_b);
+            out.ends.a.shown = out.ends.a.shown & e.drawn;
+            out.ends.b.shown = out.ends.b.shown & e.drawn;
+            out.first = true;
+            out.last = true;
+            return out;
         }
-        @if(!joined) {
-            let samples = trace_pair(s.row, s.index);
-            out.ends = PathEnds(sample_point(samples[0]), sample_point(samples[1]));
-        }
-    } else {
-        var e: EdgePath;
-        if has_end_vertices() {
-            e = edge_path(s, count);
-            let piece = piece_of(e, s.index);
-            i = piece.x;
-            last = e.last;
-            out.fan = piece.y;
-            out.lane = e.lane;
-            out.vertex_a = vertex_shape(e.a);
-            out.vertex_b = vertex_shape(e.b);
-            out.width = e.width;
-        }
-        // The points beside the segment, where the path runs on through its ends.
-        let before = select(NONE, i - 1u, joins() & (i > 0u));
-        let after = select(NONE, i + 2u, joins() & (i + 1u < last));
-        let points = path_points(s, count, e, vec4u(i, i + 1u, before, after));
-        out.ends = PathEnds(points.a, points.b);
-        out.before = points.before;
-        out.after = points.after;
     }
+    // The points beside the segment, where the path runs on through its ends.
+    let before = select(NONE, i - 1u, joins() & (i > 0u));
+    let after = select(NONE, i + 2u, joins() & (i + 1u < last));
+    let points = path_points(s, count, e, vec4u(i, i + 1u, before, after));
+    out.ends = PathEnds(points.a, points.b);
+    out.before = points.before;
+    out.after = points.after;
     out.first = i == 0u;
     out.last = i + 1u >= last;
     out.before.shown = out.before.shown & !out.first;
@@ -796,7 +814,7 @@ fn in_front(ca: vec4f, cb: vec4f) -> vec2f {
 }
 
 // The length in CSS pixels of the part in front of the near plane of the segment from clip position
-// `ca` to `cb`, as `on_screen` finds its `chord`. A segment list measures distances along in CSS
+// `ca` to `cb`, as `fit_segment` finds its `chord`. A segment list measures distances along in CSS
 // pixels with it.
 fn screen_length(ca: vec4f, cb: vec4f) -> f32 {
     var cut = vec2f(0.0, 1.0);
@@ -809,24 +827,79 @@ fn screen_length(ca: vec4f, cb: vec4f) -> f32 {
 }
 
 // Segment `s` on screen (see `OnScreen`).
-fn segment_screen(s: Segment) -> OnScreen {
-    return on_screen(segment_points(s));
+fn trace_screen(s: Segment) -> OnScreen {
+    var out: OnScreen;
+    let cached = mark.screen_first != NONE;
+    let count = mark.trace_points;
+    let first = s.index == 0u;
+    let start = max(s.index, 1u) - 1u;
+    var skip = u32(first);
+    var head = start;
+    var wanted = 4u - skip;
+    @if(!joined) {
+        skip = 1u;
+        head = s.index;
+        wanted = 2u;
+    }
+    let n = min(wanted, count - min(head, count));
+    var base = vec3u(0u);
+    if !cached { base = trace_cursor(s.row); }
+    var before = vec3f(0.0);
+    var after = vec3f(0.0);
+    for (var i = 0u; i < n; i++) {
+        let k = head + i;
+        var bits: vec4u;
+        if cached {
+            bits = record_word(mark.screen_first + s.item * count + k, 0u, 1u);
+        } else {
+            bits = projected_sample(trace_read(base, k));
+        }
+        let valid = !missing_bits(bits.w);
+        let clip = vec4f(bitcast<vec2f>(bits.xy), eye.clip_from_world[3].zw);
+        let at = to_screen(clip);
+        let nearby = vec3f(at, f32(valid && clip.w > 0.0 && clip.z <= clip.w));
+        var p = position_point(bitcast<vec2f>(bits.zw), 0.0, vec4f(1.0));
+        p.shown = valid;
+        switch skip + i {
+            case 0u: { before = nearby; }
+            case 1u: { out.a = at; out.ca = clip; out.ends.a = p; }
+            case 2u: { out.b = at; out.cb = clip; out.ends.b = p; }
+            default: { after = nearby; }
+        }
+    }
+    out.shown = out.ends.a.shown && out.ends.b.shown;
+    out.kept = vec2f(0.0, 1.0);
+    out.visible = out.kept;
+    out.chord = length(out.b - out.a);
+    @if(joined) {
+        let a = vec3f(out.a, 1.0);
+        let b = vec3f(out.b, 1.0);
+        out.joints = joints_of(joint(before, a, b), joint(a, b, after));
+    }
+    return out;
 }
 
-// The segment `p` holds on screen: the part in front of the near plane, with `kept` giving the drawn
-// part. A parallel edge runs beside its path, and a fan from its vertex out to it.
-fn on_screen(p: SegmentPoints) -> OnScreen {
-    var out: OnScreen;
-    out.fan = p.fan;
-    out.ends = p.ends;
+// Clip coordinates of the visible endpoints and screen positions needed to join or offset them.
+struct ProjectedSegment {
+    ca: vec4f,
+    cb: vec4f,
+    before: vec3f,
+    after: vec3f,
+    vertices: vec4f,
+    cut: vec2f,
+    shown: bool,
+}
+
+fn project_segment(p: SegmentPoints) -> ProjectedSegment {
+    var out: ProjectedSegment;
     if !p.ends.a.shown | !p.ends.b.shown { return out; }
     // The points the segment projects, each placed at one call in a loop, as `path_points` reads
     // them: its ends, then where a stroke joins its neighbors (`joined`) the points beside them,
     // then where a parallel edge runs beside a longer path its vertices' centers. A path of one
     // segment joins nothing and runs between its ends.
-    let single = p.first & p.last;
+    let single = straight_planar() | (p.first & p.last);
     let neighbors = joins() & !single;
-    let centers = has_end_vertices() & (p.lane.offset != 0.0) & !single;
+    let centers = has_end_vertices() & ((p.lane.offset != 0.0) | p.bent) & !single;
     let n = 2u + select(0u, 2u, neighbors) + select(0u, 2u, centers);
     var wa = vec3f(0.0);
     var wb = vec3f(0.0);
@@ -860,6 +933,11 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
         if k == 4u { vertex_a = on; }
         if k == 5u { vertex_b = on; }
     }
+    return clipped_segment(ca, cb, before, after, vec4f(vertex_a.xy, vertex_b.xy), shows(wa) | shows(wb));
+}
+
+fn clipped_segment(ca: vec4f, cb: vec4f, before: vec3f, after: vec3f, vertices: vec4f, ahead: bool) -> ProjectedSegment {
+    var out: ProjectedSegment;
     var cut = vec2f(0.0, 1.0);
     out.ca = ca;
     out.cb = cb;
@@ -874,30 +952,88 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
             out.cb = mix(ca, cb, cut.y);
         }
         // A segment reaching past the globe's edge still draws. The globe's depth clips it there.
-        out.shown = (shows(wa) | shows(wb)) & (cut.x < cut.y);
+        out.shown = ahead & (cut.x < cut.y);
     }
+    out.before = before;
+    out.after = after;
+    out.vertices = vertices;
+    out.cut = cut;
+    return out;
+}
+
+// Clip marker outlines and fit parallel lanes in screen space. This stage reads no path data.
+fn fit_segment(p: SegmentPoints, projected: ProjectedSegment) -> OnScreen {
+    var out: OnScreen;
+    out.ends = p.ends;
+    out.fan = p.fan;
+    out.shown = projected.shown;
+    if !out.shown { return out; }
+    out.ca = projected.ca;
+    out.cb = projected.cb;
+    let cut = projected.cut;
+    var before = projected.before;
+    var after = projected.after;
+    let vertex_a = projected.vertices.xy;
+    let vertex_b = projected.vertices.zw;
+    let single = straight_planar() | (p.first & p.last);
+    let centers = has_end_vertices() & ((p.lane.offset != 0.0) | p.bent) & !single;
     // The own segment on screen, and its joints. An end cut at the near plane joins nothing.
-    let sa = to_screen(out.ca);
-    let sb = to_screen(out.cb);
+    let center_a = to_screen(out.ca);
+    let center_b = to_screen(out.cb);
+    out.chord = length(center_b - center_a);
+    var sa = center_a;
+    var sb = center_b;
+    // The part of the segment between its points that the drawn piece stands for, as fractions of
+    // it. Where an edge fans, its fans stand for the first and last `reach` of its path, and the
+    // path between them for the rest, so distances along run on through the fans.
+    var span = vec2f(0.0, 1.0);
+    if MEET {
+        // Each end lies on its vertex's marker, at the point nearest the path's next point. A path
+        // of one segment joins the nearest points of its two markers. Two boxes meet where they
+        // face: along an axis they overlap on, at the middle of the overlap. A box meets a round
+        // marker at its point nearest that marker's center, and a round marker aims at where the
+        // other is met, or at another round marker's center. The points beside the segment move
+        // the same way, so both segments that share a first or last bend compute its joint from
+        // the same points. An end cut at the near plane has no vertex to meet.
+        let half_a = select(vec2f(p.ends.a.half.x), p.ends.a.half, p.ends.a.boxed);
+        let half_b = select(vec2f(p.ends.b.half.x), p.ends.b.half, p.ends.b.boxed);
+        let facing = 0.5 * (max(center_a - half_a, center_b - half_b) + min(center_a + half_a, center_b + half_b));
+        let boxes = p.ends.a.boxed & p.ends.b.boxed;
+        let aim_a = select(center_b, facing, boxes);
+        let aim_b = select(center_a, facing, boxes);
+        let box_a = center_a + clamp(aim_a - center_a, -half_a, half_a);
+        let box_b = center_b + clamp(aim_b - center_b, -half_b, half_b);
+        let toward_a = select(center_a, box_a, p.ends.a.boxed);
+        let toward_b = select(center_b, box_b, p.ends.b.boxed);
+        let next_a = select(center_b, select(toward_b, aim_a, p.ends.a.boxed), single);
+        let next_b = select(center_a, select(toward_a, aim_b, p.ends.b.boxed), single);
+        let met_a = meet_marker(p.ends.a, center_a, next_a);
+        let met_b = meet_marker(p.ends.b, center_b, next_b);
+        before = vec3f(meet_marker(p.before, before.xy, center_a), before.z);
+        after = vec3f(meet_marker(p.after, after.xy, center_b), after.z);
+        sa = select(center_a, met_a, p.first & (cut.x == 0.0));
+        sb = select(center_b, met_b, p.last & (cut.y == 1.0));
+        // The piece stands for as much of its segment as it is long, at the end that is no vertex,
+        // so dashes and comets keep their size and run on through the bend.
+        let met = length(sb - sa) / max(out.chord, 1e-6);
+        let both = vec2f(0.5 - 0.5 * met, 0.5 + 0.5 * met);
+        let one = select(vec2f(0.0, met), vec2f(1.0 - met, 1.0), p.first);
+        span = select(span, select(one, both, single), p.first | p.last);
+    }
     let front = vec2f(select(0.0, 1.0, cut.x == 0.0), select(0.0, 1.0, cut.y == 1.0));
     var start = joint(before, vec3f(sa, front.x), vec3f(sb, front.y));
     var end = joint(vec3f(sa, front.x), vec3f(sb, front.y), after);
     let dir = normalize(sb - sa + vec2f(1e-6, 0.0));
-    out.chord = length(sb - sa);
     var a = sa;
     var b = sb;
     // Whether the drawn segment starts or ends at a vertex, which its stroke stops short of.
     var at_from = p.first;
     var at_to = p.last;
-    // The part of the segment from `sa` to `sb` that the drawn piece stands for, as fractions of it.
-    // Where an edge fans, its fans stand for the first and last `reach` of its path, and the path
-    // between them for the rest, so distances along run on through the fans.
-    var span = vec2f(0.0, 1.0);
     if has_end_vertices() {
         var o = 0.0;
         if p.lane.offset != 0.0 {
             // A path of one segment runs between its vertices' centers. A longer one projects them.
-            let step = lane_step(p, select(sa, vertex_a.xy, centers), select(sb, vertex_b.xy, centers));
+            let step = lane_step(p, select(center_a, vertex_a.xy, centers), select(center_b, vertex_b.xy, centers));
             o = p.lane.offset * step;
             out.shown = out.shown & !lane_thinned(p.lane, step * p.lane.step);
         }
@@ -953,10 +1089,19 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
         if length_along > 1e-3 {
             let u = along / length_along;
             let room = 0.5 * length_along;
+            // On a path through bends, a segment that is not the first may still start on the first
+            // vertex's marker, where a bend lies on it, and one that is not the last may end on the
+            // last's. Each stops at that marker too, and one that lies wholly on it draws nothing.
+            let inner = p.bent & !single;
             let stops = vec2f(
-                select(0.0, exit_marker(p.ends.a, sa, a, u), at_from & (cut.x == 0.0)),
-                select(0.0, exit_marker(p.ends.b, sb, b, -u), at_to & (cut.y == 1.0)),
+                select(0.0, exit_marker(p.ends.a, center_a, a, u), at_from & (cut.x == 0.0)),
+                select(0.0, exit_marker(p.ends.b, center_b, b, -u), at_to & (cut.y == 1.0)),
+            ) + vec2f(
+                select(0.0, exit_marker(p.vertex_a, vertex_a.xy, a, u), inner & !at_from & (cut.x == 0.0)),
+                select(0.0, exit_marker(p.vertex_b, vertex_b.xy, b, -u), inner & !at_to & (cut.y == 1.0)),
             );
+            out.shown = out.shown & !(inner & any(stops >= vec2f(length_along)));
+            out.stops = stops > vec2f(0.0);
             let short = min(stops, vec2f(room));
             a += u * short.x;
             b -= u * short.y;

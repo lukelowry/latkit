@@ -52,7 +52,9 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::query_pack", variants: &[("main", &[])] },
     Entry { module: "raster::lists", variants: &[("main", &[])] },
     // Records where each segment of a stroke mark lies on screen, and each its lit draw draws.
-    Entry { module: "raster::screen", variants: &[("main", &["joined"])] },
+    Entry { module: "raster::screen", variants: &[("main", &["joined"]), ("projected", &["joined", "projected"])] },
+    Entry { module: "raster::trace_points", variants: &[("main", &[])] },
+    Entry { module: "raster::project", variants: &[("main", &[])] },
     // Counts and writes the comet slots of a flowing mark, from its records.
     Entry { module: "raster::comets", variants: &[("main", &[])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
@@ -98,8 +100,6 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::compose", variants: &[("main", &[])] },
     Entry { module: "raster::fields", variants: &[("main", &[]), ("columns", &["columns"])] },
 ];
-
-const FEATURES: &[&str] = &["custom", "shaded", "focused", "columns", "scatter", "gather", "joined"];
 
 /// The hooks a variant calls, by the feature that calls each: the function's name and a
 /// placeholder definition, appended to validate and translate the variant. The browser's copy
@@ -198,7 +198,13 @@ const OVERRIDES: &[(&str, &[&str])] = &[
     ("VIEWED", &["false", "true"]),
     ("PROJECTION", &["PROJECTION_PLANAR", "PROJECTION_MERCATOR", "PROJECTION_GLOBE", "PROJECTION_DYNAMIC"]),
     ("PAINTED", &["false", "true"]),
-    ("MARKER", &["MARKER_SHAPE", "MARKER_GAUGE", "MARKER_PIE", "MARKER_ICON"]),
+    ("MARKER", &["MARKER_SHAPE", "MARKER_GAUGE", "MARKER_PIE", "MARKER_ICON", "MARKER_SYMBOL"]),
+    // Options a mark's shaders hold only when the mark uses them.
+    ("MEET", &["false", "true"]),
+    ("TURNED", &["false", "true"]),
+    ("LABEL_PLACED", &["false", "true"]),
+    ("HALO", &["false", "true"]),
+    ("ALONG", &["false", "true"]),
 ];
 
 pub(crate) fn generate() {
@@ -417,7 +423,7 @@ impl Specializing<'_> {
     ) -> (Vec<String>, Vec<String>) {
         let mut manifest = Vec::new();
         let mut specializations = Vec::new();
-        for values in combinations(self.shader, self.module, self.types) {
+        for values in combinations(self.shader, self.name, self.module, self.types) {
             let value = |name: &str| values.iter().find(|(n, _)| *n == name).map(|&(_, v)| v).expect("a value");
             let numbers: Vec<u32> = self.constants.iter().map(|c| value(c.name)).collect();
             let mut file = self.file.to_owned();
@@ -576,10 +582,11 @@ fn declared(glsl: &str, written: &[&str]) -> String {
 }
 
 /// Deduplicated text for the browser: each translated entry's GLSL, by key. Texts are split into
-/// chunks at blank lines and at each `struct` and `const` declaration, and each distinct chunk is
-/// stored once. Chunks are packed in their first order into blocks of about [`BLOCK`] bytes, each
-/// compressed with deflate on its own, so a page inflates only the blocks the shaders it compiles
-/// use.
+/// chunks (see [`crate::glsl::chunks`]), and each distinct chunk is stored once. Chunks are packed
+/// in the order of their text into blocks of about [`BLOCK`] bytes, each compressed with deflate on
+/// its own. So the variants of a function lie together and deflate against each other, which makes
+/// the store about a quarter smaller than packing chunks as they first appear, and a page inflates
+/// only the blocks the shaders it compiles use: most of them, in either order.
 ///
 /// `shaders.bin`, all little-endian: the index's compressed and inflated sizes and its deflate
 /// stream, then the block count, and each block's compressed and inflated sizes followed by its
@@ -597,25 +604,11 @@ const BLOCK: usize = 32 << 10;
 
 impl Store {
     fn add(&mut self, key: &str, text: &str) {
-        let mut chunks = Vec::new();
-        let mut chunk = String::new();
-        let mut blank = false;
-        for line in text.split_inclusive('\n') {
-            let starts = blank || line.starts_with("struct ") || line.starts_with("const ");
-            if starts && !chunk.is_empty() {
-                chunks.push(std::mem::take(&mut chunk));
-            }
-            blank = line.trim().is_empty();
-            chunk.push_str(line);
-        }
-        if !chunk.is_empty() {
-            chunks.push(chunk);
-        }
-        let ids = chunks
+        let ids = crate::glsl::chunks(text)
             .into_iter()
             .map(|chunk| {
                 let next = self.chunks.len() as u32;
-                *self.index.entry(chunk).or_insert_with_key(|chunk| {
+                *self.index.entry(chunk.to_owned()).or_insert_with_key(|chunk| {
                     self.chunks.push(chunk.clone());
                     next
                 })
@@ -634,18 +627,24 @@ impl Store {
             encoder.finish().unwrap()
         };
         let mut blocks: Vec<String> = vec![String::new()];
-        let mut index = Vec::new();
-        index.extend((self.chunks.len() as u32).to_le_bytes());
-        for chunk in &self.chunks {
+        // Where each chunk lies: its block, start, and length.
+        let mut places = vec![[0_u32; 3]; self.chunks.len()];
+        let mut sorted: Vec<usize> = (0..self.chunks.len()).collect();
+        sorted.sort_by_key(|&id| &self.chunks[id]);
+        for id in sorted {
+            let chunk = &self.chunks[id];
             let mut at = blocks.len() - 1;
             if !blocks[at].is_empty() && blocks[at].len() + chunk.len() > BLOCK {
                 blocks.push(String::new());
                 at += 1;
             }
-            for word in [at as u32, blocks[at].len() as u32, chunk.len() as u32] {
-                index.extend(word.to_le_bytes());
-            }
+            places[id] = [at as u32, blocks[at].len() as u32, chunk.len() as u32];
             blocks[at].push_str(chunk);
+        }
+        let mut index = Vec::new();
+        index.extend((self.chunks.len() as u32).to_le_bytes());
+        for word in places.as_flattened() {
+            index.extend(word.to_le_bytes());
         }
         index.extend((self.texts.len() as u32).to_le_bytes());
         for (key, ids) in &self.texts {
@@ -740,18 +739,13 @@ fn check_swizzle_indexes(module: &naga::Module, name: &str) {
     }
 }
 
-/// Asserts that each fragment entry of `module` writes at most one color target, but the screen
-/// pass's, which writes a record's four. ANGLE on D3D11 builds a pixel shader for the first target
-/// when a program links, and one for more targets on the browser's GPU thread when a frame first
-/// draws with it, stalling the page. The screen pass's fragment only copies its point's outputs, so
-/// that build takes a moment.
+/// All fragment programs write one color target so their first draw uses the linked output layout.
 fn check_targets(module: &naga::Module, name: &str) {
-    let most = if name == "raster::screen" { 4 } else { 1 };
     for entry in module.entry_points.iter().filter(|e| e.stage == naga::ShaderStage::Fragment) {
         let Some(result) = &entry.function.result else { continue };
         if let TypeInner::Struct { members, .. } = &module.types[result.ty].inner {
             let targets = members.iter().filter(|m| matches!(m.binding, Some(naga::Binding::Location { .. }))).count();
-            assert!(targets <= most, "{name}.{} writes {targets} color targets; it may write {most}", entry.name);
+            assert!(targets <= 1, "{name}.{} writes {targets} color targets", entry.name);
         }
     }
 }
@@ -759,7 +753,12 @@ fn check_targets(module: &naga::Module, name: &str) {
 /// Every combination of `module`'s constants that pipelines use. Asserts there is at least one,
 /// since a shader the browser build translates for no pipeline crashes the first page that draws
 /// with it.
-fn combinations<'a>(shader: &str, module: &'a naga::Module, types: &naga::Module) -> Vec<Vec<(&'a str, u32)>> {
+fn combinations<'a>(
+    shader: &str,
+    name: &str,
+    module: &'a naga::Module,
+    types: &naga::Module,
+) -> Vec<Vec<(&'a str, u32)>> {
     let mut combinations: Vec<Vec<(&str, u32)>> = vec![Vec::new()];
     for (_, o) in module.overrides.iter() {
         let name = o.name.as_deref().expect("a named override");
@@ -782,16 +781,17 @@ fn combinations<'a>(shader: &str, module: &'a naga::Module, types: &naga::Module
     }
     // Filtered once complete, so a constant missing means the shader has none, never one not yet
     // added.
-    combinations.retain(|c| made(shader, c, types));
+    combinations.retain(|c| made(shader, name, c, types));
     assert!(!combinations.is_empty(), "{shader}: no pipeline uses any combination of its constants");
     combinations
 }
 
-/// Whether any pipeline of `module` uses `constants`, all of the constants it has. Only channel
+/// Whether any pipeline of `module`, the shader named `name`, uses `constants`, all of the constants
+/// it has. Only channel
 /// evaluation (`raster::state`) runs without joins or samples. Points read no path, so they keep
 /// the default `PATH_ENDS`; area triangles always read geometry, and their focus variant reads no
 /// path.
-fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
+fn made(module: &str, name: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
     let value = |name: &str| constants.iter().find(|(n, _)| *n == name).map(|&(_, v)| v);
     // Every geometry pipeline is specialized for its scene. Only the shared expression
     // evaluator projects through any view at runtime (for pointer-dependent channels), and always
@@ -804,9 +804,60 @@ fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
         return false;
     }
     let path = value("PATH");
+    // Only an edge's ends meet its vertices' markers, and a draw reads where they lie from its
+    // records.
+    if value("MEET") == Some(1) {
+        let edges =
+            path.is_some_and(|p| p == type_constant(types, "PATH_ENDS") || p == type_constant(types, "PATH_BENDS"));
+        let strokes = value("PRIMITIVE").is_none_or(|p| p == type_constant(types, "STROKES"));
+        if !edges || !strokes || module.starts_with("draw::") {
+            return false;
+        }
+    }
+    // A program that works with places along a stroke. A stroke's draw parts under its markers and
+    // changes color where its row says, by the distances along that only a painted program reads,
+    // on a path with records. A marker's turns to run along its path: it is a shape, an icon, or a
+    // symbol, drawn by the plain points programs, its rows' and the lit ones'.
+    if value("ALONG") == Some(1) {
+        let stroke = module == "draw::strokes";
+        let unplaced = value("PAINTED") == Some(0) || path == Some(type_constant(types, "PATH_TRACE"));
+        let pictured = ["MARKER_SHAPE", "MARKER_ICON", "MARKER_SYMBOL"]
+            .iter()
+            .any(|kind| value("MARKER") == Some(type_constant(types, kind)));
+        let marker = value("TURNED") == Some(1) && pictured && matches!(name, "Points" | "PointsFocus");
+        if if stroke { unplaced } else { !marker } {
+            return false;
+        }
+    }
+    if matches!(module, "raster::screen" | "raster::project") {
+        let paged = ["PATH_BENDS", "PATH_GEOMETRY"].iter().any(|p| path == Some(type_constant(types, p)));
+        if paged != matches!(name, "ScreenProjected" | "Project") {
+            return false;
+        }
+    }
+    let stroke = value("PRIMITIVE") == Some(type_constant(types, "STROKES"));
+    let trace = Some(type_constant(types, "PATH_TRACE"));
+    let ends = Some(type_constant(types, "PATH_ENDS"));
+    // Only plot marks trace samples. Map and globe pipelines never take this path.
+    if path == trace && value("PROJECTION").is_some_and(|p| p != type_constant(types, "PROJECTION_PLANAR")) {
+        return false;
+    }
+    if matches!(module, "raster::metadata" | "raster::probe") && stroke && path != trace {
+        return (path.is_none() || path == ends)
+            && value("PROJECTION").is_none_or(|v| v == type_constant(types, "PROJECTION_PLANAR"))
+            && value("MEET") != Some(1);
+    }
     // A trace's draws place its segments themselves, so no screen pass writes their records.
     if module == "raster::screen" && path == Some(type_constant(types, "PATH_TRACE")) {
         return false;
+    }
+    // A stroke's draw reads where its segments lie from their records, whatever path they follow,
+    // so every such path draws with the program of edges between their ends.
+    if module == "draw::strokes" {
+        let drawn = ["PATH_ENDS", "PATH_TRACE"].iter().any(|kind| path == Some(type_constant(types, kind)));
+        if !drawn {
+            return false;
+        }
     }
     if module == "draw::areas" {
         return path.is_none_or(|path| path == type_constant(types, "PATH_GEOMETRY"));
@@ -844,7 +895,7 @@ fn shader_name(module: &str, variant: &str) -> String {
 fn link(root: &Path, module: &str, features: &[&str], keep_main: bool) -> String {
     let mut options =
         wesl::CompileOptions { mangler: wesl::ManglerKind::None, validate: false, keep_main, ..Default::default() };
-    for feature in FEATURES {
+    for feature in ENTRIES.iter().flat_map(|entry| entry.variants).flat_map(|(_, flags)| *flags) {
         options.features.set(*feature, features.contains(feature));
     }
     let path = format!("package::{module}").parse().unwrap();

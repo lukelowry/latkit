@@ -58,9 +58,9 @@ pub struct Controls {
     #[schemars(with = "f64")]
     pub press: Duration,
     /// How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
-    /// options that read `elapsed()`. `system` follows the user's reduced-motion setting, `full`
-    /// animates everything, and `reduced` animates only motion the user drives. Defaults to
-    /// `system`.
+    /// options that read `elapsed()`. `full` animates everything, `system` follows the user's
+    /// reduced-motion setting, and `reduced` animates only motion the user drives. Defaults to
+    /// `full`.
     pub motion: Motion,
     /// The most frames a second a view in a canvas draws while the only thing moving is the shown
     /// coordinate, as a playhead plays, or motion that never settles: comets, an orbit, and options
@@ -345,9 +345,9 @@ impl JsonSchema for Gestures {
 #[serde(rename_all = "camelCase")]
 pub enum Motion {
     /// Follows the system setting: reduced when the user has asked their system for less motion.
-    #[default]
     System,
     /// All motion.
+    #[default]
     Full,
     /// Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits,
     /// and comets and options that read `elapsed()` stay still.
@@ -366,7 +366,7 @@ impl Default for Controls {
             delete: false,
             cycle: false,
             press: Duration::from_millis(500),
-            motion: Motion::System,
+            motion: Motion::Full,
             fps: 60.0,
             reach: Reach::fit(),
         }

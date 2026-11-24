@@ -13,6 +13,8 @@ use super::{
 
 pub(crate) struct ProbeInputs<'a> {
     pub(crate) geometry: Inputs<'a>,
+    pub(crate) screen: &'a super::screen::Screen,
+    pub(crate) strokes: super::screen::StrokeRead,
     pub(crate) depth: &'a wgpu::TextureView,
     pub(crate) output: &'a Words,
     pub(crate) variant: Variant,
@@ -198,10 +200,11 @@ impl Probing {
 fn shared<'a>(input: &'a ProbeInputs<'a>) -> Shared<'a> {
     Shared { view: input.geometry.view, mark: input.geometry.mark, offset: input.geometry.offset }
 }
-fn bindings<'a>(input: &'a ProbeInputs<'a>, source: &'a Words, details: &'a Words) -> [wgpu::BindGroupEntry<'a>; 5] {
+fn bindings<'a>(input: &'a ProbeInputs<'a>, source: &'a Words, details: &'a Words) -> [wgpu::BindGroupEntry<'a>; 6] {
     [
         wgpu::BindGroupEntry { binding: 0, resource: input.geometry.pages.binding() },
         wgpu::BindGroupEntry { binding: 9, resource: input.geometry.lists.binding() },
+        wgpu::BindGroupEntry { binding: 11, resource: input.screen.binding() },
         wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(input.depth) },
         wgpu::BindGroupEntry { binding: 18, resource: source.binding() },
         wgpu::BindGroupEntry { binding: 20, resource: details.binding() },
@@ -213,9 +216,10 @@ fn geometry(
     variant: Variant,
     [source, details]: [&Words; 2],
     output: &Words,
-    step: WordStep,
+    mut step: WordStep,
     words: u32,
 ) {
+    (step.record_first, step.record_kind) = input.strokes.address();
     raster.render(Render {
         variant,
         shared: Some(shared(input)),

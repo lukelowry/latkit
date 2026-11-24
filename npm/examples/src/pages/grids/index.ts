@@ -36,7 +36,7 @@ async function load(
         );
   const peak = (values: Float32Array) => values.reduce((most, v) => Math.max(most, v), 1);
   detail(
-    `${found.name} · ${found.buses.toLocaleString()} buses · ${found.lines.toLocaleString()} lines`,
+    `${found.name}: ${found.buses.toLocaleString()} buses, ${found.lines.toLocaleString()} lines`,
   );
   return { ...found, peak: { load: peak(found.load), generation: peak(found.generation) } };
 }
@@ -52,7 +52,7 @@ export default page({
         ACTIVSg10k: 'activsg10k',
         ACTIVSg25k: 'activsg25k',
         ACTIVSg70k: 'activsg70k',
-        'North America · 2M': 'continent-2m',
+        'North America (2M)': 'continent-2m',
       },
       { value: 'activsg25k' },
     ),

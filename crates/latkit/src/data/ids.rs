@@ -196,6 +196,7 @@ impl RowIds {
     /// Whether `other` holds the same ids in the same order.
     pub(crate) fn same(&self, other: &RowIds) -> bool {
         match (self, other) {
+            (RowIds::Count(a), RowIds::Count(b)) => a == b,
             (RowIds::Listed(a), RowIds::Listed(b)) if a.shares(b) => true,
             _ => self.len() == other.len() && (0..self.len()).all(|row| self.key(row) == other.key(row)),
         }

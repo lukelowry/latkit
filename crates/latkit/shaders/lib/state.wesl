@@ -80,6 +80,12 @@ fn extra_at(row: u32, w: u32) -> u32 {
     return row_at(row) + mark.stride + w;
 }
 
+// The inputs of `row` that packed word `inputs` names, a marker's or a shade's: how many in its low
+// byte, and above it the extra word of the first.
+fn packed_inputs(row: u32, inputs: u32) -> array<f32, 8> {
+    return row_inputs(row, inputs >> 8u, inputs & 0xffu);
+}
+
 // `count` (at most eight) of the current mark's extra words of `row` from `first`, as numbers: a
 // marker's or a shade's inputs.
 fn row_inputs(row: u32, first: u32, count: u32) -> array<f32, 8> {

@@ -4,6 +4,21 @@ use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Kind, Name, Result};
 
+/// Where an edge's end lies on its vertex.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Meet {
+    /// Aimed at the vertex's center, stopping at its marker's outline.
+    #[default]
+    Center,
+    /// At the point of the marker's outline nearest the path's next point. On a bar or a block,
+    /// an end lands square on the side that point lies beside, and its parallel edges land side
+    /// by side. A path without bends joins the nearest points of its two markers: two boxes
+    /// where they face, at the middle of their overlap along an axis, and a box and a round
+    /// marker at the box's point nearest the round one's center.
+    Nearest,
+}
+
 mark!(
 /// Rows drawn as strokes between two vertices named by reference fields: branches, links, wires.
 /// A row can instead stand as a pole on its own vertex, or join many vertices as a net.
@@ -20,8 +35,8 @@ Edges("edges") + stroke {
     /// How each row runs between its ends. Defaults to geodesic on the earth and straight
     /// elsewhere.
     route: Option<Route>,
-    /// Whether each row has an arrowhead at its second end. Defaults to `false`.
-    arrows: bool,
+    /// Where each row's ends lie on their vertices. Defaults to `center`.
+    meet: Meet,
     /// Draws each row as a pole from its own vertex down to the ground, on a plane or the earth.
     /// Poles take no `ends`, `bends`, or `joins`. Defaults to `false`.
     poles: bool,
@@ -39,7 +54,7 @@ impl Edges {
             ends: None,
             bends: None,
             route: None,
-            arrows: false,
+            meet: Meet::Center,
             poles: false,
             joins: None,
         }
@@ -78,10 +93,10 @@ impl Edges {
         self
     }
 
-    /// Sets whether each row has an arrowhead at its second end.
+    /// Sets where each row's ends lie on their vertices. Defaults to [`Meet::Center`].
     #[must_use]
-    pub fn arrows(mut self, on: bool) -> Edges {
-        self.arrows = on;
+    pub fn meet(mut self, meet: Meet) -> Edges {
+        self.meet = meet;
         self
     }
 
@@ -119,7 +134,10 @@ impl Edges {
         {
             return Err(Error::invalid("not a path field").at(bends).at("bends"));
         }
-        let mut flags = if self.arrows { wgsl::ARROWS } else { 0 };
+        let mut flags = 0;
+        if self.meet == Meet::Nearest && self.ends.is_none() {
+            return Err(Error::invalid("only edges with ends meet their vertices").at("meet"));
+        }
         // Without a theme edge color, a row with ends whose color is missing blends the colors of
         // its ends.
         let blends = context.theme.edge.color.is_none() && self.ends.is_some();

@@ -19,6 +19,14 @@ pub(crate) struct Request {
     pub(crate) seen: u32,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Metadata {
+    pub(crate) variant: Variant,
+    pub(crate) rows: u32,
+    pub(crate) destination: [u32; 2],
+    pub(crate) strokes: super::screen::StrokeRead,
+}
+
 pub(crate) struct Texts {
     metadata: Words,
     positions: Words,
@@ -49,22 +57,24 @@ impl Texts {
         raster: &mut Raster<'_>,
         input: &Inputs<'_>,
         labels: &Words,
-        variant: Variant,
-        rows: u32,
-        destination: [u32; 2],
+        screen: &super::screen::Screen,
+        metadata: Metadata,
     ) {
+        let Metadata { variant, rows, destination, strokes } = metadata;
         self.metadata.ensure(raster.device, u64::from(rows.max(1)) * 4);
         self.positions.ensure(raster.device, u64::from(rows.max(1)) * 4);
+        let (record_first, record_kind) = strokes.address();
         // The metadata (value 0), then the corners of the labels' boxes (value 1).
         for (value, output) in [(0, &self.metadata), (1, &self.positions)] {
             raster.render(Render {
                 variant,
                 shared: Some(shared(input)),
                 uniform: 19,
-                step: WordStep { value, ..WordStep::of(rows) },
+                step: WordStep { value, record_first, record_kind, ..WordStep::of(rows) },
                 bindings: &[
                     wgpu::BindGroupEntry { binding: 0, resource: input.pages.binding() },
                     wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
+                    wgpu::BindGroupEntry { binding: 11, resource: screen.binding() },
                     wgpu::BindGroupEntry { binding: 13, resource: labels.binding() },
                 ],
                 output,

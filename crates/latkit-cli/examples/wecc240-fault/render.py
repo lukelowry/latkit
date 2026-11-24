@@ -113,8 +113,8 @@ def prepare(work, frames):
     map_scene = {
         "space": {"plane": {"grid": "off"}}, "ease": 0,
         "theme": {**theme, "edge": {"color": None, "parallel": None}},
-        "title": "WECC 240 / FAULT RESPONSE",
-        "subtitle": "JOHN DAY / Bus 4005 / Applied 1.00 s / Cleared 1.15 s",
+        "title": {"text": "WECC240 fault response",
+                  "subtitle": "John Day / Bus 4005 / Applied 1.00 s / Cleared 1.15 s"},
         "marks": [
             {"lines": ["states", "polygons"], "color": "#58718b70", "width": 0.9},
             {"edges": ["grid", "Branch"], "ends": ["from", "to"], "width": "$width"},

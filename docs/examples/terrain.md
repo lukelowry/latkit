@@ -1,14 +1,15 @@
-# Terrain
+# Build a terrain mesh
 
 ```{image} ../images/terrain.png
 :alt: Ridged mountains of 112,000 lit triangles, from deep teal valleys to pale summits, seen from above at an angle
 :class: picture
 ```
 
-Ridged mountains in three dimensions, as a wire mesh over a grid of vertices. Edges blend their endpoints' colors.
+A wire mesh connects the mountain grid. Each edge blends the colors of its endpoints.
 
-The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. Run `node docs/gallery/render.ts terrain` to draw it again.
+```sh
+node docs/gallery/render.ts terrain
+```
 
 ```{literalinclude} ../gallery/terrain.ts
 :language: typescript

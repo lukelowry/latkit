@@ -1,6 +1,5 @@
-# latkit
-
-Columnar data, queries, and scenes rendered with WebGL2 in browsers and Vulkan, Metal, DX12, or OpenGL natively.
+latkit stores and queries tabular data and draws it as vertices, edges, lines, and areas.
+Browser views use WebGL2. Native views use Vulkan, Metal, DX12, or OpenGL.
 [Guides](https://latkit.readthedocs.io) | [Rust API](https://docs.rs/latkit)
 
 ```sh
@@ -19,19 +18,17 @@ fn main() -> Result<(), latkit::Error> {
 }
 ```
 
-- `default-features = false`: data, patches, LATK, JSON reading, queries, expressions, colormaps,
-  GeoJSON, and images, with no GPU dependency.
-- `gpu` (default): scenes, views, picking, layouts, and rendering into wgpu targets.
-- `native`: system fonts, file loading, jobs, and Windows Media Foundation video.
-- `web`: browser integration on `wasm32-unknown-unknown`, which drawing there requires. The
-  WebAssembly carries the shaders the build translated for WebGL2.
-- `wgsl`: a WGSL compiler in the browser build, for custom markers and WGSL shader modules on the
-  WebGL2 device. It adds about 1 MB.
+## Features
 
-`cargo install latkit-cli` installs the `latkit` executable. `npm install latkit` installs
-the browser runtime and plain-data builders.
+| Cargo feature              | Use                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------ |
+| `default-features = false` | Datasets, queries, GeoJSON, expressions, colormaps, and image encoding without a GPU dependency. |
+| `gpu` (default)            | Scenes, views, picking, layouts, and rendering to wgpu targets.                                  |
+| `native`                   | System fonts, files, background jobs, and H.264 encoding on Windows.                             |
+| `web`                      | Browser rendering with WebGL2 on `wasm32-unknown-unknown`.                                       |
+| `wgsl`                     | An in-browser WGSL compiler for custom shaders. Adds about 1 MB to the WebAssembly build.        |
 
-The binary format uses 64-bit absolute frame indexes. Sampled values are `f32` and coordinates are
-`f64`. See the [format specification](https://latkit.readthedocs.io/en/latest/guide.html#bytes).
+Use `cargo add latkit --no-default-features` for data processing alone.
+For the binary layout, see the [LATK format specification](https://latkit.readthedocs.io/en/latest/formats.html#bytes).
 
-MIT licensed. Third-party notices are in `THIRD_PARTY.md` and `colormaps/NOTICES.md`.
+License and third-party notices are included in `LICENSE`, `THIRD_PARTY.md`, and `colormaps/NOTICES.md`.

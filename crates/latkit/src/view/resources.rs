@@ -20,7 +20,7 @@ use crate::gpu::work::Queue;
 use crate::gpu::{Inner, Shared};
 
 /// One uniform per mark, shared by every pass at the supported dynamic-offset alignment.
-pub(crate) const MARK_STRIDE: u64 = 256;
+pub(crate) const MARK_STRIDE: u64 = 512;
 const _: () = assert!(size_of::<wgsl::Mark>() as u64 <= MARK_STRIDE, "a mark's uniform fits its stride");
 /// The depth format. Depth is reversed: nearer is greater.
 pub(crate) const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -156,13 +156,13 @@ impl Resources {
         self.remap.write_padded(queue, 0, words);
     }
 
-    /// Makes room for every mark's uniforms (three each: see `View::mark_uniforms`), domains, and
-    /// extents.
-    pub(crate) fn fit(&mut self, device: &wgpu::Device, marks: u64, domains: u64) {
+    /// Makes room for every mark's uniforms (three each, and one for each of the `markers` along
+    /// their strokes: see `View::mark_uniforms`), domains, and extents.
+    pub(crate) fn fit(&mut self, device: &wgpu::Device, marks: u64, markers: u64, domains: u64) {
         let count = marks + 1;
         let mut replaced = self.domains.ensure(device, (domains * 2).max(4));
         replaced |= self.extents.ensure(device, u64::from(wgsl::EXTENT_WORDS) * count);
-        replaced |= self.marks.ensure(device, MARK_STRIDE * 3 * count);
+        replaced |= self.marks.ensure(device, MARK_STRIDE * (3 * count + markers));
         if replaced {
             self.generation += 1;
         }

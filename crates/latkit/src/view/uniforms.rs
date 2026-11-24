@@ -7,7 +7,7 @@ use super::marks::Shown;
 use super::words::Kept;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
-use crate::{Color, Converge, Grid, Length, Scene, Space, Theme};
+use crate::{Color, Converge, Grid, Length, Scene, Space};
 
 fn matrix(m: DMat4) -> [[f32; 4]; 4] {
     m.to_cols_array_2d().map(|c| c.map(|v| v as f32))
@@ -63,18 +63,18 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     frame.elapsed = elapsed as f32;
     frame.glow = theme.focus.glow;
     frame.dim = theme.focus.dim;
-    frame.dash = theme.dash;
+    frame.dash = px(theme.dash, scene, projected);
     // Comet spacing and length keep their own unit. A stroke converts them to pixels as it draws.
     frame.flow_spacing = theme.flow.spacing.value();
     frame.flow_length = theme.flow.length.value();
-    frame.flow_width = theme.flow.width;
+    frame.flow_width = px(theme.flow.width, scene, projected).max(0.0);
     frame.flow_unit = match theme.flow.spacing {
         Length::Px(_) => wgsl::FLOW_PX,
         Length::Units(_) => wgsl::FLOW_UNITS,
     };
     // Without parallel edges no lanes are derived, so nothing reads the gap or how they converge.
     let parallel = theme.edge.parallel.unwrap_or_default();
-    frame.gap = parallel.gap;
+    frame.gap = px(parallel.gap, scene, projected);
     frame.converge = match parallel.converge {
         Converge::Squeeze => wgsl::CONVERGE_SQUEEZE,
         Converge::Fan => wgsl::CONVERGE_FAN,
@@ -83,8 +83,7 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     // Hover is tracked either way. The controls only decide whether it glows.
     let glows = scene.controls.hover;
     frame.grow = if glows { theme.focus.grow } else { 1.0 };
-    frame.arrow = theme.edge.arrow;
-    frame.halo = theme.text.halo;
+    frame.halo = px(theme.text.halo, scene, projected).max(0.0);
     frame.zoom = projected.zoom as f32;
     frame.linear = u32::from(linear);
     frame.hover = if glows { theme.focus.hover.to_array() } else { [0.0; 4] };
@@ -97,8 +96,20 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     grid(&mut frame, scene, projected);
     frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.earth.night.clamp(0.0, 1.0)]);
     frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
-    frame.theme = theme_slots(theme);
+    frame.theme = theme_slots(scene, projected);
     frame
+}
+
+/// `length` in CSS pixels at the camera's center, where a length in position units follows the zoom.
+pub(super) fn px(length: Length, scene: &Scene, projected: &Projected) -> f32 {
+    match length {
+        Length::Px(px) => px,
+        // On the earth a position unit is a degree, and `px_per_unit` counts radians.
+        Length::Units(units) => {
+            let degrees = if matches!(scene.space, Space::Earth(_)) { std::f64::consts::PI / 180.0 } else { 1.0 };
+            (f64::from(units) * projected.px_per_unit[0] * degrees) as f32
+        }
+    }
 }
 
 /// Sets the grid `frame` draws on `scene`'s ground: its kind, the two steps its lines lie at, how
@@ -168,8 +179,10 @@ pub(crate) fn eye(projected: &Projected, size: [f64; 2], pixel_ratio: f32) -> wg
     eye
 }
 
-/// The theme's values in slot order: colors packed, sizes as `f32` bits.
-fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
+/// The values of `scene`'s theme in slot order: colors packed, sizes as `f32` bits, and lengths in
+/// CSS pixels at `projected`'s zoom.
+fn theme_slots(scene: &Scene, projected: &Projected) -> [[u32; 4]; 4] {
+    let theme = &scene.theme;
     let mut slots = [0_u32; wgsl::THEME_SLOTS as usize];
     let edge = theme.edge.color.unwrap_or(theme.vertex.color);
     slots[wgsl::THEME_VERTEX as usize] = theme.vertex.color.packed();
@@ -182,8 +195,46 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_TEXT as usize] = theme.text.color.packed();
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
-    slots[wgsl::THEME_CORNER as usize] = theme.vertex.corner.to_bits();
+    slots[wgsl::THEME_CORNER as usize] = px(theme.vertex.corner, scene, projected).to_bits();
+    slots[wgsl::THEME_EDGE_HALO as usize] = px(theme.edge.halo, scene, projected).max(0.0).to_bits();
+    slots[wgsl::THEME_LINE_HALO as usize] = px(theme.line.halo, scene, projected).max(0.0).to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
+}
+
+/// The copy of a stroke mark's uniform `mark` that the draw of one of its markers binds: the
+/// marker's shape and inputs in place of the mark's, its descriptor first, and a palette that
+/// starts at its pictures.
+pub(super) fn stroke_marker(
+    mut mark: wgsl::Mark,
+    marking: &crate::scene::mark::StrokeMarking,
+    scene: &Scene,
+    projected: &Projected,
+) -> wgsl::Mark {
+    mark.markers = described(std::slice::from_ref(marking));
+    drawn_as(&mut mark, &marking.markers, scene, projected);
+    mark.palette += marking.palette;
+    mark
+}
+
+/// Sets how `mark` draws markers as `markers` says: their kind, shape, and inputs.
+fn drawn_as(mark: &mut wgsl::Mark, markers: &crate::scene::mark::Markers, scene: &Scene, projected: &Projected) {
+    mark.marker = markers.marker;
+    mark.shape = markers.shape;
+    mark.corner = markers.corner;
+    // A symbol's stroke takes the place of a pie's hole.
+    mark.hole = markers.stroke.map_or(markers.hole, |width| px(width, scene, projected).max(0.0));
+    // How many inputs in the low byte, and above it the extra word of the first.
+    mark.inputs = markers.inputs | markers.input << 8;
+}
+
+/// The words describing `markings`, a stroke mark's markers, as its uniform holds them.
+fn described(markings: &[crate::scene::mark::StrokeMarking]) -> [[u32; 4]; 8] {
+    let mut words = [[0_u32; wgsl::STROKE_MARKER_WORDS as usize]; wgsl::STROKE_MARKERS as usize];
+    for (words, marking) in words.iter_mut().zip(markings) {
+        *words = marking.words;
+    }
+    let words = words.as_flattened();
+    std::array::from_fn(|i| std::array::from_fn(|j| words[i * 4 + j]))
 }
 
 /// Sets `mark`'s easing fields: how each word blends, and while it eases, the page tables of its frozen and
@@ -200,13 +251,15 @@ fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     }
 }
 
-/// The uniform of mark `index`, with its label slots from `labels` and its easing progress from
-/// `clock`.
+/// The uniform of mark `index`, with its label slots from `labels`, its easing progress from
+/// `clock`, and its lengths in CSS pixels at `projected`'s zoom.
 pub(crate) fn mark(
     index: usize,
     shown: &Shown,
     labels: &super::labels::Labels,
     clock: &super::clock::Clock,
+    scene: &Scene,
+    projected: &Projected,
 ) -> wgsl::Mark {
     let mut mark: wgsl::Mark = bytemuck::Zeroable::zeroed();
     mark.index = index as u32;
@@ -265,16 +318,11 @@ pub(crate) fn mark(
             mark.trace_capacity = capacity;
             mark.trace_head = head;
         }
-        let markers = &drawing.markers;
-        mark.marker = markers.marker;
-        mark.shape = markers.shape;
-        mark.corner = markers.corner;
-        mark.hole = markers.hole;
-        mark.inputs = markers.inputs;
-        mark.input = markers.input;
+        mark.markers = described(&drawing.stroke_markers);
+        [mark.blend_from, mark.blend_to] = drawing.blend;
+        drawn_as(&mut mark, &drawing.markers, scene, projected);
         if let Some(shading) = &drawing.shade {
-            mark.shade_inputs = shading.inputs;
-            mark.shade_input = shading.input;
+            mark.shade_inputs = shading.inputs | shading.input << 8;
         }
         mark.geometry = drawing.geometry;
         mark.lane = drawing.lane;
@@ -284,7 +332,8 @@ pub(crate) fn mark(
         [mark.size_min, mark.size_max] = drawing.size_px;
         if let Some(labeling) = &drawing.label {
             mark.label = labeling.extra;
-            mark.label_size = labeling.size;
+            mark.label_size = px(labeling.size, scene, projected);
+            [mark.label_right, mark.label_down] = labeling.offset.map(|length| px(length, scene, projected));
             mark.number = labeling.number.as_ref().map_or(wgsl::NONE, |(number, _)| *number);
         }
         if shown.kind() == MarkKind::Lines {

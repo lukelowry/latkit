@@ -1,7 +1,6 @@
 # ACTIVSg70k line opening with Python and the latkit CLI
 
-[Preview](preview.png) · The video is not in Git: [render the saved study](#render-the-saved-study)
-to write `animation.mp4` here.
+[View the preview](preview.png). [Render the saved study](#render-the-saved-study) to write `animation.mp4`.
 
 The synthetic 70,000-bus network responds as the Little Rock–Newark 765 kV line
 (`branch_59757_59774_1`) opens at 1 s and stays open. The video shows simulation time 0.6–10 s at a

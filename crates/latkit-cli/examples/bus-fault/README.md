@@ -1,7 +1,6 @@
 # 70,000-bus fault with Python and the latkit CLI
 
-[Preview](preview.png) · The animation is not in Git. Run [`render.py`](render.py) as below to
-write `animation.mp4` here.
+[View the preview](preview.png). Run [render.py](render.py) to write `animation.mp4`.
 
 The saved ACTIVSg70k fault recording: simulation time 0.6–1.4 s at 0.1× speed, then 1.4–10 s at
 1×, as 997 frames at 60 fps and 1920 × 1080. The fault is on bus 56923 at 1 s and clears at 1.15 s.

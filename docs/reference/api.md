@@ -1,22 +1,17 @@
 # JavaScript API
 
-Every class, function, and type the `latkit` package exports. Scenes and their options use the
-[scene and result types](types.md). These rules apply everywhere, so the entries below don't
-repeat them:
+For scene options and return types, see [Scene and result types](types.md).
 
-- Scenes, expressions, and patches are plain data. Datasets, views, pictures, the colormap
-  functions, and [`Patch.read()`](#patch-read) of JSON need latkit's WebAssembly, and throw an `unloaded` error
-  until [`load()`](#load) finishes. [`View.create()`](#view-create), [`Gpu.create()`](#gpu-create), and [`Data.read()`](#data-read) call it
-  themselves.
-- Everything latkit throws or rejects with is a [`LatkitError`](#latkiterror). Input it can't use fails with an
-  `invalid` error and changes nothing. The error's `path` names the bad part, such as
-  `marks[2].color`.
-- Every promise waits until its [`Wait`](#wait) signal aborts, or for 30 seconds without one.
-- A [`Handle`](#handle) holds memory until `destroy()` or the end of a `using` block frees it.
+- Call [`load()`](#load) before working with datasets, views, images, [`colormapCss()`](#colormapcss), or [`Patch.read()`](#patch-read) on JSON.
+  [`View.create()`](#view-create), [`Gpu.create()`](#gpu-create), and [`Data.read()`](#data-read) load WebAssembly for you. Scene,
+  expression, and patch builders work without it.
+- A [`LatkitError`](#latkiterror) has a code. For invalid input, its path identifies the problem,
+  for example `marks[2].color`.
+- Operations that accept [`Wait`](#wait) time out after 30 seconds by default. Supply an abort signal
+  to control the deadline.
+- Release a [`Handle`](#handle) with `destroy()` or a `using` block.
 
 ## Loading, errors, and lifetimes
-
-What every part of the package shares.
 
 (load)=
 
@@ -25,14 +20,13 @@ What every part of the package shares.
 {.signature}
 `function load(options?: { wasm?: string | URL | WebAssembly.Module; jobs?: string | URL | WebAssembly.Module; wgsl?: string | URL | WebAssembly.Module; worker?: string | URL | (() => Worker) }): Promise<void>`
 
-Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
-load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
-load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
-also creates the first WebGL2 device for [`Gpu.create()`](#gpu-create).
+Loads WebAssembly once per page and requests a WebGL2 device if a browser canvas is available.
+Concurrent calls share the load. Later calls can omit options or repeat the original values.
+Conflicting options and failed loads reject with an `io` error. Failed loads can be retried.
 
-The assets come as a set. Without options, latkit finds each beside its own module. A page that
-gives the URL of `wasm` gives `jobs` and `worker` too, or the call rejects with an `invalid`
-error: a job would otherwise fail only when a view first has one.
+Assets default to the bundled files. When passing a `wasm` URL, also supply `jobs` from the
+same package version and, if workers are available, `worker`. Missing assets reject with an
+`invalid` error.
 
 {#load-wasm .member}
 **`wasm`**`?: string | URL | WebAssembly.Module` [¶](#load-wasm){.headerlink}
@@ -57,6 +51,36 @@ error: a job would otherwise fail only when a view first has one.
   a function that creates a worker running it. A browser starts workers only from the page's
   origin, so the page fetches a worker on another origin, such as a CDN or a webview's
   resources, and starts it from a blob. Defaults to the bundled worker.
+
+(handle)=
+
+### `Handle`
+
+{.signature}
+`abstract class Handle`
+
+An object that holds WebAssembly memory (and GPU memory, for a [`Gpu`](#gpu)) until it is destroyed.
+`destroy()` frees it, as does the end of a `using` block. After that, its other methods throw a
+`destroyed` error.
+
+```{rubric} Methods
+```
+
+{#handle-destroy .member}
+**`destroy`**`(): void` [¶](#handle-destroy){.headerlink}
+: Frees the object's memory. Calling it again does nothing. Once latkit has stopped, it only
+  drops the object, since its memory can't be used again.
+
+(bytesource)=
+
+### `ByteSource`
+
+{.signature}
+`type ByteSource = Uint8Array | ArrayBuffer | Blob | Response |` [`ReadableBytes`](#readablebytes) `| AsyncIterable<Uint8Array> | string`
+
+Bytes to read: an array or buffer, a `Blob`, a `Response`, a byte stream, or a URL string to
+fetch. Reading is bounded by the call's [`Wait`](#wait). It fails with an `io` error when a fetch
+fails or returns an error status, or when the bytes can't be read.
 
 (latkiterror)=
 
@@ -88,6 +112,19 @@ The error latkit throws: an `Error` with a `code` that names the kind of failure
 **`path`**`?: string` [¶](#latkiterror-path){.headerlink}
 : On `invalid` errors, the invalid part of the input, such as `marks[2].color`.
 
+(readablebytes)=
+
+### `ReadableBytes`
+
+{.signature}
+`interface ReadableBytes`
+
+A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Uint8Array`.
+
+{#readablebytes-getreader .member}
+**`getReader`**`(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(reason?: unknown): Promise<void>; releaseLock(): void }` [¶](#readablebytes-getreader){.headerlink}
+: Returns a reader of the stream's chunks. latkit reads it to the end or cancels it.
+
 (wait)=
 
 ### `Wait`
@@ -104,28 +141,108 @@ Options that bound how long a promise waits.
   pending work where it can. Without a signal, the call times out after 30 seconds, counting
   every step it takes.
 
-(handle)=
+## Data and patches
 
-### `Handle`
+(data)=
+
+### `Data`
 
 {.signature}
-`abstract class Handle`
+`class Data extends` [`Dataset`](#dataset)
 
-An object that holds WebAssembly memory (and GPU memory, for a [`Gpu`](#gpu)) until it is destroyed.
-`destroy()` frees it, as does the end of a `using` block. After that, its other methods throw a
-`destroyed` error.
+A mutable dataset. Views show changes on the next frame. Write individual edits with methods
+such as `set`, or batch them with `apply`. Views and snapshots remain usable after `destroy()`.
+
+```ts
+const grid = new Data('grid').set('Bus', [1, 2], { kv: [230, 115] });
+grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
+```
+
+```{rubric} Constructor
+```
+
+{#data-new .member}
+**`new Data`**`(name: string)` [¶](#data-new){.headerlink}
+: Creates an empty dataset named `name`.
 
 ```{rubric} Methods
 ```
 
-{#handle-destroy .member}
-**`destroy`**`(): void` [¶](#handle-destroy){.headerlink}
-: Frees the object's memory. Calling it again does nothing. Once latkit has stopped, it only
-  drops the object, since its memory can't be used again.
+{#data-read .member}
+`static` **`read`**`(source:` [`ByteSource`](#bytesource) `| object, options?: { name?: string; base?: string } &` [`Wait`](#wait)`): Promise<Data>` [¶](#data-read){.headerlink}
+: Reads a dataset from `source`. Its first bytes decide the format:
 
-## Data and patches
+  - latkit's bytes, as `toBytes()` writes them.
+  - GeoJSON, plain or gzip-compressed, read in a worker. Points, line strings, and polygons
+    become rows of tables `points`, `lines`, and `polygons`, with the geometry in field
+    `geometry` and each property as a field.
+  - A dataset document, `{"name": ..., "patch": [...]}`. Its patch is read like
+    [`Patch.read()`](#patch-read).
 
-Datasets, the tables in them that marks draw, and the patches that change them. Patches are written without WebAssembly.
+  {#data-read-name .member}
+  **`name`**`?: string` [¶](#data-read-name){.headerlink}
+  : The dataset's name, overriding the name in its bytes or document. Required for GeoJSON.
+
+  {#data-read-base .member}
+  **`base`**`?: string` [¶](#data-read-base){.headerlink}
+  : The URL that a document's file slices are relative to. Defaults to the document's URL.
+
+{#data-apply .member}
+**`apply`**`(patch:` [`Patch`](#patch) `| Uint8Array): this` [¶](#data-apply){.headerlink}
+: Applies the patch and returns this dataset. If any change is invalid, the dataset keeps its
+  previous version. The error path identifies the change, for example `patch[1].Bus.kv`.
+
+{#data-axis .member}
+**`axis`**`(name: string, unit: string): this` [¶](#data-axis){.headerlink}
+: Applies [`Patch.axis()`](#patch-axis): names the axis that sampled fields are recorded over.
+
+{#data-replace .member}
+**`replace`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#data-replace){.headerlink}
+: Applies [`Patch.replace()`](#patch-replace): replaces table `table` with `fields` for rows `ids` (or `0` to
+  `n - 1`).
+
+{.member}
+**`replace`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
+: Applies [`Patch.replace()`](#patch-replace): replaces table `table` with `fields` for rows `ids` (or `0` to
+  `n - 1`).
+
+{#data-set .member}
+**`set`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#data-set){.headerlink}
+: Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
+  adding new rows. For a numeric field updated every frame, pass a typed array.
+
+{.member}
+**`set`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
+: Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
+  adding new rows. For a numeric field updated every frame, pass a typed array.
+
+{#data-remove .member}
+**`remove`**`(table: string, ids:` [`RowIds`](#rowids)`): this` [¶](#data-remove){.headerlink}
+: Applies [`Patch.remove()`](#patch-remove): removes the rows of `table` with `ids`.
+
+{#data-append .member}
+**`append`**`(table: string, at: number | readonly number[], fields: Readonly<Record<string,` [`Values`](#values)`>>, options?: { ids?:` [`RowIds`](#rowids) `}): this` [¶](#data-append){.headerlink}
+: Applies [`Patch.append()`](#patch-append): records frames of `table` at the axis coordinates `at`.
+
+  {#data-append-ids .member}
+  **`ids`**`?:` [`RowIds`](#rowids) [¶](#data-append-ids){.headerlink}
+  : The rows the frames cover. Defaults to every row. Other rows keep their last values.
+
+{#data-forget .member}
+**`forget`**`(before: number): this` [¶](#data-forget){.headerlink}
+: Applies [`Patch.forget()`](#patch-forget): drops every sampled field's frames before `before`.
+
+{#data-frames .member}
+**`frames`**`(table: string, field: string, run:` [`Run`](#run)`): this` [¶](#data-frames){.headerlink}
+: Applies [`Patch.frames()`](#patch-frames): stores a run of a sampled field's entries, as in a time tile.
+
+{#data-snapshot .member}
+**`snapshot`**`():` [`Snapshot`](#snapshot) [¶](#data-snapshot){.headerlink}
+: Returns an immutable [`Snapshot`](#snapshot) in O(1). Unchanged pages are shared across versions.
+
+{#data-restore .member}
+**`restore`**`(snapshot:` [`Snapshot`](#snapshot)`): this` [¶](#data-restore){.headerlink}
+: Restores this dataset to a previous snapshot.
 
 (dataset)=
 
@@ -181,115 +298,6 @@ the version it holds, through the same methods.
 **`toBytes`**`(): Uint8Array` [¶](#dataset-tobytes){.headerlink}
 : Returns the dataset as latkit's bytes: a patch that builds it from an empty dataset.
 
-(data)=
-
-### `Data`
-
-{.signature}
-`class Data extends` [`Dataset`](#dataset)
-
-A dataset that changes in place. Each change applies all at once or not at all. Every
-[`Patch`](#patch) method is also a method here that applies that one change right away, and `apply`
-applies a patch of several. Views draw the latest version from the frame after each change. A
-[`Snapshot`](#snapshot) keeps one version and shares its pages with the dataset, so an undo history
-costs only the pages that differ. Destroying a `Data` leaves the views that draw it, and its
-snapshots, usable.
-
-```ts
-const grid = new Data('grid').set('Bus', [1, 2], { kv: [230, 115] });
-grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
-```
-
-```{rubric} Constructor
-```
-
-{#data-new .member}
-**`new Data`**`(name: string)` [¶](#data-new){.headerlink}
-: Creates an empty dataset named `name`.
-
-```{rubric} Methods
-```
-
-{#data-read .member}
-`static` **`read`**`(source:` [`ByteSource`](#bytesource) `| object, options?: { name?: string; base?: string } &` [`Wait`](#wait)`): Promise<Data>` [¶](#data-read){.headerlink}
-: Reads a dataset from `source`. Its first bytes decide the format:
-
-  - latkit's bytes, as `toBytes()` writes them.
-  - GeoJSON, plain or gzip-compressed, read in a worker. Points, line strings, and polygons
-    become rows of tables `points`, `lines`, and `polygons`, with the geometry in field
-    `geometry` and each property as a field.
-  - A dataset document, `{"name": ..., "patch": [...]}`. Its patch is read like
-    [`Patch.read()`](#patch-read).
-
-  {#data-read-name .member}
-  **`name`**`?: string` [¶](#data-read-name){.headerlink}
-  : The dataset's name, overriding the name in its bytes or document. Required for GeoJSON.
-
-  {#data-read-base .member}
-  **`base`**`?: string` [¶](#data-read-base){.headerlink}
-  : The URL that a document's file slices are relative to. Defaults to the document's URL.
-
-{#data-apply .member}
-**`apply`**`(patch:` [`Patch`](#patch) `| Uint8Array): this` [¶](#data-apply){.headerlink}
-: Applies every change in `patch`, or none when one is invalid, and returns this dataset. An
-  `invalid` error's `path` names the failing change, such as `patch[1].Bus.kv`.
-
-{#data-axis .member}
-**`axis`**`(name: string, unit: string): this` [¶](#data-axis){.headerlink}
-: Applies [`Patch.axis()`](#patch-axis): names the axis that sampled fields are recorded over.
-
-{#data-replace .member}
-**`replace`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#data-replace){.headerlink}
-: Applies [`Patch.replace()`](#patch-replace): replaces table `table` with `fields` for rows `ids` (or `0` to
-  `n - 1`).
-
-{.member}
-**`replace`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
-: Applies [`Patch.replace()`](#patch-replace): replaces table `table` with `fields` for rows `ids` (or `0` to
-  `n - 1`).
-
-{#data-set .member}
-**`set`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#data-set){.headerlink}
-: Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
-  adding new rows. Typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or
-  not at all, are copied once and become the fields' values as they are. That is the way to
-  write a field every frame.
-
-{.member}
-**`set`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
-: Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
-  adding new rows. Typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or
-  not at all, are copied once and become the fields' values as they are. That is the way to
-  write a field every frame.
-
-{#data-remove .member}
-**`remove`**`(table: string, ids:` [`RowIds`](#rowids)`): this` [¶](#data-remove){.headerlink}
-: Applies [`Patch.remove()`](#patch-remove): removes the rows of `table` with `ids`.
-
-{#data-append .member}
-**`append`**`(table: string, at: number | readonly number[], fields: Readonly<Record<string,` [`Values`](#values)`>>, options?: { ids?:` [`RowIds`](#rowids) `}): this` [¶](#data-append){.headerlink}
-: Applies [`Patch.append()`](#patch-append): records frames of `table` at the axis coordinates `at`.
-
-  {#data-append-ids .member}
-  **`ids`**`?:` [`RowIds`](#rowids) [¶](#data-append-ids){.headerlink}
-  : The rows the frames cover. Defaults to every row. Other rows keep their last values.
-
-{#data-forget .member}
-**`forget`**`(before: number): this` [¶](#data-forget){.headerlink}
-: Applies [`Patch.forget()`](#patch-forget): drops every sampled field's frames before `before`.
-
-{#data-frames .member}
-**`frames`**`(table: string, field: string, run:` [`Run`](#run)`): this` [¶](#data-frames){.headerlink}
-: Applies [`Patch.frames()`](#patch-frames): stores a run of a sampled field's entries, as in a time tile.
-
-{#data-snapshot .member}
-**`snapshot`**`():` [`Snapshot`](#snapshot) [¶](#data-snapshot){.headerlink}
-: Returns the current version as a [`Snapshot`](#snapshot). Later patches don't change it. O(1).
-
-{#data-restore .member}
-**`restore`**`(snapshot:` [`Snapshot`](#snapshot)`): this` [¶](#data-restore){.headerlink}
-: Makes `snapshot`, a version of this dataset, the current version. This is how to undo.
-
 (snapshot)=
 
 ### `Snapshot`
@@ -299,6 +307,90 @@ grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
 
 One immutable version of a dataset, taken in O(1) by [`Data.snapshot()`](#data-snapshot). A view given a
 snapshot draws that version, and keeps drawing it after the snapshot is destroyed.
+
+(table)=
+
+### `Table`
+
+{.signature}
+`class Table`
+
+A table in a dataset, such as `grid.table('Bus')`. Use it in a mark or a cross-table
+expression. It serializes as `[data, table]`.
+
+```{rubric} Constructor
+```
+
+{#table-new .member}
+**`new Table`**`(source:` [`Source`](#source)`, name: string)` [¶](#table-new){.headerlink}
+: The table `name` in `source`.
+
+```{rubric} Properties
+```
+
+{#table-source .member}
+`readonly` **`source`**`:` [`Source`](#source) [¶](#table-source){.headerlink}
+: The dataset the table belongs to.
+
+{#table-name .member}
+`readonly` **`name`**`: string` [¶](#table-name){.headerlink}
+: The table's name.
+
+```{rubric} Methods
+```
+
+{#table-tojson .member}
+**`toJSON`**`(): [data: string, table: string]` [¶](#table-tojson){.headerlink}
+: Returns the JSON form, `[data, table]`. `JSON.stringify` calls it.
+
+(tilewriter)=
+
+### `TileWriter`
+
+{.signature}
+`class TileWriter extends` [`Handle`](#handle)
+
+Writes a history as time tiles while it is recorded: the files `latkit tile` writes for the same
+frames, which [`Tiles`](#tiles) draw. It holds only what is still to be written, each level's span and
+bucket in progress, so its memory stays the same however long the history grows. Levels of detail
+are built as appends to a [`Data`](#data) build them.
+
+```ts
+const writer = new TileWriter(new Data('grid').axis('time', 's').replace('Bus', ids));
+const files = new Map<string, Uint8Array>();
+const write = (path: string, bytes: Uint8Array) => void files.set(path, bytes);
+writer.apply(new Patch().append('Bus', at, { vm }), write);
+writer.flush(write); // then tiles.refresh()
+```
+
+```{rubric} Constructor
+```
+
+{#tilewriter-new .member}
+**`new TileWriter`**`(base:` [`Data`](#data) `|` [`Snapshot`](#snapshot)`, options?: { chunk?: number })` [¶](#tilewriter-new){.headerlink}
+: A writer of the frames appended to the tables of `base`, the dataset without its frames: at
+  least its axis and the tables' rows, as it is now.
+
+  {#tilewriter-new-chunk .member}
+  **`chunk`**`?: number` [¶](#tilewriter-new-chunk){.headerlink}
+  : The entries a span holds: frames, or buckets of frames at coarser levels. A multiple of 8
+    from 8 to 2^20. Defaults to 256, as `latkit tile` writes them.
+
+```{rubric} Methods
+```
+
+{#tilewriter-apply .member}
+**`apply`**`(patch:` [`Patch`](#patch) `| Uint8Array, write: (path: string, bytes: Uint8Array) => void): this` [¶](#tilewriter-apply){.headerlink}
+: Appends the frames of `patch`, calling `write` with the path and bytes of each span they fill.
+  Every change must append frames to every row of a table of the base, at coordinates that do not
+  decrease, or it throws an `invalid` error and changes nothing.
+
+{#tilewriter-flush .member}
+**`flush`**`(write: (path: string, bytes: Uint8Array) => void): void` [¶](#tilewriter-flush){.headerlink}
+: Calls `write` with the spans in progress as they stand, then the base and the `frames.json`
+  manifest, so [`Tiles`](#tiles) drawing the manifest find every frame appended so far. A span written
+  again as it grows replaces the one before. Flushed before the first frames, after appends of
+  none, it lists their fields, so views find the manifest from the start.
 
 (tiles)=
 
@@ -381,126 +473,26 @@ when it fails and when it recovers.
   const { attribution, layers } = await tiles.describe();
   ```
 
-(tilesoptions)=
+(envelope)=
 
-### `TilesOptions`
-
-{.signature}
-`interface TilesOptions`
-
-How [`Tiles`](#tiles) fetch their files.
-
-{#tilesoptions-fetch .member}
-**`fetch`**`?: (url: string, range?: [start: number, end: number]) => Promise<`[`ByteSource`](#bytesource)`>` [¶](#tilesoptions-fetch){.headerlink}
-: Fetches a file in place of the browser, such as with credentials or from the app's own store:
-  the index at `url`, the pieces at URLs resolved against it, and bytes `[start, end)` of an
-  archive. A 404 or 204 `Response` is a missing piece. A rejection with an `AbortError`, as from
-  an aborted `fetch`, is no failure: the file is fetched again when next needed. latkit calls it
-  after the frame that needs the file, so it may change views and datasets. Tiles at one URL with
-  different `fetch` functions share nothing.
-
-(tilewriter)=
-
-### `TileWriter`
+### `Envelope`
 
 {.signature}
-`class TileWriter extends` [`Handle`](#handle)
+`interface Envelope`
 
-Writes a history as time tiles while it is recorded: the files `latkit tile` writes for the same
-frames, which [`Tiles`](#tiles) draw. It holds only what is still to be written, each level's span and
-bucket in progress, so its memory stays the same however long the history grows. Levels of detail
-are built as appends to a [`Data`](#data) build them.
+The minimum and maximum of a sampled field for each row, over equal spans of the axis.
 
-```ts
-const writer = new TileWriter(new Data('grid').axis('time', 's').replace('Bus', ids));
-const files = new Map<string, Uint8Array>();
-const write = (path: string, bytes: Uint8Array) => void files.set(path, bytes);
-writer.apply(new Patch().append('Bus', at, { vm }), write);
-writer.flush(write); // then tiles.refresh()
-```
+{#envelope-at .member}
+**`at`**`: Float64Array` [¶](#envelope-at){.headerlink}
+: The span boundaries on the axis: one more than the number of spans.
 
-```{rubric} Constructor
-```
+{#envelope-least .member}
+**`least`**`: Float32Array` [¶](#envelope-least){.headerlink}
+: Each row's minimum in each span, `spans` values per row, row after row. NaN for no value.
 
-{#tilewriter-new .member}
-**`new TileWriter`**`(base:` [`Data`](#data) `|` [`Snapshot`](#snapshot)`, options?: { chunk?: number })` [¶](#tilewriter-new){.headerlink}
-: A writer of the frames appended to the tables of `base`, the dataset without its frames: at
-  least its axis and the tables' rows, as it is now.
-
-  {#tilewriter-new-chunk .member}
-  **`chunk`**`?: number` [¶](#tilewriter-new-chunk){.headerlink}
-  : The entries a span holds: frames, or buckets of frames at coarser levels. A multiple of 8
-    from 8 to 2^20. Defaults to 256, as `latkit tile` writes them.
-
-```{rubric} Methods
-```
-
-{#tilewriter-apply .member}
-**`apply`**`(patch:` [`Patch`](#patch) `| Uint8Array, write: (path: string, bytes: Uint8Array) => void): this` [¶](#tilewriter-apply){.headerlink}
-: Appends the frames of `patch`, calling `write` with the path and bytes of each span they fill.
-  Every change must append frames to every row of a table of the base, at coordinates that do not
-  decrease, or it throws an `invalid` error and changes nothing.
-
-{#tilewriter-flush .member}
-**`flush`**`(write: (path: string, bytes: Uint8Array) => void): void` [¶](#tilewriter-flush){.headerlink}
-: Calls `write` with the spans in progress as they stand, then the base and the `frames.json`
-  manifest, so [`Tiles`](#tiles) drawing the manifest find every frame appended so far. A span written
-  again as it grows replaces the one before. Flushed before the first frames, after appends of
-  none, it lists their fields, so views find the manifest from the start.
-
-(source)=
-
-### `Source`
-
-{.signature}
-`type Source =` [`Data`](#data) `|` [`Snapshot`](#snapshot) `|` [`Tiles`](#tiles)
-
-A dataset a view draws: the one a [`Table`](#table) belongs to, or one of the view's `sources`.
-
-(table)=
-
-### `Table`
-
-{.signature}
-`class Table`
-
-A table in a dataset, such as `grid.table('Bus')`. Marks draw its rows and `field().from()` reads
-its fields. A view loads every dataset its scene uses. In JSON it is `[data, table]`.
-
-```{rubric} Constructor
-```
-
-{#table-new .member}
-**`new Table`**`(source:` [`Source`](#source)`, name: string)` [¶](#table-new){.headerlink}
-: The table `name` in `source`.
-
-```{rubric} Properties
-```
-
-{#table-source .member}
-`readonly` **`source`**`:` [`Source`](#source) [¶](#table-source){.headerlink}
-: The dataset the table belongs to.
-
-{#table-name .member}
-`readonly` **`name`**`: string` [¶](#table-name){.headerlink}
-: The table's name.
-
-```{rubric} Methods
-```
-
-{#table-tojson .member}
-**`toJSON`**`(): [data: string, table: string]` [¶](#table-tojson){.headerlink}
-: Returns the JSON form, `[data, table]`. `JSON.stringify` calls it.
-
-(tableinput)=
-
-### `TableInput`
-
-{.signature}
-`type TableInput =` [`Table`](#table) `| readonly [data: string, table: string]`
-
-A table for a mark to draw or a field to read: a [`Table`](#table), or its JSON form `[data, table]`,
-where `data` names a dataset in the view's `sources`.
+{#envelope-greatest .member}
+**`greatest`**`: Float32Array` [¶](#envelope-greatest){.headerlink}
+: Each row's maximum in each span, laid out like `least`.
 
 (queryresult)=
 
@@ -529,26 +521,42 @@ The rows a query returns, as columns in the forms a patch takes.
 **`total`**`: number` [¶](#queryresult-total){.headerlink}
 : The number of rows that matched, before `offset` and `limit`.
 
-(envelope)=
+(source)=
 
-### `Envelope`
+### `Source`
 
 {.signature}
-`interface Envelope`
+`type Source =` [`Data`](#data) `|` [`Snapshot`](#snapshot) `|` [`Tiles`](#tiles)
 
-The minimum and maximum of a sampled field for each row, over equal spans of the axis.
+A dataset a view draws: the one a [`Table`](#table) belongs to, or one of the view's `sources`.
 
-{#envelope-at .member}
-**`at`**`: Float64Array` [¶](#envelope-at){.headerlink}
-: The span boundaries on the axis: one more than the number of spans.
+(tableinput)=
 
-{#envelope-least .member}
-**`least`**`: Float32Array` [¶](#envelope-least){.headerlink}
-: Each row's minimum in each span, `spans` values per row, row after row. NaN for no value.
+### `TableInput`
 
-{#envelope-greatest .member}
-**`greatest`**`: Float32Array` [¶](#envelope-greatest){.headerlink}
-: Each row's maximum in each span, laid out like `least`.
+{.signature}
+`type TableInput =` [`Table`](#table) `| readonly [data: string, table: string]`
+
+A table for a mark to draw or a field to read: a [`Table`](#table), or its JSON form `[data, table]`,
+where `data` names a dataset in the view's `sources`.
+
+(tilesoptions)=
+
+### `TilesOptions`
+
+{.signature}
+`interface TilesOptions`
+
+How [`Tiles`](#tiles) fetch their files.
+
+{#tilesoptions-fetch .member}
+**`fetch`**`?: (url: string, range?: [start: number, end: number]) => Promise<`[`ByteSource`](#bytesource)`>` [¶](#tilesoptions-fetch){.headerlink}
+: Fetches a file in place of the browser, such as with credentials or from the app's own store:
+  the index at `url`, the pieces at URLs resolved against it, and bytes `[start, end)` of an
+  archive. A 404 or 204 `Response` is a missing piece. A rejection with an `AbortError`, as from
+  an aborted `fetch`, is no failure: the file is fetched again when next needed. latkit calls it
+  after the frame that needs the file, so it may change views and datasets. Tiles at one URL with
+  different `fetch` functions share nothing.
 
 (patch)=
 
@@ -685,51 +693,23 @@ const patch = new Patch('grid')
 **`toBytes`**`(): Uint8Array` [¶](#patch-tobytes){.headerlink}
 : Returns a copy of the patch as latkit's bytes: one frame, naming the dataset if it has one.
 
-(bytesource)=
+(reference-function)=
 
-### `ByteSource`
-
-{.signature}
-`type ByteSource = Uint8Array | ArrayBuffer | Blob | Response |` [`ReadableBytes`](#readablebytes) `| AsyncIterable<Uint8Array> | string`
-
-Bytes to read: an array or buffer, a `Blob`, a `Response`, a byte stream, or a URL string to
-fetch. Reading is bounded by the call's [`Wait`](#wait). It fails with an `io` error when a fetch
-fails or returns an error status, or when the bytes can't be read.
-
-(readablebytes)=
-
-### `ReadableBytes`
+### `reference()`
 
 {.signature}
-`interface ReadableBytes`
+`function reference(table: string, ids:` [`RowIds`](#rowids)`):` [`Reference`](#reference)
 
-A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Uint8Array`.
+Builds a [`Reference`](#reference) field: for each row, the id of the row it references in `table`.
 
-{#readablebytes-getreader .member}
-**`getReader`**`(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(reason?: unknown): Promise<void>; releaseLock(): void }` [¶](#readablebytes-getreader){.headerlink}
-: Returns a reader of the stream's chunks. latkit reads it to the end or cancels it.
+(fields)=
 
-(rowids)=
-
-### `RowIds`
+### `Fields`
 
 {.signature}
-`type RowIds =` [`Ids`](#ids) `| readonly (`[`Id`](#id) `| null)[] | Uint32Array | Float64Array`
+`type Fields = Readonly<Record<string,` [`Values`](#values) `|` [`Reference`](#reference)`>>`
 
-Row ids: a list of numbers or strings, `{ count }` for ids `0` to `count - 1`, or a `Uint32Array`
-or `Float64Array` of numbers. In a reference, `null` or NaN names no row.
-
-(values)=
-
-### `Values`
-
-{.signature}
-`type Values = Float64Array | Float32Array | Int32Array | Uint32Array | Uint8Array | readonly (number | null)[] | readonly (boolean | null)[] | readonly (string | null)[] | readonly (`[`Geometry`](#geometry) `| null)[]`
-
-One field's values, one per row, with `null` for a missing value. Numbers come as a typed array
-or an array. A `Uint8Array` holds booleans, where nonzero is true. Booleans, strings, and
-geometries also come as arrays. Values are copied when passed, so the arrays can be reused right
-away.
+A table's fields by name: values, or a [`Reference`](#reference).
 
 (geometry)=
 
@@ -758,23 +738,15 @@ A reference field: for each row, a row of another table.
 **`ids`**`:` [`RowIds`](#rowids) [¶](#reference-ids){.headerlink}
 : For each row, the id of the row it references, or `null` or NaN to reference none.
 
-(reference-function)=
+(rowids)=
 
-### `reference()`
-
-{.signature}
-`function reference(table: string, ids:` [`RowIds`](#rowids)`):` [`Reference`](#reference)
-
-Builds a [`Reference`](#reference) field: for each row, the id of the row it references in `table`.
-
-(fields)=
-
-### `Fields`
+### `RowIds`
 
 {.signature}
-`type Fields = Readonly<Record<string,` [`Values`](#values) `|` [`Reference`](#reference)`>>`
+`type RowIds =` [`Ids`](#ids) `| readonly (`[`Id`](#id) `| null)[] | Uint32Array | Float64Array`
 
-A table's fields by name: values, or a [`Reference`](#reference).
+Row ids: a list of numbers or strings, `{ count }` for ids `0` to `count - 1`, or a `Uint32Array`
+or `Float64Array` of numbers. In a reference, `null` or NaN names no row.
 
 (run)=
 
@@ -803,9 +775,125 @@ A run of entries of a sampled field at one level of detail, for [`Patch.frames()
 : One value per row for each entry, entry by entry. At a bucket level, the per-row minimums of
   every bucket, then the per-row maximums of every bucket. NaN marks a missing value.
 
+(values)=
+
+### `Values`
+
+{.signature}
+`type Values = Float64Array | Float32Array | Int32Array | Uint32Array | Uint8Array | readonly (number | null)[] | readonly (boolean | null)[] | readonly (string | null)[] | readonly (`[`Geometry`](#geometry) `| null)[]`
+
+One field's values, one per row, with `null` for a missing value. Numbers come as a typed array
+or an array. A `Uint8Array` holds booleans, where nonzero is true. Booleans, strings, and
+geometries also come as arrays. Values are copied when passed, so the arrays can be reused right
+away.
+
 ## Expressions
 
-Builders for the per-row expressions that scene options take, including colors.
+(colormapcss)=
+
+### `colormapCss()`
+
+{.signature}
+`function colormapCss(map:` [`Colormap`](#colormap)`, direction?: string): string`
+
+Returns a CSS `linear-gradient(...)` with the colors the GPU draws for `map`, a catalog name or a
+custom colormap. `direction` is the CSS gradient direction and defaults to `'to right'`. A
+categorical map gives one solid band per category.
+
+(colormaps)=
+
+### `colormaps()`
+
+{.signature}
+`function colormaps(): typeof CATALOG`
+
+Returns the catalog's colormaps in order, each with its name, its label such as `'Red / Blue'`,
+its kind, and its colors as a custom colormap takes them. Needs no WebAssembly.
+
+(units-function)=
+
+### `units()`
+
+{.signature}
+`function units(size: number): { units: number }`
+
+{.signature}
+`function units(size:` [`ExprInput`](#exprinput)`, limits?: Omit<`[`Units`](#units)`, 'units'>):` [`Units`](#units)
+
+A size in position units (degrees on the earth) in any space, so it scales as the view zooms.
+`limits` bound its size on screen in CSS pixels: `units('$r', { atLeast: 2 })` grows with the
+map and never shrinks below 2 pixels. A marker keeps its proportions, and the limits apply to its
+larger side. Given only a number, the result also works as a theme length.
+
+(meters)=
+
+### `meters()`
+
+{.signature}
+`function meters(length:` [`ExprInput`](#exprinput)`):` [`Expr`](#expr)
+
+A length given in meters, in degrees of arc: the earth's unit for positions, elevations, and
+sizes in `units`. A degree is 111,194.93 meters on a sphere of the earth's mean radius.
+
+(when-function)=
+
+### `when()`
+
+{.signature}
+`function when(condition:` [`ExprInput`](#exprinput)`):` [`When`](#when)
+
+Starts a conditional. `when(c).then(a).when(d).then(b).otherwise(e)` takes the value of the first
+case whose condition holds, else `e`. The values may be numbers, colors, or a text field and
+`null`, whichever the option takes.
+
+(symbol)=
+
+### `symbol()`
+
+{.signature}
+`function symbol(paths: string | readonly string[], options?: { index?:` [`ExprInput`](#exprinput)`; stroke?: number | { units: number } }):` [`Marker`](#marker)
+
+A symbol marker: each row shows `paths[index]`, SVG path data drawn in the row's color. A path's
+coordinates run from -1 to 1 across the square of the marker's smaller side, x right and y down.
+
+{#symbol-index .member}
+**`index`**`?:` [`ExprInput`](#exprinput) [¶](#symbol-index){.headerlink}
+: Each row's path index, from 0. Defaults to 0.
+
+{#symbol-stroke .member}
+**`stroke`**`?: number | { units: number }` [¶](#symbol-stroke){.headerlink}
+: The width the path is stroked at, in CSS pixels or `units(n)`. Without it, the path is filled.
+
+(icon)=
+
+### `icon()`
+
+{.signature}
+`function icon(images: readonly` [`RgbaImage`](#rgbaimage)`[], index:` [`ExprInput`](#exprinput)`):` [`Marker`](#marker)
+
+An icon marker: each row shows `images[index]`, fitted in the marker's box, with `index` counting
+from 0. The pixels are copied into the marker.
+
+(color)=
+
+### `Color`
+
+{.signature}
+`type Color = string`
+
+A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In an expression, a string that does not
+start with `$` is a color.
+
+(exprinput)=
+
+### `ExprInput`
+
+{.signature}
+`type ExprInput =` [`Expr`](#expr) `|` [`ExprNode`](#exprnode)
+
+An option's value: an [`Expr`](#expr) or its JSON form. In JSON, `null` is a missing value, a string
+starting with `$` reads a field (`'$kv'` reads field `kv`), and any other string is a CSS color.
+Color options take a value that computes a color.
 
 (expr)=
 
@@ -970,6 +1058,12 @@ a conditional that chooses between colors.
 **`is`**`(text: string): Expr` [¶](#expr-is){.headerlink}
 : Whether a text field equals `text`, plain text read as neither a field nor a color.
 
+{#expr-match .member}
+**`match`**`(cases: readonly (readonly [value: number | string, result:` [`ExprInput`](#exprinput)`])[], otherwise?:` [`ExprInput`](#exprinput)`): Expr` [¶](#expr-match){.headerlink}
+: The result of the first case this value equals, else `otherwise`, which defaults to a missing
+  value: `field('kv').match([[69, 1.9], [138, 2.6]])`. A number compares as `eq` does, and a text
+  as `is` does.
+
 {#expr-contains .member}
 **`contains`**`(text: string): Expr` [¶](#expr-contains){.headerlink}
 : Whether a text field contains `text` (plain text), ignoring case. In a mark, the field must be
@@ -984,17 +1078,6 @@ a conditional that chooses between colors.
 **`scale`**`(low: number, high: number):` [`Mapped`](#mapped) [¶](#expr-scale){.headerlink}
 : Maps the value linearly onto `[low, high]`, clamped. The domain fits the values shown unless
   set with [`Mapped.domain()`](#mapped-domain).
-
-(exprinput)=
-
-### `ExprInput`
-
-{.signature}
-`type ExprInput =` [`Expr`](#expr) `|` [`ExprNode`](#exprnode)
-
-An option's value: an [`Expr`](#expr) or its JSON form. In JSON, `null` is a missing value, a string
-starting with `$` reads a field (`'$kv'` reads field `kv`), and any other string is a CSS color.
-Color options take a value that computes a color.
 
 (mapped)=
 
@@ -1020,16 +1103,6 @@ A value mapped through a colormap or onto a range. Its input domain can be set.
   the input field holds, in every frame of a sampled field, so colors stay put as `at` moves.
   Without it, the domain fits the values shown.
 
-(color)=
-
-### `Color`
-
-{.signature}
-`type Color = string`
-
-A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In an expression, a string that does not
-start with `$` is a color.
-
 (field)=
 
 ### `field()`
@@ -1040,16 +1113,82 @@ start with `$` is a color.
 Reads field `name` of each row. In JSON it is `'$name'`, or the `{ field }` form after `from()`,
 `of()`, or `step()`.
 
-(when-function)=
+(selected)=
 
-### `when()`
+### `selected()`
 
 {.signature}
-`function when(condition:` [`ExprInput`](#exprinput)`):` [`When`](#when)
+`function selected():` [`Expr`](#expr)
 
-Starts a conditional. `when(c).then(a).when(d).then(b).otherwise(e)` takes the value of the first
-case whose condition holds, else `e`. The values may be numbers, colors, or a text field and
-`null`, whichever the option takes.
+Whether the row is selected.
+
+(hovered)=
+
+### `hovered()`
+
+{.signature}
+`function hovered():` [`Expr`](#expr)
+
+Whether the row is hovered: under the pointer, stepped to by the keyboard, or set by [`view.hovered`](#view-hovered).
+
+(related)=
+
+### `related()`
+
+{.signature}
+`function related():` [`Expr`](#expr)
+
+Whether the row is one reference from a selected or hovered row: a row it references, or one
+that references it, such as a branch of a selected bus. The selected row may be one a linked view
+shares.
+
+(pointer)=
+
+### `pointer()`
+
+{.signature}
+`function pointer():` [`Expr`](#expr)
+
+CSS pixels from a vertex to the pointer. Vertex marks only, and not in a vertex's position.
+
+(elapsed)=
+
+### `elapsed()`
+
+{.signature}
+`function elapsed():` [`Expr`](#expr)
+
+Seconds since the view was created. A mark that reads it redraws every frame.
+
+(zoom)=
+
+### `zoom()`
+
+{.signature}
+`function zoom():` [`Expr`](#expr)
+
+The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere.
+
+(rgbaimage)=
+
+### `RgbaImage`
+
+{.signature}
+`interface RgbaImage`
+
+RGBA pixels with straight alpha, rows top to bottom. A browser `ImageData` has this shape.
+
+{#rgbaimage-width .member}
+**`width`**`: number` [¶](#rgbaimage-width){.headerlink}
+: The width in pixels.
+
+{#rgbaimage-height .member}
+**`height`**`: number` [¶](#rgbaimage-height){.headerlink}
+: The height in pixels.
+
+{#rgbaimage-data .member}
+**`data`**`: Uint8ClampedArray` [¶](#rgbaimage-data){.headerlink}
+: 4 bytes per pixel, red, green, blue, and alpha, row after row.
 
 (when)=
 
@@ -1103,142 +1242,188 @@ A conditional's next condition. `then` gives its value.
 **`then`**`(value:` [`ExprInput`](#exprinput)`):` [`Then`](#then) [¶](#next-then){.headerlink}
 : Sets the value where this condition holds.
 
-(units-function)=
-
-### `units()`
-
-{.signature}
-`function units(size: number): { units: number }`
-
-{.signature}
-`function units(size:` [`ExprInput`](#exprinput)`, limits?: Omit<`[`Units`](#units)`, 'units'>):` [`Units`](#units)
-
-A size in position units (degrees on the earth) in any space, so it scales as the view zooms.
-`limits` bound its size on screen in CSS pixels: `units('$r', { atLeast: 2 })` grows with the
-map and never shrinks below 2 pixels. A marker keeps its proportions, and the limits apply to its
-larger side. Given only a number, the result also works as a theme length.
-
-(meters)=
-
-### `meters()`
-
-{.signature}
-`function meters(length:` [`ExprInput`](#exprinput)`):` [`Expr`](#expr)
-
-A length given in meters, in degrees of arc: the earth's unit for positions, elevations, and
-sizes in `units`. A degree is 111,194.93 meters on a sphere of the earth's mean radius.
-
-(selected)=
-
-### `selected()`
-
-{.signature}
-`function selected():` [`Expr`](#expr)
-
-Whether the row is selected.
-
-(hovered)=
-
-### `hovered()`
-
-{.signature}
-`function hovered():` [`Expr`](#expr)
-
-Whether the row is hovered: under the pointer, stepped to by the keyboard, or set by [`view.hovered`](#view-hovered).
-
-(related)=
-
-### `related()`
-
-{.signature}
-`function related():` [`Expr`](#expr)
-
-Whether the row is one reference from a selected or hovered row: a row it references, or one
-that references it, such as a branch of a selected bus. The selected row may be one a linked view
-shares.
-
-(pointer)=
-
-### `pointer()`
-
-{.signature}
-`function pointer():` [`Expr`](#expr)
-
-CSS pixels from a vertex to the pointer. Vertex marks only, and not in a vertex's position.
-
-(zoom)=
-
-### `zoom()`
-
-{.signature}
-`function zoom():` [`Expr`](#expr)
-
-The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere.
-
-(elapsed)=
-
-### `elapsed()`
-
-{.signature}
-`function elapsed():` [`Expr`](#expr)
-
-Seconds since the view was created. A mark that reads it redraws every frame.
-
-(icon)=
-
-### `icon()`
-
-{.signature}
-`function icon(images: readonly` [`RgbaImage`](#rgbaimage)`[], index:` [`ExprInput`](#exprinput)`):` [`Marker`](#marker)
-
-An icon marker: each row shows `images[index]`, fitted in the marker's box, with `index` counting
-from 0. The pixels are copied into the marker.
-
-(rgbaimage)=
-
-### `RgbaImage`
-
-{.signature}
-`interface RgbaImage`
-
-RGBA pixels with straight alpha, rows top to bottom. A browser `ImageData` has this shape.
-
-{#rgbaimage-width .member}
-**`width`**`: number` [¶](#rgbaimage-width){.headerlink}
-: The width in pixels.
-
-{#rgbaimage-height .member}
-**`height`**`: number` [¶](#rgbaimage-height){.headerlink}
-: The height in pixels.
-
-{#rgbaimage-data .member}
-**`data`**`: Uint8ClampedArray` [¶](#rgbaimage-data){.headerlink}
-: 4 bytes per pixel, red, green, blue, and alpha, row after row.
-
-(colormaps)=
-
-### `colormaps()`
-
-{.signature}
-`function colormaps(): typeof CATALOG`
-
-Returns the catalog's colormaps in order, each with its name, its label such as `'Red / Blue'`,
-its kind, and its colors as a custom colormap takes them. Needs no WebAssembly.
-
-(colormapcss)=
-
-### `colormapCss()`
-
-{.signature}
-`function colormapCss(map:` [`Colormap`](#colormap)`, direction?: string): string`
-
-Returns a CSS `linear-gradient(...)` with the colors the GPU draws for `map`, a catalog name or a
-custom colormap. `direction` is the CSS gradient direction and defaults to `'to right'`. A
-categorical map gives one solid band per category.
-
 ## Views
 
-Views, which draw scenes on canvases, the playheads they follow, and the GPU they draw with.
+(gpu)=
+
+### `Gpu`
+
+{.signature}
+`class Gpu extends` [`Handle`](#handle)
+
+A WebGL2 device that views draw with. Views on one `Gpu` share its memory and draw together in
+each animation frame, so linked views always show the same moment. Views use the first `Gpu`
+created unless given another, and [`View.create`](#view-create) creates one if none exists. When the device is
+lost, latkit requests a new one once the page is in the foreground, and moves the views, their
+canvases, and the frame listeners to it. The views stay the same views: what they were asked,
+their listeners, and pictures and videos drawing them carry over. Destroying a `Gpu` destroys
+its views and frame listeners. Other GPUs and datasets stay usable.
+
+```{rubric} Properties
+```
+
+{#gpu-lost .member}
+`readonly` **`lost`**`: boolean` [¶](#gpu-lost){.headerlink}
+: Whether the device is lost. latkit then requests a new one, so this is true only until it
+  arrives, or when there is none. Also true once an internal error stopped latkit. latkit also
+  gives up a device that has no memory to grow its data, and the new one gets the budget lowered
+  to what the old one gave.
+
+{#gpu-budget .member}
+**`budget`**`:` [`Budget`](#budget) [¶](#gpu-budget){.headerlink}
+: The GPU memory budget for data, shared by every view on this GPU. See [`Budget`](#budget). Defaults
+  to half the device's addressable word-texture capacity, at most 1 GiB, with 32 MiB uploaded per frame.
+
+{#gpu-work .member}
+`readonly` **`work`**`:` [`Work`](#work) [¶](#gpu-work){.headerlink}
+: Exact counts of the work this GPU has done since it was created, on every device it moved to.
+  See [`Work`](#work). The same budget, device limits, and frames give the same counts, so tests and
+  benchmarks can assert them.
+
+{#gpu-resident .member}
+`readonly` **`resident`**`: number` [¶](#gpu-resident){.headerlink}
+: Bytes of GPU memory the views draw from: data pages and each view's per-row data.
+
+{#gpu-uploading .member}
+`readonly` **`uploading`**`: number` [¶](#gpu-uploading){.headerlink}
+: Bytes waiting to upload to the GPU, across all its views.
+
+```{rubric} Methods
+```
+
+{#gpu-create .member}
+`static` **`create`**`(wait?:` [`Wait`](#wait)`): Promise<Gpu>` [¶](#gpu-create){.headerlink}
+: Requests a WebGL2 device. The first call takes the device [`load()`](#load) requested. Create one before
+  any view to set its `budget` first, or create another for views that should not share memory
+  with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
+  when the browser has no WebGL2 device.
+
+{#gpu-on .member}
+**`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}
+: Calls `listener` every animation frame with the frame's timestamp in milliseconds. It runs
+  before the views draw, so its changes show in that frame. While any listener is registered, a
+  frame runs on every animation frame. Returns a function that removes the listener.
+
+{#gpu-lose .member}
+**`lose`**`(): void` [¶](#gpu-lose){.headerlink}
+: Loses the device, as a GPU reset does, so a test can check what follows: `lost` turns true,
+  and latkit moves the views to a new device.
+
+{#gpu-step .member}
+**`step`**`(now: number, wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-step){.headerlink}
+: Draws one frame now, at `now` milliseconds on the `requestAnimationFrame` clock. It runs the
+  frame listeners, then draws every canvas that needs a frame. Resolves once the GPU has finished
+  the frame and its readbacks have arrived. Pipelines may still compile: a view waiting for one
+  wakes when it lands. After the first call the GPU stops requesting animation frames, so a test
+  or benchmark that steps every frame draws the same frames on any device.
+
+{#gpu-done .member}
+**`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-done){.headerlink}
+: Resolves once the GPU has finished the work submitted before the call, with the readbacks it
+  copies, and every pipeline a view or shot requested has compiled. A frame stepped after that
+  uses all of them.
+
+{#gpu-landed .member}
+**`landed`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-landed){.headerlink}
+: Resolves when work a view waits on arrives after this call (a readback, a pipeline compile, a
+  job, a label text, or a fetch), or when a view requests a frame. A harness that steps frames
+  awaits it to know when to step again.
+
+(playhead)=
+
+### `Playhead`
+
+{.signature}
+`class Playhead extends` [`Handle`](#handle)
+
+A playhead views follow: the axis coordinate they show, such as a time, which moves on its own
+while it plays. Views that follow it show the same coordinate in the same frame, and the page
+runs nothing per frame to move them. Scrubbing a view that follows it moves it, and every other
+view that follows it.
+
+```ts
+const playhead = new Playhead({ span: [0, duration] });
+monitor.playhead = map.playhead = playhead;
+playhead.on('at', (at) => (scrubber.value = String(at)));
+playhead.play(); // one axis unit per second
+```
+
+```{rubric} Constructor
+```
+
+{#playhead-new .member}
+**`new Playhead`**`(options?: { at?: number; span?: readonly [number, number] | null; loop?: boolean })` [¶](#playhead-new){.headerlink}
+: A paused playhead, which plays forward at one axis unit per second once it plays.
+
+  {#playhead-new-at .member}
+  **`at`**`?: number` [¶](#playhead-new-at){.headerlink}
+  : The axis coordinate it starts at. Defaults to 0.
+
+  {#playhead-new-span .member}
+  **`span`**`?: readonly [number, number] | null` [¶](#playhead-new-span){.headerlink}
+  : The coordinates it stays between. Defaults to none.
+
+  {#playhead-new-loop .member}
+  **`loop`**`?: boolean` [¶](#playhead-new-loop){.headerlink}
+  : Whether it wraps to the other end of its span instead of stopping. Defaults to false.
+
+```{rubric} Properties
+```
+
+{#playhead-at .member}
+**`at`**`: number` [¶](#playhead-at){.headerlink}
+: The axis coordinate it is at. Setting it moves every view that follows it at once, and stops a
+  live playhead.
+
+{#playhead-rate .member}
+`readonly` **`rate`**`: number` [¶](#playhead-rate){.headerlink}
+: Axis units per second it moves while it plays, backward when negative. While live, the rate the
+  end of its span moves.
+
+{#playhead-playing .member}
+`readonly` **`playing`**`: boolean` [¶](#playhead-playing){.headerlink}
+: Whether it is moving. A live playhead that reached the end of its span waits there.
+
+{#playhead-live .member}
+**`live`**`: boolean` [¶](#playhead-live){.headerlink}
+: Whether it plays along the end of its span while the page extends the span as data arrives, as
+  a recording does. It trails the end by a little more than the time between arrivals, at the rate
+  the end moves, so data that arrives in uneven chunks plays at an even pace, and eases to a stop
+  at the end when no more arrives. Turning it on starts at the end. Seeking, playing, or pausing
+  stops it, and turning it off pauses it where it is.
+
+  ```ts
+  playhead.live = true;
+  // As frames arrive:
+  data.append('Bus', times, { vm });
+  playhead.span = [0, times.at(-1)];
+  ```
+
+{#playhead-span .member}
+**`span`**`: readonly [number, number] | null` [¶](#playhead-span){.headerlink}
+: The coordinates it stays between, lowest first, or `null` to move anywhere.
+
+{#playhead-loop .member}
+**`loop`**`: boolean` [¶](#playhead-loop){.headerlink}
+: Whether it wraps to the other end of its span instead of stopping.
+
+```{rubric} Methods
+```
+
+{#playhead-play .member}
+**`play`**`(rate?: number): void` [¶](#playhead-play){.headerlink}
+: Plays at `rate` axis units per second from the next frame, backward when negative. At the end of
+  its span it stops, or wraps to the other end when it loops. A frame moves it at most a quarter
+  second's worth, so a page that stalls or is hidden resumes where it was.
+
+{#playhead-pause .member}
+**`pause`**`(): void` [¶](#playhead-pause){.headerlink}
+: Stops it where it is, live or not.
+
+{#playhead-on .member}
+**`on`**`(type: 'at', listener: (at: number) => void): () => void` [¶](#playhead-on){.headerlink}
+: Calls `listener` with the coordinate whenever it moves: at most once per frame while it plays,
+  and whenever it is set or scrubbed. Returns a function that stops it.
 
 (view)=
 
@@ -1277,8 +1462,8 @@ const view = await View.create(canvas, {
 : The scene drawn. A mark that matches one in the previous scene by kind, dataset, table, and
   name keeps its state and eases to its new options. An option that can't be read, that the scene
   can't use, or that doesn't fit the data draws as if unset, and a mark that doesn't fit draws
-  nothing. Each is listed in `failures`. Only a scene whose space, marks, or a mark's table can't
-  be read throws, and leaves the current one in place.
+  nothing. Each is listed in `failures`. Assigning a scene throws if a local table is invalid
+  or its space, marks, or a mark's table can't be read. The previous scene stays in place.
 
   A new scene draws once the pipelines its frames draw with have compiled. Until then the view
   goes on drawing, and answering for, the scene before, and fits wait for the new one.
@@ -1295,9 +1480,8 @@ const view = await View.create(canvas, {
 
 {#view-at .member}
 **`at`**`: number` [¶](#view-at){.headerlink}
-: The axis coordinate shown, such as a time. Marks read sampled fields at it, interpolating
-  between the frame at or before it and the next, unless an expression uses `step()`. Setting it
-  on a view that follows a playhead moves the playhead.
+: The current axis coordinate. Marks interpolate between samples by default. Use `step()` to
+  hold the previous sample. Setting `at` also moves the view's playhead, if it has one.
 
 {#view-playhead .member}
 **`playhead`**`:` [`Playhead`](#playhead) `| null` [¶](#view-playhead){.headerlink}
@@ -1486,14 +1670,42 @@ const view = await View.create(canvas, {
   that removes it. Past events are not replayed. Read the current state from the property that a
   change event is named after.
 
-(rect)=
+(area)=
 
-### `Rect`
+### `Area`
 
 {.signature}
-`type Rect = readonly [x: number, y: number, width: number, height: number]`
+`type Area = [x: number, y: number, width: number, height: number]`
 
-A region `[x, y, width, height]` in fractions of a canvas or picture, from its top left.
+A box in CSS pixels from the view's top left corner.
+
+(insets)=
+
+### `Insets`
+
+{.signature}
+`type Insets = [top: number, right: number, bottom: number, left: number]`
+
+CSS pixels kept clear at the top, right, bottom, and left.
+
+(point)=
+
+### `Point`
+
+{.signature}
+`type Point = [x: number, y: number]`
+
+A point on screen, in CSS pixels from the view's top left corner.
+
+(position)=
+
+### `Position`
+
+{.signature}
+`type Position = [x: number, y: number, elevation: number]`
+
+A position in the space's coordinates: x, y, and elevation. On the earth, x and y are longitude
+and latitude; on a plot, the axis coordinate and the value.
 
 (viewevents)=
 
@@ -1517,227 +1729,70 @@ for (const [from, to] of [[map, monitor], [monitor, map]]) {
 }
 ```
 
-(insets)=
+(placed)=
 
-### `Insets`
-
-{.signature}
-`type Insets = [top: number, right: number, bottom: number, left: number]`
-
-CSS pixels kept clear at the top, right, bottom, and left.
-
-(area)=
-
-### `Area`
+### `Placed`
 
 {.signature}
-`type Area = [x: number, y: number, width: number, height: number]`
+`type Placed =` [`View`](#view) `| { view:` [`View`](#view)`; region:` [`Rect`](#rect) `}`
 
-A box in CSS pixels from the view's top left corner.
+A view drawn into a picture, in its own region or in `region`.
 
-(point)=
+{#placed-view .member}
+`readonly` **`view`**`:` [`View`](#view) [¶](#placed-view){.headerlink}
+: The view drawn.
 
-### `Point`
+{#placed-region .member}
+`readonly` **`region`**`:` [`Rect`](#rect) [¶](#placed-region){.headerlink}
+: Where it draws in the picture, overriding its own region.
 
-{.signature}
-`type Point = [x: number, y: number]`
+(rect)=
 
-A point on screen, in CSS pixels from the view's top left corner.
-
-(position)=
-
-### `Position`
-
-{.signature}
-`type Position = [x: number, y: number, elevation: number]`
-
-A position in the space's coordinates: x, y, and elevation. On the earth, x and y are longitude
-and latitude; on a plot, the axis coordinate and the value.
-
-(playhead)=
-
-### `Playhead`
+### `Rect`
 
 {.signature}
-`class Playhead extends` [`Handle`](#handle)
+`type Rect = readonly [x: number, y: number, width: number, height: number]`
 
-A playhead views follow: the axis coordinate they show, such as a time, which moves on its own
-while it plays. Views that follow it show the same coordinate in the same frame, and the page
-runs nothing per frame to move them. Scrubbing a view that follows it moves it, and every other
-view that follows it.
-
-```ts
-const playhead = new Playhead({ span: [0, duration] });
-monitor.playhead = map.playhead = playhead;
-playhead.on('at', (at) => (scrubber.value = String(at)));
-playhead.play(); // one axis unit per second
-```
-
-```{rubric} Constructor
-```
-
-{#playhead-new .member}
-**`new Playhead`**`(options?: { at?: number; span?: readonly [number, number] | null; loop?: boolean })` [¶](#playhead-new){.headerlink}
-: A paused playhead, which plays forward at one axis unit per second once it plays.
-
-  {#playhead-new-at .member}
-  **`at`**`?: number` [¶](#playhead-new-at){.headerlink}
-  : The axis coordinate it starts at. Defaults to 0.
-
-  {#playhead-new-span .member}
-  **`span`**`?: readonly [number, number] | null` [¶](#playhead-new-span){.headerlink}
-  : The coordinates it stays between. Defaults to none.
-
-  {#playhead-new-loop .member}
-  **`loop`**`?: boolean` [¶](#playhead-new-loop){.headerlink}
-  : Whether it wraps to the other end of its span instead of stopping. Defaults to false.
-
-```{rubric} Properties
-```
-
-{#playhead-at .member}
-**`at`**`: number` [¶](#playhead-at){.headerlink}
-: The axis coordinate it is at. Setting it moves every view that follows it at once, and stops a
-  live playhead.
-
-{#playhead-rate .member}
-`readonly` **`rate`**`: number` [¶](#playhead-rate){.headerlink}
-: Axis units per second it moves while it plays, backward when negative. While live, the rate the
-  end of its span moves.
-
-{#playhead-playing .member}
-`readonly` **`playing`**`: boolean` [¶](#playhead-playing){.headerlink}
-: Whether it is moving. A live playhead that reached the end of its span waits there.
-
-{#playhead-live .member}
-**`live`**`: boolean` [¶](#playhead-live){.headerlink}
-: Whether it plays along the end of its span while the page extends the span as data arrives, as
-  a recording does. It trails the end by a little more than the time between arrivals, at the rate
-  the end moves, so data that arrives in uneven chunks plays at an even pace, and eases to a stop
-  at the end when no more arrives. Turning it on starts at the end. Seeking, playing, or pausing
-  stops it, and turning it off pauses it where it is.
-
-  ```ts
-  playhead.live = true;
-  // As frames arrive:
-  data.append('Bus', times, { vm });
-  playhead.span = [0, times.at(-1)];
-  ```
-
-{#playhead-span .member}
-**`span`**`: readonly [number, number] | null` [¶](#playhead-span){.headerlink}
-: The coordinates it stays between, lowest first, or `null` to move anywhere.
-
-{#playhead-loop .member}
-**`loop`**`: boolean` [¶](#playhead-loop){.headerlink}
-: Whether it wraps to the other end of its span instead of stopping.
-
-```{rubric} Methods
-```
-
-{#playhead-play .member}
-**`play`**`(rate?: number): void` [¶](#playhead-play){.headerlink}
-: Plays at `rate` axis units per second from the next frame, backward when negative. At the end of
-  its span it stops, or wraps to the other end when it loops. A frame moves it at most a quarter
-  second's worth, so a page that stalls or is hidden resumes where it was.
-
-{#playhead-pause .member}
-**`pause`**`(): void` [¶](#playhead-pause){.headerlink}
-: Stops it where it is, live or not.
-
-{#playhead-on .member}
-**`on`**`(type: 'at', listener: (at: number) => void): () => void` [¶](#playhead-on){.headerlink}
-: Calls `listener` with the coordinate whenever it moves: at most once per frame while it plays,
-  and whenever it is set or scrubbed. Returns a function that stops it.
-
-(gpu)=
-
-### `Gpu`
-
-{.signature}
-`class Gpu extends` [`Handle`](#handle)
-
-A WebGL2 device that views draw with. Views on one `Gpu` share its memory and draw together in
-each animation frame, so linked views always show the same moment. Views use the first `Gpu`
-created unless given another, and [`View.create`](#view-create) creates one if none exists. When the device is
-lost, latkit requests a new one once the page is in the foreground, and moves the views, their
-canvases, and the frame listeners to it. The views stay the same views: what they were asked,
-their listeners, and pictures and videos drawing them carry over. Destroying a `Gpu` destroys
-its views and frame listeners. Other GPUs and datasets stay usable.
-
-```{rubric} Properties
-```
-
-{#gpu-lost .member}
-`readonly` **`lost`**`: boolean` [¶](#gpu-lost){.headerlink}
-: Whether the device is lost. latkit then requests a new one, so this is true only until it
-  arrives, or when there is none. Also true once an internal error stopped latkit. latkit also
-  gives up a device that has no memory to grow its data, and the new one gets the budget lowered
-  to what the old one gave.
-
-{#gpu-budget .member}
-**`budget`**`:` [`Budget`](#budget) [¶](#gpu-budget){.headerlink}
-: The GPU memory budget for data, shared by every view on this GPU. See [`Budget`](#budget). Defaults
-  to half the device's addressable word-texture capacity, at most 1 GiB, with 32 MiB uploaded per frame.
-
-{#gpu-work .member}
-`readonly` **`work`**`:` [`Work`](#work) [¶](#gpu-work){.headerlink}
-: Exact counts of the work this GPU has done since it was created, on every device it moved to.
-  See [`Work`](#work). The same budget, device limits, and frames give the same counts, so tests and
-  benchmarks can assert them.
-
-{#gpu-resident .member}
-`readonly` **`resident`**`: number` [¶](#gpu-resident){.headerlink}
-: Bytes of GPU memory the views draw from: data pages and each view's per-row data.
-
-{#gpu-uploading .member}
-`readonly` **`uploading`**`: number` [¶](#gpu-uploading){.headerlink}
-: Bytes waiting to upload to the GPU, across all its views.
-
-```{rubric} Methods
-```
-
-{#gpu-create .member}
-`static` **`create`**`(wait?:` [`Wait`](#wait)`): Promise<Gpu>` [¶](#gpu-create){.headerlink}
-: Requests a WebGL2 device. The first call takes the device [`load()`](#load) requested. Create one before
-  any view to set its `budget` first, or create another for views that should not share memory
-  with the rest. Loading and the request wait within `wait`. Rejects with an `unsupported` error
-  when the browser has no WebGL2 device.
-
-{#gpu-on .member}
-**`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}
-: Calls `listener` every animation frame with the frame's timestamp in milliseconds. It runs
-  before the views draw, so its changes show in that frame. While any listener is registered, a
-  frame runs on every animation frame. Returns a function that removes the listener.
-
-{#gpu-lose .member}
-**`lose`**`(): void` [¶](#gpu-lose){.headerlink}
-: Loses the device, as a GPU reset does, so a test can check what follows: `lost` turns true,
-  and latkit moves the views to a new device.
-
-{#gpu-step .member}
-**`step`**`(now: number, wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-step){.headerlink}
-: Draws one frame now, at `now` milliseconds on the `requestAnimationFrame` clock. It runs the
-  frame listeners, then draws every canvas that needs a frame. Resolves once the GPU has finished
-  the frame and its readbacks have arrived. Pipelines may still compile: a view waiting for one
-  wakes when it lands. After the first call the GPU stops requesting animation frames, so a test
-  or benchmark that steps every frame draws the same frames on any device.
-
-{#gpu-done .member}
-**`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-done){.headerlink}
-: Resolves once the GPU has finished the work submitted before the call, with the readbacks it
-  copies, and every pipeline a view or shot requested has compiled. A frame stepped after that
-  uses all of them.
-
-{#gpu-landed .member}
-**`landed`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-landed){.headerlink}
-: Resolves when work a view waits on arrives after this call (a readback, a pipeline compile, a
-  job, a label text, or a fetch), or when a view requests a frame. A harness that steps frames
-  awaits it to know when to step again.
+A region `[x, y, width, height]` in fractions of a canvas or picture, from its top left.
 
 ## Pictures and video
 
-Shots draw views into images and video.
+(image)=
+
+### `Image`
+
+{.signature}
+`class Image extends` [`Handle`](#handle)
+
+A picture's RGBA pixels, with straight alpha, rows top to bottom.
+
+```{rubric} Properties
+```
+
+{#image-width .member}
+`readonly` **`width`**`: number` [¶](#image-width){.headerlink}
+: Width in pixels.
+
+{#image-height .member}
+`readonly` **`height`**`: number` [¶](#image-height){.headerlink}
+: Height in pixels.
+
+{#image-rgba .member}
+`readonly` **`rgba`**`: Uint8Array` [¶](#image-rgba){.headerlink}
+: A copy of the pixels: 4 bytes per pixel, `width * height * 4` bytes in all.
+
+```{rubric} Methods
+```
+
+{#image-encode .member}
+**`encode`**`(format:` [`ImageFormat`](#imageformat)`, options?: { quality?: number } &` [`Wait`](#wait)`): Promise<Uint8Array>` [¶](#image-encode){.headerlink}
+: Encodes the image as a file. PNG is lossless with alpha. JPEG drops alpha: pixels that are not
+  opaque blend over black. WebP is lossless with alpha and smaller than PNG. The browser's own
+  encoder writes JPEG, and PNG of an opaque image. A worker writes the rest.
+
+  {#image-encode-quality .member}
+  **`quality`**`?: number` [¶](#image-encode-quality){.headerlink}
+  : JPEG quality, from 1 (smallest) to 100 (sharpest). Defaults to 90.
 
 (shot)=
 
@@ -1811,98 +1866,6 @@ const png = await (await Shot.of(view, { scale: 2 }).image()).encode('png');
   **`bitrate`**`?: number` [¶](#shot-video-bitrate){.headerlink}
   : Bits per second. Defaults to about 0.15 bits per pixel per frame.
 
-(shotoptions)=
-
-### `ShotOptions`
-
-{.signature}
-`interface ShotOptions`
-
-Options for a [`Shot`](#shot).
-
-{#shotoptions-scale .member}
-**`scale`**`?: number` [¶](#shotoptions-scale){.headerlink}
-: Pixels per CSS pixel. Defaults to 1. Views lay out at `size / scale` CSS pixels, so 2 draws the
-  same layout twice as sharp.
-
-{#shotoptions-transparent .member}
-**`transparent`**`?: boolean` [¶](#shotoptions-transparent){.headerlink}
-: Leaves the background transparent where the theme's background color would be.
-
-{#shotoptions-capture .member}
-**`capture`**`?: 'still' | 'now'` [¶](#shotoptions-capture){.headerlink}
-: When the picture is taken. `'still'`, the default, waits until every view is complete and
-  still: transitions, camera flights, and tile fades run until they finish. `'now'` waits only
-  until every view is complete, and freezes anything moving where it is.
-
-{#shotoptions-elapsed .member}
-**`elapsed`**`?: number` [¶](#shotoptions-elapsed){.headerlink}
-: The time in seconds that [`elapsed()`](#elapsed) expressions and flowing comets show in a still picture.
-  Defaults to the view's clock.
-
-(placed)=
-
-### `Placed`
-
-{.signature}
-`type Placed =` [`View`](#view) `| { view:` [`View`](#view)`; region:` [`Rect`](#rect) `}`
-
-A view drawn into a picture, in its own region or in `region`.
-
-{#placed-view .member}
-`readonly` **`view`**`:` [`View`](#view) [¶](#placed-view){.headerlink}
-: The view drawn.
-
-{#placed-region .member}
-`readonly` **`region`**`:` [`Rect`](#rect) [¶](#placed-region){.headerlink}
-: Where it draws in the picture, overriding its own region.
-
-(image)=
-
-### `Image`
-
-{.signature}
-`class Image extends` [`Handle`](#handle)
-
-A picture's RGBA pixels, with straight alpha, rows top to bottom.
-
-```{rubric} Properties
-```
-
-{#image-width .member}
-`readonly` **`width`**`: number` [¶](#image-width){.headerlink}
-: Width in pixels.
-
-{#image-height .member}
-`readonly` **`height`**`: number` [¶](#image-height){.headerlink}
-: Height in pixels.
-
-{#image-rgba .member}
-`readonly` **`rgba`**`: Uint8Array` [¶](#image-rgba){.headerlink}
-: A copy of the pixels: 4 bytes per pixel, `width * height * 4` bytes in all.
-
-```{rubric} Methods
-```
-
-{#image-encode .member}
-**`encode`**`(format:` [`ImageFormat`](#imageformat)`, options?: { quality?: number } &` [`Wait`](#wait)`): Promise<Uint8Array>` [¶](#image-encode){.headerlink}
-: Encodes the image as a file. PNG is lossless with alpha. JPEG drops alpha: pixels that are not
-  opaque blend over black. WebP is lossless with alpha and smaller than PNG. The browser's own
-  encoder writes JPEG, and PNG of an opaque image. A worker writes the rest.
-
-  {#image-encode-quality .member}
-  **`quality`**`?: number` [¶](#image-encode-quality){.headerlink}
-  : JPEG quality, from 1 (smallest) to 100 (sharpest). Defaults to 90.
-
-(imageformat)=
-
-### `ImageFormat`
-
-{.signature}
-`type ImageFormat = 'png' | 'jpeg' | 'webp'`
-
-An image file format for [`Image.encode()`](#image-encode).
-
 (video)=
 
 ### `Video`
@@ -1953,3 +1916,41 @@ A video being drawn, encoded, and written. Create one with [`Shot.video()`](#sho
 : Cancels drawing and encoding, aborts the output with `reason`, and unlocks it once pending
   writes settle. Later calls return the same promise. After `finish()` completes, it does
   nothing.
+
+(imageformat)=
+
+### `ImageFormat`
+
+{.signature}
+`type ImageFormat = 'png' | 'jpeg' | 'webp'`
+
+An image file format for [`Image.encode()`](#image-encode).
+
+(shotoptions)=
+
+### `ShotOptions`
+
+{.signature}
+`interface ShotOptions`
+
+Options for a [`Shot`](#shot).
+
+{#shotoptions-scale .member}
+**`scale`**`?: number` [¶](#shotoptions-scale){.headerlink}
+: Pixels per CSS pixel. Defaults to 1. Views lay out at `size / scale` CSS pixels, so 2 draws the
+  same layout twice as sharp.
+
+{#shotoptions-transparent .member}
+**`transparent`**`?: boolean` [¶](#shotoptions-transparent){.headerlink}
+: Leaves the background transparent where the theme's background color would be.
+
+{#shotoptions-capture .member}
+**`capture`**`?: 'still' | 'now'` [¶](#shotoptions-capture){.headerlink}
+: When the picture is taken. `'still'`, the default, waits until every view is complete and
+  still: transitions, camera flights, and tile fades run until they finish. `'now'` waits only
+  until every view is complete, and freezes anything moving where it is.
+
+{#shotoptions-elapsed .member}
+**`elapsed`**`?: number` [¶](#shotoptions-elapsed){.headerlink}
+: The time in seconds that [`elapsed()`](#elapsed) expressions and flowing comets show in a still picture.
+  Defaults to the view's clock.

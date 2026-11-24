@@ -1,14 +1,15 @@
-# ACTIVSg2000
+# Map generation by bus
 
 ```{image} ../images/texas.png
-:alt: Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines
+:alt: Amber disks show generation at buses on the ACTIVSg2000 network in Texas.
 :class: picture
 ```
 
-A synthetic Texas grid. Generators are sized by the square root of their output, and the ten largest are labeled. Comets flow along the lines of 345 kV and up, spaced in map units so they keep their place as the view zooms.
+Disk area represents total active power generation at each bus (MW). Labels identify buses at or above the tenth-highest bus total. Line color and width show voltage class. Moving marks highlight lines at 345 kV and above, all at the same animation speed.
 
-The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. Run `node docs/gallery/render.ts texas` to draw it again.
+```sh
+node docs/gallery/render.ts texas
+```
 
 ```{literalinclude} ../gallery/texas.ts
 :language: typescript

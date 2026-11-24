@@ -100,10 +100,11 @@ pub(crate) struct Job {
     /// JPEG quality, from 1 (smallest) to 100 (sharpest)
     #[arg(long, default_value = "90", value_parser = clap::value_parser!(u8).range(1..=100))]
     pub(crate) quality: u8,
-    /// The picture's width and height in pixels, such as `1920x1080`. A video rounds its width down
-    /// to a multiple of 4 and its height to an even number
+    /// The picture's width and height in pixels, such as `1920x1080`. With one side, as `1920x`
+    /// or `x1080`, the other follows what the scene's fit frames, with the same room around it. A
+    /// video rounds its width down to a multiple of 4 and its height to an even number
     #[arg(long, default_value = "1600x900", value_parser = size)]
-    pub(crate) size: [u32; 2],
+    pub(crate) size: [Option<u32>; 2],
     /// Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp
     #[arg(long, default_value = "1", value_parser = scale)]
     pub(crate) scale: f32,
@@ -130,7 +131,7 @@ pub(crate) struct Job {
     /// CSS pixels to keep clear at the top, right, bottom, and left
     #[arg(long, value_name = "T,R,B,L", value_parser = insets)]
     pub(crate) insets: Option<[f32; 4]>,
-    /// The axis coordinate to show. Sampled fields show their last frame at or before it
+    /// The axis coordinate to render. Marks interpolate between samples by default
     #[arg(long, value_parser = finite, allow_hyphen_values = true)]
     pub(crate) at: Option<f64>,
     /// A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets
@@ -252,9 +253,9 @@ impl Job {
         })
     }
 
-    /// The job's shot: its size, scale, panels, transparency, and deadline.
-    pub(crate) fn shot(&self) -> Shot {
-        let shot = Shot::new(self.size).scale(self.scale).deadline(Some(self.deadline)).panels(self.panel.clone());
+    /// The job's shot of `size` pixels: its scale, panels, transparency, and deadline.
+    pub(crate) fn shot(&self, size: [u32; 2]) -> Shot {
+        let shot = Shot::new(size).scale(self.scale).deadline(Some(self.deadline)).panels(self.panel.clone());
         if self.transparent { shot.transparent() } else { shot }
     }
 
@@ -350,7 +351,17 @@ impl Cli {
         if job.sequence() && (format.image(job.quality).is_none() || is_stdio(output)) {
             return Err(invalid("a %d pattern needs an image format: png, jpeg, or webp"));
         }
-        job.shot().check(format.pixels()).map_err(|e| invalid(&e.to_string()))
+        // A size with one side is checked once the render knows the other.
+        match job.size {
+            [Some(width), Some(height)] => {
+                job.shot([width, height]).check(format.pixels()).map_err(|e| invalid(&e.to_string()))
+            }
+            _ if job.scenes.len() > 1 => Err(invalid("a --size with one side takes one scene")),
+            _ if !job.camera.is_empty() => {
+                Err(invalid("a --size with one side follows a fit, so it takes no --camera"))
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -389,10 +400,16 @@ fn fps(value: &str) -> Result<f64, String> {
     finite(value).and_then(|f| if (1.0..=240.0).contains(&f) { Ok(f) } else { Err("expected 1 to 240 fps".into()) })
 }
 
-fn size(value: &str) -> Result<[u32; 2], String> {
-    let (w, h) = value.split_once(['x', 'X']).ok_or("expected WIDTHxHEIGHT")?;
-    let side = |v: &str| v.trim().parse::<u32>().ok().filter(|n| *n > 0).ok_or("expected positive whole numbers");
-    Ok([side(w)?, side(h)?])
+fn size(value: &str) -> Result<[Option<u32>; 2], String> {
+    let (w, h) = value.split_once(['x', 'X']).ok_or("expected WIDTHxHEIGHT, WIDTHx, or xHEIGHT")?;
+    let side = |v: &str| match v.trim() {
+        "" => Ok(None),
+        v => v.parse::<u32>().ok().filter(|n| *n > 0).map(Some).ok_or("expected positive whole numbers"),
+    };
+    match [side(w)?, side(h)?] {
+        [None, None] => Err("expected a width, a height, or both".into()),
+        sides => Ok(sides),
+    }
 }
 
 fn numbers<const N: usize>(value: &str) -> Result<[f32; N], String> {
@@ -498,7 +515,9 @@ mod tests {
         assert_eq!(pattern(Path::new("out/frame-%04d.png")), Some((10..14, 4)));
         assert_eq!(pattern(Path::new("out/%d.png")), Some((4..6, 0)));
         assert_eq!(pattern(Path::new("out/100%.png")), None);
-        assert_eq!(size("1920x1080"), Ok([1920, 1080]));
+        assert_eq!(size("1920x1080"), Ok([Some(1920), Some(1080)]));
+        assert_eq!((size("1920x"), size("x1080")), (Ok([Some(1920), None]), Ok([None, Some(1080)])));
+        assert!(size("x").is_err());
         assert!(size("0x10").is_err());
         assert_eq!(panel("0,0.5,1,0.5"), Ok([0.0, 0.5, 1.0, 0.5]));
         assert!(insets("1,2,3").is_err());

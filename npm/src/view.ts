@@ -6,7 +6,7 @@
 
 import type * as bindings from '../pkg/latkit.js';
 import type { Canvas, Rect } from './canvas.js';
-import { Snapshot, sourceOf, Table, type Source } from './data.js';
+import { columns, Snapshot, sourceOf, Table, type Source } from './data.js';
 import { device, Gpu } from './gpu.js';
 import type { Arrange, Camera, Fit, Row, Rows, Scene } from './inputs.js';
 import {
@@ -16,11 +16,12 @@ import {
   onStop,
   thrown,
   waited,
+  wasm,
   type LatkitError,
   type Wait,
 } from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
-import { owned, Patch } from './patch.js';
+import { owned, Patch, rows, type RowIds } from './patch.js';
 import { playhead as bound, type Playhead } from './playhead.js';
 
 /** The region covering a whole canvas or picture. */
@@ -106,7 +107,7 @@ export class View extends Handle {
       if (told.view) told.view.#tell(json);
     };
     const { json, tables } = encoded(scene);
-    super(device(gpu).view(json, tell), 'View');
+    super(device(gpu).view(json, tell, localTables(scene)), 'View');
     told.view = this;
     this.#unstop = onStop((error) => this.#emit('error', error));
     this.#gpu = gpu;
@@ -187,8 +188,8 @@ export class View extends Handle {
    * The scene drawn. A mark that matches one in the previous scene by kind, dataset, table, and
    * name keeps its state and eases to its new options. An option that can't be read, that the scene
    * can't use, or that doesn't fit the data draws as if unset, and a mark that doesn't fit draws
-   * nothing. Each is listed in `failures`. Only a scene whose space, marks, or a mark's table can't
-   * be read throws, and leaves the current one in place.
+   * nothing. Each is listed in `failures`. Assigning a scene throws if a local table is invalid
+   * or its space, marks, or a mark's table can't be read. The previous scene stays in place.
    *
    * A new scene draws once the pipelines its frames draw with have compiled. Until then the view
    * goes on drawing, and answering for, the scene before, and fits wait for the new one.
@@ -202,7 +203,7 @@ export class View extends Handle {
     const changed =
       tables.length !== this.#tables.length || tables.some((t, i) => t !== this.#tables[i]);
     const drawn = changed ? this.#drawn(tables, this.#sources) : undefined;
-    view(this).setScene(json);
+    view(this).setScene(json, localTables(scene));
     this.#scene = scene;
     this.#tables = tables;
     if (drawn) view(this).setSources(drawn);
@@ -231,22 +232,25 @@ export class View extends Handle {
    * that no source replaces by name. Throws an `invalid` error when two datasets share a name.
    */
   #drawn(tables: readonly Source[], sources: readonly Source[]): bindings.Source[] {
-    const named = new Set(sources.map((source) => source.name));
-    const drawn = [...sources, ...tables.filter((table) => !named.has(table.name))];
-    const twice = drawn.find((source, i) => drawn.findIndex((s) => s.name === source.name) !== i);
-    if (twice)
-      throw thrown({
-        code: 'invalid',
-        message: `two datasets are named '${twice.name}'`,
-        path: 'sources',
-      });
+    const external = new Set(sources.map((source) => source.name));
+    const drawn = [...sources, ...tables.filter((table) => !external.has(table.name))];
+    const names = new Set<string>();
+    for (const source of drawn) {
+      const name = source.name;
+      if (names.has(name))
+        throw thrown({
+          code: 'invalid',
+          message: `two datasets are named '${name}'`,
+          path: 'sources',
+        });
+      names.add(name);
+    }
     return drawn.map(sourceOf);
   }
 
   /**
-   * The axis coordinate shown, such as a time. Marks read sampled fields at it, interpolating
-   * between the frame at or before it and the next, unless an expression uses `step()`. Setting it
-   * on a view that follows a playhead moves the playhead.
+   * The current axis coordinate. Marks interpolate between samples by default. Use `step()` to
+   * hold the previous sample. Setting `at` also moves the view's playhead, if it has one.
    */
   get at(): number {
     return view(this).at;
@@ -571,16 +575,81 @@ function detail(event: ViewEvent): unknown {
   return event.detail;
 }
 
-/** `scene` as JSON, and the datasets of the tables it names. */
+/** Encodes scene options and collects external datasets. Local columns cross separately. */
 function encoded(scene: Scene): { json: string; tables: Source[] } {
   const tables = new Set<Source>();
-  const json = JSON.stringify(scene, function (this: Record<string, unknown>, key, value: unknown) {
-    // `value` is what `toJSON` returned. The holder still has the table itself.
-    const held = this[key];
-    if (held instanceof Table) tables.add(held.source);
-    return value;
-  });
+  const options = scene.tables === undefined ? scene : { ...scene, tables: undefined };
+  const json = JSON.stringify(
+    options,
+    function (this: Record<string, unknown>, key, value: unknown) {
+      // `value` is what `toJSON` returned. The holder still has the table itself.
+      const held = this[key];
+      if (held instanceof Table) tables.add(held.source);
+      return value;
+    },
+  );
   return { json, tables: [...tables] };
+}
+
+function record(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    !ArrayBuffer.isView(value)
+  );
+}
+
+function validIds(ids: RowIds): boolean {
+  return (
+    Array.isArray(ids) ||
+    ids instanceof Float64Array ||
+    ids instanceof Uint32Array ||
+    (record(ids) &&
+      'count' in ids &&
+      Object.keys(ids).length === 1 &&
+      Number.isInteger(ids.count) &&
+      ids.count >= 0 &&
+      ids.count <= 0xffffffff)
+  );
+}
+
+/** Owns the pending batch until the binding consumes it or a declaration fails. */
+function localTables(scene: Scene): bindings.TableBatch | undefined {
+  if (scene.tables === undefined) return undefined;
+  const invalid = (path: string, message: string) =>
+    thrown({ code: 'invalid', path, message: `${path}: ${message}` });
+  if (!record(scene.tables)) throw invalid('scene.tables', 'expected tables by name');
+  const batch = new (wasm().TableBatch)();
+  try {
+    for (const [name, table] of Object.entries(scene.tables)) {
+      const path = `scene.tables.${name}`;
+      if (!record(table) || Object.keys(table).some((k) => k !== 'ids' && k !== 'fields'))
+        throw invalid(path, 'expected a table with ids and fields');
+      if (table.fields !== undefined && !record(table.fields))
+        throw invalid(path + '.fields', 'expected fields by name');
+      if (table.ids != null && !validIds(table.ids))
+        throw invalid(path + '.ids', 'invalid row ids');
+      const fields = table.fields ?? {};
+      for (const [key, field] of Object.entries(fields)) {
+        if (Array.isArray(field) || ArrayBuffer.isView(field)) continue;
+        if (
+          !record(field) ||
+          !('reference' in field) ||
+          typeof field.reference !== 'string' ||
+          !validIds(field.ids) ||
+          Object.keys(field).some((k) => k !== 'ids' && k !== 'reference')
+        )
+          throw invalid(`${path}.fields.${key}`, 'expected values or a row reference');
+      }
+      const [ids] = table.ids == null ? rows(fields, undefined) : [table.ids];
+      batch.write(name, ...columns(name, ids, fields));
+    }
+    return batch;
+  } catch (error) {
+    batch.free();
+    throw error;
+  }
 }
 
 /** @internal Returns a new bindings handle to the view, for a canvas to show or a shot to draw. */

@@ -91,8 +91,7 @@ def prepare(source, job, indices):
         "map.json": {
             "space": {"plane": {"grid": "off"}}, "ease": 0,
             "theme": {**theme, "edge": {"color": None, "parallel": None}},
-            "title": "ACTIVSg70k",
-            "subtitle": f"A fault on bus {FAULT} at 1 s, cleared at 1.15 s",
+            "title": {"text": "ACTIVSg70k", "subtitle": f"A fault on bus {FAULT} at 1 s, cleared at 1.15 s"},
             "marks": [
                 {"lines": ["states", "polygons"], "color": "#5c7a8f6b", "width": 0.75},
                 {"edges": ["grid", "Branch"], "ends": ["from", "to"], "width": "$width"},
@@ -101,12 +100,12 @@ def prepare(source, job, indices):
                     "elevation": {"mul": ["$height", height_scale]},
                     "color": {"colormap": {"kind": "diverging", "colors": PALETTE},
                               "value": "$df", "domain": [-0.05, 0.05]},
-                    "legend": "Bus frequency deviation · Hz",
+                    "legend": "Bus frequency deviation (Hz)",
                 },
             ],
         },
         "plot.json": {
-            "space": {"plot": {"x": {"label": "Simulation time · s"}, "y": {"label": "Δf · Hz", "precision": 2}}},
+            "space": {"plot": {"x": {"label": "Simulation time (s)"}, "y": {"label": "Δf (Hz)", "precision": 2}}},
             "ease": 0,
             "theme": {**theme, "text": {**theme["text"], "size": 13}, "plot": {"playhead": "#eff5f8"}},
             "marks": [{"lines": ["trace", "Bus"], "trace": "df", "width": 1.4,

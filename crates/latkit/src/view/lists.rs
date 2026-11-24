@@ -410,7 +410,7 @@ impl View {
                 let found = crate::wire::In::new(&bytes).u32().unwrap_or(0);
                 shown.comets.found.make(stamp, found);
             }
-            let recorded = MarkVariants::shown(shown, &self.scene.space).screen().is_some();
+            let recorded = MarkVariants::shown(shown, &self.scene).screen().is_some();
             if !(recorded && shown.mark.flows() && shown.drawable()) {
                 shown.comets.list = None;
                 continue;
@@ -647,7 +647,8 @@ impl View {
     }
 
     /// The marks whose segment lists measure their distances along again, as the projection
-    /// changed: those that dash, or carry comets spaced in CSS pixels, which measure on screen.
+    /// changed: those that dash, place markers a fraction of the way along, or carry comets spaced
+    /// in CSS pixels, which measure on screen.
     /// A list only comets read waits while comets rest (see `View::comets_travel`). A list `built`
     /// this frame measures as it builds.
     pub(super) fn lengths_due(&mut self, built: &[usize]) -> Vec<usize> {
@@ -655,7 +656,7 @@ impl View {
         let resting = self.comets_shown == 0.0;
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
-            let read = shown.mark.dashes() || !resting;
+            let read = shown.mark.dashes() || shown.mark.measures_markers() || shown.mark.blended() || !resting;
             if shown.segments.list.is_none()
                 || !shown.drawable()
                 || !shown.measures_paths()
@@ -784,7 +785,7 @@ mod tests {
         data.apply(Patch::new().set(nodes).set(links.reference("to", "Node", to))).unwrap();
         let shown = |parallel: Option<Parallel>| {
             let theme = Theme { edge: EdgeTheme { parallel, ..Theme::dark().edge }, ..Theme::dark() };
-            let scene = Scene::new(Plane { grid: Grid::Off })
+            let scene = Scene::new(Plane { grid: Grid::Off, ..Plane::default() })
                 .theme(theme)
                 .ease(std::time::Duration::ZERO)
                 .draw(Vertices::of("d", "Node").position(field("x"), field("y")).radius(1.0))
@@ -891,7 +892,8 @@ mod tests {
     fn heights_streaming(gpu: &crate::Gpu, data: &Data, node: &dyn Fn(f64) -> Table) -> u32 {
         use crate::Vertices;
         let raised = Vertices::of("d", "Node").position(field("x"), field("y")).elevation(field("z"));
-        let scene = Scene::new(Plane { grid: Grid::Off }).ease(std::time::Duration::ZERO).draw(raised);
+        let scene =
+            Scene::new(Plane { grid: Grid::Off, ..Plane::default() }).ease(std::time::Duration::ZERO).draw(raised);
         let mut view = View::new(gpu, scene);
         // Tilted, depth varies, so the raised rows draw lowest first.
         view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 50.0, bearing: 0.0 });
@@ -961,7 +963,8 @@ mod tests {
         )
         .unwrap();
         let line = Lines::of("d", "Path").color(crate::when(field("red")).then(Color::WHITE).otherwise(Color::BLACK));
-        let scene = |line| Scene::new(Plane { grid: Grid::Off }).ease(std::time::Duration::ZERO).draw(line);
+        let scene =
+            |line| Scene::new(Plane { grid: Grid::Off, ..Plane::default() }).ease(std::time::Duration::ZERO).draw(line);
         let mut view = View::new(&gpu, scene(line.clone()));
         view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
         view.set_sources([&data]).unwrap();

@@ -35,7 +35,7 @@ export interface Basemap {
 /** No map: the earth's ground alone. */
 export const NO_MAP: Basemap = { credit: '', data: [], marks: [] };
 
-const NATURAL_EARTH = 'Natural Earth · public domain';
+const NATURAL_EARTH = 'Natural Earth (public domain)';
 const NE = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/';
 
 export const MAPS: Record<
@@ -82,7 +82,7 @@ export const MAPS: Record<
   planet() {
     const base = new Tiles('base', 'https://tiles.openfreemap.org/planet');
     return {
-      credit: 'OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors',
+      credit: 'OpenFreeMap, © OpenMapTiles, © OpenStreetMap contributors',
       data: [],
       marks: [
         { areas: base.table('landcover'), color: LOOK.landcover },

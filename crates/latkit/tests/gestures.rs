@@ -591,8 +591,15 @@ fn reduced_motion_applies_every_move_at_once() {
     still.input(&wheel, common::now());
     step(&gpu, &mut still);
     assert!((zoom(&still) - before - 0.3).abs() < 1e-6, "applies at once: {}", zoom(&still) - before);
-    // The system preference reduces motion too, and a flight jumps to its end.
-    let mut system = view(&gpu, Controls::default());
+    // A view moves in full unless its scene says otherwise, whatever the system prefers.
+    let mut full = view(&gpu, Controls::default());
+    full.set_reduced_motion(true);
+    full.input(&wheel, common::now());
+    step(&gpu, &mut full);
+    assert!(zoom(&full) - before < 0.29, "glides by default: {}", zoom(&full) - before);
+    // A scene that follows the system preference reduces motion with it, and a flight jumps to
+    // its end.
+    let mut system = view(&gpu, Controls { motion: Motion::System, ..Controls::default() });
     system.set_reduced_motion(true);
     let to = Camera::Map { center: [-10.0, 5.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 };
     system.fly(to, None);

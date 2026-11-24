@@ -14,11 +14,20 @@ import {
 } from './internal.js';
 import { load } from './load.js';
 import type { Description, TilesDescription, Value } from './outputs.js';
-import { framed, Patch, rows, type Fields, type RowIds, type Run, type Values } from './patch.js';
+import {
+  framed,
+  Patch,
+  rows,
+  tableBytes,
+  type Fields,
+  type RowIds,
+  type Run,
+  type Values,
+} from './patch.js';
 
 /**
- * A table in a dataset, such as `grid.table('Bus')`. Marks draw its rows and `field().from()` reads
- * its fields. A view loads every dataset its scene uses. In JSON it is `[data, table]`.
+ * A table in a dataset, such as `grid.table('Bus')`. Use it in a mark or a cross-table
+ * expression. It serializes as `[data, table]`.
  */
 export class Table {
   /** The dataset the table belongs to. */
@@ -135,12 +144,8 @@ export abstract class Dataset extends Handle {
 }
 
 /**
- * A dataset that changes in place. Each change applies all at once or not at all. Every
- * {@link Patch} method is also a method here that applies that one change right away, and `apply`
- * applies a patch of several. Views draw the latest version from the frame after each change. A
- * {@link Snapshot} keeps one version and shares its pages with the dataset, so an undo history
- * costs only the pages that differ. Destroying a `Data` leaves the views that draw it, and its
- * snapshots, usable.
+ * A mutable dataset. Views show changes on the next frame. Write individual edits with methods
+ * such as `set`, or batch them with `apply`. Views and snapshots remain usable after `destroy()`.
  *
  * ```ts
  * const grid = new Data('grid').set('Bus', [1, 2], { kv: [230, 115] });
@@ -184,8 +189,8 @@ export class Data extends Dataset {
   }
 
   /**
-   * Applies every change in `patch`, or none when one is invalid, and returns this dataset. An
-   * `invalid` error's `path` names the failing change, such as `patch[1].Bus.kv`.
+   * Applies the patch and returns this dataset. If any change is invalid, the dataset keeps its
+   * previous version. The error path identifies the change, for example `patch[1].Bus.kv`.
    */
   apply(patch: Patch | Uint8Array): this {
     inner<bindings.Data>(this).apply(patch instanceof Uint8Array ? patch : framed(patch));
@@ -209,9 +214,7 @@ export class Data extends Dataset {
 
   /**
    * Applies {@link Patch.set}: writes `fields` for rows `ids` (or `0` to `n - 1`) of `table`,
-   * adding new rows. Typed arrays of numbers, for rows given as a `Uint32Array`, as `{ count }`, or
-   * not at all, are copied once and become the fields' values as they are. That is the way to
-   * write a field every frame.
+   * adding new rows. For a numeric field updated every frame, pass a typed array.
    */
   set(table: string, fields: Fields): this;
   set(table: string, ids: RowIds, fields?: Fields): this;
@@ -219,27 +222,8 @@ export class Data extends Dataset {
     return this.#write(false, table, ...rows(ids, fields));
   }
 
-  /**
-   * Applies one `set`, or with `replace` one `replace`. Number arrays for numbered rows go to
-   * WebAssembly as they are. Any other ids or values are written as a patch.
-   */
   #write(replace: boolean, table: string, ids: RowIds, fields: Fields): this {
-    const numbers = numbered(ids, fields);
-    if (!numbers) {
-      const patch = new Patch();
-      return this.apply(
-        replace ? patch.replace(table, ids, fields) : patch.set(table, ids, fields),
-      );
-    }
-    const names = Object.keys(fields);
-    inner<bindings.Data>(this).write(
-      replace,
-      table,
-      numbers.ids,
-      numbers.count,
-      names,
-      numbers.values,
-    );
+    inner<bindings.Data>(this).write(replace, table, ...columns(table, ids, fields));
     return this;
   }
 
@@ -271,12 +255,12 @@ export class Data extends Dataset {
     return this.apply(new Patch().frames(table, field, run));
   }
 
-  /** Returns the current version as a {@link Snapshot}. Later patches don't change it. O(1). */
+  /** Returns an immutable {@link Snapshot} in O(1). Unchanged pages are shared across versions. */
   snapshot(): Snapshot {
     return Snapshot.made(inner<bindings.Data>(this).snapshot());
   }
 
-  /** Makes `snapshot`, a version of this dataset, the current version. This is how to undo. */
+  /** Restores this dataset to a previous snapshot. */
   restore(snapshot: Snapshot): this {
     inner<bindings.Data>(this).restore(inner<bindings.Snapshot>(snapshot));
     return this;
@@ -286,27 +270,46 @@ export class Data extends Dataset {
 /** A typed array of numbers. A `Uint8Array` holds booleans, so it is not one. */
 type Numbers = Float32Array | Float64Array | Int32Array | Uint32Array;
 
-/**
- * Returns `ids` and `fields` as the bindings take typed writes: the ids, or the count of rows from
- * 0, and each field's array. Returns `undefined` unless the ids are a `Uint32Array` or a whole
- * `{ count }` and every field is a typed array of numbers.
- */
-function numbered(
+function numbers(field: Fields[string]): Numbers | undefined {
+  if (
+    field instanceof Float32Array ||
+    field instanceof Float64Array ||
+    field instanceof Int32Array ||
+    field instanceof Uint32Array
+  )
+    return field;
+  if (!Array.isArray(field)) return undefined;
+  for (let i = 0; i < field.length; i++) {
+    if (typeof field[i] !== 'number') return undefined;
+  }
+  return new Float64Array(field);
+}
+
+/** @internal Sends numeric columns directly and encodes the remaining fields with their row ids. */
+export function columns(
+  table: string,
   ids: RowIds,
   fields: Fields,
-): { ids: Uint32Array | undefined; count: number; values: Numbers[] } | undefined {
-  const values = Object.values(fields);
-  const typed = (v: unknown): v is Numbers =>
-    v instanceof Float32Array ||
-    v instanceof Float64Array ||
-    v instanceof Int32Array ||
-    v instanceof Uint32Array;
-  if (!values.every(typed)) return undefined;
-  if (ids instanceof Uint32Array) return { ids, count: ids.length, values };
-  if (ArrayBuffer.isView(ids) || Array.isArray(ids) || !('count' in ids)) return undefined;
-  const { count } = ids;
-  if (!Number.isInteger(count) || count < 0 || count > 0xffffffff) return undefined;
-  return { ids: undefined, count, values };
+): [base: number | Uint32Array | Uint8Array, names: string[], values: Numbers[]] {
+  const names: string[] = [];
+  const values: Numbers[] = [];
+  let encoded: Record<string, Fields[string]> | undefined;
+  for (const [name, field] of Object.entries(fields)) {
+    const numeric = numbers(field);
+    if (numeric) {
+      names.push(name);
+      values.push(numeric);
+    } else {
+      encoded ??= Object.create(null) as Record<string, Fields[string]>;
+      encoded[name] = field;
+    }
+  }
+  if (!encoded) {
+    if (ids instanceof Uint32Array) return [ids, names, values];
+    if ('count' in ids && Number.isInteger(ids.count) && ids.count >= 0 && ids.count <= 0xffffffff)
+      return [ids.count, names, values];
+  }
+  return [tableBytes(table, ids, encoded ?? {}), names, values];
 }
 
 /**

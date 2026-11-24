@@ -220,11 +220,11 @@ pub fn green_edges() -> Theme {
 /// The plain theme with label halos off.
 pub fn haloless() -> Theme {
     let plain = plain_theme();
-    Theme { text: latkit::TextTheme { halo: 0.0, ..plain.text.clone() }, ..plain }
+    Theme { text: latkit::TextTheme { halo: 0.0.into(), ..plain.text.clone() }, ..plain }
 }
 
 pub fn plane() -> Plane {
-    Plane { grid: Grid::Off }
+    Plane { grid: Grid::Off, ..Plane::default() }
 }
 
 pub fn camera() -> Camera {

@@ -1,17 +1,18 @@
 // Extents for fitting: the least and greatest x, y, and z of each mark's shown instances, in
 // position units, and the widest margin its markers keep in CSS pixels, as order-preserving words.
-// It uses the same geometry as the draws: a vertex's box, a stroke's points, and an area's triangle
-// corners. While a fit measures chosen rows, only rows marked `FIT` count. A record is eight words,
+// It uses the same geometry as the draws: a vertex's box as its bearing turns it, with the margin a
+// symbol's ink may reach past it, a stroke's points, and an area's triangle corners. While a fit measures chosen rows, only rows marked `FIT` count. A record is eight words,
 // written by two draws of one color target each: `params.value` 0 writes the least x, y, and z and
 // the greatest x, and 1 the greatest y and z and the margin.
 
 import package::lib::types::{
-    NONE, FIT, PATH_ENDS, PATH_BENDS, PATH_TRACE, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS, OWN_HEIGHT, WordStep, SCAN_BLOCK,
+    NONE, FIT, PATH_ENDS, PATH_TRACE, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS, OWN_HEIGHT, WordStep, SCAN_BLOCK,
+    TURNS, MARKER_SYMBOL, SYMBOL_MARGIN,
 };
-import package::lib::bind::{frame, mark};
+import package::lib::bind::{frame, mark, word};
 import package::lib::focus::focus_of;
 import package::lib::reduce::ordered;
-import package::lib::state::{row_at, vertex_at};
+import package::lib::state::{row_at, vertex_at, extra_at};
 import package::lib::points::{placed, vertex_half};
 import package::lib::path::{PATH, segment, segment_ends, stroke_style, stroke_instances, path_position};
 import package::lib::triangles::{area_source, area_bits, triangle_instances};
@@ -57,12 +58,22 @@ fn point(i: u32) {
     // a marker sized in pixels and a marker's least size in pixels widen the margin instead.
     // Measured at the current zoom, pixels could correspond to any number of units.
     let units = (v.flags & HALF_UNITS) != 0u;
+    // How far a box of half size (1, 0), and one of (0, 1), reach across and up once the row's
+    // bearing turns it, and with a symbol's margin, which its ink may reach past its box.
+    var reach = vec4f(1.0, 0.0, 0.0, 1.0);
+    if (mark.flags & TURNS) != 0u {
+        let bearing = radians(bitcast<f32>(word(extra_at(row, (mark.inputs >> 8u) + (mark.inputs & 0xffu)))));
+        let turn = abs(vec2f(cos(bearing), sin(bearing)));
+        reach = vec4f(turn.x, turn.y, turn.y, turn.x);
+    }
+    reach *= select(1.0, 1.0 + SYMBOL_MARGIN, mark.marker == MARKER_SYMBOL);
     let own = vec2f(v.half.x, select(v.half.x, v.half.y, (v.flags & OWN_HEIGHT) != 0u));
-    let half = select(vec2f(0.0), own, units);
+    let half = select(vec2f(0.0), own.x * reach.xy + own.y * reach.zw, units);
     let p = v.hi + v.lo;
     extend(vec3f(p - half, v.elevation));
     extend(vec3f(p + half, v.elevation));
-    let pixels = vertex_half(v);
+    let size = vertex_half(v);
+    let pixels = size.x * reach.xy + size.y * reach.zw;
     margin = max(margin, ordered(select(max(pixels.x, pixels.y), v.range.x, units)));
 }
 
@@ -87,9 +98,10 @@ fn trace(i: u32) {
 fn stroke(i: u32) {
     if PATH == PATH_TRACE { trace(i); return; }
     // Keep constant exits separate from runtime tests so unreachable geometry is removed
-    // before translation, rather than leaving the driver to simplify a short-circuit branch.
+    // before translation, rather than leaving the driver to simplify a short-circuit branch. An
+    // edge between its ends lies within its vertices' box, which their marks measure. One through
+    // bends can reach outside it, so its points count.
     if PATH == PATH_ENDS { return; }
-    if PATH == PATH_BENDS { return; }
     if i >= stroke_instances() { return; }
     let s = segment(i);
     if s.item >= mark.rows || !counted(s.row) || !stroke_style(s.row).shown {

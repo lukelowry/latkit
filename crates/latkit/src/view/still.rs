@@ -38,6 +38,8 @@ pub(super) struct Still {
     pub(super) from: Option<Cut>,
     held: Option<Cut>,
     view: u64,
+    #[cfg(target_arch = "wasm32")]
+    pub(super) placement_version: u64,
     last: Option<(Cut, u64)>,
     runs: [u32; 2],
 }
@@ -92,6 +94,10 @@ impl View {
             if self.still.view != view || any(0..held.rows) || any(after) || hidden {
                 self.still.held = None;
             }
+        }
+        #[cfg(target_arch = "wasm32")]
+        if travel || changed.iter().any(|&dirty| dirty) {
+            self.still.placement_version = self.still.placement_version.wrapping_add(1);
         }
         self.still.view = view;
         let cut = self.cut(&changed, flowing);
@@ -171,11 +177,7 @@ impl View {
             (_, None) => Cut { rows: self.marks.len(), comets: None, opaque: true },
         };
         let grounded = cut.opaque || !self.layered() || (0..cut.rows).all(|i| !self.heights_vary(i));
-        // Frames where only comets move draw with the comets' pipelines. Other cuts wait for the
-        // still's own.
-        let ready =
-            if cut.opaque && cut.comets.is_some() { self.can_use(Stage::Draw) } else { self.can_use(Stage::Changes) };
-        (cut.rows > 0 && grounded && ready).then_some(cut)
+        (cut.rows > 0 && grounded && self.can_use(Stage::Changes)).then_some(cut)
     }
 
     /// The first mark whose comets travel.
