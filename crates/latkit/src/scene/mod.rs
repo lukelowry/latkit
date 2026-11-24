@@ -45,13 +45,11 @@ pub use vertices::Vertices;
 use self::mark::MarkKind;
 use crate::{Error, Path, Result, Snapshot, Source, Step};
 
-/// A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
-/// ease duration, and an optional title.
+/// A space and its marks, in drawing order. A scene also sets layout, style, and input controls.
 ///
-/// A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
-/// its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`. An option that can't be
-/// read, or that the scene can't use, draws as if unset, and views list why in their
-/// [`failures`](crate::View::failures).
+/// JSON uses camelCase field names. Each mark names a dataset and table, for example
+/// `{ "vertices": ["grid", "Bus"], "radius": 4 }`. A view ignores invalid options and lists
+/// them in [`failures`](crate::View::failures).
 ///
 /// ```
 /// # use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};
@@ -65,13 +63,12 @@ use crate::{Error, Path, Result, Snapshot, Source, Step};
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 pub struct Scene {
-    /// The coordinate space positions are in.
+    /// The coordinate space for mark positions.
     pub(crate) space: Space,
-    /// The marks, in drawing order: each draws over the marks before it.
+    /// Marks in drawing order, from back to front.
     #[serde(default)]
     pub(crate) marks: Vec<Mark>,
-    /// How the view places vertex rows that have no position, on a plane or the earth. Defaults to
-    /// `none`.
+    /// Layout for vertices without positions on a plane or the earth. Defaults to `none`.
     #[serde(default)]
     pub(crate) layout: Layout,
     /// Default colors and sizes, and the look of text, focus, and each space. Defaults to `dark`.
@@ -80,12 +77,11 @@ pub struct Scene {
     /// How the view responds to the pointer and keyboard.
     #[serde(default)]
     pub(crate) controls: Controls,
-    /// How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to
-    /// 0.3.
+    /// Animation duration in seconds for scene and data changes. Defaults to 0.3. Use 0 to disable.
     #[serde(default = "ease", deserialize_with = "form::seconds")]
     #[schemars(with = "f64")]
     pub(crate) ease: Duration,
-    /// The title: its text, or title options.
+    /// Title text or title options.
     #[serde(default)]
     pub(crate) title: Option<Title>,
     /// Why options read from JSON were left out, each at its path.

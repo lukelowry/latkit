@@ -5,10 +5,11 @@
 :class: picture
 ```
 
-Ridged mountains in three dimensions, as a wire mesh over a grid of vertices. Edges blend their endpoints' colors.
+A wire mesh connects the mountain grid. Each edge blends the colors of its endpoints.
 
-The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. Run `node docs/gallery/render.ts terrain` to draw it again.
+```sh
+node docs/gallery/render.ts terrain
+```
 
 ```{literalinclude} ../gallery/terrain.ts
 :language: typescript

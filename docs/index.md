@@ -30,18 +30,15 @@ cargo add latkit            # in Rust
 
 ## Quickstart
 
-`quickstart(canvas)` draws a dataset on a canvas. Destroy the `view` and `grid` it returns when the
-page is done with them. The package's consumer test type-checks and renders this file.
+`quickstart(canvas)` draws a dataset on a canvas. Call `destroy()` on the returned `view` and `grid` when the page is done with them.
 
 ```{literalinclude} ../npm/test/consumer/quickstart.ts
 :language: typescript
 ```
 
-A **dataset** is a set of named tables of columns, and you change it in place. A **scene**
-describes what to draw: marks that draw a dataset's tables, in a space, with a theme and controls.
-A **view** draws a scene on a canvas and into pictures. Scenes and expressions are plain data, and
-`JSON.stringify` writes the JSON the command line reads. `load()` loads the WebAssembly that
-datasets and drawing need. `View.create()` and `Data.read()` call it for you.
+A **dataset** holds named tables. A **scene** describes which rows to draw, where to place
+them, and how they look. A **view** renders the scene on a canvas. To use a scene with the
+CLI, serialize it with `JSON.stringify`.
 
 ## Examples
 
@@ -62,9 +59,7 @@ datasets and drawing need. `View.create()` and `Data.read()` call it for you.
 : 260,000 translucent points of a strange attractor.
 :::
 
-latkit draws every picture on this site, and the {doc}`examples/index` show the code for each. The
-{doc}`guide` covers data, scenes, views, and pictures. The {doc}`cli` page covers drawing from JSON.
-{doc}`performance` reports benchmark results, and the reference lists every option.
+Browse the full {doc}`examples/index` or start with the {doc}`guide`.
 
 ```{toctree}
 :hidden:

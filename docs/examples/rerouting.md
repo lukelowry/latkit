@@ -5,13 +5,9 @@
 :class: picture
 ```
 
-Half a second after the Little Rock to Newark 765 kV line opens, its power moves onto the rest of
-ACTIVSg70k. Each branch whose real power changed lights up by how much, as the simulation recorded
-it, with comets running the way the change runs.
+The image shows where power flows half a second after the 765 kV line from Little Rock to Newark opens.
+Brighter branches carry larger changes in real power. Comets show the direction of each change.
 
 <video class="picture" src="../_static/videos/rerouting.mp4" controls loop muted playsinline preload="metadata"></video>
 
-The film plays the simulation's first ten seconds at half speed.
-
-The `latkit` command line drew this picture and film from a simulation recording too large for
-the repository.
+The video plays the first ten seconds at half speed. The source recording is too large to include here.

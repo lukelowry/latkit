@@ -274,7 +274,7 @@
         "required": false,
         "many": false,
         "global": false,
-        "help": "The axis coordinate to show. Sampled fields show their last frame at or before it",
+        "help": "The axis coordinate to render. Marks interpolate between samples by default",
         "defaults": [],
         "values": []
       },
@@ -604,7 +604,7 @@
         "required": false,
         "many": false,
         "global": false,
-        "help": "The axis coordinate to show. Sampled fields show their last frame at or before it",
+        "help": "The axis coordinate to render. Marks interpolate between samples by default",
         "defaults": [],
         "values": []
       },

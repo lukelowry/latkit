@@ -1,9 +1,8 @@
 # Examples
 
-The `latkit` command line draws every picture here. Each page shows the module that builds the
-picture's datasets with `Data` and returns its scene. The
-[example suite](https://github.com/lukelowry/latkit/tree/main/npm/examples) shows the same features
-live in the browser.
+Most examples include their TypeScript source and a command to reproduce the image. The fault
+and rerouting videos use recordings too large to include here.
+[Browse the interactive browser examples](https://github.com/lukelowry/latkit/tree/main/npm/examples).
 
 :::{container} cards
 [![Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage](../images/grid.png) ACTIVSg70k](grid.md)

@@ -9,10 +9,8 @@ use super::snapshot::Snapshot;
 use crate::pending::Watchers;
 use crate::{Error, Result};
 
-/// A dataset that changes in place. It holds named tables of columns, and only patches change it.
-/// Clones share the same dataset. A view drawing it shows the latest version from the frame after a
-/// patch applies. A [`Snapshot`] keeps one version unchanged and costs only the pages that later
-/// versions rewrite.
+/// A mutable dataset of named tables. Clones share the same data. Views show an applied
+/// [`Patch`] on the next frame. A [`Snapshot`] keeps an immutable version.
 ///
 /// ```
 /// # use latkit::{Data, Ids, Patch, Table};
@@ -62,14 +60,13 @@ impl Data {
         Ok(())
     }
 
-    /// The current version, which later patches do not change. O(1).
+    /// Returns an immutable snapshot in O(1). Versions share unchanged pages.
     pub fn snapshot(&self) -> Snapshot {
         self.current().clone()
     }
 
-    /// Makes `snapshot`, a version of this dataset, the current version, like an undo. Views
-    /// drawing the dataset show it from their next frame. A snapshot of another dataset (by name)
-    /// is an error.
+    /// Restores a snapshot. Views show the restored data on the next frame. Returns an error if
+    /// the snapshot's dataset name differs.
     pub fn restore(&self, snapshot: &Snapshot) -> Result<()> {
         if snapshot.name() != self.name() {
             return Err(Error::invalid(format!("a snapshot of '{}' restored to '{}'", snapshot.name(), self.name())));

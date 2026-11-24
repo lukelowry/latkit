@@ -17,8 +17,8 @@ import type { Description, TilesDescription, Value } from './outputs.js';
 import { framed, Patch, rows, type Fields, type RowIds, type Run, type Values } from './patch.js';
 
 /**
- * A table in a dataset, such as `grid.table('Bus')`. Marks draw its rows and `field().from()` reads
- * its fields. A view loads every dataset its scene uses. In JSON it is `[data, table]`.
+ * A table in a dataset, such as `grid.table('Bus')`. Use it in a mark or a cross-table
+ * expression. It serializes as `[data, table]`.
  */
 export class Table {
   /** The dataset the table belongs to. */
@@ -135,12 +135,8 @@ export abstract class Dataset extends Handle {
 }
 
 /**
- * A dataset that changes in place. Each change applies all at once or not at all. Every
- * {@link Patch} method is also a method here that applies that one change right away, and `apply`
- * applies a patch of several. Views draw the latest version from the frame after each change. A
- * {@link Snapshot} keeps one version and shares its pages with the dataset, so an undo history
- * costs only the pages that differ. Destroying a `Data` leaves the views that draw it, and its
- * snapshots, usable.
+ * A mutable dataset. Views show changes on the next frame. Write individual edits with methods
+ * such as `set`, or batch them with `apply`. Views and snapshots remain usable after `destroy()`.
  *
  * ```ts
  * const grid = new Data('grid').set('Bus', [1, 2], { kv: [230, 115] });
@@ -184,8 +180,8 @@ export class Data extends Dataset {
   }
 
   /**
-   * Applies every change in `patch`, or none when one is invalid, and returns this dataset. An
-   * `invalid` error's `path` names the failing change, such as `patch[1].Bus.kv`.
+   * Applies the patch and returns this dataset. If any change is invalid, the dataset keeps its
+   * previous version. The error path identifies the change, for example `patch[1].Bus.kv`.
    */
   apply(patch: Patch | Uint8Array): this {
     inner<bindings.Data>(this).apply(patch instanceof Uint8Array ? patch : framed(patch));
@@ -271,12 +267,12 @@ export class Data extends Dataset {
     return this.apply(new Patch().frames(table, field, run));
   }
 
-  /** Returns the current version as a {@link Snapshot}. Later patches don't change it. O(1). */
+  /** Returns an immutable {@link Snapshot} in O(1). Unchanged pages are shared across versions. */
   snapshot(): Snapshot {
     return Snapshot.made(inner<bindings.Data>(this).snapshot());
   }
 
-  /** Makes `snapshot`, a version of this dataset, the current version. This is how to undo. */
+  /** Restores this dataset to a previous snapshot. */
   restore(snapshot: Snapshot): this {
     inner<bindings.Data>(this).restore(inner<bindings.Snapshot>(snapshot));
     return this;

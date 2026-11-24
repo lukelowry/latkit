@@ -5,13 +5,9 @@
 :class: picture
 ```
 
-Half a second after a fault at bus 69645, cleared at 1.15 s, ACTIVSg25k swings as it recovers.
-Each branch whose real power changed lights up by how much, as the simulation recorded it, with
-comets running the way the change runs.
+The image shows the grid half a second after a fault at bus 69645. The fault clears at 1.15 s.
+Brightness shows how much each branch's real power changed. The comets show the direction of that change.
 
 <video class="picture" src="../_static/videos/fault.mp4" controls loop muted playsinline preload="metadata"></video>
 
-The film plays the simulation's first ten seconds at half speed.
-
-The `latkit` command line drew this picture and film from a simulation recording too large for
-the repository.
+The video plays the first ten seconds at half speed. The source recording is too large to include here.

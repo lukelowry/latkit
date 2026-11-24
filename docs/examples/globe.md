@@ -5,10 +5,11 @@
 :class: picture
 ```
 
-Great-circle routes between forty cities, with comets flowing along them. Coastlines and borders come from GeoJSON, and the globe has an atmosphere.
+Comets follow great-circle routes between forty cities. GeoJSON supplies the coastlines and borders.
 
-The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. Run `node docs/gallery/render.ts globe` to draw it again.
+```sh
+node docs/gallery/render.ts globe
+```
 
 ```{literalinclude} ../gallery/globe.ts
 :language: typescript

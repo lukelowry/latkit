@@ -834,14 +834,13 @@ impl View {
         }
     }
 
-    /// The axis coordinate shown. Every sampled field shows its last frame at or before it.
+    /// The current axis coordinate. Marks interpolate between samples unless the expression uses [`step`](crate::Expr::step).
     pub fn at(&self) -> f64 {
         self.at
     }
 
-    /// Shows axis coordinate `at`. Only options that read sampled fields evaluate again. A canvas
-    /// draws the coordinate moving, as a playhead plays, at most
-    /// [`Controls::fps`](crate::Controls) times a second.
+    /// Sets the axis coordinate. Only options that read sampled fields are reevaluated.
+    /// During playback, [`Controls::fps`](crate::Controls) limits the canvas frame rate.
     pub fn set_at(&mut self, at: f64) {
         if at.to_bits() != self.at.to_bits() {
             self.at = at;

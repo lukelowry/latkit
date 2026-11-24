@@ -131,7 +131,7 @@ pub(crate) struct Job {
     /// CSS pixels to keep clear at the top, right, bottom, and left
     #[arg(long, value_name = "T,R,B,L", value_parser = insets)]
     pub(crate) insets: Option<[f32; 4]>,
-    /// The axis coordinate to show. Sampled fields show their last frame at or before it
+    /// The axis coordinate to render. Marks interpolate between samples by default
     #[arg(long, value_parser = finite, allow_hyphen_values = true)]
     pub(crate) at: Option<f64>,
     /// A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets

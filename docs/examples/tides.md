@@ -5,10 +5,11 @@
 :class: picture
 ```
 
-Closed contours swelling outward, colored from the center out. Harmonics ripple each contour, and their phases shift from level to level.
+Each closed contour has a different color. The ripples shift phase from one contour to the next.
 
-The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. Run `node docs/gallery/render.ts tides` to draw it again.
+```sh
+node docs/gallery/render.ts tides
+```
 
 ```{literalinclude} ../gallery/tides.ts
 :language: typescript

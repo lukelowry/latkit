@@ -20,14 +20,13 @@ let loading: Promise<void> | undefined;
 let first: Promise<bindings.Gpu> | undefined;
 
 /**
- * Loads latkit's WebAssembly, once per page. Later and concurrent calls share the first call's
- * load. Options they pass must equal the first call's, or they reject with an `io` error. A failed
- * load rejects with an `io` error and can be retried. Where a browser canvas is available, `load()`
- * also creates the first WebGL2 device for `Gpu.create()`.
+ * Loads WebAssembly once per page and requests a WebGL2 device if a browser canvas is available.
+ * Concurrent calls share the load. Later calls can omit options or repeat the original values.
+ * Conflicting options and failed loads reject with an `io` error. Failed loads can be retried.
  *
- * The assets come as a set. Without options, latkit finds each beside its own module. A page that
- * gives the URL of `wasm` gives `jobs` and `worker` too, or the call rejects with an `invalid`
- * error: a job would otherwise fail only when a view first has one.
+ * Assets default to the bundled files. When passing a `wasm` URL, also supply `jobs` from the
+ * same package version and, if workers are available, `worker`. Missing assets reject with an
+ * `invalid` error.
  */
 export function load(
   options: {

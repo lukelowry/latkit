@@ -5,10 +5,11 @@
 :class: picture
 ```
 
-A simulated fault on the ACTIVSg10k case: every machine's speed over ten seconds, traced directly from the recording's sampled field and colored by distance from the fault.
+Each trace follows one of 1,456 machines for ten seconds after the simulated fault. Color shows distance from the fault.
 
-The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. Run `node docs/gallery/render.ts frequency` to draw it again.
+```sh
+node docs/gallery/render.ts frequency
+```
 
 ```{literalinclude} ../gallery/frequency.ts
 :language: typescript

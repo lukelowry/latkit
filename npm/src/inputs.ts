@@ -1301,30 +1301,26 @@ export interface ScaleNode {
 }
 
 /**
- * A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
- * ease duration, and an optional title.
+ * A space and its marks, in drawing order. A scene also sets layout, style, and input controls.
  *
- * A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
- * its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`. An option that can't be
- * read, or that the scene can't use, draws as if unset, and views list why in their `failures`.
+ * JSON uses camelCase field names. Each mark names a dataset and table, for example
+ * `{ "vertices": ["grid", "Bus"], "radius": 4 }`. A view ignores invalid options and lists them in
+ * `failures`.
  */
 export interface Scene {
-  /** The coordinate space positions are in. */
+  /** The coordinate space for mark positions. */
   space: Space;
-  /** The marks, in drawing order: each draws over the marks before it. */
+  /** Marks in drawing order, from back to front. */
   marks?: Mark[];
-  /**
-   * How the view places vertex rows that have no position, on a plane or the earth. Defaults to
-   * `none`.
-   */
+  /** Layout for vertices without positions on a plane or the earth. Defaults to `none`. */
   layout?: Layout;
   /** Default colors and sizes, and the look of text, focus, and each space. Defaults to `dark`. */
   theme?: Theme;
   /** How the view responds to the pointer and keyboard. */
   controls?: Controls;
-  /** How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to 0.3. */
+  /** Animation duration in seconds for scene and data changes. Defaults to 0.3. Use 0 to disable. */
   ease?: number;
-  /** The title: its text, or title options. */
+  /** Title text or title options. */
   title?: Title | null;
 }
 

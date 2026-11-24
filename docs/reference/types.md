@@ -1,7 +1,6 @@
 # Scene and result types
 
-The types of the scenes latkit draws and the results it reports, generated from the same schema as
-the package's types. Each property gives its meaning and default.
+Scene options, expressions, and the values latkit returns. The npm types use the same schema.
 
 ## Scenes
 
@@ -14,25 +13,23 @@ A scene: its space, how it responds to input, and how it is laid out.
 {.signature}
 `interface Scene`
 
-A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
-ease duration, and an optional title.
+A space and its marks, in drawing order. A scene also sets layout, style, and input controls.
 
-A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
-its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`. An option that can't be
-read, or that the scene can't use, draws as if unset, and views list why in their `failures`.
+JSON uses camelCase field names. Each mark names a dataset and table, for example
+`{ "vertices": ["grid", "Bus"], "radius": 4 }`. A view ignores invalid options and lists them in
+`failures`.
 
 {#scene-space .member}
 **`space`**`:` [`Space`](#space) [¶](#scene-space){.headerlink}
-: The coordinate space positions are in.
+: The coordinate space for mark positions.
 
 {#scene-marks .member}
 **`marks`**`?:` [`Mark`](#mark)`[]` [¶](#scene-marks){.headerlink}
-: The marks, in drawing order: each draws over the marks before it.
+: Marks in drawing order, from back to front.
 
 {#scene-layout .member}
 **`layout`**`?:` [`Layout`](#layout) [¶](#scene-layout){.headerlink}
-: How the view places vertex rows that have no position, on a plane or the earth. Defaults to
-  `none`.
+: Layout for vertices without positions on a plane or the earth. Defaults to `none`.
 
 {#scene-theme .member}
 **`theme`**`?:` [`Theme`](#theme) [¶](#scene-theme){.headerlink}
@@ -44,11 +41,11 @@ read, or that the scene can't use, draws as if unset, and views list why in thei
 
 {#scene-ease .member}
 **`ease`**`?: number` [¶](#scene-ease){.headerlink}
-: How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to 0.3.
+: Animation duration in seconds for scene and data changes. Defaults to 0.3. Use 0 to disable.
 
 {#scene-title .member}
 **`title`**`?:` [`Title`](#title) `| null` [¶](#scene-title){.headerlink}
-: The title: its text, or title options.
+: Title text or title options.
 
 (title)=
 

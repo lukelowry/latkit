@@ -244,9 +244,8 @@ export class View extends Handle {
   }
 
   /**
-   * The axis coordinate shown, such as a time. Marks read sampled fields at it, interpolating
-   * between the frame at or before it and the next, unless an expression uses `step()`. Setting it
-   * on a view that follows a playhead moves the playhead.
+   * The current axis coordinate. Marks interpolate between samples by default. Use `step()` to
+   * hold the previous sample. Setting `at` also moves the view's playhead, if it has one.
    */
   get at(): number {
     return view(this).at;

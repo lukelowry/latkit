@@ -1,31 +1,31 @@
 # Command line
 
-The `latkit` executable draws [scenes](guide.md#scenes) of datasets to images, image sequences, raw
-frames, and video on the machine's GPU, with the same renderer as the browser. Its inputs are
-latkit's JSON, so any language can write them. A dataset can be a [JSON document](guide.md#json),
-latkit's [bytes](guide.md#bytes), or GeoJSON named with `NAME=`. The
-[command reference](reference/cli.md) documents every command and option.
+Use `latkit render` to draw a [scene](scenes.md) as an image or video with the browser's
+renderer on a native GPU. Supply datasets as [JSON](formats.md#json), [LATK](formats.md#bytes),
+or GeoJSON (name it with `NAME=`). Use `latkit validate` to check the inputs without a GPU.
+The [command reference](reference/cli.md) lists flags and defaults.
+
+Install the CLI, validate the input files, then render a PNG at twice the layout resolution.
 
 ```sh
-cargo install latkit-cli   # or, from the repository: cargo build --locked -p latkit-cli --profile cli
-latkit validate scene.json -d grid.json        # check every input without a GPU
+cargo install latkit-cli
+latkit validate scene.json -d grid.json
 latkit render scene.json -d grid.json -o grid.png --size 2400x1350 --scale 2
-latkit render scene.json -d grid.json -o figure.png --size 2400x   # as tall as what the fit frames
-latkit render scene.json -d grid.json --camera '{"center":[-97,31],"zoom":5,"pitch":0,"bearing":0}' -o tx.png
-latkit render map.json plot.json -d grid.json -d states=usa.geojson \
-  --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4
-latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i - film.webm
-latkit render scene.json -d grid.json --frames frames.jsonl -o frames/%04d.png
-latkit render scene.json -d run.latk -o run.mp4   # plays the recording's span
-latkit render scene.json -d run.latk --frames frames.jsonl --span 0.6,10 --rate 0.4 -o run.mp4
-latkit inspect grid.bin                        # tables, fields, and the axis, as JSON
-latkit query grid.bin '{"of":"Branch","filter":{"gt":["$loading",90]},"limit":20}'
-latkit tile history.bin -o history/            # time tiles, which --tiles opens
-latkit render plot.json --tiles grid=history/frames.json -o year.png
-latkit schema scene > scene.schema.json
 ```
 
-At most one input can read stdin (`-`).
+To inspect a dataset or select rows before rendering:
+
+```sh
+latkit inspect grid.bin
+latkit query grid.bin '{"of":"Branch","filter":{"gt":["$loading",90]},"limit":20}'
+```
+
+Use one scene per panel for a multi-view video. At most one input can read stdin (`-`).
+
+```sh
+latkit render map.json plot.json -d grid.json -d states=usa.geojson \
+  --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4
+```
 
 ## Frames
 

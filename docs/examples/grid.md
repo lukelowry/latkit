@@ -5,10 +5,11 @@
 :class: picture
 ```
 
-The ACTIVSg70k case from the example suite: 70,000 buses and 88,207 branches over the US states, on a Mercator map tilted toward the Great Lakes. Each line's color and width follow its voltage level, and `priority` draws the high-voltage backbone on top.
+ACTIVSg70k has 70,000 buses and 88,207 branches. Line color and width encode voltage. On this tilted Mercator map, `priority` keeps the high-voltage lines visible.
 
-The `latkit` command line draws this picture from the module below, which builds its datasets
-with `Data` and returns its scene. Run `node docs/gallery/render.ts grid` to draw it again.
+```sh
+node docs/gallery/render.ts grid
+```
 
 ```{literalinclude} ../gallery/grid.ts
 :language: typescript

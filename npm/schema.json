@@ -7,18 +7,18 @@
       "properties": {
         "space": {
           "$ref": "#/$defs/Space",
-          "description": "The coordinate space positions are in."
+          "description": "The coordinate space for mark positions."
         },
         "marks": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/Mark"
           },
-          "description": "The marks, in drawing order: each draws over the marks before it."
+          "description": "Marks in drawing order, from back to front."
         },
         "layout": {
           "$ref": "#/$defs/Layout",
-          "description": "How the view places vertex rows that have no position, on a plane or the earth. Defaults to\n`none`."
+          "description": "Layout for vertices without positions on a plane or the earth. Defaults to `none`."
         },
         "theme": {
           "$ref": "#/$defs/Theme",
@@ -31,7 +31,7 @@
         "ease": {
           "type": "number",
           "format": "double",
-          "description": "How many seconds scene and data changes take to animate. 0 turns animation off. Defaults to\n0.3."
+          "description": "Animation duration in seconds for scene and data changes. Defaults to 0.3. Use 0 to disable."
         },
         "title": {
           "anyOf": [
@@ -42,13 +42,13 @@
               "type": "null"
             }
           ],
-          "description": "The title: its text, or title options."
+          "description": "Title text or title options."
         }
       },
       "required": [
         "space"
       ],
-      "description": "A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an\nease duration, and an optional title.\n\nA scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds\nits dataset and table: `{ \"vertices\": [\"grid\", \"Bus\"], \"radius\": 4 }`. An option that can't be\nread, or that the scene can't use, draws as if unset, and views list why in their\n[`failures`](crate::View::failures).\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage\"))\n    .title(\"Voltage\");\n```"
+      "description": "A space and its marks, in drawing order. A scene also sets layout, style, and input controls.\n\nJSON uses camelCase field names. Each mark names a dataset and table, for example\n`{ \"vertices\": [\"grid\", \"Bus\"], \"radius\": 4 }`. A view ignores invalid options and lists\nthem in [`failures`](crate::View::failures).\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage\"))\n    .title(\"Voltage\");\n```"
     },
     "Space": {
       "anyOf": [

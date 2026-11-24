@@ -1,6 +1,6 @@
 # Command reference
 
-Every command and option of the `latkit` command line, generated from its help. The [command-line guide](../cli.md) shows them in use. `--help` prints a command's help, and `latkit --version` prints the version.
+Run a command with `--help` to list its options. For examples, see the [command-line guide](../cli.md).
 
 (cli-latkit)=
 
@@ -154,7 +154,7 @@ Draw scenes of datasets into an image, image sequence, raw frames, or a video.
 
 {#cli-render-at .member}
 **`--at`** `<AT>` [¶](#cli-render-at){.headerlink}
-: The axis coordinate to show. Sampled fields show their last frame at or before it.
+: The axis coordinate to render. Marks interpolate between samples by default.
 
 {#cli-render-elapsed .member}
 **`--elapsed`** `<ELAPSED>` [¶](#cli-render-elapsed){.headerlink}
