@@ -1,5 +1,43 @@
 # latkit
 
+## 0.13.0
+
+### Minor Changes
+
+- 6e9c02b: Strokes carry markers along their paths, such as a breaker's square or a transformer's symbol. Arrowheads are gone: comets show which way a row flows.
+
+  - Added: `markers` on edges and lines, at most four, each a shape, an icon, or a symbol at a place along each row's path: `{ marker, at, offset, size, color, visible }`, or a shape's name alone. `at` runs from 0 at the path's start to 1 at its end. A marker lies wholly on one segment, so it slides clear of a bend. The stroke stops at each marker's box and goes on after it, and comets pass under it. A marker without a color takes its stroke's color pixel by pixel, so a change of color runs through it. Rust: `StrokeMarker`, `Edges::markers`, `Lines::markers`.
+  - Added: `blend` on edges and lines says where along its path a row's color goes from its first to its second: a fraction for a sharp change there, or `[from, to]` to blend between two places. An edge with no color of its own takes the colors of its ends, so a branch can show each side of a transformer in its own bus's color. Rust: `Edges::blend`, `Lines::blend`.
+  - Added: a label's `offset` takes a value for each row, in pixels or `{ units }`.
+  - Changed: `controls.motion` defaults to `full`. A view animates whatever the system prefers, and `motion: 'system'` follows the system's reduced-motion setting, as the default did.
+  - Changed: `theme.text.halo`, `theme.edge.halo`, `theme.line.halo`, `theme.flow.width`, `theme.dash`, and `theme.vertex.corner` take `{ units }` as well as pixels. With `flow.width` in units, comets zoom with the drawing whole.
+  - Changed: comets sized in position units rest once their tails are under two pixels long, and the view asks for no frames for them.
+  - Changed: a fit frames a marker's box as its bearing turns it, the margin a symbol's ink may reach, and beside a stroke, half its width, its halo, and its markers.
+  - Fixed: an edge through bends stops at its end vertices' markers on whichever segment leaves or reaches them. A bend placed on a bar no longer leaves a stretch of the edge, its comets, and its dashes under the bar, and a marker at the edge's start or end sits where the stroke starts or ends.
+  - Changed: every stroke draws with one program whatever path it follows, so a scene of edges and lines compiles one program fewer.
+  - Changed: the npm package packs the variants of each shader function together. Its shaders take about 40 kB less, and the main module is 3.72 MB with markers and blends included.
+  - Removed: `arrows` on edges and `theme.edge.arrow`. Give rows a `flow` to show their direction.
+  - Rust: `Label::offset` takes a `Size` for each side. `TextTheme::halo`, `EdgeTheme::halo`, `LineTheme::halo`, `FlowTheme::width`, `Theme::dash`, and `VertexTheme::corner` are a `Length`. `Motion` defaults to `Full`. `EdgeTheme` lost `arrow`, so build it from its default.
+
+- 6e9c02b: Rows draw as objects: symbol markers, edges that meet a bar where they are drawn to, labels with a place, halos that part crossing strokes, categories by value, and pictures sized by their drawing. A mark's shaders hold the code of `meet`, `bearing`, a label's `place` and `offset`, and a halo only when the mark uses them, so other scenes compile and draw as before.
+
+  - Added: `marker: { symbol: { paths, index, stroke } }` draws SVG path data, filled or stroked, and `marker: 'none'` draws only a row's label. npm: `symbol(paths, options)`. Rust: `Marker::symbol`, `Marker::stroke`, `Marker::None`.
+  - Added: `bearing` on vertices turns each row's marker, in degrees clockwise from up. Rust: `Vertices::bearing`.
+  - Added: `meet: 'nearest'` on edges lands each end on the point of its vertex's marker nearest the path, so edges drawn to a bar or a wide block land square on it. Rust: `Edges::meet`, `Meet`.
+  - Added: a label's `place`, a side or corner or a text field that names one for each row, and its `offset`. A label's `size` takes `{ units }`. Rust: `Label::place`, `Label::place_by`, `Label::offset`.
+  - Added: `theme.edge.halo` and `theme.line.halo`, a band of the background's color beside each stroke, which parts the strokes drawn under it.
+  - Added: `values` on a categorical colormap, a number or a text for each category, and the `match` expression. npm: `Expr.match`. Rust: `Colormap::values`, `Expr::matched`, `Category`.
+  - Added: `plane: { y: 'down' }`, for positions drafted on a screen or a page. Rust: `Plane::y`, `Vertical`.
+  - Added: `latkit render --size 1920x` or `--size x1080`. The side left out follows what the scene's fit frames. Rust: `View::bounds`.
+  - Changed: a legend of categories draws each as its mark draws rows, a stroke at its width or a marker's shape, and sets them in one row above or below the marks.
+  - Changed: `theme.edge.parallel.gap` takes `{ units }` as well as pixels. Rust: `Parallel::gap` is a `Length`.
+  - Changed: a conditional compiles with any number of cases. A long chain was refused as too deep.
+  - Changed: each translated shader function numbers its own names the same way in every shader, so the npm package keeps it once. Its shaders take about 60 kB less with the new ones included, and the main module stays at 3.71 MB.
+  - Fixed: a fit frames the bends of edges, which can lie outside the box of their vertices.
+  - Rust: `Label::size` takes a `Length`. `Plane`, `EdgeTheme`, and `LineTheme` gained a field, so build them from their defaults.
+
+- 6e9c02b: Declare static tables in a scene and draw them by name in JavaScript, Rust, or the CLI. Omit row IDs to number rows from zero. In Rust, use `Scene::table`, `Table::columns`, and `Vertices::local` or `Edges::local`.
+
 ## 0.12.1
 
 ### Patch Changes
