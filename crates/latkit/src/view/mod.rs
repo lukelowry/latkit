@@ -651,7 +651,8 @@ impl View {
         // If the GPU's sample count is known, start compiling now. Otherwise the first frame asks.
         if let Some(most) = gpu.samples() {
             let samples = variants::samples(&self.scene, most);
-            self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
+            let needs = self.draw_work();
+            self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true, &needs);
         }
         self.focus.dirty = true;
         if let Some(camera) = camera {
@@ -1222,8 +1223,8 @@ impl View {
     /// Whether the view can draw frames into `format` at `pixel_ratio` now, because the scene's
     /// draw pipelines for that target are compiled.
     ///
-    /// The first call for a target requests every pipeline the scene uses, draw pipelines first. In
-    /// a browser they compile in parallel off the GPU thread, and each one that finishes wakes the
+    /// Requests the pipelines this target needs. Browser views with animated flows start compiling
+    /// text and interaction after recording their first frame. Each completed pipeline wakes the
     /// view. Until the draw pipelines are ready, the view draws nothing new, so a canvas keeps
     /// showing the last frame. Until each other stage is ready, frames do without it: text, easing,
     /// the glow of lit rows, and layers where depth varies. Probes and queries wait for theirs.
@@ -1239,10 +1240,13 @@ impl View {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         self.refresh(&mut inner);
-        let at = self.ask(&mut inner, (format, self.samples(pixel_ratio)), input);
-        let (unready, asked) = self.unready(&inner, at);
+        let budget = inner.budget.bytes;
+        self.update_plan(&mut inner.ledger, budget);
+        let needs = self.draw_work();
+        let at = self.ask(&mut inner, (format, self.samples(pixel_ratio)), input, &needs);
+        let (unready, asked) = self.unready(&inner, at, &needs);
         let landed = inner.pipelines.landed();
-        let refused = if inner.pipelines.refusing() { self.refusal(&inner) } else { None };
+        let refused = if inner.pipelines.refusing() { self.refusal(&inner, &needs) } else { None };
         drop(inner);
         if let Some(error) = refused {
             // The view can't draw what its scene describes, so it draws nothing, which also keeps

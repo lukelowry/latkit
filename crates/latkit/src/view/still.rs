@@ -177,11 +177,7 @@ impl View {
             (_, None) => Cut { rows: self.marks.len(), comets: None, opaque: true },
         };
         let grounded = cut.opaque || !self.layered() || (0..cut.rows).all(|i| !self.heights_vary(i));
-        // Frames where only comets move draw with the comets' pipelines. Other cuts wait for the
-        // still's own.
-        let ready =
-            if cut.opaque && cut.comets.is_some() { self.can_use(Stage::Draw) } else { self.can_use(Stage::Changes) };
-        (cut.rows > 0 && grounded && ready).then_some(cut)
+        (cut.rows > 0 && grounded && self.can_use(Stage::Changes)).then_some(cut)
     }
 
     /// The first mark whose comets travel.

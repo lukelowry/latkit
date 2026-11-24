@@ -185,7 +185,6 @@ impl Program {
         }
         // No status query here: with KHR_parallel_shader_compile these return before linking.
         gl.link_program(&raw);
-        gl.flush();
         Ok(Self {
             gl: gl.clone(),
             raw,

@@ -75,6 +75,8 @@ pub(super) struct Waits {
     fenced: RefCell<Vec<Fenced>>,
     since: RefCell<Since>,
     linking: RefCell<Vec<Weak<Program>>>,
+    /// New links share one flush at the next poll, including on a worker without animation frames.
+    flush_links: Cell<bool>,
     caught_up: RefCell<Vec<CaughtUp>>,
     polling: Cell<bool>,
     /// The poller while it rests between program polls. A new fence wakes it.
@@ -193,6 +195,7 @@ impl Waits {
     /// Polls `program` until it links, then wakes its waiters.
     pub(super) fn link(state: &Rc<State>, program: &Rc<Program>) {
         state.waits.linking.borrow_mut().push(Rc::downgrade(program));
+        state.waits.flush_links.set(true);
         Self::poll(state);
     }
 
@@ -213,6 +216,9 @@ impl Waits {
                 // Fences and links end on a lost context. The loss is reported first, so what ended
                 // with it is not mistaken for a failure of its own.
                 super::noticed_loss(&state);
+                if state.waits.flush_links.replace(false) {
+                    state.gl.flush();
+                }
                 if state.waits.settle_fences(&state) {
                     backoff.found();
                 }

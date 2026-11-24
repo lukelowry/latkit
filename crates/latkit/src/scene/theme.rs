@@ -119,6 +119,12 @@ pub struct EdgeTheme {
     pub parallel: Option<Parallel>,
 }
 
+impl EdgeTheme {
+    pub(crate) fn fans(&self) -> bool {
+        matches!(self.parallel, Some(Parallel { converge: Converge::Fan, .. }))
+    }
+}
+
 /// How edges joining the same two vertices run side by side: each moved sideways from the path
 /// between its vertices, a step apart. A step is an edge's width plus `gap`.
 /// More than eight edges pack closer, within eight steps, and where neighbors would lie less than a

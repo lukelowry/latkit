@@ -182,13 +182,6 @@ impl MarkVariants {
         Some(self.own(Variant::raster(Shader::Bounds, entry)))
     }
 
-    /// Whether a list may number its instances, for rows whose counts differ: edges between ends
-    /// (which may pass through bends, follow great circles, or fan into their vertices), and every
-    /// path through geometry, including areas' triangles.
-    fn listed(&self) -> bool {
-        self.path == PATH_GEOMETRY || (self.kind == MarkKind::Edges && matches!(self.path, PATH_ENDS | PATH_BENDS))
-    }
-
     /// The passes counting each row's instances into its list, then writing them, around a
     /// [`SCAN`].
     pub(super) fn segments(&self, measured: bool) -> [Variant; 2] {
@@ -322,9 +315,18 @@ pub(super) struct Asking {
     target: (wgpu::TextureFormat, u32),
     input: bool,
     stages: Stages,
+    after_draw: bool,
 }
 
 impl Asking {
+    fn queue_following(&self, inner: &mut Inner, waker: &std::task::Waker) {
+        for stage in [Stage::Text, Stage::Changes, Stage::Lit, Stage::Input] {
+            if stage != Stage::Input || self.input {
+                inner.pipelines.queue(self.stages.of(stage), stage.urgency(self.input), waker);
+            }
+        }
+    }
+
     /// Whether frames ask for `stage`: input only when they take it, and layers only where depth
     /// varies, and fitting only when it must measure rows.
     fn asks(&self, stage: Stage, deep: bool, measure: bool) -> bool {
@@ -344,17 +346,24 @@ impl View {
     /// requests each mark's channel pipeline, whose variant depends on what the
     /// channels read, known once the data is. Each finished compile wakes the view. Returns the
     /// request's index in `asked`.
-    pub(super) fn ask(&mut self, inner: &mut Inner, target: (wgpu::TextureFormat, u32), input: bool) -> usize {
+    pub(super) fn ask(
+        &mut self,
+        inner: &mut Inner,
+        target: (wgpu::TextureFormat, u32),
+        input: bool,
+        needs: &[Asked],
+    ) -> usize {
         let device = &self.gpu.0.device;
         let deep = self.deep();
         let measure = self.measures();
         let at = if let Some(at) = self.asked.iter().position(|a| a.target == target && a.input == input) {
             at
         } else {
-            let asking = Asking { target, input, stages: stages(&self.scene, target.0, target.1) };
-            let later = |stage| matches!(stage, Stage::Layers | Stage::Fit);
-            for stage in Stage::ALL.into_iter().filter(|&stage| !later(stage) && asking.asks(stage, deep, measure)) {
-                inner.pipelines.queue(asking.stages.of(stage), stage.urgency(input), &self.compile_waker);
+            let after_draw = cfg!(target_arch = "wasm32") && input && self.scene.marks.iter().any(Mark::flows);
+            let asking = Asking { target, input, stages: stages(&self.scene, target.0, target.1), after_draw };
+            inner.pipelines.queue(asking.stages.of(Stage::Draw), Urgency::Draw, &self.compile_waker);
+            if !asking.after_draw {
+                asking.queue_following(inner, &self.compile_waker);
             }
             self.asked.push(asking);
             self.asked.len() - 1
@@ -371,13 +380,42 @@ impl View {
         if measure {
             inner.pipelines.queue(self.asked[at].stages.of(Stage::Fit), Urgency::Draw, &self.compile_waker);
         }
-        inner.pipelines.ask(device, &self.channels(), Urgency::Draw, &self.compile_waker);
+        inner.pipelines.ask(device, needs, Urgency::Draw, &self.compile_waker);
         at
     }
 
-    /// Each mark's channel pipeline (see [`channels`]).
-    fn channels(&self) -> Vec<Asked> {
-        channels(self.marks.iter())
+    /// Browser links for labels and interaction can occupy the same driver threads as geometry.
+    /// Start them once the first interactive frame's commands have been recorded. Captures request
+    /// their text up front and warmed programs are immediately usable across views.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn recorded(&mut self, inner: &mut Inner, frame: &crate::Frame<'_>, input: bool) {
+        if !input {
+            return;
+        }
+        let target = (frame.format, self.samples(frame.pixel_ratio));
+        if let Some(asking) = self.asked.iter_mut().find(|a| a.input && a.target == target)
+            && std::mem::take(&mut asking.after_draw)
+        {
+            asking.queue_following(inner, &self.compile_waker);
+            inner.pipelines.queue(&[Asked::Shader(TRAVEL)], Urgency::Draw, &self.compile_waker);
+        }
+    }
+
+    /// Draw dependencies known after refreshing the data and planning its resident rows.
+    pub(super) fn draw_work(&self) -> Vec<Asked> {
+        let mut needs = channels(self.marks.iter());
+        // A former paged drawing can remain visible until its replacement is published.
+        if self.planning.plans().values().any(|p| p.draw != crate::derive::tiled::Draw::Whole)
+            || self.marks.iter().any(|m| m.drawing().is_some())
+        {
+            needs.push(Asked::Shader(EXPAND_RUNS));
+        }
+        // The first frame has no elapsed travel. Later frames may change the flow
+        // during layout and must be able to write the distance under the previous flow.
+        if self.effect_time.is_finite() && self.marks.iter().any(|m| m.mark.flows()) {
+            needs.push(Asked::Shader(TRAVEL));
+        }
+        needs
     }
 
     /// The multisample count of its frames at `pixel_ratio` (see [`samples`]).
@@ -401,25 +439,25 @@ impl View {
     }
 
     /// Why the browser refused to build a pipeline the view asked for, if it refused one.
-    pub(super) fn refusal(&self, inner: &Inner) -> Option<crate::Error> {
+    pub(super) fn refusal(&self, inner: &Inner, needs: &[Asked]) -> Option<crate::Error> {
         let pipelines = &inner.pipelines;
         self.asked
             .iter()
             .flat_map(|a| Stage::ALL.map(|stage| a.stages.of(stage)))
             .find_map(|needs| pipelines.refused(needs))
-            .or_else(|| pipelines.refused(&self.channels()))
+            .or_else(|| pipelines.refused(needs))
     }
 
     /// The stages of request `at` whose pipelines have not all landed, and of those, the ones it
     /// asked for. Layers it has not asked for never land. Draw includes each mark's channels.
-    pub(super) fn unready(&self, inner: &Inner, at: usize) -> (StageSet, StageSet) {
+    pub(super) fn unready(&self, inner: &Inner, at: usize, needs: &[Asked]) -> (StageSet, StageSet) {
         let asking = &self.asked[at];
         let deep = self.deep();
         let measure = self.measures();
         let (mut unready, mut asked) = (StageSet::default(), StageSet::default());
         for stage in Stage::ALL {
             let landed = inner.pipelines.ready(asking.stages.of(stage));
-            let landed = landed && (stage != Stage::Draw || inner.pipelines.ready(&self.channels()));
+            let landed = landed && (stage != Stage::Draw || inner.pipelines.ready(needs));
             if !landed && (stage != Stage::Input || asking.input) {
                 unready = unready.with(stage);
                 if asking.asks(stage, deep, measure) {
@@ -530,23 +568,17 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     }
     // Comets travel, and frames where only they move start from the still.
     if any(&Mark::flows) {
-        stages.add(Stage::Draw, Asked::Shader(TRAVEL));
-        stages.add(Stage::Draw, draw(Shader::Still));
         stages.add(Stage::Changes, Asked::Shader(CARRY));
     }
-    if any(&|m| MarkVariants::of(m, scene).listed()) {
+    if any(&|m| listed(m, scene)) {
         stages.add_all(Stage::Draw, SCAN.map(Asked::Shader));
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Lists, "pack_counts")));
     }
-    if any(&|m| MarkVariants::of(m, scene).listed() && m.measures_paths()) {
+    if any(&|m| listed(m, scene) && m.measures_paths()) {
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Lists, "pack_segments")));
         for entry in ["totals", "scan"] {
             stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Lengths, entry)));
         }
-    }
-    // Any table may become paged: its data can outgrow the budget, or a mark can give a priority.
-    if !scene.marks.is_empty() {
-        stages.add(Stage::Draw, Asked::Shader(EXPAND_RUNS));
     }
     for mark in &scene.marks {
         mark_stages(mark, scene, format, samples, &mut stages);
@@ -555,13 +587,27 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     stages
 }
 
+/// Only paths with a variable number of segments need count and list passes.
+fn listed(mark: &Mark, scene: &Scene) -> bool {
+    match mark.path(&scene.space) {
+        PATH_GEOMETRY | PATH_BENDS => true,
+        PATH_ENDS if matches!(mark, Mark::Edges(_)) => {
+            matches!(scene.space, Space::Earth(_)) || scene.theme.edge.fans()
+        }
+        _ => false,
+    }
+}
+
 /// Adds `mark`'s pipelines to `stages`: its draw and raster passes (for the path a stroke follows
 /// or an area's triangle geometry), its lit-row draw (for the rows that hover, selection, and edge
 /// endpoints light), its opaque draw and height sort where depth varies, the pass measuring it for
 /// a fit, its probe, and its labels.
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, scene);
-    stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
+    if mark.draws_rows() {
+        stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
+        stages.add(Stage::Lit, variants.draw(Draw::Lit, format, samples));
+    }
     if variants.path == PATH_TRACE {
         stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::TracePoints, "point")));
     }
@@ -580,7 +626,6 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
             stages.add_all(Stage::Draw, SCAN.map(Asked::Shader));
         }
     }
-    stages.add(Stage::Lit, variants.draw(Draw::Lit, format, samples));
     // A stroke's markers draw after its rows, and after its lit rows.
     for k in 0..mark.stroke_markers().len() {
         stages.add_all(Stage::Draw, variants.marker(k, Draw::Rows, format, samples).map(Asked::Shader));
@@ -588,7 +633,9 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
     }
     // Depth varies only where the camera can tilt or the globe shows: on a plane or the earth.
     if matches!(scene.space, Space::Plane(_) | Space::Earth(_)) {
-        stages.add(Stage::Draw, variants.draw(Draw::Opaque, format, samples));
+        if mark.draws_rows() {
+            stages.add(Stage::Draw, variants.draw(Draw::Opaque, format, samples));
+        }
         // Rows that can stand at different heights draw lowest first: a raised vertex mark's, and
         // those of edges and poles, which may end at one.
         let edges = matches!(mark, Mark::Edges(_)) && matches!(variants.path, PATH_ENDS | PATH_BENDS | PATH_POLES);
@@ -599,7 +646,7 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
         }
     }
     stages.add_all(Stage::Fit, variants.bounds().map(Asked::Shader));
-    if variants.listed() {
+    if listed(mark, scene) {
         stages.add_all(Stage::Draw, variants.segments(mark.measures_paths()).map(Asked::Shader));
     }
     // One probe program answers hover, queries, and the depth under the pointer for the mark's
@@ -643,6 +690,28 @@ mod tests {
             stages(scene, format, samples(scene, 4)).of(Stage::Input).contains(&Asked::Shader(backdrop))
         };
         assert!(!replays(&graph) && replays(&map));
+    }
+
+    #[test]
+    fn label_only_vertices_request_glyphs_without_a_marker_program() {
+        let scene = Scene::new(Plane::default())
+            .draw(Vertices::of("g", "Bus").marker(crate::Marker::None).label(crate::Label::new(crate::field("name"))));
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let variants = MarkVariants::of(&scene.marks[0], &scene);
+        let stages = stages(&scene, format, 1);
+        assert!(!stages.of(Stage::Draw).contains(&variants.draw(Draw::Rows, format, 1)));
+        assert!(!stages.of(Stage::Lit).contains(&variants.draw(Draw::Lit, format, 1)));
+        assert!(stages.of(Stage::Text).contains(&Asked::Shader(variants.glyphs(format, 1))));
+    }
+
+    #[test]
+    fn straight_planar_edges_skip_list_construction_until_fans_are_enabled() {
+        let mut scene = Scene::new(Plane::default()).draw(Edges::of("g", "E").ends("a", "b"));
+        let counts = Asked::Shader(MarkVariants::of(&scene.marks[0], &scene).segments(false)[0]);
+        let asks = |scene: &Scene| draws(scene, wgpu::TextureFormat::Rgba8Unorm, 1).contains(&counts);
+        assert!(!asks(&scene));
+        scene.theme.edge.parallel = Some(crate::Parallel { converge: crate::Converge::Fan, ..Default::default() });
+        assert!(asks(&scene));
     }
 
     #[test]

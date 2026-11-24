@@ -191,6 +191,8 @@ impl View {
         if let Some(timer) = &mut self.timer {
             timer.end(encoder, device);
         }
+        #[cfg(target_arch = "wasm32")]
+        self.recorded(&mut inner, frame, input);
         self.settle_row_words();
         let atlas = std::mem::take(&mut inner.atlas.errors);
         drop(inner);
@@ -311,8 +313,7 @@ impl View {
     fn lay_out(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let fans =
-            matches!(self.scene.theme.edge.parallel, Some(crate::Parallel { converge: crate::Converge::Fan, .. }));
+        let fans = self.scene.theme.edge.fans();
         // Comets in position units place themselves along a path in those units. On a plane seen
         // straight down, the screen only scales and turns positions, so every distance along is
         // measured in units too, once, and the draw scales it: a zoom or pan measures nothing.
@@ -503,8 +504,6 @@ impl View {
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.job_errors.clone();
         let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
-        let budget = inner.budget.bytes;
-        self.update_plan(&mut inner.ledger, budget);
         self.trace_entries = self.planning.trace_entries();
         let ask = derive::tiled::Ask {
             data: &self.snapshots,

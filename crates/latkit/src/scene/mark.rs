@@ -487,12 +487,17 @@ impl Mark {
         }
     }
 
+    /// Label-only vertices take part in fits and queries, but have no marker to draw.
+    pub(crate) fn draws_rows(&self) -> bool {
+        !matches!(self, Mark::Vertices(vertices) if vertices.marker == super::Marker::None)
+    }
+
     /// Whether the pointer hovers, clicks, and picks the mark's rows. `pick` decides when set.
     /// Otherwise vertices, edges, and plot traces pick, and geometry (areas, and lines along
     /// paths such as coasts, borders, and roads) does not, so hovering never probes it.
     pub(crate) fn picks(&self) -> bool {
         self.style().interaction.pick.unwrap_or(match self {
-            Mark::Vertices(vertices) => vertices.marker != super::Marker::None,
+            Mark::Vertices(_) => self.draws_rows(),
             Mark::Edges(_) => true,
             Mark::Lines(lines) => lines.trace.is_some(),
             Mark::Areas(_) => false,

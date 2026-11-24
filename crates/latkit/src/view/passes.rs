@@ -372,9 +372,7 @@ impl Marks<'_> {
         shown: &super::marks::Shown,
         draw: Draw,
     ) {
-        let Some(compiled) = &shown.compiled else { return };
-        // A marker of none draws nothing: its rows show only their labels.
-        if compiled.drawing.markers.marker == crate::gpu::shaders::MARKER_NONE {
+        if shown.compiled.is_none() || !shown.mark.draws_rows() {
             return;
         }
         let variants = MarkVariants::shown(shown, self.scene);
