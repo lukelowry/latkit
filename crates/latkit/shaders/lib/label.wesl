@@ -7,11 +7,12 @@
 import package::lib::types::{
     NONE, POINTS, MARKER_BLOCK, SIZED, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, LABEL_CELL, LABEL_MARGIN, LABEL_GUESS, NUMBER_CHARS, CHAR_POINT, CHAR_MINUS, CHAR_EXPONENT, CHAR_UNIT,
     FORMAT_AUTO, FORMAT_SCIENTIFIC, FORMAT_ENGINEERING, NUMBER_TRIM, NUMBER_UNIT,
-    LABEL_CODE, LABEL_PLACE, LABEL_PLACED_BY_ROW, LABEL_PLACE_SHIFT,
+    LABEL_CODE, LABEL_PLACE, LABEL_PLACED_BY_ROW, LABEL_PLACE_SHIFT, LABEL_RIGHT, LABEL_DOWN, LABEL_OFFSET_BY_ROW,
+    LABEL_RIGHT_UNITS, LABEL_DOWN_UNITS,
 };
 import package::lib::bind::{eye, mark, word};
 import package::lib::state::extra_at;
-import package::lib::mark::PRIMITIVE;
+import package::lib::mark::{PRIMITIVE, px_per_length};
 import package::lib::points::point;
 import package::lib::path::PATH;
 import package::lib::center::{row_center, point_center};
@@ -29,6 +30,21 @@ fn label_place(row: u32) -> u32 {
     let by_row = (mark.flags & LABEL_PLACED_BY_ROW) != 0u;
     let own = bitcast<f32>(word(extra_at(row, mark.label + select(LABEL_CODE, LABEL_PLACE, by_row))));
     return select((mark.flags >> LABEL_PLACE_SHIFT) & 15u, u32(clamp(own, 0.0, 8.0)), by_row);
+}
+
+// How far held row `row`'s label moves from its place on screen, right then down, in CSS pixels: the
+// mark's, or where the offset reads data, the row's own. It reads label words either way, so no
+// branch guards the read.
+fn label_offset(row: u32) -> vec2f {
+    let by_row = (mark.flags & LABEL_OFFSET_BY_ROW) != 0u;
+    let at = extra_at(row, mark.label);
+    let own = vec2f(
+        bitcast<f32>(word(at + select(LABEL_CODE, LABEL_RIGHT, by_row))),
+        bitcast<f32>(word(at + select(LABEL_CODE, LABEL_DOWN, by_row))),
+    );
+    let units = vec2<bool>((mark.flags & LABEL_RIGHT_UNITS) != 0u, (mark.flags & LABEL_DOWN_UNITS) != 0u);
+    let scaled = own * select(vec2f(1.0), vec2f(px_per_length()), units);
+    return select(vec2f(mark.label_right, mark.label_down), scaled, by_row);
 }
 
 // The side place `code` lies on: x right and y down, each -1, 0, or 1. Both are 0 for no place.
@@ -67,10 +83,11 @@ fn anchor(item: u32) -> Anchor {
     // How far the label moves from its place on screen, right then down.
     var offset = vec2f(0.0);
     if LABEL_PLACED {
-        let side = label_side(label_place(held_row(item)));
+        let row = held_row(item);
+        let side = label_side(label_place(row));
         a.placed = any(side != vec2f(0.0));
         a.side = select(a.side, side, a.placed);
-        offset = vec2f(mark.label_right, mark.label_down);
+        offset = label_offset(row);
     }
     if PRIMITIVE != POINTS {
         let c = row_center(item);

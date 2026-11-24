@@ -82,7 +82,7 @@ pub use {
         Action, AreaTheme, Areas, Axis, Controls, Converge, Direction, Earth, EarthTheme, EdgeTheme, Edges, FlowTheme,
         FocusTheme, Gestures, Grid, GridTheme, Interpolation, Label, Layered, Layout, Legend, LineTheme, Lines, Mark,
         Marker, Meet, Motion, Parallel, Place, Plane, Plot, PlotTheme, Projection, Reach, Route, Scene, Shade, Shape,
-        Space, Stress, TextTheme, Theme, Title, Trace, VertexTheme, Vertical, Vertices,
+        Space, Stress, StrokeMarker, TextTheme, Theme, Title, Trace, VertexTheme, Vertical, Vertices,
     },
     shot::{Capture, Shot},
     tiles::{LayerDescription, Tiles, TilesDescription},

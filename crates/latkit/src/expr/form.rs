@@ -111,6 +111,73 @@ impl<'de> Visitor<'de> for Reading {
     }
 }
 
+/// Reads one expression as a pair of it, or a pair of expressions. `null` reads as none.
+pub(crate) fn one_or_two<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<[Expr; 2]>, D::Error> {
+    struct Pair;
+
+    fn both<E: de::Error>(written: Written) -> Result<Option<[Expr; 2]>, E> {
+        let expr = written.expr().map_err(E::custom)?;
+        Ok(Some([expr.clone(), expr]))
+    }
+
+    impl<'de> Visitor<'de> for Pair {
+        type Value = Option<[Expr; 2]>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an expression, or a pair of them")
+        }
+
+        fn visit_bool<E: de::Error>(self, b: bool) -> Result<Self::Value, E> {
+            both(Reading.visit_bool(b)?)
+        }
+
+        fn visit_i64<E: de::Error>(self, n: i64) -> Result<Self::Value, E> {
+            both(Reading.visit_i64(n)?)
+        }
+
+        fn visit_u64<E: de::Error>(self, n: u64) -> Result<Self::Value, E> {
+            both(Reading.visit_u64(n)?)
+        }
+
+        fn visit_f64<E: de::Error>(self, n: f64) -> Result<Self::Value, E> {
+            both(Reading.visit_f64(n)?)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, text: &str) -> Result<Self::Value, E> {
+            both(Reading.visit_str(text)?)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            both(Reading.visit_map(map)?)
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let short = |n| de::Error::invalid_length(n, &"two expressions");
+            let from = seq.next_element::<Expr>()?.ok_or_else(|| short(0))?;
+            let to = seq.next_element::<Expr>()?.ok_or_else(|| short(1))?;
+            if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                return Err(short(3));
+            }
+            Ok(Some([from, to]))
+        }
+    }
+
+    deserializer.deserialize_any(Pair)
+}
+
+/// The schema of a value read by [`one_or_two`].
+pub(crate) fn one_or_two_schema(generator: &mut SchemaGenerator) -> Schema {
+    let expr = generator.subschema_for::<Expr>();
+    json_schema!({
+        "anyOf": [expr, { "type": "array", "prefixItems": [expr, expr], "minItems": 2, "maxItems": 2 }],
+        "tsType": "ExprInput | [from: ExprInput, to: ExprInput]",
+    })
+}
+
 /// The expression a string writes: `$name` reads field `name`, and any other string is a CSS
 /// color.
 fn string(text: &str) -> Result<Expr, String> {
@@ -194,7 +261,7 @@ form! {
     pub(crate) text "text": Expr as value,
     pub(crate) size "size": Length,
     pub(crate) place "place": Arc<str>,
-    pub(crate) offset "offset": [Length; 2],
+    pub(crate) offset "offset": [Size; 2],
     pub(crate) color "color": Expr as value,
     pub(crate) max_width "maxWidth": f32,
     pub(crate) font "font": Arc<str>,

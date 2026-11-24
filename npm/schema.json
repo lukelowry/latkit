@@ -1974,13 +1974,13 @@
               ]
             },
             "offset": {
-              "description": "How far the text moves from its place on screen, right then down: each a number in CSS\npixels, or `{ units }` in position units. Defaults to none.",
+              "description": "How far each row's text moves from its place on screen, right then down: each a value in\nCSS pixels, or `{ units }` in position units. Defaults to none.",
               "type": [
                 "array",
                 "null"
               ],
               "items": {
-                "$ref": "#/$defs/Length"
+                "$ref": "#/$defs/Size"
               },
               "minItems": 2,
               "maxItems": 2
@@ -2300,10 +2300,6 @@
               "$ref": "#/$defs/Meet",
               "description": "Where each row's ends lie on their vertices. Defaults to `center`."
             },
-            "arrows": {
-              "type": "boolean",
-              "description": "Whether each row has an arrowhead at its second end. Defaults to `false`."
-            },
             "poles": {
               "type": "boolean",
               "description": "Draws each row as a pole from its own vertex down to the ground, on a plane or the earth.\nPoles take no `ends`, `bends`, or `joins`. Defaults to `false`."
@@ -2325,6 +2321,35 @@
               "maxItems": 2,
               "description": "Draws each row as a net on a plane or the earth. The net joins the vertex rows of `table`\nwhose `reference` field names it, as a star from their center to each member.",
               "tsType": "[table: string, reference: string]"
+            },
+            "markers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/StrokeMarker"
+              },
+              "description": "Markers along each row's path, such as a breaker's square or a transformer's\nsymbol: at most four. A shape's name alone, as `\"rectangle\"`, sits at the path's end."
+            },
+            "blend": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "$ref": "#/$defs/Expr"
+                    },
+                    {
+                      "$ref": "#/$defs/Expr"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              ],
+              "tsType": "ExprInput | [from: ExprInput, to: ExprInput]",
+              "description": "Where along each row's path its color goes from its first to its second: a\nfraction, from 0 at the path's start to 1 at its end, for a sharp change there, or\n`[from, to]` to blend between two places. A row with no color of its own takes the\ncolors of its two ends. Defaults to `[0, 1]`, which blends from end to end."
             }
           },
           "required": [
@@ -2364,6 +2389,67 @@
         }
       ],
       "description": "Where an edge's end lies on its vertex."
+    },
+    "StrokeMarker": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "ellipse",
+            "rectangle",
+            "rounded",
+            "diamond"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "marker": {
+              "description": "How it is drawn: a shape, an icon, or a symbol.",
+              "$ref": "#/$defs/Marker"
+            },
+            "at": {
+              "description": "How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a\npath of one segment that is a fraction of the stroke as drawn, and on a longer one, of the\npath between its first and last points. At 0 or 1 it sits on the path's first or last\nsegment, which must have a length to carry it. Defaults to 1.",
+              "$ref": "#/$defs/Expr"
+            },
+            "offset": {
+              "description": "How far it moves along the path from there, toward the path's end: a number in CSS pixels,\nor `{ units }` in position units. Defaults to 0.",
+              "$ref": "#/$defs/Length"
+            },
+            "size": {
+              "description": "Its width and height in CSS pixels, unless given in `units`. Defaults to twice the theme's\n`vertex.radius`, the size of a vertex's marker.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Size"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "color": {
+              "description": "Each row's color. Defaults to the stroke's color there.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "visible": {
+              "description": "Which rows show it. Defaults to all.",
+              "$ref": "#/$defs/Expr"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "marker"
+          ]
+        }
+      ],
+      "description": "A marker on a stroke: at a place along each row's path, turned so that its up is the way the path runs there. It lies wholly on the path, so at the start its near edge sits on the start, and at the end its far edge on the end. The stroke stops at its box and goes on after it, as it stops at the markers of its end vertices. A shape's name alone sits at the path's end. A stroke takes at most four, each a shape, an icon, or a symbol."
     },
     "StrokeOptions": {
       "type": "object",
@@ -2439,6 +2525,35 @@
             "interpolation": {
               "$ref": "#/$defs/Interpolation",
               "description": "How each row runs between its samples on a plot. Defaults to `linear`."
+            },
+            "markers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/StrokeMarker"
+              },
+              "description": "Markers along each row's path, such as a breaker's square or a transformer's\nsymbol: at most four. A shape's name alone, as `\"rectangle\"`, sits at the path's end."
+            },
+            "blend": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "$ref": "#/$defs/Expr"
+                    },
+                    {
+                      "$ref": "#/$defs/Expr"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              ],
+              "tsType": "ExprInput | [from: ExprInput, to: ExprInput]",
+              "description": "Where along each row's path its color goes from its first to its second: a\nfraction, from 0 at the path's start to 1 at its end, for a sharp change there, or\n`[from, to]` to blend between two places. A row with no color of its own takes the\ncolors of its two ends. Defaults to `[0, 1]`, which blends from end to end."
             }
           },
           "required": [
@@ -2675,7 +2790,7 @@
               "$ref": "#/$defs/VertexTheme"
             },
             "edge": {
-              "description": "Defaults for edges, and how parallel edges and arrowheads look.",
+              "description": "Defaults for edges, and how parallel edges look.",
               "$ref": "#/$defs/EdgeTheme"
             },
             "line": {
@@ -2756,9 +2871,8 @@
           "description": "The font size, in CSS pixels."
         },
         "halo": {
-          "type": "number",
-          "format": "float",
-          "description": "Width of the background-colored halo around label text, in CSS pixels."
+          "$ref": "#/$defs/Length",
+          "description": "The width of the halo of the background's color around label text: a number in CSS pixels,\nor `{ units }` in position units."
         }
       },
       "description": "How labels, axis ticks, and titles look."
@@ -2803,9 +2917,8 @@
           "description": "The edge width, in CSS pixels."
         },
         "halo": {
-          "type": "number",
-          "format": "float",
-          "description": "The width of a band of the background's color beside each edge, in CSS pixels. It covers\nthe strokes drawn under it, so an edge that crosses another parts it, as one that ends on\nit does. Where depth decides what covers what (a tilted view, the globe, or raised rows),\nit covers only what lies farther. Defaults to 0, which draws none."
+          "$ref": "#/$defs/Length",
+          "description": "The width of a band of the background's color beside each edge: a number in CSS pixels, or\n`{ units }` in position units. It covers the strokes drawn under it, so an edge that\ncrosses another parts it, as one that ends on it does. Where depth decides what covers what\n(a tilted view, the globe, or raised rows), it covers only what lies farther. Defaults to\n0, which draws none."
         },
         "parallel": {
           "anyOf": [
@@ -2817,14 +2930,9 @@
             }
           ],
           "description": "How edges joining the same two vertices run side by side. `None` draws them over one\nanother."
-        },
-        "arrow": {
-          "type": "number",
-          "format": "float",
-          "description": "How far an arrowhead extends beyond the edge's width. A head's length is this plus the\nwidth."
         }
       },
-      "description": "Defaults for edges, and how parallel edges and arrowheads look."
+      "description": "Defaults for edges, and how parallel edges look."
     },
     "Parallel": {
       "type": "object",
@@ -2876,9 +2984,8 @@
           "description": "The line width, in CSS pixels."
         },
         "halo": {
-          "type": "number",
-          "format": "float",
-          "description": "The width of a band of the background's color beside each line, in CSS pixels, as an\nedge's [`halo`](EdgeTheme::halo). Defaults to 0, which draws none."
+          "$ref": "#/$defs/Length",
+          "description": "The width of a band of the background's color beside each line, as an edge's\n[`halo`](EdgeTheme::halo). Defaults to 0, which draws none."
         }
       },
       "description": "Defaults for lines."
@@ -2948,12 +3055,11 @@
           "description": "The length of a comet's tail behind its head."
         },
         "width": {
-          "type": "number",
-          "format": "float",
-          "description": "The width of a comet's head, in CSS pixels. A head is never narrower than its stroke."
+          "$ref": "#/$defs/Length",
+          "description": "The width of a comet's head: a number in CSS pixels, or `{ units }` in position units. A\nhead is never narrower than its stroke."
         }
       },
-      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a\nthin rim of the background color ahead of its head, which parts it from the line. Comets end\nbefore an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,\nand they come back once it rests.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen."
+      "description": "How comets along edges and lines look. A comet has a round head, brightest at its middle, and a\ntail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a\nthin rim of the background color ahead of its head, which parts it from the line. Comets pass\nunder a stroke's markers. While the camera moves, comets fade out and hold still, and they come\nback once it rests.\n\n`spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.\nIn position units (degrees on the earth), comets scale with the zoom and stay in place along\ntheir lines. In CSS pixels, they keep their size and speed on screen."
     },
     "EarthTheme": {
       "type": "object",
@@ -3032,7 +3138,7 @@
               "format": "double"
             },
             "motion": {
-              "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and\noptions that read `elapsed()`. `system` follows the user's reduced-motion setting, `full`\nanimates everything, and `reduced` animates only motion the user drives. Defaults to\n`system`.",
+              "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and\noptions that read `elapsed()`. `full` animates everything, `system` follows the user's\nreduced-motion setting, and `reduced` animates only motion the user drives. Defaults to\n`full`.",
               "$ref": "#/$defs/Motion"
             },
             "fps": {

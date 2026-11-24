@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
 use crate::expr::form::Written;
-use crate::{Expr, Format, Length, Name, Place};
+use crate::{Expr, Format, Length, Name, Place, Size};
 
 /// Text for each row, placed beside, inside, or along the row's shape and moving with it: a text
 /// field, a number, or options. A label shows when its row is visible. A block, or a marker with a
@@ -45,10 +45,10 @@ pub struct Label {
     /// that holds it, else right of a marker, and on the middle of a stroke or area.
     #[serde(default)]
     pub(crate) place: Option<Placed>,
-    /// How far the text moves from its place on screen, right then down: each a number in CSS
-    /// pixels, or `{ units }` in position units. Defaults to none.
+    /// How far each row's text moves from its place on screen, right then down: each a value in
+    /// CSS pixels, or `{ units }` in position units. Defaults to none.
     #[serde(default)]
-    pub(crate) offset: Option<[Length; 2]>,
+    pub(crate) offset: Option<[Size; 2]>,
     /// Each row's text color. Defaults to the theme's text color. Inside a shape or block, it keeps a
     /// 4.5:1 contrast with the row's color.
     #[serde(default)]
@@ -187,9 +187,10 @@ impl Label {
         self
     }
 
-    /// Sets how far the text moves from its place on screen: right, then down.
+    /// Sets how far each row's text moves from its place on screen: right, then down, each in CSS
+    /// pixels unless given in [`units`](crate::units).
     #[must_use]
-    pub fn offset(mut self, right: impl Into<Length>, down: impl Into<Length>) -> Label {
+    pub fn offset(mut self, right: impl Into<Size>, down: impl Into<Size>) -> Label {
         self.offset = Some([right.into(), down.into()]);
         self
     }

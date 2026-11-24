@@ -31,7 +31,7 @@ use crate::gpu::Inner;
 use crate::gpu::atlas::FIELDS;
 use crate::gpu::hooks::Hooks;
 use crate::gpu::pipelines::{Asked, Options, Projection, Urgency, Variant};
-use crate::gpu::shaders::{PATH_BENDS, PATH_ENDS, PATH_GEOMETRY, PATH_POLES, PATH_TRACE, Shader};
+use crate::gpu::shaders::{NONE, PATH_BENDS, PATH_ENDS, PATH_GEOMETRY, PATH_POLES, PATH_TRACE, STROKE_MARKERS, Shader};
 use crate::scene::mark::{MarkKind, Primitive};
 use crate::{Action, Mark, Scene, Space};
 
@@ -75,8 +75,9 @@ pub(super) const PAGES: Variant = Variant::raster(Shader::WordsGather, "gather")
 
 pub(super) use crate::gpu::pipelines::Draw;
 
-/// What a mark's pipelines are specialized for: its kind, the `PATH_` code its rows follow, and the
-/// hooks its draw shaders call.
+/// What a mark's pipelines are specialized for: its kind, the `PATH_` code its rows follow, the
+/// `MARKER_` code of each marker along its strokes (`NONE` past the last), and the hooks its draw
+/// shaders call.
 #[derive(Clone)]
 pub(super) struct MarkVariants {
     kind: MarkKind,
@@ -84,6 +85,7 @@ pub(super) struct MarkVariants {
     projection: Projection,
     painted: bool,
     marker: u32,
+    along: [u32; STROKE_MARKERS as usize],
     options: Options,
     hooks: Hooks,
 }
@@ -95,20 +97,25 @@ impl MarkVariants {
             kind: mark.kind(),
             path: mark.path(&scene.space),
             projection: Projection::of(&scene.space),
-            painted: mark.measures_paths(),
+            // A stroke parts under its markers with the program that paints dashes and comets.
+            painted: mark.measures_paths() || mark.marked(),
             marker: match mark {
                 Mark::Vertices(vertices) => vertices.marker.code(),
                 _ => 0,
             },
+            along: std::array::from_fn(|k| mark.stroke_markers().get(k).map_or(NONE, |marker| marker.marker.code())),
             options: Options {
                 meet: mark.meets(),
                 turned: mark.turns(),
                 placed: mark.places_labels(),
                 halo: match mark {
-                    Mark::Edges(_) => scene.theme.edge.halo > 0.0,
-                    Mark::Lines(_) => scene.theme.line.halo > 0.0,
+                    Mark::Edges(_) => scene.theme.edge.halo.value() > 0.0,
+                    Mark::Lines(_) => scene.theme.line.halo.value() > 0.0,
                     Mark::Vertices(_) | Mark::Areas(_) => false,
                 },
+                marked: mark.marked(),
+                along: false,
+                blended: mark.blended(),
             },
             hooks: mark.hooks(),
         }
@@ -153,6 +160,16 @@ impl MarkVariants {
             .painted(self.painted)
             .marker(self.marker);
         if self.hooks.is_empty() { Asked::Shader(variant) } else { Asked::Hooked(self.hooks.clone(), variant) }
+    }
+
+    /// The pipeline drawing marker `k` of those along its strokes, an instance a segment record
+    /// (see `lib/along.wesl`): over its rows, or with [`Draw::Lit`], over its lit rows. `None` past
+    /// its last marker.
+    pub(super) fn marker(&self, k: usize, draw: Draw, format: wgpu::TextureFormat, samples: u32) -> Option<Variant> {
+        let code = self.along.get(k).copied().filter(|&code| code != NONE)?;
+        let shader = if draw == Draw::Lit { Shader::PointsFocus } else { Shader::Points };
+        let options = Options { turned: true, along: true, ..Options::NONE };
+        Some(Variant::draw(shader, format, samples).projection(self.projection).marker(code).options(options))
     }
 
     /// The pass measuring its rows' extents for a fit. `None` for edges between their ends, which
@@ -551,6 +568,11 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
         }
     }
     stages.add(Stage::Lit, variants.draw(Draw::Lit, format, samples));
+    // A stroke's markers draw after its rows, and after its lit rows.
+    for k in 0..mark.stroke_markers().len() {
+        stages.add_all(Stage::Draw, variants.marker(k, Draw::Rows, format, samples).map(Asked::Shader));
+        stages.add_all(Stage::Lit, variants.marker(k, Draw::Lit, format, samples).map(Asked::Shader));
+    }
     // Depth varies only where the camera can tilt or the globe shows: on a plane or the earth.
     if matches!(scene.space, Space::Plane(_) | Space::Earth(_)) {
         stages.add(Stage::Draw, variants.draw(Draw::Opaque, format, samples));
@@ -660,11 +682,12 @@ mod tests {
         let spaces = [Space::Plane(Plane::default()), Space::Earth(Earth::default()), Space::Earth(globe)];
         let shade = || crate::Shade::new("fn shade(f: ShadeFragment) -> vec4f { return f.color; }");
         // Each space once as its marks draw by default, and once with the options that have
-        // pipelines of their own: a halo, a bearing, a label's place, and ends that meet markers.
+        // pipelines of their own: a halo, a bearing, a label's place, ends that meet markers,
+        // markers along strokes, of each kind a stroke takes, and a place where colors change.
         let dark = Theme::dark();
         let haloed = Theme {
-            edge: EdgeTheme { halo: 2.0, ..dark.edge },
-            line: LineTheme { halo: 2.0, ..dark.line },
+            edge: EdgeTheme { halo: 2.0.into(), ..dark.edge },
+            line: LineTheme { halo: 2.0.into(), ..dark.line },
             ..dark.clone()
         };
         let spaces = spaces.into_iter().chain([Space::Plot(Plot::default())]);
@@ -679,9 +702,13 @@ mod tests {
                 let raised = if options { raised.bearing(field("b")) } else { raised };
                 scene = scene.draw(raised.clone()).draw(raised.shade(shade()));
             }
+            let along = || {
+                let pictures = [Marker::Icon { images: vec![], index: field("i") }, Marker::symbol(["M0 0V-1"], 0.0)];
+                [Marker::Shape(Shape::Rectangle)].into_iter().chain(pictures).filter(|_| options)
+            };
             let edges = || {
-                let edges = Edges::of("g", "E").ends("a", "b");
-                if options { edges.meet(Meet::Nearest) } else { edges }
+                let edges = Edges::of("g", "E").ends("a", "b").markers(along());
+                if options { edges.meet(Meet::Nearest).blend(0.5, 0.5) } else { edges }
             };
             for edges in [edges(), edges().poles(), edges().bends("p"), edges().joins("J", "j")] {
                 scene = scene
@@ -690,8 +717,8 @@ mod tests {
                     .draw(edges.flow(field("s")).dash(field("d")).label(Label::new(field("n"))));
             }
             scene = scene
-                .draw(Lines::of("g", "L"))
-                .draw(Lines::of("g", "L").flow(field("s")).shade(shade()))
+                .draw(Lines::of("g", "L").markers(along()))
+                .draw(Lines::of("g", "L").markers(along()).flow(field("s")).shade(shade()))
                 .draw(Areas::of("g", "A"))
                 .draw(Areas::of("g", "A").shade(shade()));
             for samples in [1, 4] {

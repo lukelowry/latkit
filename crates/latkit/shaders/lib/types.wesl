@@ -259,6 +259,10 @@ const LABEL_COLOR: u32 = 1u;
 // Each row's place, as a number from 1 to 8 in `Place`'s order, or 0 for none: a third label word
 // only where a field names each row's place (`LABEL_PLACED_BY_ROW`).
 const LABEL_PLACE: u32 = 2u;
+// How far each row's label moves right, then down: a fourth and fifth label word only where the
+// offset reads data (`LABEL_OFFSET_BY_ROW`).
+const LABEL_RIGHT: u32 = 3u;
+const LABEL_DOWN: u32 = 4u;
 
 // A number label writes its number as runs of its run table: digits 0–9 at codes 0–9, then these.
 // It writes at most `NUMBER_CHARS` of them.
@@ -330,7 +334,8 @@ const PATH_BENDS: u32 = 4u;
 
 // Mark flags.
 const SIZED: u32 = 1u;
-const ARROWS: u32 = 2u;
+// The mark's strokes carry markers (see `lib/along.wesl`), so its records measure distances along.
+const STROKE_MARKED: u32 = 2u;
 const ENDS_COLOR: u32 = 4u;
 const GEODESIC: u32 = 8u;
 const STATUS: u32 = 16u;
@@ -341,6 +346,20 @@ const STEP_AFTER: u32 = 128u;
 // seen straight down, where the screen scales them evenly. Otherwise they are in CSS pixels on
 // screen.
 const ALONG_UNITS: u32 = 256u;
+// Label words hold each row's offset, each in position units where its flag says, and otherwise in
+// CSS pixels. Without them, the mark's uniform holds the offset of every row.
+const LABEL_OFFSET_BY_ROW: u32 = 512u;
+const LABEL_RIGHT_UNITS: u32 = 1024u;
+const LABEL_DOWN_UNITS: u32 = 2048u;
+// The mark's markers turn by each row's bearing, which follows the marker's inputs among the row's
+// extra words.
+const TURNS: u32 = 4096u;
+// The mark says where along its path a row's color goes from its first to its second (see
+// `blend_on` in `lib/along.wesl`). A place is the same for every row, or where its `_ROW` flag is
+// set, a row word holds each row's.
+const STROKE_BLENDED: u32 = 262144u;
+const BLEND_FROM_ROW: u32 = 524288u;
+const BLEND_TO_ROW: u32 = 1048576u;
 // A label word holds each row's place. Otherwise the four bits from `LABEL_PLACE_SHIFT` hold the
 // place of every row, as a number from 1 to 8 in `Place`'s order, or 0 for none.
 const LABEL_PLACED_BY_ROW: u32 = 8192u;
@@ -431,6 +450,37 @@ const SHAPE_RECTANGLE: u32 = 1u;
 const SHAPE_ROUNDED: u32 = 2u;
 const SHAPE_DIAMOND: u32 = 3u;
 
+// A stroke mark's markers (see `lib/along.wesl`): at most `STROKE_MARKERS`, each described in the
+// mark's uniform by `STROKE_MARKER_WORDS` words, two texels. A descriptor holds its flags, with
+// the row word of its `visible` flag above `ALONG_VISIBLE_SHIFT`, the fraction of the path it sits
+// at, how far it moves from there along the path, and its size, then its color and the least and
+// greatest size it takes, in CSS pixels. A word holds a value, or where its `_ROW` flag is set, the
+// row word that holds each row's.
+const STROKE_MARKERS: u32 = 4u;
+const STROKE_MARKER_WORDS: u32 = 8u;
+const ALONG_FLAGS: u32 = 0u;
+const ALONG_AT: u32 = 1u;
+const ALONG_OFFSET: u32 = 2u;
+const ALONG_SIZE: u32 = 3u;
+const ALONG_COLOR: u32 = 4u;
+const ALONG_SIZE_MIN: u32 = 5u;
+const ALONG_SIZE_MAX: u32 = 6u;
+const ALONG_VISIBLE_SHIFT: u32 = 16u;
+// It sits where the stroke starts, or ends, not at a fraction.
+const ALONG_START: u32 = 1u;
+const ALONG_END: u32 = 2u;
+const ALONG_AT_ROW: u32 = 4u;
+const ALONG_SIZE_ROW: u32 = 8u;
+const ALONG_COLOR_ROW: u32 = 16u;
+const ALONG_VISIBLE_ROW: u32 = 32u;
+// Its size, or its offset, is in position units.
+const ALONG_SIZE_UNITS: u32 = 64u;
+const ALONG_OFFSET_UNITS: u32 = 128u;
+// It has a color of its own. Otherwise it takes the stroke's there.
+const ALONG_COLOR_OWN: u32 = 256u;
+// The descriptor describes a marker. A mark with fewer markers leaves the rest unset.
+const ALONG_PRESENT: u32 = 512u;
+
 // Colormap kinds.
 const COLORMAP_SEQUENTIAL: u32 = 0u;
 const COLORMAP_DIVERGING: u32 = 1u;
@@ -511,7 +561,6 @@ struct Frame {
     gap: f32,
     // Scale factor for a hovered vertex sized in CSS pixels.
     grow: f32,
-    arrow: f32,
     halo: f32,
     zoom: f32,
     // How parallel edges come together at their vertices: a `CONVERGE_` code.
@@ -676,6 +725,13 @@ struct Mark {
     size_max: f32,
     // The draw that binds this copy of the mark's uniform: a `DRAW_` code.
     draw: u32,
+    // Where a stroke mark's rows change color (`STROKE_BLENDED`): the fractions of the path where
+    // the change starts and ends, or the row words that hold each row's.
+    blend_from: u32,
+    blend_to: u32,
+    // The markers along a stroke mark's strokes: `STROKE_MARKER_WORDS` words each (see
+    // `lib/along.wesl`). The copy a marker's draw binds describes that marker first.
+    markers: array<vec4u, 8>,
 }
 
 // An overlay sprite in CSS pixels: a line, box, fill, or run of text, drawn over the marks.

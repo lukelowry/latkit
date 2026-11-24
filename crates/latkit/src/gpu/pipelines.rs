@@ -142,14 +142,24 @@ pub(crate) struct Variant {
 
 /// What a mark's shaders hold only when the mark uses it: edges that end where their paths meet
 /// their vertices' markers (`MEET`), markers turned by a bearing (`TURNED`), labels with a place or
-/// an offset (`LABEL_PLACED`), and strokes with a halo (`HALO`). A pipeline without one compiles
-/// none of its code, so a mark that uses none draws with the shaders it would without them.
+/// an offset (`LABEL_PLACED`), strokes with a halo (`HALO`), strokes that part under markers along
+/// them (`MARKED`), the draw of such a marker (`ALONG`), and strokes that say where their colors
+/// change (`BLEND`). A pipeline without one compiles none
+/// of its code, so a mark that uses none draws with the shaders it would without them.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) struct Options {
     pub(crate) meet: bool,
     pub(crate) turned: bool,
     pub(crate) placed: bool,
     pub(crate) halo: bool,
+    pub(crate) marked: bool,
+    pub(crate) along: bool,
+    pub(crate) blended: bool,
+}
+
+impl Options {
+    pub(crate) const NONE: Options =
+        Options { meet: false, turned: false, placed: false, halo: false, marked: false, along: false, blended: false };
 }
 
 /// What a mark's channels read besides its own table's static fields: other tables' fields by row
@@ -208,7 +218,7 @@ impl Variant {
             projection: if matches!(shader, Shader::State) { Projection::Dynamic } else { Projection::Planar },
             painted: true,
             marker: 0,
-            options: Options { meet: false, turned: false, placed: false, halo: false },
+            options: Options::NONE,
             reads: Reads::ALL,
             target: Some((format, 1)),
             draw: Draw::Rows,
@@ -225,7 +235,7 @@ impl Variant {
             projection: Projection::Planar,
             painted: true,
             marker: 0,
-            options: Options { meet: false, turned: false, placed: false, halo: false },
+            options: Options::NONE,
             reads: Reads::ALL,
             target: Some((format, samples)),
             draw: Draw::Rows,
@@ -252,11 +262,16 @@ impl Variant {
         self
     }
 
-    /// This variant with strokes reading `path` (a `PATH_` code), if its shader reads `PATH`.
+    /// This variant with strokes reading `path` (a `PATH_` code), if its shader reads `PATH`. A
+    /// stroke's draw reads where its segments lie from their records, whatever path they follow,
+    /// so every such path draws with the program of edges between their ends. Only a trace's draw
+    /// places its own segments.
     #[must_use]
     pub(crate) fn path(mut self, path: u32) -> Variant {
+        use Shader::{Strokes, StrokesFocus, StrokesShaded, StrokesShadedFocus};
         if self.reads_constant("PATH") {
-            self.path = path;
+            let drawn = matches!(self.shader, Strokes | StrokesFocus | StrokesShaded | StrokesShadedFocus);
+            self.path = if drawn && path != super::shaders::PATH_TRACE { PATH_ENDS } else { path };
         }
         self
     }
@@ -291,16 +306,20 @@ impl Variant {
 
     /// This variant with those of a mark's `options` that its shader holds code for. Only an edge's
     /// ends meet markers, and a draw reads where they lie from its records, so it takes its path
-    /// first.
+    /// first. A trace has no records, so its strokes carry no markers.
     #[must_use]
     pub(crate) fn options(mut self, options: Options) -> Self {
         let edges = matches!(self.path, PATH_ENDS | super::shaders::PATH_BENDS);
         let placing = edges && self.entry != "vertex";
+        let recorded = self.path != super::shaders::PATH_TRACE;
         self.options = Options {
             meet: options.meet && placing && self.reads_constant("MEET"),
             turned: options.turned && self.reads_constant("TURNED"),
             placed: options.placed && self.reads_constant("LABEL_PLACED"),
             halo: options.halo && self.reads_constant("HALO"),
+            marked: options.marked && recorded && self.reads_constant("MARKED"),
+            along: options.along && self.reads_constant("ALONG"),
+            blended: options.blended && recorded && self.reads_constant("BLEND"),
         };
         self
     }
@@ -356,11 +375,19 @@ impl Variant {
     fn label(&self) -> String {
         let Reads { joined, timed, viewed } = self.reads;
         let target = self.target.map(|(format, samples)| format!(" {format:?}x{samples}")).unwrap_or_default();
-        let Options { meet, turned, placed, halo } = self.options;
-        let options: String = [(meet, " MEET"), (turned, " TURNED"), (placed, " LABEL_PLACED"), (halo, " HALO")]
-            .into_iter()
-            .filter_map(|(on, name)| on.then_some(name))
-            .collect();
+        let Options { meet, turned, placed, halo, marked, along, blended } = self.options;
+        let options: String = [
+            (meet, " MEET"),
+            (turned, " TURNED"),
+            (placed, " LABEL_PLACED"),
+            (halo, " HALO"),
+            (marked, " MARKED"),
+            (along, " ALONG"),
+            (blended, " BLEND"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
         format!(
             "latkit {:?} {} PRIMITIVE={} PATH={} JOINED={} TIMED={} VIEWED={} PROJECTION={:?} PAINTED={} MARKER={} DRAW={:?}{options}{target}",
             self.shader,
@@ -409,6 +436,9 @@ impl Specialized {
             "TURNED" => self.options.turned.into(),
             "LABEL_PLACED" => self.options.placed.into(),
             "HALO" => self.options.halo.into(),
+            "MARKED" => self.options.marked.into(),
+            "ALONG" => self.options.along.into(),
+            "BLEND" => self.options.blended.into(),
             other => unreachable!("no value for the constant {other}"),
         }
     }
@@ -1373,7 +1403,10 @@ mod tests {
         // Pipelines of one shader and values share a module, whatever their entry points or targets.
         let samples = Variant::draw(Shader::Strokes, wgpu::TextureFormat::Rgba8Unorm, 4);
         assert_eq!(strokes.specialized(), samples.specialized());
-        assert_ne!(strokes.specialized(), strokes.path(PATH_GEOMETRY).specialized());
+        // A stroke's draw reads its segments' records, so every path shares the module of edges
+        // between their ends, except a trace, whose draw places its own segments.
+        assert_eq!(strokes.specialized(), strokes.path(PATH_GEOMETRY).specialized());
+        assert_ne!(strokes.specialized(), strokes.path(super::super::shaders::PATH_TRACE).specialized());
     }
 
     #[test]

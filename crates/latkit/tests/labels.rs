@@ -587,7 +587,7 @@ fn labels_finish_when_their_rows_arrive_after_the_first_frame() {
 }
 
 #[test]
-fn a_label_sits_outside_its_row_on_the_side_its_place_names() {
+fn a_label_sits_on_the_side_its_place_names_moved_by_its_rows_offset() {
     let Some(gpu) = gpu() else { return };
     gpu.set_host(Boxes);
     let data = Data::new("d");
@@ -596,10 +596,12 @@ fn a_label_sits_outside_its_row_on_the_side_its_place_names() {
             .field("x", vec![-10.0, 30.0])
             .field("y", vec![0.0; 2])
             .field("name", vec!["abcdef"; 2])
-            .field("side", vec!["left", "bottom"]),
+            .field("side", vec!["left", "bottom"])
+            .field("dx", vec![0.0, 20.0]),
     )
     .expect("valid");
     let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0)).place_by("side");
+    let label = label.offset(field("dx"), 0.0);
     let scene = Scene::new(plane())
         .theme(haloless())
         .draw(Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).pick(false).label(label));
@@ -609,8 +611,9 @@ fn a_label_sits_outside_its_row_on_the_side_its_place_names() {
     let pixels = frame(&gpu, &mut view);
     let c = SIZE / 2;
     let red = |x: u32, y: u32| at(&pixels, x, y)[0] > 200 && at(&pixels, x, y)[2] < 60;
-    // The text is 36 wide and 10 tall, and ends four pixels from its marker.
+    // The text is 36 wide and 10 tall, and ends four pixels from its marker. The second row's
+    // moves 20 pixels right, as its row says.
     assert!(red(c - 10 - 20, c) && !red(c - 10 + 12, c), "left of the first row, not right of it");
-    assert!(red(c + 30, c + 11) && !red(c + 30 + 12, c), "under the second row, centered on it");
+    assert!(red(c + 60, c + 11) && !red(c + 20, c + 11), "under the second row, moved by its own offset");
     assert_eq!(errors(&mut view), Vec::new());
 }

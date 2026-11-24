@@ -1,7 +1,7 @@
 // Strokes: one instanced quad per segment of every row's path, for edges and lines alike. A quad
-// covers the stroke, any arrowhead, and one pixel of antialiased edge. Where a path runs on through
-// a segment's end, its quad stops a pixel past the line splitting that end with the next segment.
-// The last segment of each part of a path draws the arrowhead. A quad's corners read where its
+// covers the stroke and one pixel of antialiased edge. Where a path runs on through a segment's
+// end, its quad stops a pixel past the line splitting that end with the next segment. A stroke
+// with markers parts under each of them (see `lib/along.wesl`). A quad's corners read where its
 // segment lies on screen from its record, which the frame wrote once. A trace's quads place their
 // segment themselves (see `lib/screen.wesl`). A mark's comets draw after its rows, through the copy
 // of its uniform for `DRAW_COMETS`: a quad for each of its comet slots, spanning one comet, so comets
@@ -13,9 +13,11 @@
 
 import package::lib::types::{
     NONE, PATH_TRACE, ALONG_UNITS, FLOW_UNITS, DRAW_OPAQUE, DRAW_COMETS, MARK_EDGES, THEME_EDGE_HALO, THEME_LINE_HALO,
+    STROKE_MARKERS,
 };
 import package::lib::path::PATH;
 import package::lib::bind::{frame, mark, eye, theme_word};
+import package::lib::along::{along, blend_on, blend_weight};
 import package::lib::project::{to_clip, nearer, culled};
 import package::lib::hooks::{MarkerColor, ShadeFragment};
 import package::lib::marker::glow;
@@ -38,25 +40,41 @@ override PAINTED: bool = true;
 @if(!focused)
 override HALO: bool = false;
 
+// Whether the mark's strokes carry markers, fixed when the pipeline is created. Only the pipelines
+// of such marks hold the code that parts a stroke under them.
+override MARKED: bool = false;
+
+// Whether the mark says where its rows' colors change (its `blend`), fixed when the pipeline is
+// created. Only the pipelines of such marks blend a row's two colors pixel by pixel. Others draw
+// the color their corners carry.
+override BLEND: bool = false;
+
 struct Varyings {
     // The corner in clip space. In the fragment, the target pixel, which `pixel` reads. Invariant,
     // so the opaque pass and the other draws compute the same depth.
     @invariant @builtin(position) clip: vec4f,
     // Pack related values into complete varying slots; WebGL drivers may reserve a whole slot
-    // even for a scalar. Both endpoints share one slot, and arrow/focus bits share another.
+    // even for a scalar. Both endpoints share one slot, and the stroke's and focus bits another.
     @location(0) @interpolate(flat) ends: vec4f,
     @location(1) color: vec4f,
     // Width, distance along at `a` and at `b` in CSS pixels, and flow.
     @location(2) @interpolate(flat) style: vec4f,
-    // x: bit 0 is an arrowhead, bit 1 dashes, bits 2 and 3 a shared end at `a` and at `b`, bit 4
-    // comets with a rim. y: focus bits for the glow. z: the held row, whose inputs a shade reads.
+    // x: bit 1 dashes, bits 2 and 3 a shared end at `a` and at `b`, bit 4 comets with a rim. y: focus
+    // bits for the glow. z: the held row, whose inputs a shade reads.
     @location(3) @interpolate(flat) bits: vec3u,
-    // Distance along at `a` and at `b` in position units, how far the row's comets have traveled,
-    // and how far past `b` its arrowhead lies (see `Stroke`).
-    @location(4) @interpolate(flat) comet: vec4f,
+    // Distance along at `a` and at `b` in position units, and how far the row's comets have traveled.
+    @location(4) @interpolate(flat) comet: vec3f,
     // The normals of the lines splitting the pixels at `a` and at `b` with the segments beyond (see
     // `Joints`).
     @location(5) @interpolate(flat) split: vec4f,
+    // Where the stroke parts under each of its row's markers: each one's center along the segment,
+    // and half its length, as fractions of the segment. A marker elsewhere parts nothing.
+    @location(6) @interpolate(flat) parts: vec4f,
+    @location(7) @interpolate(flat) part_halves: vec4f,
+    // With `BLEND`: the row's second color, as `color` then holds its first, and where on the
+    // segment one gives way to the other (see `blend_on`).
+    @location(8) @interpolate(flat) blend_to: vec4f,
+    @location(9) @interpolate(flat) blend: vec2f,
 }
 
 // Focused geometry stays specialized so normal draws do not pay for its extra list traversal.
@@ -114,15 +132,14 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     let width = s.width;
     let comets = select(0.0, 0.5 * max(frame.flow_width, width) + COMET_RIM, flows & (LIT_DRAW | comets_draw));
-    // How far the stroke, its comets, and any glow reach from its middle. An arrowhead reaches
-    // further, but comets never cover one.
+    // How far the stroke, its comets, and any glow reach from its middle.
     var across = select(max(0.5 * width, comets), comets, comets_draw) + select(0.0, frame.glow, LIT_DRAW) + fringe();
     @if(!focused) {
         if HALO {
             across += select(stroke_halo(), 0.0, comets_draw);
         }
     }
-    let reach = across + select(0.0, frame.arrow + width, s.arrow & !comets_draw);
+    let reach = across;
     let dir = normalize(s.b - s.a + vec2f(1e-6, 0.0));
     let normal = vec2f(-dir.y, dir.x);
     let pixels = length(s.b - s.a);
@@ -137,12 +154,11 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     // Comets move on from where their row's travel was last written, at its flow.
     let travel = select(0.0, s.travel + s.flow * frame.flow_time, PAINTED);
-    // Where the segment shares an end with the next, its quad stops a pixel past the split line
-    // there, except behind an arrowhead's segment, where the head's base can reach. The comets
-    // draw's quad spans only the comets on the segment, as fractions of it: it reaches past an end
-    // as the rows' does only where a comet does.
+    // Where the segment shares its end with the next, its quad stops a pixel past the split line
+    // there. The comets draw's quad spans only the comets on the segment, as fractions of it: it
+    // reaches past an end as the rows' does only where a comet does.
     let shares = select(s.shares, s.shares_comets, comets_draw);
-    let past = select(vec2f(reach), across * s.turn + fringe(), shares & vec2<bool>(s.arrow & !comets_draw, true));
+    let past = vec2f(reach, select(reach, across * s.turn.y + fringe(), shares.y));
     var span = vec2f(0.0, 1.0);
     if comets_draw {
         let c = select(phase, s.along, comet_units);
@@ -176,12 +192,31 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.ends = vec4f(s.a, s.b);
     // This corner's color: its end's, or for a comets quad, between them where its corner lies.
     out.color = mix(s.color_a, s.color_b, mix(span.x, span.y, t));
+    if BLEND {
+        out.color = s.color_a;
+        out.blend_to = s.color_b;
+        out.blend = blend_on(s);
+    }
     out.style = vec4f(width, phase, select(0.0, s.flow, PAINTED));
-    out.comet = vec4f(s.along, travel, s.tip);
+    out.comet = vec3f(s.along, travel);
     out.split = s.split;
     let rim = flows & s.rim;
-    out.bits.x =
-        u32(s.arrow) | (u32(s.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u) | (u32(rim) << 4u);
+    out.bits.x = (u32(s.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u) | (u32(rim) << 4u);
+    out.parts = vec4f(-1.0);
+    out.part_halves = vec4f(0.0);
+    if MARKED {
+        // Each marker on this segment, less half a pixel at each side, which the stroke tucks under
+        // the marker's edge so that no seam shows between them.
+        var parts = array<vec2f, 4>(vec2f(-1.0, 0.0), vec2f(-1.0, 0.0), vec2f(-1.0, 0.0), vec2f(-1.0, 0.0));
+        for (var k = 0u; k < STROKE_MARKERS; k++) {
+            let on = along(k, s);
+            if on.shown {
+                parts[k] = vec2f(on.at, on.half - 0.5 / max(pixels, 1e-6));
+            }
+        }
+        out.parts = vec4f(parts[0].x, parts[1].x, parts[2].x, parts[3].x);
+        out.part_halves = vec4f(parts[0].y, parts[1].y, parts[2].y, parts[3].y);
+    }
     if LIT_DRAW { out.bits.y = focus_of(s.row); }
     out.bits.z = s.row;
     return out;
@@ -196,16 +231,13 @@ fn pixel(v: Varyings) -> vec2f {
 }
 
 fn segment_of(v: Varyings) -> Stroke {
-    // A select, not `&`: Metal can write this inline in the struct's brace initializer, where
-    // C++'s int result of `bool & bool` does not narrow back to bool.
-    let arrow = select(false, (v.bits.x & 1u) != 0u, PATH != PATH_TRACE);
     let shares = vec2<bool>((v.bits.x & 4u) != 0u, (v.bits.x & 8u) != 0u);
     if !PAINTED {
-        return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color, 0.0, 0.0, false, arrow, v.split, shares, false, -1.0);
+        return Stroke(v.ends.xy, v.ends.zw, vec2f(0.0), vec2f(0.0), v.style.x, v.color, 0.0, 0.0, false, v.split, shares, false);
     }
     let dash = (v.bits.x & 2u) != 0u;
     let rim = (v.bits.x & 16u) != 0u;
-    return Stroke(v.ends.xy, v.ends.zw, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, arrow, v.split, shares, rim, v.comet.w);
+    return Stroke(v.ends.xy, v.ends.zw, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, v.split, shares, rim);
 }
 
 // Where depth varies, a mark draws twice with this one program: first the pixels an opaque row's
@@ -216,15 +248,28 @@ fn segment_of(v: Varyings) -> Stroke {
 // their own lines' depth, and wherever nothing nearer was drawn. The lit draw paints rows and
 // comets at once.
 fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
-    let s = segment_of(v);
+    var s = segment_of(v);
     let p = pixel(v);
-    // Past a shared end, the segment beyond draws the line (see `owns`). Only an arrowhead is drawn
-    // whole, by its own segment.
-    if !s.arrow & !owns(p, s) {
+    if BLEND {
+        // The row's first color gives way to its second where the row says.
+        let ab = s.b - s.a;
+        let t = clamp(dot(p - s.a, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
+        s.color = mix(v.color, v.blend_to, blend_weight(v.blend, t));
+    }
+    // Past a shared end, the segment beyond draws the line (see `owns`).
+    if !owns(p, s) {
         discard;
     }
+    if MARKED {
+        // The stroke, its comets, and its glow give way to each marker on the segment.
+        let ab = s.b - s.a;
+        let t = clamp(dot(p - s.a, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
+        if any(abs(vec4f(t) - v.parts) <= v.part_halves) {
+            discard;
+        }
+    }
     // The opaque test, color, and focus glow all use this same distance. Evaluating it once
-    // avoids repeating the segment projection and arrowhead geometry for each covered pixel.
+    // avoids repeating the segment projection for each covered pixel.
     let d = stroke_distance(p, s);
     let comets = !LIT_DRAW & (mark.draw == DRAW_COMETS);
     let color = stroke_paint(d, s, !comets, LIT_DRAW | comets);

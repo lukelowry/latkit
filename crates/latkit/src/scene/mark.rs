@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use super::{Areas, Edges, Label, Lines, Vertices};
+use super::{Areas, Edges, Label, Lines, Marker, StrokeMarker, Vertices};
+use crate::expr::Node;
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Expr, Format, Length, Name, Place, Result, Size, Space};
@@ -109,11 +110,15 @@ pub(crate) struct Stroke {
     pub(crate) width: Option<Size>,
     pub(crate) dash: Expr,
     pub(crate) flow: Expr,
+    pub(crate) markers: Vec<StrokeMarker>,
+    /// Where along its path each row's color goes from its first to its second: the fractions
+    /// where the change starts and ends.
+    pub(crate) blend: Option<[Expr; 2]>,
 }
 
 impl Default for Stroke {
     fn default() -> Stroke {
-        Stroke { width: None, dash: false.into(), flow: 0.0.into() }
+        Stroke { width: None, dash: false.into(), flow: 0.0.into(), markers: Vec::new(), blend: None }
     }
 }
 
@@ -330,6 +335,16 @@ pub(crate) struct Markers {
     pub(crate) stroke: Option<Length>,
 }
 
+/// How one of a stroke mark's markers draws: its marker, and the words that describe it in the
+/// mark's uniform (see `lib/along.wesl`). `palette` is where its pictures' palette starts in the
+/// mark's, set when the mark is packed.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct StrokeMarking {
+    pub(crate) markers: Markers,
+    pub(crate) words: [u32; wgsl::STROKE_MARKER_WORDS as usize],
+    pub(crate) palette: u32,
+}
+
 /// How a compiled mark's shade reads its rows: how many inputs, the extra word holding the first,
 /// and whether it reads the time or the pointer, which then draw it again.
 #[derive(Clone, PartialEq, Debug)]
@@ -383,6 +398,10 @@ pub(crate) struct Drawing {
     pub(crate) extras: u32,
     pub(crate) flags: u32,
     pub(crate) markers: Markers,
+    /// A stroke mark's markers along its paths.
+    pub(crate) stroke_markers: Vec<StrokeMarking>,
+    /// Where a stroke mark's rows change color: the mark's `blend` as its uniform holds it.
+    pub(crate) blend: [u32; 2],
     /// The program column a line traces, or `NONE`.
     pub(crate) trace: u32,
     /// The scale and offset a trace draws its field's values at: `value × scale + offset`.
@@ -407,6 +426,8 @@ impl Drawing {
             extras: 0,
             flags: 0,
             markers: Markers::default(),
+            stroke_markers: Vec::new(),
+            blend: [0; 2],
             trace: wgsl::NONE,
             scale: [1.0, 0.0],
             geometry: wgsl::NONE,
@@ -470,28 +491,49 @@ impl Mark {
     /// Whether the mark's rows can carry comets: a stroke mark whose `flow` is anything but the
     /// constant 0.
     pub(crate) fn flows(&self) -> bool {
-        let stroke = match self {
-            Mark::Edges(m) => &m.stroke,
-            Mark::Lines(m) => &m.stroke,
-            Mark::Vertices(_) | Mark::Areas(_) => return false,
-        };
-        stroke.flow != Stroke::default().flow
+        self.stroke().is_some_and(|stroke| stroke.flow != Stroke::default().flow)
     }
 
     /// Whether the mark's rows can dash: a stroke mark whose `dash` is anything but the constant
     /// false.
     pub(crate) fn dashes(&self) -> bool {
-        let stroke = match self {
-            Mark::Edges(m) => &m.stroke,
-            Mark::Lines(m) => &m.stroke,
-            Mark::Vertices(_) | Mark::Areas(_) => return false,
-        };
-        stroke.dash != Stroke::default().dash
+        self.stroke().is_some_and(|stroke| stroke.dash != Stroke::default().dash)
     }
 
-    /// Whether strokes need cumulative path lengths for dashes or moving comets.
+    /// The options of a mark that draws strokes.
+    pub(crate) fn stroke(&self) -> Option<&Stroke> {
+        match self {
+            Mark::Edges(m) => Some(&m.stroke),
+            Mark::Lines(m) => Some(&m.stroke),
+            Mark::Vertices(_) | Mark::Areas(_) => None,
+        }
+    }
+
+    /// The markers along its strokes.
+    pub(crate) fn stroke_markers(&self) -> &[StrokeMarker] {
+        self.stroke().map_or(&[], |stroke| &stroke.markers)
+    }
+
+    /// Whether its strokes carry markers.
+    pub(crate) fn marked(&self) -> bool {
+        !self.stroke_markers().is_empty()
+    }
+
+    /// Whether a marker sits part of the way along its strokes' paths, which a path of several
+    /// segments measures. One at a path's start or end reads only its own segment.
+    pub(crate) fn measures_markers(&self) -> bool {
+        self.stroke_markers().iter().any(|marker| marker.end().is_none())
+    }
+
+    /// Whether its rows say where along their paths their colors change.
+    pub(crate) fn blended(&self) -> bool {
+        self.stroke().is_some_and(|stroke| stroke.blend.is_some())
+    }
+
+    /// Whether strokes need cumulative path lengths: for dashes, moving comets, markers a fraction
+    /// of the way along, or a change of color along the way.
     pub(crate) fn measures_paths(&self) -> bool {
-        self.dashes() || self.flows()
+        self.dashes() || self.flows() || self.measures_markers() || self.blended()
     }
 
     /// Whether its rows end where their paths meet their vertices' markers.
@@ -529,7 +571,8 @@ impl Mark {
         let style = self.style();
         style.color.iter().chain([&style.visible]).chain(&style.priority).for_each(&mut *f);
         if let Some(label) = &style.label {
-            [&label.text].into_iter().chain(&label.color).for_each(&mut *f);
+            let offset = label.offset.iter().flatten().map(|size| &size.expr);
+            [&label.text].into_iter().chain(&label.color).chain(offset).for_each(&mut *f);
         }
         if let Some(shade) = &style.shade {
             shade.inputs.iter().for_each(&mut *f);
@@ -541,6 +584,8 @@ impl Mark {
         };
         if let Some(stroke) = stroke {
             stroke.width.iter().map(|size| &size.expr).chain([&stroke.dash, &stroke.flow]).for_each(&mut *f);
+            stroke.markers.iter().flat_map(StrokeMarker::exprs).for_each(&mut *f);
+            stroke.blend.iter().flatten().for_each(&mut *f);
         }
         if let Mark::Vertices(v) = self {
             v.position.iter().flatten().chain([&v.elevation]).for_each(&mut *f);
@@ -611,8 +656,149 @@ impl Mark {
         if let Some(shade) = &style.shade {
             compiler.within("shade", |c| compile_shade(shade, c, &mut drawing))?;
         }
+        if let Some(stroke) = self.stroke() {
+            compiler.within("markers", |c| compile_markers(&stroke.markers, c, context, &mut drawing))?;
+            if let Some(blend) = &stroke.blend {
+                compiler.within("blend", |c| compile_blend(blend, c, &mut drawing))?;
+            }
+        }
         Ok(drawing)
     }
+}
+
+/// Compiles where a stroke mark's rows change color, its `blend`. A place the same for every row
+/// goes in the mark's uniform, and one that reads data in an extra row word, which both places
+/// share when they are the same.
+fn compile_blend(blend: &[Expr; 2], c: &mut Compiler<'_>, drawing: &mut Drawing) -> Result<()> {
+    if drawing.path == wgsl::PATH_TRACE {
+        return Err(Error::invalid("a line that traces a field has one color"));
+    }
+    let sides = [("from", wgsl::BLEND_FROM_ROW), ("to", wgsl::BLEND_TO_ROW)];
+    for (i, (place, (name, by_row))) in blend.iter().zip(sides).enumerate() {
+        if let Node::Number(fraction) = &*place.0 {
+            drawing.blend[i] = (*fraction as f32).to_bits();
+            continue;
+        }
+        drawing.flags |= by_row;
+        if i == 1 && blend[0] == blend[1] {
+            drawing.blend[1] = drawing.blend[0];
+            continue;
+        }
+        drawing.extras += 1;
+        let word = drawing.kind.stride() + drawing.extras - 1;
+        c.channel(name, place, Store::Number { word, fallback: None })?;
+        drawing.blend[i] = word;
+    }
+    drawing.flags |= wgsl::STROKE_BLENDED;
+    Ok(())
+}
+
+/// Compiles a stroke mark's `markers` into their descriptors, and each option that differs by row
+/// into an extra word after the mark's others. An option that is the same for every row takes no
+/// word: its value goes in the descriptor.
+fn compile_markers(
+    markers: &[StrokeMarker],
+    c: &mut Compiler<'_>,
+    context: Context<'_>,
+    drawing: &mut Drawing,
+) -> Result<()> {
+    if markers.is_empty() {
+        return Ok(());
+    }
+    if markers.len() > wgsl::STROKE_MARKERS as usize {
+        return Err(Error::invalid(format!("a stroke takes at most {} markers", wgsl::STROKE_MARKERS)));
+    }
+    if drawing.path == wgsl::PATH_TRACE {
+        return Err(Error::invalid("a line that traces a field takes no markers"));
+    }
+    let theme = if drawing.kind == MarkKind::Edges { wgsl::THEME_EDGE } else { wgsl::THEME_LINE };
+    for (k, marker) in markers.iter().enumerate() {
+        let marking = c.within(k, |c| {
+            if !matches!(marker.marker, Marker::Shape(_) | Marker::Icon { .. } | Marker::Symbol { .. }) {
+                return Err(Error::invalid("a stroke's marker is a shape, an icon, or a symbol").at("marker"));
+            }
+            let mut words = [0_u32; wgsl::STROKE_MARKER_WORDS as usize];
+            let mut flags = 0_u32;
+            let mut bounds = Size::ANY;
+            // The row word a channel named `name` stores in, after the mark's others.
+            let row = |drawing: &mut Drawing| {
+                drawing.extras += 1;
+                drawing.kind.stride() + drawing.extras - 1
+            };
+            match (marker.end(), &*marker.at.0) {
+                (Some(false), _) => flags |= wgsl::ALONG_START,
+                (Some(true), _) => flags |= wgsl::ALONG_END,
+                (None, Node::Number(fraction)) => words[wgsl::ALONG_AT as usize] = (*fraction as f32).to_bits(),
+                (None, _) => {
+                    let word = row(drawing);
+                    c.channel(&format!("marker{k}at"), &marker.at, Store::Number { word, fallback: None })?;
+                    words[wgsl::ALONG_AT as usize] = word;
+                    flags |= wgsl::ALONG_AT_ROW;
+                }
+            }
+            words[wgsl::ALONG_OFFSET as usize] = marker.offset.value().to_bits();
+            if matches!(marker.offset, Length::Units(_)) {
+                flags |= wgsl::ALONG_OFFSET_UNITS;
+            }
+            match &marker.size {
+                // The size of a vertex's marker.
+                None => words[wgsl::ALONG_SIZE as usize] = (2.0 * context.theme.vertex.radius).to_bits(),
+                Some(size) => {
+                    bounds = size.px;
+                    if size.units {
+                        flags |= wgsl::ALONG_SIZE_UNITS;
+                    }
+                    if let Node::Number(size) = &*size.expr.0 {
+                        words[wgsl::ALONG_SIZE as usize] = (*size as f32).to_bits();
+                    } else {
+                        let word = row(drawing);
+                        c.channel(&format!("marker{k}size"), &size.expr, Store::Number { word, fallback: None })?;
+                        words[wgsl::ALONG_SIZE as usize] = word;
+                        flags |= wgsl::ALONG_SIZE_ROW;
+                    }
+                }
+            }
+            match marker.color.as_ref().map(|color| (&*color.0, color)) {
+                None => {}
+                Some((Node::Color(color), _)) => {
+                    words[wgsl::ALONG_COLOR as usize] = color.packed();
+                    flags |= wgsl::ALONG_COLOR_OWN;
+                }
+                Some((_, color)) => {
+                    let word = row(drawing);
+                    c.channel(&format!("marker{k}color"), color, Store::Color { word, fallback: theme })?;
+                    words[wgsl::ALONG_COLOR as usize] = word;
+                    flags |= wgsl::ALONG_COLOR_OWN | wgsl::ALONG_COLOR_ROW;
+                }
+            }
+            if !matches!(&*marker.visible.0, Node::Bool(true)) {
+                let word = row(drawing);
+                let store = Store::Flag { word, bit: wgsl::VISIBLE, unset: true };
+                c.channel(&format!("marker{k}visible"), &marker.visible, store)?;
+                flags |= wgsl::ALONG_VISIBLE_ROW | word << wgsl::ALONG_VISIBLE_SHIFT;
+            }
+            // A picture's index is its marker's one input. An index of 0 for every row takes no word.
+            let inputs = marker.marker.inputs();
+            let constant = inputs.iter().all(|input| matches!(&*input.0, Node::Number(index) if *index == 0.0));
+            let first = drawing.extras;
+            let mut markers = marker.marker.markers(first);
+            if constant {
+                markers.inputs = 0;
+            } else {
+                for (i, input) in inputs.iter().enumerate() {
+                    let word = row(drawing);
+                    c.channel(&format!("marker{k}input{i}"), input, Store::Number { word, fallback: None })?;
+                }
+            }
+            words[wgsl::ALONG_FLAGS as usize] = flags | wgsl::ALONG_PRESENT;
+            words[wgsl::ALONG_SIZE_MIN as usize] = bounds[0].to_bits();
+            words[wgsl::ALONG_SIZE_MAX as usize] = bounds[1].to_bits();
+            Ok(StrokeMarking { markers, words, palette: 0 })
+        })?;
+        drawing.stroke_markers.push(marking);
+    }
+    drawing.flags |= wgsl::STROKE_MARKED;
+    Ok(())
 }
 
 /// Compiles a shade's inputs into extra words after the mark's others.
@@ -682,13 +868,38 @@ fn compile_label(label: &Label, c: &mut Compiler<'_>, context: Context<'_>, draw
             words += 1;
         }
     }
+    // An offset the same for every row goes in the mark's uniform. One that reads data goes in two
+    // more label words, as each row's own.
+    let mut offset = [Length::Px(0.0); 2];
+    if let Some(sizes) = &label.offset {
+        if sizes.iter().any(|size| size.px != Size::ANY) {
+            return Err(Error::invalid("a label's offset takes no bounds").at("offset"));
+        }
+        let same = |size: &Size| match &*size.expr.0 {
+            Node::Number(value) if size.units => Some(Length::Units(*value as f32)),
+            Node::Number(value) => Some(Length::Px(*value as f32)),
+            _ => None,
+        };
+        if let [Some(right), Some(down)] = [same(&sizes[0]), same(&sizes[1])] {
+            offset = [right, down];
+        } else {
+            let sides = [(wgsl::LABEL_RIGHT, wgsl::LABEL_RIGHT_UNITS), (wgsl::LABEL_DOWN, wgsl::LABEL_DOWN_UNITS)];
+            for (size, (at, units)) in sizes.iter().zip(sides) {
+                let store = Store::Number { word: word(at), fallback: None };
+                c.within("offset", |c| c.channel(&format!("offset{at}"), &size.expr, store))?;
+                flags |= if size.units { units } else { 0 };
+            }
+            flags |= wgsl::LABEL_OFFSET_BY_ROW;
+            words = wgsl::LABEL_DOWN + 1;
+        }
+    }
     drawing.extras += words;
     drawing.flags |= flags;
     drawing.label = Some(Labeling {
         extra,
         column,
         size: label.size.unwrap_or(Length::Px(theme.text.size)),
-        offset: label.offset.unwrap_or([Length::Px(0.0); 2]),
+        offset,
         max_width: label.max_width,
         font: label.font.clone().unwrap_or_else(|| theme.text.font.clone()),
         number,
@@ -829,11 +1040,28 @@ macro_rules! mark {
             /// speed changes, comets continue from where they are.
             #[serde(default = "crate::scene::mark::still")]
             flow: $crate::Expr,
+            /// Markers along each row's path, such as a breaker's square or a transformer's
+            /// symbol: at most four. A shape's name alone, as `"rectangle"`, sits at the path's end.
+            #[serde(default)]
+            markers: Vec<$crate::StrokeMarker>,
+            /// Where along each row's path its color goes from its first to its second: a
+            /// fraction, from 0 at the path's start to 1 at its end, for a sharp change there, or
+            /// `[from, to]` to blend between two places. A row with no color of its own takes the
+            /// colors of its two ends. Defaults to `[0, 1]`, which blends from end to end.
+            #[serde(default, deserialize_with = "crate::expr::form::one_or_two")]
+            #[schemars(schema_with = "crate::expr::form::one_or_two_schema")]
+            blend: Option<[$crate::Expr; 2]>,
         });
 
         impl Form {
             fn stroke(&self) -> $crate::scene::mark::Stroke {
-                $crate::scene::mark::Stroke { width: self.width.clone(), dash: self.dash.clone(), flow: self.flow.clone() }
+                $crate::scene::mark::Stroke {
+                    width: self.width.clone(),
+                    dash: self.dash.clone(),
+                    flow: self.flow.clone(),
+                    markers: self.markers.clone(),
+                    blend: self.blend.clone(),
+                }
             }
         }
     };
@@ -1035,6 +1263,24 @@ macro_rules! stroke_methods {
             #[must_use]
             pub fn flow(mut self, speed: impl Into<$crate::Expr>) -> Self {
                 self.stroke.flow = speed.into();
+                self
+            }
+
+            /// Sets the markers along each row's path, such as a breaker's square or a
+            /// transformer's symbol: at most four. See [`StrokeMarker`](crate::StrokeMarker).
+            #[must_use]
+            pub fn markers<M: Into<$crate::StrokeMarker>>(mut self, markers: impl IntoIterator<Item = M>) -> Self {
+                self.stroke.markers = markers.into_iter().map(Into::into).collect();
+                self
+            }
+
+            /// Sets where along each row's path its color goes from its first to its second, as
+            /// fractions from 0 at the path's start to 1 at its end: it blends from `from` to `to`,
+            /// and with both the same, changes sharply there. A row with no color of its own takes
+            /// the colors of its two ends. Without this, a row blends from end to end.
+            #[must_use]
+            pub fn blend(mut self, from: impl Into<$crate::Expr>, to: impl Into<$crate::Expr>) -> Self {
+                self.stroke.blend = Some([from.into(), to.into()]);
                 self
             }
         }

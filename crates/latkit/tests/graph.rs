@@ -1,5 +1,5 @@
 //! Graphs. Edges between the same two vertices run side by side, edges bend through the points of a
-//! path field, edges end in arrowheads, and great-circle edges settle while their vertices animate.
+//! path field, strokes carry markers along them, and great-circle edges settle while their vertices animate.
 //! Comets keep their spacing on screen along every kind of edge. Neighbors follow edges and nets.
 
 #![cfg(feature = "gpu")]
@@ -7,7 +7,7 @@
 mod common;
 
 use common::{SIZE, answer, at, camera, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Data, Edges, Ids, Length, Patch, Scene, Table, Vertices, View, field};
+use latkit::{Data, Edges, Ids, Length, Patch, Scene, Shape, StrokeMarker, Table, Vertices, View, field};
 
 const C: u32 = SIZE / 2;
 
@@ -94,7 +94,8 @@ fn comets_keep_their_spacing_on_screen_along_every_path() {
     );
     data.apply(Patch::new().set(nodes(x.clone(), y.clone())).set(links)).expect("valid");
     let red = latkit::Color::rgb(1.0, 0.0, 0.0);
-    let flow = latkit::FlowTheme { color: red, spacing: Length::Px(12.0), length: Length::Px(4.0), width: 4.0 };
+    let flow =
+        latkit::FlowTheme { color: red, spacing: Length::Px(12.0), length: Length::Px(4.0), width: Length::Px(4.0) };
     let fan = latkit::Parallel { gap: 3.0.into(), converge: latkit::Converge::Fan };
     let edge = latkit::EdgeTheme { parallel: Some(fan), ..plain_theme().edge };
     let theme = latkit::Theme { flow, edge, ..plain_theme() };
@@ -258,56 +259,70 @@ fn edges_along_great_circles_settle_while_their_vertices_pulse() {
 }
 
 #[test]
-fn arrows_draw_heads_at_second_ends_clear_of_comets() {
+fn markers_sit_along_strokes_which_part_under_them() {
     let Some(gpu) = gpu() else { return };
-    // An edge 80 pixels long, one as long that bends 5 pixels before its end, so its arrowhead
-    // reaches back past the bend, a stub 12 long, too short for a comet beside its arrowhead, and
-    // an edge between two vertices at one place. Red comets 12 pixels apart move so slowly they
-    // stand still.
-    let x = vec![-40.0, 40.0, -6.0, 6.0, -40.0, 40.0, 0.0, 0.0];
-    let y = vec![0.0, 0.0, 30.0, 30.0, -30.0, -30.0, 55.0, 55.0];
-    let draw = |arrows: bool| {
-        let data = Data::new("graph");
-        let bends: Vec<Vec<[f64; 2]>> = vec![vec![], vec![], vec![[35.0, -30.0]], vec![]];
-        let links = Table::new("Link", Ids::count(4))
-            .reference("from", "Node", vec![1_u64, 3, 5, 7])
-            .reference("to", "Node", vec![2_u64, 4, 6, 8])
-            .field("bends", bends);
-        data.apply(Patch::new().set(nodes(x.clone(), y.clone())).set(links)).expect("valid");
-        let red = latkit::Color::rgb(1.0, 0.0, 0.0);
-        let flow = latkit::FlowTheme { color: red, spacing: Length::Px(12.0), length: Length::Px(4.0), width: 4.0 };
-        let edges = Edges::of("graph", "Link").ends("from", "to").bends("bends").width(2.0).arrows(arrows).flow(1e-4);
-        let scene = Scene::new(plane())
-            .theme(latkit::Theme { flow, ..plain_theme() })
-            .draw(edges.color(latkit::Color::WHITE))
-            .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(1.0));
-        let mut view = View::new(&gpu, scene);
-        view.set_camera(camera());
-        view.set_sources([&data]).expect("a source");
-        let pixels = common::rest(&gpu, &mut view);
-        assert_eq!(errors(&mut view), Vec::new());
-        let on = |i: usize| view.screen([x[i], y[i], 0.0]).expect("on screen").map(|v| v.round() as i32);
-        (pixels, [on(1), on(3), on(5), on(7)])
-    };
-    let lit_count = |pixels: &[[u8; 4]]| pixels.iter().filter(|&&p| lit(p)).count();
-    let (plain, (headed, [tip, stub, bent, point])) = (lit_count(&draw(false).0), draw(true));
-    assert!(lit_count(&headed) > plain + 20, "{plain} → {}", lit_count(&headed));
-    // An edge of no length points nowhere, so it draws no head around its vertex.
+    // An edge 80 pixels long, one as long that bends 20 pixels before its end, and an edge between
+    // two vertices at one place. Each
+    // carries a square at its end, a red square 14 pixels after its start, and a clear circle
+    // where its row says: halfway, or on the bent edge, 2 pixels before the bend. Red comets 12
+    // pixels apart move so slowly they stand still.
+    let x = vec![-40.0, 40.0, -40.0, 40.0, 0.0, 0.0];
+    let y = vec![0.0, 0.0, -30.0, -30.0, 55.0, 55.0];
+    let data = Data::new("graph");
+    let bends: Vec<Vec<[f64; 2]>> = vec![vec![], vec![[20.0, -30.0]], vec![]];
+    let links = Table::new("Link", Ids::count(3))
+        .reference("from", "Node", vec![1_u64, 3, 5])
+        .reference("to", "Node", vec![2_u64, 4, 6])
+        .field("bends", bends)
+        .field("mid", vec![0.5, 0.725, 0.5]);
+    data.apply(Patch::new().set(nodes(x.clone(), y.clone())).set(links)).expect("valid");
+    let red = latkit::Color::rgb(1.0, 0.0, 0.0);
+    let flow =
+        latkit::FlowTheme { color: red, spacing: Length::Px(12.0), length: Length::Px(4.0), width: Length::Px(4.0) };
+    let clear = latkit::Color::WHITE.alpha(0.0);
+    let edges = Edges::of("graph", "Link").ends("from", "to").bends("bends").width(2.0).flow(1e-4).markers([
+        StrokeMarker::new(Shape::Rectangle).size(9.0),
+        StrokeMarker::new(Shape::Rectangle).at(0.0).offset(10.0).size(8.0).color(red),
+        StrokeMarker::new(Shape::Ellipse).at(field("mid")).size(12.0).color(clear),
+    ]);
+    let scene = Scene::new(plane())
+        .theme(latkit::Theme { flow, ..plain_theme() })
+        .draw(edges.color(latkit::Color::WHITE))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(1.0));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let pixels = common::rest(&gpu, &mut view);
+    assert_eq!(errors(&mut view), Vec::new());
+    let on = |i: usize| view.screen([x[i], y[i], 0.0]).expect("on screen").map(|v| v.round() as i32);
+    let [start, tip, bent, point] = [on(0), on(1), on(3), on(5)];
+    // A marker whose place lies near a bend slides to lie wholly on its own segment, so the bend
+    // is never under it: the circle 12 across, placed 2 pixels before the bend, covers the 12
+    // pixels before it, and the edge goes on at the bend.
+    let before = |dx: i32| lit(at(&pixels, (bent[0] - dx) as u32, bent[1] as u32));
+    assert!(!before(30) && !before(22), "the edge parts under the circle before the bend");
+    assert!(before(18) && before(36), "and is whole from the bend on, and before the circle");
+    let pixel = |[x, y]: [i32; 2]| at(&pixels, x as u32, y as u32);
+    let reddish = |p: [u8; 4]| p[0] > 100 && p[1] < p[0] / 2;
+    // The square's far edge sits on the edge's end, so it is wider than the edge before the end.
+    assert!(lit(pixel([tip[0] - 8, tip[1] - 3])) && lit(pixel([tip[0] - 8, tip[1] + 2])), "a square at the end");
+    assert!(!lit(pixel([tip[0] - 30, tip[1] - 3])), "and only the edge before it");
+    assert!(reddish(pixel([start[0] + 14, start[1]])), "a square after the start");
+    // The edge stops at the clear circle's box and goes on after it.
+    assert!(!lit(pixel([start[0] + 40, start[1]])), "the edge parts under a marker");
+    assert!(lit(pixel([start[0] + 30, start[1]])) && lit(pixel([start[0] + 50, start[1]])), "and goes on after it");
+    // An edge of no length points nowhere, so it carries no marker around its vertex.
     let around =
         (-9..=9_i32).flat_map(|dx| (-9..=9_i32).map(move |dy| [dx, dy])).filter(|d| d[0].abs().max(d[1].abs()) >= 3);
-    let near = around.filter(|&[dx, dy]| lit(at(&headed, (point[0] + dx) as u32, (point[1] + dy) as u32))).count();
+    let near = around.filter(|&[dx, dy]| lit(pixel([point[0] + dx, point[1] + dy]))).count();
     assert_eq!(near, 0, "nothing lit around an edge of no length");
     // Red pixels in the box `dx` pixels before a tip, and 6 either side of its edge.
-    let red = |tip: [i32; 2], dx: std::ops::RangeInclusive<i32>| {
-        let red = |p: [u8; 4]| p[0] > 100 && p[1] < p[0] / 2;
-        dx.flat_map(|dx| (-6..=6).map(move |dy| [tip[0] - dx, tip[1] + dy]))
-            .filter(|&[x, y]| red(at(&headed, x as u32, y as u32)))
-            .count()
+    let comets = |tip: [i32; 2], dx: std::ops::RangeInclusive<i32>| {
+        dx.flat_map(|dx| (-6..=6).map(move |dy| [tip[0] - dx, tip[1] + dy])).filter(|&p| reddish(pixel(p))).count()
     };
-    assert!(red(tip, 12..=70) > 0 && red(bent, 12..=70) > 0, "comets along the edges");
-    assert_eq!(red(tip, 0..=9), 0, "none over an arrowhead");
-    assert_eq!(red(bent, 0..=9), 0, "none over one that reaches past a bend");
-    assert_eq!(red(stub, 0..=12), 0, "none on the stub");
+    assert!(comets(tip, 12..=30) > 0 && comets(bent, 34..=60) > 0, "comets along the edges");
+    assert_eq!(comets(tip, 0..=7), 0, "none over a marker");
+    assert_eq!(comets(bent, 0..=7), 0, "nor over one after a bend");
 }
 
 #[test]
@@ -353,7 +368,7 @@ fn edges_meet_a_bar_where_their_path_leads_and_a_halo_parts_the_edge_under_it() 
         ),
     ))
     .expect("valid");
-    let theme = latkit::Theme { edge: latkit::EdgeTheme { halo: 6.0, ..plain_theme().edge }, ..plain_theme() };
+    let theme = latkit::Theme { edge: latkit::EdgeTheme { halo: 6.0.into(), ..plain_theme().edge }, ..plain_theme() };
     let scene = Scene::new(plane())
         .theme(theme)
         .draw(

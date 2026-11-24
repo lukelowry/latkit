@@ -7,7 +7,7 @@ use super::marks::Shown;
 use super::words::Kept;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
-use crate::{Color, Converge, Grid, Length, Scene, Space, Theme};
+use crate::{Color, Converge, Grid, Length, Scene, Space};
 
 fn matrix(m: DMat4) -> [[f32; 4]; 4] {
     m.to_cols_array_2d().map(|c| c.map(|v| v as f32))
@@ -67,7 +67,7 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     // Comet spacing and length keep their own unit. A stroke converts them to pixels as it draws.
     frame.flow_spacing = theme.flow.spacing.value();
     frame.flow_length = theme.flow.length.value();
-    frame.flow_width = theme.flow.width;
+    frame.flow_width = px(theme.flow.width, scene, projected).max(0.0);
     frame.flow_unit = match theme.flow.spacing {
         Length::Px(_) => wgsl::FLOW_PX,
         Length::Units(_) => wgsl::FLOW_UNITS,
@@ -83,8 +83,7 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     // Hover is tracked either way. The controls only decide whether it glows.
     let glows = scene.controls.hover;
     frame.grow = if glows { theme.focus.grow } else { 1.0 };
-    frame.arrow = theme.edge.arrow;
-    frame.halo = theme.text.halo;
+    frame.halo = px(theme.text.halo, scene, projected).max(0.0);
     frame.zoom = projected.zoom as f32;
     frame.linear = u32::from(linear);
     frame.hover = if glows { theme.focus.hover.to_array() } else { [0.0; 4] };
@@ -97,12 +96,12 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     grid(&mut frame, scene, projected);
     frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.earth.night.clamp(0.0, 1.0)]);
     frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
-    frame.theme = theme_slots(theme);
+    frame.theme = theme_slots(scene, projected);
     frame
 }
 
 /// `length` in CSS pixels at the camera's center, where a length in position units follows the zoom.
-fn px(length: Length, scene: &Scene, projected: &Projected) -> f32 {
+pub(super) fn px(length: Length, scene: &Scene, projected: &Projected) -> f32 {
     match length {
         Length::Px(px) => px,
         // On the earth a position unit is a degree, and `px_per_unit` counts radians.
@@ -180,8 +179,10 @@ pub(crate) fn eye(projected: &Projected, size: [f64; 2], pixel_ratio: f32) -> wg
     eye
 }
 
-/// The theme's values in slot order: colors packed, sizes as `f32` bits.
-fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
+/// The values of `scene`'s theme in slot order: colors packed, sizes as `f32` bits, and lengths in
+/// CSS pixels at `projected`'s zoom.
+fn theme_slots(scene: &Scene, projected: &Projected) -> [[u32; 4]; 4] {
+    let theme = &scene.theme;
     let mut slots = [0_u32; wgsl::THEME_SLOTS as usize];
     let edge = theme.edge.color.unwrap_or(theme.vertex.color);
     slots[wgsl::THEME_VERTEX as usize] = theme.vertex.color.packed();
@@ -195,9 +196,39 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
     slots[wgsl::THEME_CORNER as usize] = theme.vertex.corner.to_bits();
-    slots[wgsl::THEME_EDGE_HALO as usize] = theme.edge.halo.max(0.0).to_bits();
-    slots[wgsl::THEME_LINE_HALO as usize] = theme.line.halo.max(0.0).to_bits();
+    slots[wgsl::THEME_EDGE_HALO as usize] = px(theme.edge.halo, scene, projected).max(0.0).to_bits();
+    slots[wgsl::THEME_LINE_HALO as usize] = px(theme.line.halo, scene, projected).max(0.0).to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
+}
+
+/// The copy of a stroke mark's uniform `mark` that the draw of one of its markers binds: the
+/// marker's shape and inputs in place of the mark's, its descriptor first, and a palette that
+/// starts at its pictures.
+pub(super) fn stroke_marker(
+    mut mark: wgsl::Mark,
+    marking: &crate::scene::mark::StrokeMarking,
+    scene: &Scene,
+    projected: &Projected,
+) -> wgsl::Mark {
+    let markers = &marking.markers;
+    mark.markers = described(std::slice::from_ref(marking));
+    mark.marker = markers.marker;
+    mark.shape = markers.shape;
+    mark.corner = markers.corner;
+    mark.hole = markers.stroke.map_or(markers.hole, |width| px(width, scene, projected).max(0.0));
+    mark.inputs = markers.inputs | markers.input << 8;
+    mark.palette += marking.palette;
+    mark
+}
+
+/// The words describing `markings`, a stroke mark's markers, as its uniform holds them.
+fn described(markings: &[crate::scene::mark::StrokeMarking]) -> [[u32; 4]; 8] {
+    let mut words = [[0_u32; wgsl::STROKE_MARKER_WORDS as usize]; wgsl::STROKE_MARKERS as usize];
+    for (words, marking) in words.iter_mut().zip(markings) {
+        *words = marking.words;
+    }
+    let words = words.as_flattened();
+    std::array::from_fn(|i| std::array::from_fn(|j| words[i * 4 + j]))
 }
 
 /// Sets `mark`'s easing fields: how each word blends, and while it eases, the page tables of its frozen and
@@ -281,6 +312,8 @@ pub(crate) fn mark(
             mark.trace_capacity = capacity;
             mark.trace_head = head;
         }
+        mark.markers = described(&drawing.stroke_markers);
+        [mark.blend_from, mark.blend_to] = drawing.blend;
         let markers = &drawing.markers;
         mark.marker = markers.marker;
         mark.shape = markers.shape;

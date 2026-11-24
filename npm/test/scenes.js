@@ -119,14 +119,14 @@ export default [
       { "vertices": ["grid", "Custom"], "marker": { "wgsl": { "source": "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }", "inputs": ["$load"] } } },
       { "edges": ["grid", "Branch"], "ends": ["from", "to"] }
     ],
-    "theme": { "edge": { "parallel": { "gap": 4, "converge": "fan" }, "arrow": 8 }, "text": { "halo": 2 }, "flow": { "spacing": { "units": 40 }, "length": { "units": 12 } } }
+    "theme": { "edge": { "parallel": { "gap": 4, "converge": "fan" } }, "text": { "halo": 2 }, "flow": { "spacing": { "units": 40 }, "length": { "units": 12 } } }
   },
   {
     "space": "plane",
     "layout": { "stress": { "gap": 50 } },
     "controls": { "gestures": { "alt+primary": "connect" }, "delete": true },
     "marks": [
-      { "edges": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "arrows": true, "width": 1.5 },
+      { "edges": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "markers": ["rectangle", { "marker": "ellipse", "at": 0.5, "size": 6 }], "width": 1.5 },
       { "edges": ["plant", "Net"], "joins": ["Device", "net"], "route": "straight" },
       { "vertices": ["plant", "Device"], "size": [40, 24], "marker": "block", "label": "$name" }
     ],

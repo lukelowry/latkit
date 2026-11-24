@@ -230,13 +230,14 @@ impl View {
     ///
     /// In a frame the user steers (`input`), comets rest while the camera moves by anything but an
     /// orbit: they fade out over [`FADE`] seconds as they slow to a stop, and once the camera has
-    /// held still for [`REST`] seconds, they fade back in and travel on. Hidden, they cost a frame
-    /// nothing. Pictures and videos, and reduced motion, keep them.
+    /// held still for [`REST`] seconds, they fade back in and travel on. Comets too small to see
+    /// rest as well (see [`View::comets_tiny`]). Hidden, they cost a frame nothing. Pictures and
+    /// videos, and reduced motion, keep them.
     fn comets_travel(&mut self, uniform: &mut wgsl::Frame, step: f64, input: bool) -> bool {
         let fades = input && self.moves();
         let resting = fades && self.rig.moved_at.is_some_and(|at| self.clock.now() - at < REST);
         let most = if fades { step / FADE } else { 1.0 };
-        let toward = if resting { 0.0 } else { 1.0 };
+        let toward = if resting || self.comets_tiny() { 0.0 } else { 1.0 };
         self.comets_shown += (toward - self.comets_shown).clamp(-most, most);
         uniform.flow[3] *= self.comets_shown as f32;
         self.comet_clock += step * self.comets_shown;
@@ -323,8 +324,9 @@ impl View {
         self.transitions(inner);
         self.attach_ends();
         let domains = self.place_domains();
+        let (marks, markers) = (self.marks.len() as u64, self.stroke_markers() as u64);
         let resources = self.resources.as_mut().expect("created");
-        resources.fit(device, self.marks.len() as u64, domains);
+        resources.fit(device, marks, markers, domains);
         self.pack(encoder, inner);
         self.lay_out_labels(inner);
         fresh
@@ -582,11 +584,14 @@ impl View {
     /// Every mark's uniform at its dynamic offset, then each one's copy for its opaque draw, then,
     /// where any mark has comets, for its comets' draw (see [`passes::offset`](super::passes::offset)).
     /// The comets draw of a mark whose segments have records numbers its instances by its comet
-    /// slots, so its copy's `list` is theirs, or `NONE` while it has none.
+    /// slots, so its copy's `list` is theirs, or `NONE` while it has none. After those come the
+    /// copies for the markers along each mark's strokes, in mark order (see
+    /// [`marker_uniforms`](View::marker_uniforms)).
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
         let count = self.marks.len();
-        let blocks = if self.marks.iter().any(|shown| shown.mark.flows()) { 3 } else { 2 };
-        let mut marks = vec![0_u8; blocks * count * MARK_STRIDE as usize];
+        let blocks = self.uniform_blocks();
+        let firsts = self.marker_uniforms();
+        let mut marks = vec![0_u8; (blocks * count + self.stroke_markers()) * MARK_STRIDE as usize];
         let mut write = |at: usize, uniform: &wgsl::Mark| {
             let at = at * MARK_STRIDE as usize;
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(uniform));
@@ -598,6 +603,10 @@ impl View {
                 uniform.focus = wgsl::NONE;
             }
             write(i, &uniform);
+            let markings = shown.compiled.as_ref().map_or(&[][..], |compiled| &compiled.drawing.stroke_markers);
+            for (k, marking) in markings.iter().enumerate() {
+                write(firsts[i] + k, &uniforms::stroke_marker(uniform, marking, &self.scene, &projected));
+            }
             uniform.draw = wgsl::DRAW_OPAQUE;
             write(count + i, &uniform);
             if blocks == 3 {
@@ -609,6 +618,29 @@ impl View {
             }
         }
         marks
+    }
+
+    /// How many markers the marks' strokes carry in all, each with a uniform of its own.
+    fn stroke_markers(&self) -> usize {
+        self.marks.iter().map(|shown| shown.mark.stroke_markers().len()).sum()
+    }
+
+    /// How many uniforms each mark's own draws bind: its rows', its opaque draw's, and where any
+    /// mark has comets, its comets'.
+    fn uniform_blocks(&self) -> usize {
+        if self.marks.iter().any(|shown| shown.mark.flows()) { 3 } else { 2 }
+    }
+
+    /// For each mark, the index of the uniform its first stroke marker's draw binds. A mark's
+    /// markers take one each, after every mark's own uniforms.
+    pub(super) fn marker_uniforms(&self) -> Vec<usize> {
+        let mut next = self.uniform_blocks() * self.marks.len();
+        let first = |shown: &super::marks::Shown| {
+            let at = next;
+            next += shown.mark.stroke_markers().len();
+            at
+        };
+        self.marks.iter().map(first).collect()
     }
 
     /// What traces show: the plot's x range, its width in device pixel columns, and the most

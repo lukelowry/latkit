@@ -417,8 +417,8 @@ rows pick, select, and drag. These options control the view itself.
 {#controls-motion .member}
 **`motion`**`?:` [`Motion`](#motion) [¶](#controls-motion){.headerlink}
 : How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
-  options that read `elapsed`. `system` follows the user's reduced-motion setting, `full` animates
-  everything, and `reduced` animates only motion the user drives. Defaults to `system`.
+  options that read `elapsed`. `full` animates everything, `system` follows the user's
+  reduced-motion setting, and `reduced` animates only motion the user drives. Defaults to `full`.
 
 {#controls-fps .member}
 **`fps`**`?: number` [¶](#controls-fps){.headerlink}
@@ -726,7 +726,7 @@ Lengths are in CSS pixels, except comet lengths given in position units.
 
 {#theme-edge .member}
 **`edge`**`?:` [`EdgeTheme`](#edgetheme) [¶](#theme-edge){.headerlink}
-: Defaults for edges, and how parallel edges and arrowheads look.
+: Defaults for edges, and how parallel edges look.
 
 {#theme-line .member}
 **`line`**`?:` [`LineTheme`](#linetheme) [¶](#theme-line){.headerlink}
@@ -800,8 +800,9 @@ How labels, axis ticks, and titles look.
 : The font size, in CSS pixels.
 
 {#texttheme-halo .member}
-**`halo`**`?: number` [¶](#texttheme-halo){.headerlink}
-: Width of the background-colored halo around label text, in CSS pixels.
+**`halo`**`?:` [`Length`](#length) [¶](#texttheme-halo){.headerlink}
+: The width of the halo of the background's color around label text: a number in CSS pixels, or
+  `{ units }` in position units.
 
 (vertextheme)=
 
@@ -831,7 +832,7 @@ Defaults for vertices.
 {.signature}
 `interface EdgeTheme`
 
-Defaults for edges, and how parallel edges and arrowheads look.
+Defaults for edges, and how parallel edges look.
 
 {#edgetheme-color .member}
 **`color`**`?:` [`Color`](#color) `| null` [¶](#edgetheme-color){.headerlink}
@@ -843,19 +844,16 @@ Defaults for edges, and how parallel edges and arrowheads look.
 : The edge width, in CSS pixels.
 
 {#edgetheme-halo .member}
-**`halo`**`?: number` [¶](#edgetheme-halo){.headerlink}
-: The width of a band of the background's color beside each edge, in CSS pixels. It covers the
-  strokes drawn under it, so an edge that crosses another parts it, as one that ends on it does.
-  Where depth decides what covers what (a tilted view, the globe, or raised rows), it covers only
-  what lies farther. Defaults to 0, which draws none.
+**`halo`**`?:` [`Length`](#length) [¶](#edgetheme-halo){.headerlink}
+: The width of a band of the background's color beside each edge: a number in CSS pixels, or
+  `{ units }` in position units. It covers the strokes drawn under it, so an edge that crosses
+  another parts it, as one that ends on it does. Where depth decides what covers what (a tilted
+  view, the globe, or raised rows), it covers only what lies farther. Defaults to 0, which draws
+  none.
 
 {#edgetheme-parallel .member}
 **`parallel`**`?:` [`Parallel`](#parallel) `| null` [¶](#edgetheme-parallel){.headerlink}
 : How edges joining the same two vertices run side by side. `null` draws them over one another.
-
-{#edgetheme-arrow .member}
-**`arrow`**`?: number` [¶](#edgetheme-arrow){.headerlink}
-: How far an arrowhead extends beyond the edge's width. A head's length is this plus the width.
 
 (parallel)=
 
@@ -919,9 +917,9 @@ Defaults for lines.
 : The line width, in CSS pixels.
 
 {#linetheme-halo .member}
-**`halo`**`?: number` [¶](#linetheme-halo){.headerlink}
-: The width of a band of the background's color beside each line, in CSS pixels, as an edge's
-  `halo`. Defaults to 0, which draws none.
+**`halo`**`?:` [`Length`](#length) [¶](#linetheme-halo){.headerlink}
+: The width of a band of the background's color beside each line, as an edge's `halo`. Defaults to
+  0, which draws none.
 
 (areatheme)=
 
@@ -945,9 +943,9 @@ Defaults for areas.
 
 How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
 tail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a
-thin rim of the background color ahead of its head, which parts it from the line. Comets end
-before an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,
-and they come back once it rests.
+thin rim of the background color ahead of its head, which parts it from the line. Comets pass
+under a stroke's markers. While the camera moves, comets fade out and hold still, and they come
+back once it rests.
 
 `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
 In position units (degrees on the earth), comets scale with the zoom and stay in place along
@@ -967,8 +965,9 @@ their lines. In CSS pixels, they keep their size and speed on screen.
 : The length of a comet's tail behind its head.
 
 {#flowtheme-width .member}
-**`width`**`?: number` [¶](#flowtheme-width){.headerlink}
-: The width of a comet's head, in CSS pixels. A head is never narrower than its stroke.
+**`width`**`?:` [`Length`](#length) [¶](#flowtheme-width){.headerlink}
+: The width of a comet's head: a number in CSS pixels, or `{ units }` in position units. A head is
+  never narrower than its stroke.
 
 (focustheme)=
 
@@ -1138,6 +1137,48 @@ The options of marks drawn as strokes: edges and lines.
   Negative speeds flow backward. 0 draws no comets. Defaults to 0. When the speed changes, comets
   continue from where they are.
 
+(strokemarker)=
+
+### `StrokeMarker`
+
+{.signature}
+`type StrokeMarker = 'ellipse' | 'rectangle' | 'rounded' | 'diamond' | { … }`
+
+A marker on a stroke: at a place along each row's path, turned so that its up is the way the
+path runs there. It lies wholly on the path, so at the start its near edge sits on the start,
+and at the end its far edge on the end. The stroke stops at its box and goes on after it, as it
+stops at the markers of its end vertices. A shape's name alone sits at the path's end. A stroke
+takes at most four, each a shape, an icon, or a symbol.
+
+{#strokemarker-marker .member}
+**`marker`**`:` [`Marker`](#marker) [¶](#strokemarker-marker){.headerlink}
+: How it is drawn: a shape, an icon, or a symbol.
+
+{#strokemarker-at .member}
+**`at`**`?:` [`ExprInput`](#exprinput) [¶](#strokemarker-at){.headerlink}
+: How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a path of
+  one segment that is a fraction of the stroke as drawn, and on a longer one, of the path between
+  its first and last points. At 0 or 1 it sits on the path's first or last segment, which must
+  have a length to carry it. Defaults to 1.
+
+{#strokemarker-offset .member}
+**`offset`**`?:` [`Length`](#length) [¶](#strokemarker-offset){.headerlink}
+: How far it moves along the path from there, toward the path's end: a number in CSS pixels, or
+  `{ units }` in position units. Defaults to 0.
+
+{#strokemarker-size .member}
+**`size`**`?:` [`Size`](#size) `| null` [¶](#strokemarker-size){.headerlink}
+: Its width and height in CSS pixels, unless given in `units`. Defaults to twice the theme's
+  `vertex.radius`, the size of a vertex's marker.
+
+{#strokemarker-color .member}
+**`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#strokemarker-color){.headerlink}
+: Each row's color. Defaults to the stroke's color there.
+
+{#strokemarker-visible .member}
+**`visible`**`?:` [`ExprInput`](#exprinput) [¶](#strokemarker-visible){.headerlink}
+: Which rows show it. Defaults to all.
+
 (vertices)=
 
 ### `Vertices`
@@ -1221,10 +1262,6 @@ row can instead stand as a pole on its own vertex, or join many vertices as a ne
 **`meet`**`?:` [`Meet`](#meet) [¶](#edges-meet){.headerlink}
 : Where each row's ends lie on their vertices. Defaults to `center`.
 
-{#edges-arrows .member}
-**`arrows`**`?: boolean` [¶](#edges-arrows){.headerlink}
-: Whether each row has an arrowhead at its second end. Defaults to `false`.
-
 {#edges-poles .member}
 **`poles`**`?: boolean` [¶](#edges-poles){.headerlink}
 : Draws each row as a pole from its own vertex down to the ground, on a plane or the earth. Poles
@@ -1234,6 +1271,18 @@ row can instead stand as a pole on its own vertex, or join many vertices as a ne
 **`joins`**`?: [table: string, reference: string] | null` [¶](#edges-joins){.headerlink}
 : Draws each row as a net on a plane or the earth. The net joins the vertex rows of `table` whose
   `reference` field names it, as a star from their center to each member.
+
+{#edges-markers .member}
+**`markers`**`?:` [`StrokeMarker`](#strokemarker)`[]` [¶](#edges-markers){.headerlink}
+: Markers along each row's path, such as a breaker's square or a transformer's symbol: at most
+  four. A shape's name alone, as `"rectangle"`, sits at the path's end.
+
+{#edges-blend .member}
+**`blend`**`?:` [`ExprInput`](#exprinput) `| [from:` [`ExprInput`](#exprinput)`, to:` [`ExprInput`](#exprinput)`]` [¶](#edges-blend){.headerlink}
+: Where along each row's path its color goes from its first to its second: a fraction, from 0 at
+  the path's start to 1 at its end, for a sharp change there, or `[from, to]` to blend between two
+  places. A row with no color of its own takes the colors of its two ends. Defaults to `[0, 1]`,
+  which blends from end to end.
 
 (meet)=
 
@@ -1286,6 +1335,18 @@ monitor. On the earth, paths follow the globe's curve and stay unbroken across t
 {#lines-interpolation .member}
 **`interpolation`**`?:` [`Interpolation`](#interpolation) [¶](#lines-interpolation){.headerlink}
 : How each row runs between its samples on a plot. Defaults to `linear`.
+
+{#lines-markers .member}
+**`markers`**`?:` [`StrokeMarker`](#strokemarker)`[]` [¶](#lines-markers){.headerlink}
+: Markers along each row's path, such as a breaker's square or a transformer's symbol: at most
+  four. A shape's name alone, as `"rectangle"`, sits at the path's end.
+
+{#lines-blend .member}
+**`blend`**`?:` [`ExprInput`](#exprinput) `| [from:` [`ExprInput`](#exprinput)`, to:` [`ExprInput`](#exprinput)`]` [¶](#lines-blend){.headerlink}
+: Where along each row's path its color goes from its first to its second: a fraction, from 0 at
+  the path's start to 1 at its end, for a sharp change there, or `[from, to]` to blend between two
+  places. A row with no color of its own takes the colors of its two ends. Defaults to `[0, 1]`,
+  which blends from end to end.
 
 (trace)=
 
@@ -1566,9 +1627,9 @@ under a title or legend in a corner. A row whose text is missing or empty has no
   right of a marker, and on the middle of a stroke or area.
 
 {#label-offset .member}
-**`offset`**`?: [`[`Length`](#length)`,` [`Length`](#length)`] | null` [¶](#label-offset){.headerlink}
-: How far the text moves from its place on screen, right then down: each a number in CSS pixels,
-  or `{ units }` in position units. Defaults to none.
+**`offset`**`?: [`[`Size`](#size)`,` [`Size`](#size)`] | null` [¶](#label-offset){.headerlink}
+: How far each row's text moves from its place on screen, right then down: each a value in CSS
+  pixels, or `{ units }` in position units. Defaults to none.
 
 {#label-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#label-color){.headerlink}

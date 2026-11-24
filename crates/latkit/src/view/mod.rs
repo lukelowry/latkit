@@ -1334,10 +1334,19 @@ impl View {
         self.needs_render() || (self.can_use(Stage::Draw) && self.holding())
     }
 
-    /// Whether comets travel along some mark's rows: a flowing mark is drawable, and the theme's
-    /// flow color is visible.
+    /// Whether comets travel along some mark's rows: a flowing mark is drawable, the theme's flow
+    /// color is visible, and comets are large enough to see.
     fn flowing(&self) -> bool {
-        self.scene.theme.flow.color.a > 0.0 && self.marks.iter().any(|m| m.drawable() && m.mark.flows())
+        let visible = self.scene.theme.flow.color.a > 0.0 && !self.comets_tiny();
+        visible && self.marks.iter().any(|m| m.drawable() && m.mark.flows())
+    }
+
+    /// Whether comets are too small to see. Sized in position units, they shrink with the drawing
+    /// as the view zooms out. With tails under two CSS pixels they show nothing, so they rest, and
+    /// the view asks for no frames on their account.
+    pub(super) fn comets_tiny(&self) -> bool {
+        let length = self.scene.theme.flow.length;
+        matches!(length, crate::Length::Units(_)) && uniforms::px(length, &self.scene, &self.projected()) < 2.0
     }
 
     /// Whether this frame left work for the next one (taking `input` or not): pages over the

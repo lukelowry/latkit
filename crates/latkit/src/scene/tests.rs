@@ -181,7 +181,7 @@ fn comets_and_named_categories_match_builders() {
     let map = Colormap::new(ColormapKind::Categorical, [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)]).unwrap();
     let flow = FlowTheme {
         color: Color::rgb(0.0, 1.0, 0.0),
-        width: 6.0,
+        width: Length::Px(6.0),
         spacing: Length::Units(40.0),
         length: Length::Units(30.0),
     };
@@ -274,15 +274,16 @@ fn unknown_options_are_left_out_and_a_mark_has_one_kind() {
 fn rows_drawn_as_objects_read_as_built() {
     let json = r#"{
         "space": { "plane": { "y": "down" } },
-        "theme": { "edge": { "halo": 3, "parallel": { "gap": { "units": 4 } } } },
+        "theme": { "edge": { "halo": { "units": 3 }, "parallel": { "gap": { "units": 4 } } } },
         "marks": [
             { "edges": ["g", "Branch"], "ends": ["from", "to"], "meet": "nearest",
+              "markers": ["diamond", { "marker": "rectangle", "at": "$mid", "size": { "units": 8, "atLeast": 4 } }],
               "width": { "match": "$kv", "cases": [[69, 1.5], ["high", 2.5]], "otherwise": 1 } },
             { "vertices": ["g", "Bus"], "bearing": "$turn",
               "marker": { "symbol": { "paths": ["M0 0V-1"], "stroke": { "units": 2 } } },
               "color": { "value": "$kind",
                          "colormap": { "kind": "categorical", "colors": ["red", "blue"], "values": ["gas", 2] } },
-              "label": { "text": "$name", "place": "$side", "offset": [0, { "units": 1 }], "size": { "units": 12 } } },
+              "label": { "text": "$name", "place": "$side", "offset": ["$dx", { "units": 1 }], "size": { "units": 12 } } },
             { "vertices": ["g", "Note"], "marker": "none", "label": { "text": "$name", "place": "bottom-left" } }
         ]
     }"#;
@@ -293,8 +294,11 @@ fn rows_drawn_as_objects_read_as_built() {
         .values([Category::from("gas"), Category::from(2)]);
     let width = field("kv").matched([(Category::from(69), 1.5), (Category::from("high"), 2.5)], 1.0);
     let built = Scene::new(Plane { y: Vertical::Down, ..Plane::default() })
-        .theme(Theme { edge: EdgeTheme { halo: 3.0, parallel: Some(parallel), ..dark.edge }, ..dark })
-        .draw(Edges::of("g", "Branch").ends("from", "to").meet(Meet::Nearest).width(width))
+        .theme(Theme { edge: EdgeTheme { halo: Length::Units(3.0), parallel: Some(parallel), ..dark.edge }, ..dark })
+        .draw(Edges::of("g", "Branch").ends("from", "to").meet(Meet::Nearest).width(width).markers([
+            StrokeMarker::new(Shape::Diamond),
+            StrokeMarker::new(Shape::Rectangle).at(field("mid")).size(crate::units(8.0).at_least(4.0)),
+        ]))
         .draw(
             Vertices::of("g", "Bus")
                 .bearing(field("turn"))
@@ -303,7 +307,7 @@ fn rows_drawn_as_objects_read_as_built() {
                 .label(
                     Label::new(field("name"))
                         .place_by("side")
-                        .offset(0.0, Length::Units(1.0))
+                        .offset(field("dx"), crate::units(1.0))
                         .size(Length::Units(12.0)),
                 ),
         )

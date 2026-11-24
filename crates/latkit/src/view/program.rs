@@ -63,11 +63,21 @@ impl View {
         let (background, contrast) = (theme.background, theme.contrast);
         for shown in self.marks.iter_mut().filter(|m| !m.packed) {
             let Some(compiled) = &mut shown.compiled else { continue };
-            let markers = &mut compiled.drawing.markers;
-            match pictures(&gpu, inner, markers) {
-                Some(Ok(palette)) => markers.palette = palette,
+            let drawing = &mut compiled.drawing;
+            match pictures(&gpu, inner, &drawing.markers) {
+                Some(Ok(palette)) => drawing.markers.palette = palette,
                 Some(Err(error)) => self.events.tell(Event::Error(error)),
                 None => {}
+            }
+            // A stroke mark's palette holds the pictures of the markers along its strokes, one
+            // marker's after another's.
+            for marking in &mut drawing.stroke_markers {
+                marking.palette = drawing.markers.palette.len() as u32;
+                match pictures(&gpu, inner, &marking.markers) {
+                    Some(Ok(layers)) => drawing.markers.palette.extend(layers),
+                    Some(Err(error)) => self.events.tell(Event::Error(error)),
+                    None => {}
+                }
             }
             for (at, colormap) in &compiled.program.colormaps {
                 let colormap = &colormap.legible(background, contrast);

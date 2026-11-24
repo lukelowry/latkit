@@ -204,6 +204,9 @@ const OVERRIDES: &[(&str, &[&str])] = &[
     ("TURNED", &["false", "true"]),
     ("LABEL_PLACED", &["false", "true"]),
     ("HALO", &["false", "true"]),
+    ("MARKED", &["false", "true"]),
+    ("BLEND", &["false", "true"]),
+    ("ALONG", &["false", "true"]),
 ];
 
 pub(crate) fn generate() {
@@ -422,7 +425,7 @@ impl Specializing<'_> {
     ) -> (Vec<String>, Vec<String>) {
         let mut manifest = Vec::new();
         let mut specializations = Vec::new();
-        for values in combinations(self.shader, self.module, self.types) {
+        for values in combinations(self.shader, self.name, self.module, self.types) {
             let value = |name: &str| values.iter().find(|(n, _)| *n == name).map(|&(_, v)| v).expect("a value");
             let numbers: Vec<u32> = self.constants.iter().map(|c| value(c.name)).collect();
             let mut file = self.file.to_owned();
@@ -581,9 +584,11 @@ fn declared(glsl: &str, written: &[&str]) -> String {
 }
 
 /// Deduplicated text for the browser: each translated entry's GLSL, by key. Texts are split into
-/// chunks (see [`crate::glsl::chunks`]), and each distinct chunk is stored once. Chunks are packed in their first
-/// order into blocks of about [`BLOCK`] bytes, each compressed with deflate on its own, so a page
-/// inflates only the blocks the shaders it compiles use.
+/// chunks (see [`crate::glsl::chunks`]), and each distinct chunk is stored once. Chunks are packed
+/// in the order of their text into blocks of about [`BLOCK`] bytes, each compressed with deflate on
+/// its own. So the variants of a function lie together and deflate against each other, which makes
+/// the store about a quarter smaller than packing chunks as they first appear, and a page inflates
+/// only the blocks the shaders it compiles use: most of them, in either order.
 ///
 /// `shaders.bin`, all little-endian: the index's compressed and inflated sizes and its deflate
 /// stream, then the block count, and each block's compressed and inflated sizes followed by its
@@ -624,18 +629,24 @@ impl Store {
             encoder.finish().unwrap()
         };
         let mut blocks: Vec<String> = vec![String::new()];
-        let mut index = Vec::new();
-        index.extend((self.chunks.len() as u32).to_le_bytes());
-        for chunk in &self.chunks {
+        // Where each chunk lies: its block, start, and length.
+        let mut places = vec![[0_u32; 3]; self.chunks.len()];
+        let mut sorted: Vec<usize> = (0..self.chunks.len()).collect();
+        sorted.sort_by_key(|&id| &self.chunks[id]);
+        for id in sorted {
+            let chunk = &self.chunks[id];
             let mut at = blocks.len() - 1;
             if !blocks[at].is_empty() && blocks[at].len() + chunk.len() > BLOCK {
                 blocks.push(String::new());
                 at += 1;
             }
-            for word in [at as u32, blocks[at].len() as u32, chunk.len() as u32] {
-                index.extend(word.to_le_bytes());
-            }
+            places[id] = [at as u32, blocks[at].len() as u32, chunk.len() as u32];
             blocks[at].push_str(chunk);
+        }
+        let mut index = Vec::new();
+        index.extend((self.chunks.len() as u32).to_le_bytes());
+        for word in places.as_flattened() {
+            index.extend(word.to_le_bytes());
         }
         index.extend((self.texts.len() as u32).to_le_bytes());
         for (key, ids) in &self.texts {
@@ -749,7 +760,12 @@ fn check_targets(module: &naga::Module, name: &str) {
 /// Every combination of `module`'s constants that pipelines use. Asserts there is at least one,
 /// since a shader the browser build translates for no pipeline crashes the first page that draws
 /// with it.
-fn combinations<'a>(shader: &str, module: &'a naga::Module, types: &naga::Module) -> Vec<Vec<(&'a str, u32)>> {
+fn combinations<'a>(
+    shader: &str,
+    name: &str,
+    module: &'a naga::Module,
+    types: &naga::Module,
+) -> Vec<Vec<(&'a str, u32)>> {
     let mut combinations: Vec<Vec<(&str, u32)>> = vec![Vec::new()];
     for (_, o) in module.overrides.iter() {
         let name = o.name.as_deref().expect("a named override");
@@ -772,16 +788,17 @@ fn combinations<'a>(shader: &str, module: &'a naga::Module, types: &naga::Module
     }
     // Filtered once complete, so a constant missing means the shader has none, never one not yet
     // added.
-    combinations.retain(|c| made(shader, c, types));
+    combinations.retain(|c| made(shader, name, c, types));
     assert!(!combinations.is_empty(), "{shader}: no pipeline uses any combination of its constants");
     combinations
 }
 
-/// Whether any pipeline of `module` uses `constants`, all of the constants it has. Only channel
+/// Whether any pipeline of `module`, the shader named `name`, uses `constants`, all of the constants
+/// it has. Only channel
 /// evaluation (`raster::state`) runs without joins or samples. Points read no path, so they keep
 /// the default `PATH_ENDS`; area triangles always read geometry, and their focus variant reads no
 /// path.
-fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
+fn made(module: &str, name: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
     let value = |name: &str| constants.iter().find(|(n, _)| *n == name).map(|&(_, v)| v);
     // Every geometry pipeline is specialized for its scene. Only the shared expression
     // evaluator projects through any view at runtime (for pointer-dependent channels), and always
@@ -804,9 +821,33 @@ fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
             return false;
         }
     }
+    // A stroke parts under its markers, and changes color where its row says, by the distances
+    // along that only a painted program reads, on a path with records.
+    let placed = value("MARKED") == Some(1) || value("BLEND") == Some(1);
+    if placed && (value("PAINTED") == Some(0) || path == Some(type_constant(types, "PATH_TRACE"))) {
+        return false;
+    }
+    // A stroke's marker turns to run along its path. It is a shape, an icon, or a symbol, drawn by
+    // the plain programs: its rows, and the lit ones.
+    if value("ALONG") == Some(1) {
+        let pictured = ["MARKER_SHAPE", "MARKER_ICON", "MARKER_SYMBOL"]
+            .iter()
+            .any(|kind| value("MARKER") == Some(type_constant(types, kind)));
+        if value("TURNED") != Some(1) || !pictured || !matches!(name, "Points" | "PointsFocus") {
+            return false;
+        }
+    }
     // A trace's draws place its segments themselves, so no screen pass writes their records.
     if module == "raster::screen" && path == Some(type_constant(types, "PATH_TRACE")) {
         return false;
+    }
+    // A stroke's draw reads where its segments lie from their records, whatever path they follow,
+    // so every such path draws with the program of edges between their ends.
+    if module == "draw::strokes" {
+        let drawn = ["PATH_ENDS", "PATH_TRACE"].iter().any(|kind| path == Some(type_constant(types, kind)));
+        if !drawn {
+            return false;
+        }
     }
     if module == "draw::areas" {
         return path.is_none_or(|path| path == type_constant(types, "PATH_GEOMETRY"));

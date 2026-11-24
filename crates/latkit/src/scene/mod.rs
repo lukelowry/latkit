@@ -32,7 +32,7 @@ pub use label::Label;
 pub use layout::{Direction, Interpolation, Layered, Layout, Route, Stress};
 pub use lines::{Lines, Trace};
 pub use mark::Mark;
-pub use marker::{Marker, Shape};
+pub use marker::{Marker, Shape, StrokeMarker};
 pub use shade::Shade;
 pub(crate) use space::sun;
 pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space, Vertical};

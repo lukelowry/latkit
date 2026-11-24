@@ -3,6 +3,7 @@ import './shell/style.css';
 
 start([
   { id: 'grids', title: 'Power grids', load: () => import('./pages/grids/index.js') },
+  { id: 'oneline', title: 'One-line', load: () => import('./pages/oneline.js') },
   { id: 'bunny', title: 'Soft body', load: () => import('./pages/bunny/index.js') },
   { id: 'orbits', title: 'Orbits', load: () => import('./pages/orbits.js') },
   { id: 'telemetry', title: 'Telemetry', load: () => import('./pages/telemetry.js') },

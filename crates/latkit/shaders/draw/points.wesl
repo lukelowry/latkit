@@ -1,4 +1,5 @@
-// Points: one instanced quad per vertex row, shaded by its marker. A quad covers its marker and any
+// Points: one instanced quad per vertex row, shaded by its marker, or with `ALONG`, per segment of
+// a stroke mark's rows, for one of the mark's markers (see `lib/along.wesl`). A quad covers its marker and any
 // status ring, plus one pixel of antialiased edge. A quad's corners place its point on screen (see
 // `lib/screen.wesl`). The focus variant redraws the lit rows over everything, with quads enlarged
 // for their glow. Where depth varies, an opaque pass draws each marker's opaque pixels before any
@@ -7,17 +8,19 @@
 
 import package::lib::types::{
     STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON, MARKER_SYMBOL, DRAW_OPAQUE, ICON_SIZE,
-    SYMBOL_MARGIN, SYMBOL_SPREAD,
+    SYMBOL_MARGIN, SYMBOL_SPREAD, MISSING_COLOR, ALONG_COLOR_ROW, ALONG_COLOR_OWN, STROKE_BLENDED,
 };
-import package::lib::bind::{mark, eye, ramp, program, focused, word};
+import package::lib::bind::{frame, mark, eye, ramp, program, focused, word};
+import package::lib::along::{along, along_word, blend_on, blend_weight};
+import package::lib::focus::focus_of;
 import package::lib::points::{shown_point, Point};
 import package::lib::drawn::drawn_instance;
 import package::lib::state::{packed_inputs, extra_at};
-import package::lib::mark::px_per_length;
+import package::lib::mark::{px_per_length, fringe};
 import package::lib::hooks::{MarkerColor, MarkerFragment};
 import package::lib::shade::shade_fragment;
 import package::lib::project::{to_clip, nearer, culled, world, clip_of, to_screen};
-import package::lib::screen::{ScreenPoint, screen_point, point_reach};
+import package::lib::screen::{ScreenPoint, screen_point, point_reach, read_stroke};
 import package::lib::marker::{gauge, pie, filled, outline_distance, status_ring, glow, premultiplied};
 import package::lib::color::{output, OPAQUE};
 
@@ -31,6 +34,11 @@ override MARKER: u32 = MARKER_SHAPE;
 // Whether the mark's rows turn by a bearing, fixed when the pipeline is created. Only the pipelines
 // of such marks hold the code, so other marks compile and draw as if there were none.
 override TURNED: bool = false;
+
+// Whether the pipeline draws a stroke mark's marker: an instance a segment record, which carries
+// the marker where it sits on that segment. Such a marker turns, so `TURNED` is set too.
+@if(!custom)
+override ALONG: bool = false;
 
 struct Varyings {
     // Invariant, so the opaque pass and the other draws compute the same depth.
@@ -79,8 +87,59 @@ fn turn_of(p: Point) -> vec2f {
     return vec2f(up.y * c - up.x * s, up.x * c + up.y * s);
 }
 
+// The corner of the marker this draw shows on segment record `instance`: at its place along the
+// segment, sized and colored as its descriptor says, its up turned to the way the path runs there.
+// It stands a hair in front of its stroke, against rounding.
+@if(!custom)
+fn on_stroke(corner: u32, instance: u32) -> Varyings {
+    var out: Varyings;
+    let s = read_stroke(instance);
+    // The copy of the mark's uniform this draw binds describes its marker first.
+    let on = along(0u, s);
+    if !on.shown {
+        out.clip = culled();
+        return out;
+    }
+    let flags = mark.markers[0].x;
+    let dir = normalize(s.b - s.a + vec2f(1e-6, 0.0));
+    // The cosine and sine of the turn from the screen's up, toward smaller y, to the path's way.
+    let turn = vec2f(-dir.y, dir.x);
+    let half = vec2f(max(0.5 * on.size, 0.5));
+    var reach = half + select(0.0, frame.glow, LIT_DRAW) + fringe();
+    if MARKER == MARKER_SYMBOL {
+        reach += SYMBOL_MARGIN * half;
+    }
+    let extent = vec2f(length(reach));
+    let quad = vec2f(f32(corner & 1u), f32(corner >> 1u)) * 2.0 - 1.0;
+    let depth = min(mix(s.depth.x, s.depth.y, on.at) * 1.0005, 1.0);
+    out.clip = nearer(to_clip(mix(s.a, s.b, on.at) + quad * extent, vec4f(0.0, 0.0, depth, 1.0)));
+    out.p = quad * extent * vec2f(1.0, -1.0);
+    out.row = s.row;
+    // The stroke's color there, or its own, which fades as its row does.
+    // How much of the stroke's second color shows there: as its draw blends them.
+    var second = on.at;
+    if (mark.flags & STROKE_BLENDED) != 0u {
+        second = blend_weight(blend_on(s), on.at);
+    }
+    let line = mix(s.color_a, s.color_b, second);
+    let given = along_word(mark.markers[1].x, s.row, (flags & ALONG_COLOR_ROW) != 0u);
+    let own = unpack4x8unorm(given);
+    out.color = select(line, vec4f(own.rgb, own.a * line.a), ((flags & ALONG_COLOR_OWN) != 0u) & (given != MISSING_COLOR));
+    out.shape = vec4f(half, turn);
+    out.status = vec4f(0.0);
+    if LIT_DRAW {
+        out.focus = focus_of(s.row);
+    }
+    return out;
+}
+
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
+    @if(!custom) {
+        if ALONG {
+            return on_stroke(corner, instance);
+        }
+    }
     let at = marker_at(instance);
     let p = screen_point(at);
     var out: Varyings;

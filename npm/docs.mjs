@@ -844,6 +844,7 @@ const sections = {
         'Mark',
         'MarkOptions',
         'StrokeOptions',
+        'StrokeMarker',
         'Vertices',
         'Edges',
         'Meet',

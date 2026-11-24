@@ -36,7 +36,7 @@ pub struct Theme {
     pub text: TextTheme,
     /// Defaults for vertices.
     pub vertex: VertexTheme,
-    /// Defaults for edges, and how parallel edges and arrowheads look.
+    /// Defaults for edges, and how parallel edges look.
     pub edge: EdgeTheme,
     /// Defaults for lines.
     pub line: LineTheme,
@@ -78,8 +78,9 @@ pub struct TextTheme {
     pub font: Arc<str>,
     /// The font size, in CSS pixels.
     pub size: f32,
-    /// Width of the background-colored halo around label text, in CSS pixels.
-    pub halo: f32,
+    /// The width of the halo of the background's color around label text: a number in CSS pixels,
+    /// or `{ units }` in position units.
+    pub halo: Length,
 }
 
 /// Defaults for vertices.
@@ -95,7 +96,7 @@ pub struct VertexTheme {
     pub corner: f32,
 }
 
-/// Defaults for edges, and how parallel edges and arrowheads look.
+/// Defaults for edges, and how parallel edges look.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
@@ -105,17 +106,15 @@ pub struct EdgeTheme {
     pub color: Option<Color>,
     /// The edge width, in CSS pixels.
     pub width: f32,
-    /// The width of a band of the background's color beside each edge, in CSS pixels. It covers
-    /// the strokes drawn under it, so an edge that crosses another parts it, as one that ends on
-    /// it does. Where depth decides what covers what (a tilted view, the globe, or raised rows),
-    /// it covers only what lies farther. Defaults to 0, which draws none.
-    pub halo: f32,
+    /// The width of a band of the background's color beside each edge: a number in CSS pixels, or
+    /// `{ units }` in position units. It covers the strokes drawn under it, so an edge that
+    /// crosses another parts it, as one that ends on it does. Where depth decides what covers what
+    /// (a tilted view, the globe, or raised rows), it covers only what lies farther. Defaults to
+    /// 0, which draws none.
+    pub halo: Length,
     /// How edges joining the same two vertices run side by side. `None` draws them over one
     /// another.
     pub parallel: Option<Parallel>,
-    /// How far an arrowhead extends beyond the edge's width. A head's length is this plus the
-    /// width.
-    pub arrow: f32,
 }
 
 /// How edges joining the same two vertices run side by side: each moved sideways from the path
@@ -163,9 +162,9 @@ pub struct LineTheme {
     pub color: Color,
     /// The line width, in CSS pixels.
     pub width: f32,
-    /// The width of a band of the background's color beside each line, in CSS pixels, as an
-    /// edge's [`halo`](EdgeTheme::halo). Defaults to 0, which draws none.
-    pub halo: f32,
+    /// The width of a band of the background's color beside each line, as an edge's
+    /// [`halo`](EdgeTheme::halo). Defaults to 0, which draws none.
+    pub halo: Length,
 }
 
 /// Defaults for areas.
@@ -197,9 +196,9 @@ pub struct FocusTheme {
 
 /// How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
 /// tail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a
-/// thin rim of the background color ahead of its head, which parts it from the line. Comets end
-/// before an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,
-/// and they come back once it rests.
+/// thin rim of the background color ahead of its head, which parts it from the line. Comets pass
+/// under a stroke's markers. While the camera moves, comets fade out and hold still, and they come
+/// back once it rests.
 ///
 /// `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
 /// In position units (degrees on the earth), comets scale with the zoom and stay in place along
@@ -215,8 +214,9 @@ pub struct FlowTheme {
     pub spacing: Length,
     /// The length of a comet's tail behind its head.
     pub length: Length,
-    /// The width of a comet's head, in CSS pixels. A head is never narrower than its stroke.
-    pub width: f32,
+    /// The width of a comet's head: a number in CSS pixels, or `{ units }` in position units. A
+    /// head is never narrower than its stroke.
+    pub width: Length,
 }
 
 /// How the earth looks.
@@ -256,11 +256,11 @@ impl Theme {
                 color: hex("#a8b2c2"),
                 font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),
                 size: 11.0,
-                halo: 2.0,
+                halo: Length::Px(2.0),
             },
             vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0, corner: 6.0 },
-            edge: EdgeTheme { color: None, width: 1.5, halo: 0.0, parallel: Some(Parallel::default()), arrow: 7.0 },
-            line: LineTheme { color: hex("#7cc4ff"), width: 1.5, halo: 0.0 },
+            edge: EdgeTheme { color: None, width: 1.5, halo: Length::Px(0.0), parallel: Some(Parallel::default()) },
+            line: LineTheme { color: hex("#7cc4ff"), width: 1.5, halo: Length::Px(0.0) },
             area: AreaTheme { color: hex("#2b3d50") },
             focus: FocusTheme {
                 hover: Color::WHITE.alpha(0.6),
@@ -273,7 +273,7 @@ impl Theme {
                 color: Color::WHITE.alpha(0.85),
                 spacing: Length::Px(64.0),
                 length: Length::Px(24.0),
-                width: 4.0,
+                width: Length::Px(4.0),
             },
             earth: EarthTheme { ground: hex("#18212b"), atmosphere: hex("#5aa9ff").alpha(0.55), night: 0.3 },
             plot: PlotTheme { playhead: hex("#ffe5d4").alpha(0.8) },

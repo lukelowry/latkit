@@ -131,6 +131,9 @@ struct Marks<'a> {
     /// Where each mark's records start in the screen store, for a recorded stroke mark this frame
     /// draws, for its draws and for its lit draw (see [`View::place`]).
     firsts: &'a [Vec<Option<u32>>; 2],
+    /// For each mark, the uniform its first stroke marker's draw binds (see
+    /// [`View::marker_uniforms`]).
+    markers: &'a [usize],
 }
 
 impl Marks<'_> {
@@ -202,6 +205,52 @@ impl Marks<'_> {
             }
             if comets && shown.mark.flows() {
                 self.draw(pass, drawn, inner, i, shown, Draw::Comets);
+            }
+            self.stroke_markers(pass, drawn, inner, i, shown, Draw::Rows);
+        }
+    }
+
+    /// Draws the lit rows of `marks` again, glowing: each mark's rows, then the markers along them.
+    fn lit(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        marks: &[super::marks::Shown],
+    ) {
+        for (i, shown) in marks.iter().enumerate().filter(|(_, shown)| shown.drawable() && shown.lit.rows > 0) {
+            self.draw(pass, drawn, inner, i, shown, Draw::Lit);
+            self.stroke_markers(pass, drawn, inner, i, shown, Draw::Lit);
+        }
+    }
+
+    /// Draws the markers along the strokes of mark `i`, each an instance a segment record: over its
+    /// rows, or with [`Draw::Lit`], over its lit rows, glowing.
+    fn stroke_markers(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        i: usize,
+        shown: &super::marks::Shown,
+        draw: Draw,
+    ) {
+        let lit = draw == Draw::Lit;
+        let count = shown.compiled.as_ref().map_or(0, |compiled| compiled.drawing.stroke_markers.len());
+        let Some(first) = self.firsts[usize::from(lit)][i].filter(|_| count > 0) else { return };
+        let variants = MarkVariants::shown(shown, self.scene);
+        let shader = if lit { Shader::PointsFocus } else { Shader::Points };
+        let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
+        let corners = Primitive::Points.corners();
+        for k in 0..count {
+            let Some(variant) = variants.marker(k, draw, self.format, self.samples) else { continue };
+            pass.set_bind_group(1, &self.groups.mark, &[offset(self.markers[i] + k)]);
+            pass.set_pipeline(&inner.pipelines.render(self.device, variant));
+            pass.set_bind_group(2, group, &[]);
+            if lit {
+                drawn.draw_range(pass, corners, first..first + shown.lit.rows * shown.lit.pieces);
+            } else {
+                shown.record(pass, drawn, corners, first);
             }
         }
     }
@@ -396,8 +445,11 @@ fn pass_shaders(marks: &[super::marks::Shown], scene: &crate::Scene, still: bool
     }
     for shown in marks {
         let variants = MarkVariants::shown(shown, scene);
-        for draw in [Draw::Rows, Draw::Lit] {
-            let shader = variants.shader(draw);
+        // The markers along a mark's strokes draw with the points' shaders.
+        let markers = if shown.mark.marked() { &[Shader::Points, Shader::PointsFocus][..] } else { &[] };
+        for shader in
+            [Draw::Rows, Draw::Lit].map(|draw| variants.shader(draw)).into_iter().chain(markers.iter().copied())
+        {
             if !shaders.contains(&shader) {
                 shaders.push(shader);
             }
@@ -938,6 +990,7 @@ impl View {
             count: self.marks.len(),
             layered,
             firsts: &firsts,
+            markers: &self.marker_uniforms(),
         };
         // Until a fit places the camera, the replayed depth only clears.
         if let Some((targets, read)) = &pick_targets {
@@ -1002,10 +1055,8 @@ impl View {
         }
         // Lit rows draw again, glowing, over every mark but labels, and where depth varies, over all
         // but the opaque rows nearer than them. They draw once their pipelines have compiled.
-        for (i, shown) in self.marks.iter().enumerate() {
-            if self.can_use(Stage::Lit) && shown.drawable() && shown.lit.rows > 0 {
-                marks.draw(&mut pass, drawn, inner, i, shown, Draw::Lit);
-            }
+        if self.can_use(Stage::Lit) {
+            marks.lit(&mut pass, drawn, inner, &self.marks);
         }
         if texts {
             self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, group(Shader::Glyphs));

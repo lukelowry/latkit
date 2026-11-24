@@ -162,6 +162,7 @@ impl Vertices {
         if let Some(bearing) = &self.bearing {
             let store = Store::Number { word: wgsl::VERTEX_WORDS + inputs.len() as u32, fallback: None };
             c.channel("bearing", bearing, store)?;
+            flags |= wgsl::TURNS;
         }
         let mut drawing = Drawing::new(MarkKind::Vertices);
         // The marker's half-size stays within its size's pixel bounds. A `size` bounds the full

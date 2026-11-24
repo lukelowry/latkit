@@ -28,8 +28,7 @@
       "parallel": {
         "gap": 3.0,
         "converge": "squeeze"
-      },
-      "arrow": 7.0
+      }
     },
     "line": {
       "color": "rgba(31, 111, 235, 1)",
@@ -90,8 +89,7 @@
       "parallel": {
         "gap": 3.0,
         "converge": "squeeze"
-      },
-      "arrow": 7.0
+      }
     },
     "line": {
       "color": "rgba(124, 196, 255, 1)",

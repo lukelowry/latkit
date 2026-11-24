@@ -414,8 +414,8 @@ export type Controls =
       press?: number;
       /**
        * How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
-       * options that read `elapsed`. `system` follows the user's reduced-motion setting, `full` animates
-       * everything, and `reduced` animates only motion the user drives. Defaults to `system`.
+       * options that read `elapsed`. `full` animates everything, `system` follows the user's
+       * reduced-motion setting, and `reduced` animates only motion the user drives. Defaults to `full`.
        */
       motion?: Motion;
       /**
@@ -517,7 +517,7 @@ export interface EarthTheme {
   night?: number;
 }
 
-/** Defaults for edges, and how parallel edges and arrowheads look. */
+/** Defaults for edges, and how parallel edges look. */
 export interface EdgeTheme {
   /**
    * The edge color. `null` blends the colors of each edge's two vertices, also for rows whose own
@@ -527,16 +527,15 @@ export interface EdgeTheme {
   /** The edge width, in CSS pixels. */
   width?: number;
   /**
-   * The width of a band of the background's color beside each edge, in CSS pixels. It covers the
-   * strokes drawn under it, so an edge that crosses another parts it, as one that ends on it does.
-   * Where depth decides what covers what (a tilted view, the globe, or raised rows), it covers only
-   * what lies farther. Defaults to 0, which draws none.
+   * The width of a band of the background's color beside each edge: a number in CSS pixels, or
+   * `{ units }` in position units. It covers the strokes drawn under it, so an edge that crosses
+   * another parts it, as one that ends on it does. Where depth decides what covers what (a tilted
+   * view, the globe, or raised rows), it covers only what lies farther. Defaults to 0, which draws
+   * none.
    */
-  halo?: number;
+  halo?: Length;
   /** How edges joining the same two vertices run side by side. `null` draws them over one another. */
   parallel?: Parallel | null;
-  /** How far an arrowhead extends beyond the edge's width. A head's length is this plus the width. */
-  arrow?: number;
 }
 
 /**
@@ -554,8 +553,6 @@ export interface Edges extends MarkOptions, StrokeOptions {
   route?: Route | null;
   /** Where each row's ends lie on their vertices. Defaults to `center`. */
   meet?: Meet;
-  /** Whether each row has an arrowhead at its second end. Defaults to `false`. */
-  arrows?: boolean;
   /**
    * Draws each row as a pole from its own vertex down to the ground, on a plane or the earth. Poles
    * take no `ends`, `bends`, or `joins`. Defaults to `false`.
@@ -566,6 +563,18 @@ export interface Edges extends MarkOptions, StrokeOptions {
    * `reference` field names it, as a star from their center to each member.
    */
   joins?: [table: string, reference: string] | null;
+  /**
+   * Markers along each row's path, such as a breaker's square or a transformer's symbol: at most
+   * four. A shape's name alone, as `"rectangle"`, sits at the path's end.
+   */
+  markers?: StrokeMarker[];
+  /**
+   * Where along each row's path its color goes from its first to its second: a fraction, from 0 at
+   * the path's start to 1 at its end, for a sharp change there, or `[from, to]` to blend between two
+   * places. A row with no color of its own takes the colors of its two ends. Defaults to `[0, 1]`,
+   * which blends from end to end.
+   */
+  blend?: ExprInput | [from: ExprInput, to: ExprInput];
 }
 
 /**
@@ -660,9 +669,9 @@ export type Fit =
 /**
  * How comets along edges and lines look. A comet has a round head, brightest at its middle, and a
  * tail that thins and fades. On a stroke its color contrasts with less than 3:1, a comet takes a
- * thin rim of the background color ahead of its head, which parts it from the line. Comets end
- * before an arrowhead, so it shows whole. While the camera moves, comets fade out and hold still,
- * and they come back once it rests.
+ * thin rim of the background color ahead of its head, which parts it from the line. Comets pass
+ * under a stroke's markers. While the camera moves, comets fade out and hold still, and they come
+ * back once it rests.
  *
  * `spacing` and `length` must use the same unit, and each row's `flow` speed is in that unit too.
  * In position units (degrees on the earth), comets scale with the zoom and stay in place along
@@ -678,8 +687,11 @@ export interface FlowTheme {
   spacing?: Length;
   /** The length of a comet's tail behind its head. */
   length?: Length;
-  /** The width of a comet's head, in CSS pixels. A head is never narrower than its stroke. */
-  width?: number;
+  /**
+   * The width of a comet's head: a number in CSS pixels, or `{ units }` in position units. A head is
+   * never narrower than its stroke.
+   */
+  width?: Length;
 }
 
 /** How hovered and selected rows glow, and how rows outside a selection dim. */
@@ -815,10 +827,10 @@ export type Label =
        */
       place?: Place | `$${string}` | null;
       /**
-       * How far the text moves from its place on screen, right then down: each a number in CSS pixels,
-       * or `{ units }` in position units. Defaults to none.
+       * How far each row's text moves from its place on screen, right then down: each a value in CSS
+       * pixels, or `{ units }` in position units. Defaults to none.
        */
-      offset?: [Length, Length] | null;
+      offset?: [Size, Size] | null;
       /**
        * Each row's text color. Defaults to the theme's text color. Inside a shape or block, it keeps a
        * 4.5:1 contrast with the row's color.
@@ -907,10 +919,10 @@ export interface LineTheme {
   /** The line width, in CSS pixels. */
   width?: number;
   /**
-   * The width of a band of the background's color beside each line, in CSS pixels, as an edge's
-   * `halo`. Defaults to 0, which draws none.
+   * The width of a band of the background's color beside each line, as an edge's `halo`. Defaults to
+   * 0, which draws none.
    */
-  halo?: number;
+  halo?: Length;
 }
 
 /**
@@ -935,6 +947,18 @@ export interface Lines extends MarkOptions, StrokeOptions {
   trace?: string | ExprInput;
   /** How each row runs between its samples on a plot. Defaults to `linear`. */
   interpolation?: Interpolation;
+  /**
+   * Markers along each row's path, such as a breaker's square or a transformer's symbol: at most
+   * four. A shape's name alone, as `"rectangle"`, sits at the path's end.
+   */
+  markers?: StrokeMarker[];
+  /**
+   * Where along each row's path its color goes from its first to its second: a fraction, from 0 at
+   * the path's start to 1 at its end, for a sharp change there, or `[from, to]` to blend between two
+   * places. A row with no color of its own takes the colors of its two ends. Defaults to `[0, 1]`,
+   * which blends from end to end.
+   */
+  blend?: ExprInput | [from: ExprInput, to: ExprInput];
 }
 
 /**
@@ -1375,6 +1399,44 @@ export interface Stress {
   gap?: number;
 }
 
+/**
+ * A marker on a stroke: at a place along each row's path, turned so that its up is the way the
+ * path runs there. It lies wholly on the path, so at the start its near edge sits on the start,
+ * and at the end its far edge on the end. The stroke stops at its box and goes on after it, as it
+ * stops at the markers of its end vertices. A shape's name alone sits at the path's end. A stroke
+ * takes at most four, each a shape, an icon, or a symbol.
+ */
+export type StrokeMarker =
+  | 'ellipse'
+  | 'rectangle'
+  | 'rounded'
+  | 'diamond'
+  | {
+      /** How it is drawn: a shape, an icon, or a symbol. */
+      marker: Marker;
+      /**
+       * How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a path of
+       * one segment that is a fraction of the stroke as drawn, and on a longer one, of the path between
+       * its first and last points. At 0 or 1 it sits on the path's first or last segment, which must
+       * have a length to carry it. Defaults to 1.
+       */
+      at?: ExprInput;
+      /**
+       * How far it moves along the path from there, toward the path's end: a number in CSS pixels, or
+       * `{ units }` in position units. Defaults to 0.
+       */
+      offset?: Length;
+      /**
+       * Its width and height in CSS pixels, unless given in `units`. Defaults to twice the theme's
+       * `vertex.radius`, the size of a vertex's marker.
+       */
+      size?: Size | null;
+      /** Each row's color. Defaults to the stroke's color there. */
+      color?: ExprInput | null;
+      /** Which rows show it. Defaults to all. */
+      visible?: ExprInput;
+    };
+
 /** The options of marks drawn as strokes: edges and lines. */
 export interface StrokeOptions {
   /** Each row's width in CSS pixels, unless given in `units`. Defaults to the theme's width. */
@@ -1397,8 +1459,11 @@ export interface TextTheme {
   font?: string;
   /** The font size, in CSS pixels. */
   size?: number;
-  /** Width of the background-colored halo around label text, in CSS pixels. */
-  halo?: number;
+  /**
+   * The width of the halo of the background's color around label text: a number in CSS pixels, or
+   * `{ units }` in position units.
+   */
+  halo?: Length;
 }
 
 /**
@@ -1435,7 +1500,7 @@ export type Theme =
       text?: TextTheme;
       /** Defaults for vertices. */
       vertex?: VertexTheme;
-      /** Defaults for edges, and how parallel edges and arrowheads look. */
+      /** Defaults for edges, and how parallel edges look. */
       edge?: EdgeTheme;
       /** Defaults for lines. */
       line?: LineTheme;

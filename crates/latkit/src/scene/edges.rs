@@ -37,8 +37,6 @@ Edges("edges") + stroke {
     route: Option<Route>,
     /// Where each row's ends lie on their vertices. Defaults to `center`.
     meet: Meet,
-    /// Whether each row has an arrowhead at its second end. Defaults to `false`.
-    arrows: bool,
     /// Draws each row as a pole from its own vertex down to the ground, on a plane or the earth.
     /// Poles take no `ends`, `bends`, or `joins`. Defaults to `false`.
     poles: bool,
@@ -57,7 +55,6 @@ impl Edges {
             bends: None,
             route: None,
             meet: Meet::Center,
-            arrows: false,
             poles: false,
             joins: None,
         }
@@ -103,13 +100,6 @@ impl Edges {
         self
     }
 
-    /// Sets whether each row has an arrowhead at its second end.
-    #[must_use]
-    pub fn arrows(mut self, on: bool) -> Edges {
-        self.arrows = on;
-        self
-    }
-
     /// Sets the reference fields naming each row's two vertices.
     #[must_use]
     pub fn ends(mut self, from: impl Into<Name>, to: impl Into<Name>) -> Edges {
@@ -144,7 +134,7 @@ impl Edges {
         {
             return Err(Error::invalid("not a path field").at(bends).at("bends"));
         }
-        let mut flags = if self.arrows { wgsl::ARROWS } else { 0 };
+        let mut flags = 0;
         if self.meet == Meet::Nearest && self.ends.is_none() {
             return Err(Error::invalid("only edges with ends meet their vertices").at("meet"));
         }

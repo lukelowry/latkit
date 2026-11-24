@@ -1,5 +1,5 @@
 // Where each instance of a stroke or point mark lies on screen this frame, as every draw of the mark
-// places it: a segment, with its joints, distances along, comets, colors, and arrowhead, or a
+// places it: a segment, with its joints, distances along, comets, colors, and place in its path, or a
 // point's marker. Placing a segment of a path reads its path's points, projects them, and joins it
 // to its neighbors, work each corner of each draw would otherwise repeat: four corners in each of a
 // mark's opaque, rows, and comets draws. So a frame writes the record of each such segment once
@@ -13,16 +13,17 @@
 // width. A draw numbers its instances from its mark's first record, so an instance's index is its
 // record's.
 
-import package::lib::types::{NONE, ARROWS, ALONG_UNITS, FLOW_UNITS, PATH_TRACE, STATUS};
+import package::lib::types::{NONE, STROKE_MARKED, STROKE_BLENDED, ALONG_UNITS, FLOW_UNITS, PATH_TRACE, STATUS};
+import package::lib::state::{row_at, edge_at, end_vertex};
 import package::lib::bind::{frame, eye, mark};
 import package::lib::path::{
     PATH, Style, PathEnds, stroke_segment, segment_points, on_screen, stroke_style, ends_part, path_count, path_length,
-    path_total, path_position, marker_reach,
+    path_total, path_position,
 };
 import package::lib::points::Point;
 import package::lib::project::{to_screen, PI};
 import package::lib::lists::{list, list_entry, list_total};
-import package::lib::mark::fringe;
+import package::lib::mark::{fringe, px_per_length};
 import package::lib::stroke::{rims, comet_reach, COMET_RIM};
 import package::lib::daylight::daylight;
 
@@ -39,8 +40,10 @@ struct ScreenRecord {
 // A segment as the draws of its mark stroke it. Its ends on screen in CSS pixels (`a`, `b`), the
 // depth at each (clip z over w), and the clip w at `b` over that at `a` (`w`): the w of a quad's
 // corners matters only relative to each other. Distances along at each end (`along`), how far its
-// row's comets have traveled (`travel`), how far past `b` its arrowhead's tip lies (`tip`), its
-// width and comet flow, as `Stroke` in `lib/stroke.wesl` holds them. At each end, tan of half the
+// row's comets have traveled (`travel`), its width and comet flow, as `Stroke` in `lib/stroke.wesl`
+// holds them. Whether it is its path's first segment (`first`) or ends a part of it (`last`), and
+// for a mark with markers whose list measures its paths, the path's length in CSS pixels (`total`),
+// which place its markers (see `lib/along.wesl`). At each end, tan of half the
 // turn there (`turn`) and the normal of the line splitting its pixels with the next segment's
 // (`split`, see `Joints` in `lib/path.wesl`). Its color at each end of its drawn part, lit by
 // daylight (`color_a`, `color_b`). Whether the rows' draw shares each end with the segment beyond
@@ -54,14 +57,15 @@ struct ScreenStroke {
     w: f32,
     along: vec2f,
     travel: f32,
-    tip: f32,
+    total: f32,
     width: f32,
     flow: f32,
     turn: vec2f,
     split: vec4f,
     color_a: vec4f,
     color_b: vec4f,
-    arrow: bool,
+    first: bool,
+    last: bool,
     dash: bool,
     rim: bool,
     shares: vec2<bool>,
@@ -85,7 +89,7 @@ struct ScreenPoint {
 
 // Bits of a stroke record's flags.
 const STROKE_SHOWN: u32 = 1u;
-const STROKE_ARROW: u32 = 2u;
+const STROKE_LAST: u32 = 2u;
 const STROKE_DASH: u32 = 4u;
 const STROKE_RIM: u32 = 8u;
 const STROKE_SHARES_A: u32 = 16u;
@@ -98,6 +102,15 @@ const HALF_MOST: f32 = 6e4;
 
 // The steps a record divides a turn into for the angle of a split line: 12 bits.
 const ANGLE_STEPS: f32 = 4095.0;
+
+// A path's length as a record keeps it: the steps from a sixteenth of a CSS pixel, `TOTAL_LOW` as
+// a power of two, across `TOTAL_OCTAVES` doublings, in 15 bits. Every segment of a path keeps the
+// same length, so they agree on where its markers sit, within a twentieth of a percent of it.
+const TOTAL_LOW: f32 = -4.0;
+const TOTAL_OCTAVES: f32 = 24.0;
+const TOTAL_STEPS: f32 = 32766.0;
+// The bit beside a record's length that marks its path's first segment.
+const TOTAL_FIRST: u32 = 0x8000u;
 
 // Segment `instance` as its mark's draws stroke it, or for the lit draw (`lit`), whose quads widen
 // for their glow and which paints comets with its rows. A stroke without dashes or flow measures no
@@ -124,30 +137,26 @@ fn screen_stroke(instance: u32, lit: bool) -> ScreenStroke {
     let a = on.a;
     let b = on.b;
     let width = style.width;
-    let pixels = length(b - a);
-    // A segment shorter than half a pixel on screen, such as one between vertices at one place,
-    // points nowhere, so it has no head.
-    let arrow = (PATH != PATH_TRACE) & ((mark.flags & ARROWS) != 0u) & ends_part(s) & (pixels >= 0.5);
     let flows = (style.flow != 0.0) & (frame.flow.a > 0.0);
     // A segment's distance along ends where its list says, so it starts its own length before (at 0
     // without a list), and its drawn part covers part of the path's segment it draws or runs
     // beside: in position units, `kept` of its length between its points, else in CSS pixels,
     // `visible` of its `chord` on screen, which is what its list measured. A fan stands for an end
     // of that segment (see `on_screen`). The list gives a fan no length, so a fan into the first
-    // vertex starts at 0, and one into the last, listed after its path, starts a segment back. Where
-    // comets flow toward an arrowhead, `tip` is how far past `b` the head's tip lies: 0 on its own
-    // segment, and before it, the rest of the path less the farthest its marker reaches.
+    // vertex starts at 0, and one into the last, listed after its path, starts a segment back. A
+    // mark with markers, or one that says where its colors change, places them by these distances
+    // too, and where its list measures its paths, by each one's length.
     var along = vec2f(0.0);
-    var tip = select(-1.0, 0.0, arrow);
-    if style.dash | (style.flow != 0.0) {
+    var total = 0.0;
+    let placed = (mark.flags & (STROKE_MARKED | STROKE_BLENDED)) != 0u;
+    if style.dash | (style.flow != 0.0) | placed {
         let units = (mark.flags & ALONG_UNITS) != 0u;
         let listed = mark.per_row == NONE;
         let span = select(on.chord, path_length(on.ends.a, on.ends.b), units);
         let start = select(0.0, s.along - select(span, 0.0, on.fan == 1u), listed);
         along = start + span * select(on.visible, on.kept, units);
-        if flows & listed & !arrow & ((mark.flags & ARROWS) != 0u) {
-            let px = select(1.0, pixels / max(abs(along.y - along.x), 1e-12), units);
-            tip = max((path_total(s.item) - along.y) * px - marker_reach(points.vertex_b), 0.0);
+        if placed & listed {
+            total = path_total(s.item) * select(1.0, px_per_length(), units);
         }
     }
     // Where the path runs on through an end, this segment shares that end's pixels with the next
@@ -167,14 +176,25 @@ fn screen_stroke(instance: u32, lit: bool) -> ScreenStroke {
     out.w = on.cb.w / on.ca.w;
     out.along = along;
     out.travel = style.travel;
-    out.tip = tip;
+    out.total = total;
     out.width = width;
     out.flow = style.flow;
     out.turn = joints.turn;
     out.split = joints.split;
-    out.color_a = daylit(first, on.ends, on.kept.x);
-    out.color_b = daylit(blended(style, on.ends, on.kept.y), on.ends, on.kept.y);
-    out.arrow = arrow;
+    // A row that takes its ends' colors blends them along this segment. On a mark that says where
+    // its colors change, each segment keeps both ends' colors whole instead, and its draws blend
+    // them where the row says (see `blend_on` in `lib/along.wesl`).
+    var color_a = first;
+    var color_b = blended(style, on.ends, on.kept.y);
+    if style.blends & ((mark.flags & STROKE_BLENDED) != 0u) {
+        let e = edge_at(row_at(s.row));
+        color_a = style.color * unpack4x8unorm(end_vertex(0u, e.a).color);
+        color_b = style.color * unpack4x8unorm(end_vertex(1u, e.b).color);
+    }
+    out.color_a = daylit(color_a, on.ends, on.kept.x);
+    out.color_b = daylit(color_b, on.ends, on.kept.y);
+    out.first = s.index == 0u;
+    out.last = ends_part(s);
     out.dash = style.dash;
     out.rim = flows & rims(first.rgb);
     out.row = s.row;
@@ -194,12 +214,13 @@ fn daylit(color: vec4f, ends: PathEnds, f: f32) -> vec4f {
 }
 
 // `s` as the texels of its record. Its travel is kept as a fraction of the comet spacing, within
-// one, which is all that sets where comets stand. That, its width, turns, the w at `b`, and how far
-// its arrowhead lies keep to half floats, and the angles of its split lines to 12 bits, well within
-// a pixel. Colors keep to 8 bits a channel, as rows' colors are.
+// one, which is all that sets where comets stand. That, its width, turns, and the w at `b` keep to
+// half floats, its path's length to 15 bits beside the bit for a first segment, and the angles of
+// its split lines to 12 bits, well within a pixel. Colors keep to 8 bits a channel, as rows' colors
+// are.
 fn stroke_record(s: ScreenStroke) -> ScreenRecord {
     let spacing = max(frame.flow_spacing, 1e-6);
-    let flags = select(0u, STROKE_SHOWN, s.shown) | select(0u, STROKE_ARROW, s.arrow) | select(0u, STROKE_DASH, s.dash)
+    let flags = select(0u, STROKE_SHOWN, s.shown) | select(0u, STROKE_LAST, s.last) | select(0u, STROKE_DASH, s.dash)
         | select(0u, STROKE_RIM, s.rim) | select(0u, STROKE_SHARES_A, s.shares.x) | select(0u, STROKE_SHARES_B, s.shares.y)
         | select(0u, STROKE_COMETS_SHARE_A, s.shares_comets.x) | select(0u, STROKE_COMETS_SHARE_B, s.shares_comets.y);
     let angles = vec2f(atan2(s.split.y, s.split.x), atan2(s.split.w, s.split.z));
@@ -209,12 +230,24 @@ fn stroke_record(s: ScreenStroke) -> ScreenRecord {
         bitcast<vec4u>(vec4f(s.depth, s.along)),
         vec4u(
             halves(vec2f(clamp(s.w, 1e-4, HALF_MOST), s.width)),
-            halves(vec2f(fract(s.travel / spacing), s.tip)),
+            to_half(fract(s.travel / spacing)) | ((total_code(s.total) | select(0u, TOTAL_FIRST, s.first)) << 16u),
             halves(s.turn),
             bitcast<u32>(s.flow),
         ),
         vec4u(turns.x | (turns.y << 12u) | (flags << 24u), pack4x8unorm(s.color_a), pack4x8unorm(s.color_b), s.row),
     );
+}
+
+// Path length `total`, in CSS pixels, as a record keeps it: 0 for none.
+fn total_code(total: f32) -> u32 {
+    let steps = round((log2(max(total, 1e-12)) - TOTAL_LOW) / TOTAL_OCTAVES * TOTAL_STEPS);
+    return select(0u, u32(clamp(steps, 0.0, TOTAL_STEPS)) + 1u, total > 0.0);
+}
+
+// The path length a record keeps as `code`.
+fn total_of(code: u32) -> f32 {
+    let steps = f32(max(code, 1u) - 1u);
+    return select(0.0, exp2(steps / TOTAL_STEPS * TOTAL_OCTAVES + TOTAL_LOW), code != 0u);
 }
 
 // Two values as half floats, low then high: each rounded to the nearest, within the range a half
@@ -251,7 +284,6 @@ fn read_stroke(i: u32) -> ScreenStroke {
     let t2 = record_texel(i, 2u);
     let t3 = record_texel(i, 3u);
     let w_width = from_halves(t2.x);
-    let travel_tip = from_halves(t2.y);
     let angles = vec2f(f32(t3.x & 0xfffu), f32((t3.x >> 12u) & 0xfffu)) / ANGLE_STEPS * (2.0 * PI) - PI;
     let flags = t3.x >> 24u;
     var s: ScreenStroke;
@@ -263,14 +295,15 @@ fn read_stroke(i: u32) -> ScreenStroke {
     s.w = w_width.x;
     s.width = w_width.y;
     s.flow = bitcast<f32>(t2.w);
-    s.travel = travel_tip.x * max(frame.flow_spacing, 1e-6);
-    s.tip = travel_tip.y;
+    s.travel = from_half(t2.y) * max(frame.flow_spacing, 1e-6);
+    s.total = total_of((t2.y >> 16u) & 0x7fffu);
+    s.first = ((t2.y >> 16u) & TOTAL_FIRST) != 0u;
     s.turn = from_halves(t2.z);
     s.split = vec4f(cos(angles.x), sin(angles.x), cos(angles.y), sin(angles.y));
     s.color_a = unpack4x8unorm(t3.y);
     s.color_b = unpack4x8unorm(t3.z);
     s.row = t3.w;
-    s.arrow = (flags & STROKE_ARROW) != 0u;
+    s.last = (flags & STROKE_LAST) != 0u;
     s.dash = (flags & STROKE_DASH) != 0u;
     s.rim = (flags & STROKE_RIM) != 0u;
     s.shares = vec2<bool>((flags & STROKE_SHARES_A) != 0u, (flags & STROKE_SHARES_B) != 0u);

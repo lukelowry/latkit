@@ -362,7 +362,15 @@ impl View {
         let mut hi = [f64::NEG_INFINITY; 3];
         let mut margin = 0.0_f64;
         for (i, shown) in self.marks.iter().enumerate() {
-            if !shown.measured() || !fits_table(fit, shown) {
+            if !fits_table(fit, shown) {
+                continue;
+            }
+            // A stroke reaches half its width from its path, its halo beyond that, and its markers
+            // half their size, whether or not the fit measures its rows.
+            if shown.drawable() {
+                margin = margin.max(self.stroke_reach(&shown.mark));
+            }
+            if !shown.measured() {
                 continue;
             }
             if let Some([w, s, e, n]) =
@@ -397,6 +405,30 @@ impl View {
             return None;
         }
         measured().filter_map(|m| self.tiled_bounds(m)).reduce(union)
+    }
+
+    /// How far the strokes of `mark` reach from their paths, in CSS pixels: half the width a stroke
+    /// has unless its row says otherwise, the theme's halo beyond that, and half the size of the
+    /// largest marker along it. Lengths in position units follow the zoom, so they count for
+    /// nothing here.
+    fn stroke_reach(&self, mark: &crate::Mark) -> f64 {
+        use crate::Length::Px;
+        let theme = &self.scene.theme;
+        let (width, halo) = match mark {
+            crate::Mark::Edges(_) => (theme.edge.width, theme.edge.halo),
+            crate::Mark::Lines(_) => (theme.line.width, theme.line.halo),
+            crate::Mark::Vertices(_) | crate::Mark::Areas(_) => return 0.0,
+        };
+        let halo = if let Px(halo) = halo { halo.max(0.0) } else { 0.0 };
+        let marker = |marker: &crate::StrokeMarker| match &marker.size {
+            None => 2.0 * theme.vertex.radius,
+            Some(size) => match &*size.expr.0 {
+                crate::expr::Node::Number(px) if !size.units => size.px[0].max(*px as f32),
+                _ => size.px[0],
+            },
+        };
+        let markers = mark.stroke_markers().iter().map(marker).fold(0.0, f32::max);
+        f64::from((0.5 * width + halo).max(0.5 * markers))
     }
 
     /// Frames `lo..hi` as `fit` asks, keeping `margin` CSS pixels clear around it. With no fit, fits

@@ -222,7 +222,22 @@ An edge aims at the middle of each vertex it joins. With `meet: 'nearest'`, each
 point of its vertex's marker nearest the path, so edges drawn to a bar or a wide block land square
 on it, where their `bends` lead, and parallel edges land side by side.
 
-`flow` animates comets along a stroke. An edges mark with `joins: [table, reference]` draws each
+`markers` sets shapes, icons, or symbols along each row's path, at most four, as a breaker's
+square near each end and a transformer's symbol halfway:
+`markers: [{ marker: 'rectangle', at: 0, offset: 14 }, { marker: symbol(windings), at: 0.5 }]`.
+`at` runs from 0 at the path's start to 1 at its end, and can read a field, as `at: '$where'`. A
+marker turns to run along its path and lies wholly on one segment of it, so it slides clear of a
+bend. The stroke stops at its box and goes on after it.
+
+An edge with no color of its own takes the colors of its two ends and blends them from end to end.
+`blend` says where the color changes instead, as a fraction of the path: `blend: 0.5` changes
+sharply halfway, `blend: '$where'` where each row says, and `blend: [0.4, 0.6]` blends between two
+places.
+
+`flow` animates comets along a stroke, toward its second end, or backward where the speed is
+negative, so they show which way a row flows. `theme.flow` sizes them in pixels, which hold on
+screen, or in `units(n)`, which zoom with the drawing:
+`flow: { spacing: units(80), length: units(40), width: units(7) }`. An edges mark with `joins: [table, reference]` draws each
 row as a net: a star from the center of the vertex rows whose `reference` names it out to each one.
 On a plot, `trace` names the sampled field a line draws, or scales it: `trace: field('vm').mul(100)`
 draws per-unit values as percent. An axis's `minSpan` keeps a fit from zooming into the noise of a
@@ -238,7 +253,8 @@ can follow a sampled field: `label: { text: field('vm'), precision: 3, unit: ' p
 
 A label's `place` names the side or corner of its row it sits outside of, such as `'bottom'` or
 `'top-left'`, or a text field that holds one for each row, as `'$side'`. `offset` moves it from
-there, and `size: units(12)` sets its text in position units, so it grows with the drawing.
+there, by a number or by each row's own, as `offset: ['$dx', units(4)]`, and `size: units(12)` sets
+its text in position units, so it grows with the drawing.
 
 ### Expressions
 
@@ -316,7 +332,8 @@ failure (see [Events](#events)), and the mark draws nothing.
   vertex, `'fan'` angles them in to each vertex's center, and `'straight'` stops each at its
   vertex's outline. `parallel: null` draws them over one another.
 - `edge.halo` and `line.halo` draw a band of the background's color beside each stroke, which
-  covers the strokes drawn under it, so a stroke that crosses another parts it.
+  covers the strokes drawn under it, so a stroke that crosses another parts it. They and
+  `text.halo` take pixels or `units(n)`.
 - `controls` sets what the pointer and keys do. By default the pointer pans, zooms, turns, and
   hovers. `gestures` binds each input to what it does, as in
   `{ gestures: { wheel: 'pan', 'control+wheel': 'zoom', 'shift+primary': 'box' } }`. `'inspect'`
