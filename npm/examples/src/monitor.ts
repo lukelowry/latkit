@@ -10,19 +10,10 @@ async function recording(url: string) {
   return response;
 }
 
-async function busVoltage() {
-  const [metadata, bytes] = await Promise.all([
-    recording(metadataUrl).then((res) => res.json() as Promise<Recording>),
-    recording(voltageUrl).then((res) => res.arrayBuffer()),
-  ]);
-  return voltageDip(metadata, new DataView(bytes));
-}
-
 const canvas = document.querySelector('canvas')!;
 try {
-  await load();
   const response = new URLSearchParams(location.search).get('plot') === 'response';
-  const picture = response ? stepResponse() : await busVoltage();
+  const picture = await (response ? load().then(stepResponse) : busVoltage());
   document.title = response ? 'Setpoint and response' : 'John Day bus voltage';
   canvas.setAttribute('aria-label', document.title);
   await View.create(canvas, picture.scene, { camera: picture.camera });
@@ -31,4 +22,13 @@ try {
   message.setAttribute('role', 'alert');
   message.textContent = `Could not draw the monitor. ${String(error)}`;
   canvas.replaceWith(message);
+}
+
+async function busVoltage() {
+  const [metadata, bytes] = await Promise.all([
+    recording(metadataUrl).then((res) => res.json() as Promise<Recording>),
+    recording(voltageUrl).then((res) => res.arrayBuffer()),
+    load(),
+  ]);
+  return voltageDip(metadata, new DataView(bytes));
 }

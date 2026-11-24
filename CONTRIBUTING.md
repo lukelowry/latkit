@@ -53,10 +53,11 @@ Drawing the pictures also needs the npm package, built with `cargo xtask wasm`.
 ## Browser performance checks
 
 The browser gate compiles each pipeline cold in Chrome (800 ms limit), then opens each example
-without a shader cache, exercises input, and exports an image. Console errors, first-use
+without a shader cache. It checks the traces on standalone monitors and exercises input and
+image export on pages with the example controls. Console errors, first-use
 pipeline compilation, and missing exports fail immediately. A page gets one cold retry if a
 view takes over 1,000 ms to draw its first frame or the page misses consecutive display frames.
-SwiftShader runs the compilation check only.
+SwiftShader checks shader compilation and monitor rendering without GPU timing limits.
 
 latkit requests pipelines before drawing and polls
 [`KHR_parallel_shader_compile`](https://registry.khronos.org/webgl/extensions/KHR_parallel_shader_compile/)

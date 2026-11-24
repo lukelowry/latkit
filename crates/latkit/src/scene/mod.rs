@@ -238,13 +238,9 @@ impl Scene {
     /// What a view drawing this scene from `sources` lists in its
     /// [`failures`](crate::View::failures), found without a GPU, and each mark whose dataset no
     /// source provides. A mark of a dataset from [`Source::Tiles`] is checked as its tiles arrive,
-    /// so it is left out. Errors when two sources share a name.
+    /// so it is left out. Returns an error for invalid scene-local tables or duplicate source names.
     pub fn failures(&self, sources: &[Source]) -> Result<Vec<Error>> {
-        for (i, source) in sources.iter().enumerate() {
-            if sources[..i].iter().any(|other| other.name() == source.name()) {
-                return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
-            }
-        }
+        Source::check_names(sources)?;
         let mut scene = self.clone();
         scene.bind_tables(sources, &[])?;
         let mut failures = std::mem::take(&mut scene.unread);

@@ -120,6 +120,20 @@ pub enum Source {
 
 #[cfg(feature = "gpu")]
 impl Source {
+    pub(crate) fn check_names(sources: &[Self]) -> Result<()> {
+        if sources.len() < 2 {
+            return Ok(());
+        }
+        let mut names = std::collections::HashSet::with_capacity(sources.len());
+        for (i, source) in sources.iter().enumerate() {
+            let name = source.name();
+            if !names.insert(name) {
+                return Err(Error::invalid(format!("two sources named '{name}'")).at(i).at("sources"));
+            }
+        }
+        Ok(())
+    }
+
     /// The name of the dataset it provides.
     pub fn name(&self) -> &Name {
         match self {

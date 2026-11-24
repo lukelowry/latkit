@@ -675,11 +675,7 @@ impl View {
     /// set since. A view that has not drawn yet takes them at once.
     pub fn set_sources<S: Into<Source>>(&mut self, sources: impl IntoIterator<Item = S>) -> Result<()> {
         let sources: Vec<Source> = sources.into_iter().map(Into::into).collect();
-        for (i, source) in sources.iter().enumerate() {
-            if sources[..i].iter().any(|other| other.name() == source.name()) {
-                return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
-            }
-        }
+        Source::check_names(&sources)?;
         self.rebind_local(&sources);
         self.give_sources(sources);
         Ok(())

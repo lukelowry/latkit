@@ -53,14 +53,18 @@ fn trace_pair(row: u32, point: u32) -> array<vec3u, 2> {
     return array<vec3u, 2>(trace_read(base, point), trace_read(base, point + 1u));
 }
 
-// The points before, at the ends of, and after segment `point`, sharing one lookup. Before the first
-// point the index wraps past the plan and reads missing.
+// The points before, at the ends of, and after segment `point`, sharing one lookup.
 fn trace_around(row: u32, point: u32) -> array<vec3u, 4> {
     let base = trace_cursor(row);
-    return array<vec3u, 4>(
-        trace_read(base, point - 1u),
-        trace_read(base, point),
-        trace_read(base, point + 1u),
-        trace_read(base, point + 2u)
-    );
+    let missing = vec3u(0u, 0u, MISSING);
+    var samples = array<vec3u, 4>(missing, missing, missing, missing);
+    let skip = u32(point == 0u);
+    let start = max(point, 1u) - 1u;
+    let count = min(4u - skip, base.y - min(start, base.y));
+    // One copy of the bucket scan serves every neighbor. Points outside the
+    // plan stay missing without touching the ring or its value pages.
+    for (var i = 0u; i < count; i++) {
+        samples[skip + i] = trace_read(base, start + i);
+    }
+    return samples;
 }

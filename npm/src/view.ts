@@ -188,8 +188,8 @@ export class View extends Handle {
    * The scene drawn. A mark that matches one in the previous scene by kind, dataset, table, and
    * name keeps its state and eases to its new options. An option that can't be read, that the scene
    * can't use, or that doesn't fit the data draws as if unset, and a mark that doesn't fit draws
-   * nothing. Each is listed in `failures`. Only a scene whose space, marks, or a mark's table can't
-   * be read throws, and leaves the current one in place.
+   * nothing. Each is listed in `failures`. Assigning a scene throws if a local table is invalid
+   * or its space, marks, or a mark's table can't be read. The previous scene stays in place.
    *
    * A new scene draws once the pipelines its frames draw with have compiled. Until then the view
    * goes on drawing, and answering for, the scene before, and fits wait for the new one.
@@ -232,15 +232,19 @@ export class View extends Handle {
    * that no source replaces by name. Throws an `invalid` error when two datasets share a name.
    */
   #drawn(tables: readonly Source[], sources: readonly Source[]): bindings.Source[] {
-    const named = new Set(sources.map((source) => source.name));
-    const drawn = [...sources, ...tables.filter((table) => !named.has(table.name))];
-    const twice = drawn.find((source, i) => drawn.findIndex((s) => s.name === source.name) !== i);
-    if (twice)
-      throw thrown({
-        code: 'invalid',
-        message: `two datasets are named '${twice.name}'`,
-        path: 'sources',
-      });
+    const external = new Set(sources.map((source) => source.name));
+    const drawn = [...sources, ...tables.filter((table) => !external.has(table.name))];
+    const names = new Set<string>();
+    for (const source of drawn) {
+      const name = source.name;
+      if (names.has(name))
+        throw thrown({
+          code: 'invalid',
+          message: `two datasets are named '${name}'`,
+          path: 'sources',
+        });
+      names.add(name);
+    }
     return drawn.map(sourceOf);
   }
 

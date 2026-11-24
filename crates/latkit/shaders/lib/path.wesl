@@ -46,6 +46,11 @@ fn has_end_vertices() -> bool {
     return PATH == PATH_BENDS;
 }
 
+fn straight_planar() -> bool {
+    if PATH != PATH_ENDS { return false; }
+    return PROJECTION == PROJECTION_PLANAR;
+}
+
 fn clips_outlines() -> bool {
     if has_end_vertices() { return true; }
     return PATH == PATH_POLES;
@@ -280,9 +285,6 @@ fn row_segments(row: u32) -> u32 {
 }
 
 fn end_segments(row: u32) -> u32 {
-    let e = edge_at(row_at(row));
-    let a = end_vertex(0u, e.a);
-    let b = end_vertex(1u, e.b);
     let fan = select(0u, 2u, fans(lane_of(row)));
     if PATH == PATH_BENDS {
         let middle = geometry_count(row);
@@ -293,6 +295,9 @@ fn end_segments(row: u32) -> u32 {
         if !geographic() { return 1u + fan; }
     }
     if (mark.flags & GEODESIC) == 0u { return 1u + fan; }
+    let e = edge_at(row_at(row));
+    let a = end_vertex(0u, e.a);
+    let b = end_vertex(1u, e.b);
     return select(0u, arcs(a.hi + a.lo, b.hi + b.lo) + fan, (e.a != NONE) & (e.b != NONE));
 }
 
@@ -385,9 +390,9 @@ fn along_circle(a: vec2f, b: vec2f, t: f32) -> vec2f {
 // The point a fraction `t` from vertex `a` to `b`. A `GEODESIC` mark follows the great circle.
 // Otherwise the point is offset from `a`'s high and low parts along a straight line, which keeps
 // their precision.
-fn between(a: Vertex, b: Vertex, t: f32) -> PathPoint {
+fn between(a: PathPoint, b: PathPoint, t: f32) -> PathPoint {
     var p: PathPoint;
-    p.z = mix(a.elevation, b.elevation, t);
+    p.z = mix(a.z, b.z, t);
     if PROJECTION != PROJECTION_PLANAR {
         if geographic() {
             if (mark.flags & GEODESIC) != 0u {
@@ -409,15 +414,15 @@ fn own_segments(bends: Points, count: u32, fanned: bool) -> u32 {
 }
 
 // Shared endpoint state is read once for a segment, including when both points lie on its path.
-fn edge_point(a: Vertex, b: Vertex, bends: Points, last: u32, i: u32) -> PathPoint {
+fn edge_point(a: PathPoint, b: PathPoint, bends: Points, last: u32, i: u32) -> PathPoint {
     let t = f32(i) / f32(max(last, 1u));
     var p = middle_point(a, b, bends, t, i);
-    p.color = mix(unpack4x8unorm(a.color), unpack4x8unorm(b.color), t);
-    p.shown = p.shown & ((a.flags & PLACED) != 0u) & ((b.flags & PLACED) != 0u);
+    p.color = mix(a.color, b.color, t);
+    p.shown = p.shown & a.shown & b.shown;
     if i == 0u {
-        p = vertex_shape(a);
+        p = a;
     } else if i >= last {
-        p = vertex_shape(b);
+        p = b;
     }
     return p;
 }
@@ -430,7 +435,7 @@ fn bends_of(row: u32) -> Points {
     return empty;
 }
 
-fn middle_point(a: Vertex, b: Vertex, bends: Points, t: f32, i: u32) -> PathPoint {
+fn middle_point(a: PathPoint, b: PathPoint, bends: Points, t: f32, i: u32) -> PathPoint {
     var p = between(a, b, t);
     p.shown = true;
     if PATH == PATH_BENDS {
@@ -468,12 +473,10 @@ fn sample_point(sample: vec3u) -> PathPoint {
 // Point `i` of a geometry column's path: polylines whose parts are separated by missing points.
 // During a transition, each point moves from the path at the transition's start: from the same
 // point when both paths have the same count, else from the old point at the same fraction along.
-fn geometry_point(row: u32, i: u32) -> PathPoint {
+fn geometry_point(now: Points, was: Points, i: u32) -> PathPoint {
     // Like column reads, this reads both paths' points and selects (see `lib/read.wesl`).
-    let now = points_of(mark.geometry, row);
     let w = point_bits(now, i);
     let xy = bitcast<vec2f>(w);
-    let was = points_of(mark.frozen_geometry, row);
     let along = f32(i) * f32(max(was.count, 1u) - 1u) / f32(max(now.count, 2u) - 1u);
     let k = select(u32(round(along)), i, was.count == now.count);
     let o = point_bits(was, min(k, max(was.count, 1u) - 1u));
@@ -498,23 +501,12 @@ fn pole_point(row: u32, i: u32) -> PathPoint {
     return p;
 }
 
-// Point `i` of held row `row`'s path, for a path that does not run between an edge's ends: those
-// read their points through `edge_path`.
-fn path_point(row: u32, i: u32) -> PathPoint {
-    switch PATH {
-        case PATH_TRACE: { return trace_point(row, i); }
-        case PATH_GEOMETRY: { return geometry_point(row, i); }
-        case PATH_POLES: { return pole_point(row, i); }
-        default: { return hidden(); }
-    }
-}
-
 // An edge's path, read once for every point a segment takes from it: its ends, its bends, its own
 // segments (`last`, without fans), its lane, whether it fans into its vertices, whether it draws,
 // and its width before focus and fading, which its lane's step adds to.
 struct EdgePath {
-    a: Vertex,
-    b: Vertex,
+    a: PathPoint,
+    b: PathPoint,
     bends: Points,
     last: u32,
     lane: Lane,
@@ -525,8 +517,8 @@ struct EdgePath {
 
 fn edge_path(s: Segment, count: u32) -> EdgePath {
     let e = edge_at(row_at(s.row));
-    let a = end_vertex(0u, e.a);
-    let b = end_vertex(1u, e.b);
+    let a = vertex_point(0u, e.a);
+    let b = vertex_point(1u, e.b);
     let bends = bends_of(s.row);
     let l = lane_of(s.row);
     let fanned = fans(l);
@@ -552,9 +544,14 @@ fn piece_of(e: EdgePath, index: u32) -> vec2u {
 }
 
 // Point `i` of segment `s`'s row path: through its edge path `e` for an edge, else from its row.
-fn path_at(s: Segment, e: EdgePath, i: u32) -> PathPoint {
+fn path_at(s: Segment, e: EdgePath, now: Points, was: Points, i: u32) -> PathPoint {
     if has_end_vertices() { return edge_path_point(e, i); }
-    return path_point(s.row, i);
+    switch PATH {
+        case PATH_TRACE: { return trace_point(s.row, i); }
+        case PATH_GEOMETRY: { return geometry_point(now, was, i); }
+        case PATH_POLES: { return pole_point(s.row, i); }
+        default: { return hidden(); }
+    }
 }
 
 // Points of a row's path that a segment reads (see `path_points`). Those not read stay hidden.
@@ -573,12 +570,19 @@ struct PathPoints {
 // segments, which only the row knows, so the loop stays a loop.
 fn path_points(s: Segment, count: u32, e: EdgePath, at: vec4u) -> PathPoints {
     var out: PathPoints;
+    var now: Points;
+    var was: Points;
+    if PATH == PATH_GEOMETRY {
+        now = points_of(mark.geometry, s.row);
+        was = points_of(mark.frozen_geometry, s.row);
+    }
     let wanted = 2u + select(0u, 1u, at.z != NONE) + select(0u, 1u, at.w != NONE);
     let n = min(wanted, count + 1u);
     for (var j = 0u; j < n; j++) {
         // In order: `a`, `b`, `before` where read, then `after`.
         let k = select(j, 3u, (j == 2u) & (at.z == NONE));
-        let p = path_at(s, e, select(select(select(at.x, at.y, k == 1u), at.z, k == 2u), at.w, k == 3u));
+        let i = select(select(select(at.x, at.y, k == 1u), at.z, k == 2u), at.w, k == 3u);
+        let p = path_at(s, e, now, was, i);
         if k == 0u { out.a = p; }
         if k == 1u { out.b = p; }
         if k == 2u { out.before = p; }
@@ -656,10 +660,20 @@ fn segment_points(s: Segment) -> SegmentPoints {
             last = e.last;
             out.fan = piece.y;
             out.lane = e.lane;
-            out.vertex_a = vertex_shape(e.a);
-            out.vertex_b = vertex_shape(e.b);
+            out.vertex_a = e.a;
+            out.vertex_b = e.b;
             out.width = e.width;
             out.bent = e.bends.count > 0u;
+            // A straight planar edge has one segment between its vertices. Fans reuse
+            // those endpoints and turn on screen. No neighboring points need a lookup.
+            if straight_planar() {
+                out.ends = PathEnds(out.vertex_a, out.vertex_b);
+                out.ends.a.shown = out.ends.a.shown & e.drawn;
+                out.ends.b.shown = out.ends.b.shown & e.drawn;
+                out.first = true;
+                out.last = true;
+                return out;
+            }
         }
         // The points beside the segment, where the path runs on through its ends.
         let before = select(NONE, i - 1u, joins() & (i > 0u));
@@ -845,7 +859,7 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
     // them: its ends, then where a stroke joins its neighbors (`joined`) the points beside them,
     // then where a parallel edge runs beside a longer path its vertices' centers. A path of one
     // segment joins nothing and runs between its ends.
-    let single = p.first & p.last;
+    let single = straight_planar() | (p.first & p.last);
     let neighbors = joins() & !single;
     let centers = has_end_vertices() & ((p.lane.offset != 0.0) | p.bent) & !single;
     let n = 2u + select(0u, 2u, neighbors) + select(0u, 2u, centers);

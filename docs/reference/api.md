@@ -1462,8 +1462,8 @@ const view = await View.create(canvas, {
 : The scene drawn. A mark that matches one in the previous scene by kind, dataset, table, and
   name keeps its state and eases to its new options. An option that can't be read, that the scene
   can't use, or that doesn't fit the data draws as if unset, and a mark that doesn't fit draws
-  nothing. Each is listed in `failures`. Only a scene whose space, marks, or a mark's table can't
-  be read throws, and leaves the current one in place.
+  nothing. Each is listed in `failures`. Assigning a scene throws if a local table is invalid
+  or its space, marks, or a mark's table can't be read. The previous scene stays in place.
 
   A new scene draws once the pipelines its frames draw with have compiled. Until then the view
   goes on drawing, and answering for, the scene before, and fits wait for the new one.
