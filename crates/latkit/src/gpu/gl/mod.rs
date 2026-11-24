@@ -6,6 +6,7 @@
 )]
 mod bindings;
 mod command;
+pub(crate) use command::PlacementCache;
 mod device;
 mod elapsed;
 mod host;

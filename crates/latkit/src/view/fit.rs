@@ -242,8 +242,7 @@ impl View {
         }
         // A plot with traces fits everything to their whole span once their data is available.
         // Measuring instead would frame only what is drawn up to the coordinate shown.
-        let plot = matches!(self.scene.space, Space::Plot(_));
-        if plot && matches!(self.fitting.wanted, Some(Fit::All)) && self.traces() {
+        if self.fits_trace_span() {
             return None;
         }
         // Positions settle once data has streamed, shapes are triangulated and bent, any layout has
@@ -307,11 +306,16 @@ impl View {
         None
     }
 
+    fn fits_trace_span(&self) -> bool {
+        matches!(self.scene.space, Space::Plot(_)) && matches!(self.fitting.wanted, Some(Fit::All)) && self.traces()
+    }
+
     /// Whether a fit will measure rows on the GPU: one asked for that is not a box, or a plot's value
     /// range following marks the CPU cannot fit it to (see `fits_traces`). Its passes are then as
     /// urgent as drawing.
     pub(super) fn measures(&self) -> bool {
-        let asked = self.fitting.wanted.as_ref().is_some_and(|fit| !matches!(fit, Fit::Bounds { .. }));
+        let asked = self.fitting.wanted.as_ref().is_some_and(|fit| !matches!(fit, Fit::Bounds { .. }))
+            && !self.fits_trace_span();
         let traced = matches!(self.camera, Camera::Plot { y: None, .. })
             && self.marks.iter().any(|m| m.kind() == MarkKind::Lines)
             && !self.fits_traces();

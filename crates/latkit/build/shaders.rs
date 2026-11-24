@@ -52,7 +52,9 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::query_pack", variants: &[("main", &[])] },
     Entry { module: "raster::lists", variants: &[("main", &[])] },
     // Records where each segment of a stroke mark lies on screen, and each its lit draw draws.
-    Entry { module: "raster::screen", variants: &[("main", &["joined"])] },
+    Entry { module: "raster::screen", variants: &[("main", &["joined"]), ("projected", &["joined", "projected"])] },
+    Entry { module: "raster::trace_points", variants: &[("main", &[])] },
+    Entry { module: "raster::project", variants: &[("main", &[])] },
     // Counts and writes the comet slots of a flowing mark, from its records.
     Entry { module: "raster::comets", variants: &[("main", &[])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
@@ -98,8 +100,6 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "raster::compose", variants: &[("main", &[])] },
     Entry { module: "raster::fields", variants: &[("main", &[]), ("columns", &["columns"])] },
 ];
-
-const FEATURES: &[&str] = &["custom", "shaded", "focused", "columns", "scatter", "gather", "joined"];
 
 /// The hooks a variant calls, by the feature that calls each: the function's name and a
 /// placeholder definition, appended to validate and translate the variant. The browser's copy
@@ -829,6 +829,12 @@ fn made(module: &str, name: &str, constants: &[(&str, u32)], types: &naga::Modul
             return false;
         }
     }
+    if matches!(module, "raster::screen" | "raster::project") {
+        let paged = ["PATH_BENDS", "PATH_GEOMETRY"].iter().any(|p| path == Some(type_constant(types, p)));
+        if paged != matches!(name, "ScreenProjected" | "Project") {
+            return false;
+        }
+    }
     let stroke = value("PRIMITIVE") == Some(type_constant(types, "STROKES"));
     let trace = Some(type_constant(types, "PATH_TRACE"));
     let ends = Some(type_constant(types, "PATH_ENDS"));
@@ -889,7 +895,7 @@ fn shader_name(module: &str, variant: &str) -> String {
 fn link(root: &Path, module: &str, features: &[&str], keep_main: bool) -> String {
     let mut options =
         wesl::CompileOptions { mangler: wesl::ManglerKind::None, validate: false, keep_main, ..Default::default() };
-    for feature in FEATURES {
+    for feature in ENTRIES.iter().flat_map(|entry| entry.variants).flat_map(|(_, flags)| *flags) {
         options.features.set(*feature, features.contains(feature));
     }
     let path = format!("package::{module}").parse().unwrap();

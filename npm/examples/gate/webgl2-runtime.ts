@@ -111,6 +111,57 @@ try {
       gridView.destroy();
       other.destroy();
       gridCanvas.remove();
+      // Moving a path must invalidate both the paint and the centerline used for picking.
+      const path = new Data('path');
+      const movePath = (y: number) =>
+        path.set('Line', [41], {
+          geometry: [
+            [
+              [-40, y],
+              [0, y],
+              [40, y],
+            ],
+          ],
+        });
+      movePath(0);
+      const pathCanvas = document.body.appendChild(document.createElement('canvas'));
+      pathCanvas.style.cssText = 'width:160px;height:100px;display:block';
+      const pathView = await View.create(
+        pathCanvas,
+        {
+          space: { plane: { grid: 'off' } },
+          ease: 0,
+          theme: { background: '#000000' },
+          marks: [{ lines: path.table('Line'), width: 6, color: '#ff0000', pick: true }],
+        },
+        { gpu, camera: { center: [0, 0], zoom: 0 } },
+      );
+      const pathRow = async () => {
+        await pathView.done();
+        const image = await Shot.of(pathView).image();
+        try {
+          const x = Math.floor(image.width / 2);
+          const pixels = image.rgba;
+          for (let y = 2; y < image.height - 2; y++) {
+            const at = (y * image.width + x) * 4;
+            if (pixels[at]! < 220 || pixels[at + 1]! > 15) continue;
+            const hits = await pathView.pick([x, y], { radius: 2 });
+            if (!hits.some((hit) => Number(hit.row.id) === 41))
+              throw new Error('the projected line was visible but could not be picked');
+            return y;
+          }
+          throw new Error('the projected line did not cross the center column');
+        } finally {
+          image.destroy();
+        }
+      };
+      const beforeMove = await pathRow();
+      movePath(18);
+      if (Math.abs((await pathRow()) - beforeMove) < 8)
+        throw new Error('changing geometry left the previous line on screen');
+      pathView.destroy();
+      path.destroy();
+      pathCanvas.remove();
       const data = new Data('verify').set('Node', [11, 22], {
         x: [-36, 42],
         y: [28, -24],

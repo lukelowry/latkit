@@ -33,6 +33,15 @@ pub(super) enum StrokeDemand {
     Segments,
 }
 
+#[derive(Hash)]
+struct Placement {
+    mark: usize,
+    // Source instance, instance count, and first output record.
+    range: [u32; 3],
+    mode: u32,
+    variant: Variant,
+}
+
 /// Targets and stroke records for one submission. Later views can reuse the GPU stores once
 /// this frame's draws, labels, and input passes have been encoded.
 pub(super) struct PreparedFrame {
@@ -53,7 +62,11 @@ impl PreparedFrame {
         let at = std::mem::offset_of!(wgsl::Mark, screen_first);
         for block in uniforms.as_chunks_mut::<{ MARK_STRIDE as usize }>().0 {
             let index = u32::from_ne_bytes(block[..4].try_into().unwrap()) as usize;
-            block[at..at + 4].copy_from_slice(&self.firsts[0][index].unwrap_or(0).to_ne_bytes());
+            let first = match self.reads[index] {
+                StrokeRead::Trace(texel) => texel,
+                _ => self.firsts[0][index].unwrap_or(wgsl::NONE),
+            };
+            block[at..at + 4].copy_from_slice(&first.to_ne_bytes());
         }
     }
 }
@@ -889,8 +902,90 @@ impl View {
                 })
                 .collect()
         });
-        let mut spans = 0;
         let mut extra = Vec::new();
+        let (mut reads, spans) = self.query_spans(demand, &placed[0], records * 2, &mut extra);
+        // Trace points are one texel each. Limit the optional cache across all marks;
+        // very wide plots or many series can always read their visible sample rings directly.
+        let mut samples = 0;
+        let page_bytes = (inner.budget.bytes / 16).clamp(1, 1 << 20) as u32;
+        let page_bytes = 1 << page_bytes.ilog2();
+        let limit = page_bytes / 16;
+        for (i, m) in self.marks.iter().enumerate() {
+            if m.path() != wgsl::PATH_TRACE || !drawn[i] || !m.drawable() {
+                continue;
+            }
+            let n = m.tables.traced().saturating_mul(m.rows + m.exits);
+            if n == 0 || n > limit - samples {
+                continue;
+            }
+            let first = records * 4 + spans * 2 + samples;
+            reads[i] = StrokeRead::Trace(first);
+            extra.push(Placement {
+                mark: i,
+                range: [0, n, first],
+                mode: 0,
+                variant: Variant::raster(wgsl::Shader::TracePoints, "point"),
+            });
+            samples += n;
+        }
+        inner.screen.fit(device, records, spans, samples);
+        // Focus changes which rows are addressed. A streaming trace can append samples
+        // independently of row paint. Always refresh these two cases.
+        #[cfg(target_arch = "wasm32")]
+        let key = (samples == 0 && placed[1].iter().all(Option::is_none)).then(|| {
+            stamp_of((
+                self.id,
+                self.still.placement_version,
+                self.still.view(),
+                self.comets_shown > 0.0,
+                inner.screen.generation,
+                &placed,
+                &extra,
+            ))
+        });
+        #[cfg(target_arch = "wasm32")]
+        let before = crate::gpu::gl::PlacementCache::begin(encoder);
+        let resources = self.resources.as_mut().expect("created before passes");
+        let groups = resources.groups(&gpu.0, inner);
+        let Inner { screen, pipelines, arena, listing, .. } = inner;
+        let mut raster = crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines, encoder };
+        let paint = [wgsl::PLACE_ROWS, wgsl::PLACE_LIT].into_iter().zip(&placed).flat_map(|(mode, list)| {
+            list.iter().enumerate().filter_map(move |(i, p)| {
+                p.map(|(first, count, variant)| Placement { mark: i, range: [0, count, first], mode, variant })
+            })
+        });
+        for Placement { mark: i, range, mode, variant } in paint.chain(extra) {
+            if range[1] == 0 || !self.marks[i].drawable() {
+                continue;
+            }
+            let input = crate::gpu::listing::Inputs {
+                pages: arena.words(),
+                lists: resources.lists(),
+                view: &groups.view,
+                mark: &groups.mark,
+                offset: offset(i),
+                path: self.marks[i].path(),
+                projection: Projection::of(&self.scene.space),
+                measured: self.marks[i].measures_paths(),
+            };
+            screen.place(&mut raster, &input, variant, range, mode, (listing.scratch(), page_bytes));
+        }
+        #[cfg(target_arch = "wasm32")]
+        screen.cache.end(encoder, before, key);
+        let firsts = placed.map(|list| list.iter().map(|p| p.map(|(first, ..)| first)).collect::<Vec<_>>());
+        self.count_comets(encoder, inner, drawn, &firsts[0]);
+        (firsts, reads)
+    }
+
+    /// Resolve each query against paint records or reserve its exact centerline after them.
+    fn query_spans(
+        &self,
+        demand: &[StrokeDemand],
+        painted: &[Option<(u32, u32, Variant)>],
+        base: u32,
+        extra: &mut Vec<Placement>,
+    ) -> (Vec<StrokeRead>, u32) {
+        let mut spans = 0;
         let reads = self
             .marks
             .iter()
@@ -905,12 +1000,12 @@ impl View {
                     return StrokeRead::Empty;
                 }
                 // Only displaced bends and geodesics need a different centerline for picking.
-                if let Some((first, _, _)) = placed[0][i]
+                if let Some((first, _, _)) = painted[i]
                     && !(m.laned() && (m.path() == wgsl::PATH_BENDS || m.geodesic))
                 {
                     return StrokeRead::Paint(first);
                 }
-                let first = records * 2 + spans;
+                let first = base + spans;
                 let (start, count, mode, read) = match *need {
                     StrokeDemand::Segments => {
                         (0, m.counted_instances(m.instances()), wgsl::PLACE_SPANS, StrokeRead::Segments(first))
@@ -920,46 +1015,16 @@ impl View {
                     StrokeDemand::None => unreachable!(),
                 };
                 spans += count;
-                extra.push((
-                    i,
-                    start,
-                    count,
-                    first,
+                extra.push(Placement {
+                    mark: i,
+                    range: [start, count, first],
                     mode,
-                    MarkVariants::shown(m, &self.scene).screen().expect("recorded stroke"),
-                ));
+                    variant: MarkVariants::shown(m, &self.scene).screen().expect("recorded stroke"),
+                });
                 read
             })
             .collect();
-        inner.screen.fit(device, records, spans);
-        let resources = self.resources.as_mut().expect("created before passes");
-        let groups = resources.groups(&gpu.0, inner);
-        let Inner { screen, pipelines, arena, .. } = inner;
-        let mut raster = crate::gpu::raster::Raster { device, queue: &gpu.0.queue, pipelines, encoder };
-        let paint = [wgsl::PLACE_ROWS, wgsl::PLACE_LIT].into_iter().zip(&placed).flat_map(|(mode, list)| {
-            list.iter()
-                .enumerate()
-                .filter_map(move |(i, p)| p.map(|(first, count, variant)| (i, 0, count, first, mode, variant)))
-        });
-        for (i, start, count, first, mode, variant) in paint.chain(extra) {
-            if count == 0 || !self.marks[i].drawable() {
-                continue;
-            }
-            let input = crate::gpu::listing::Inputs {
-                pages: arena.words(),
-                lists: resources.lists(),
-                view: &groups.view,
-                mark: &groups.mark,
-                offset: offset(i),
-                path: self.marks[i].path(),
-                projection: Projection::of(&self.scene.space),
-                measured: self.marks[i].measures_paths(),
-            };
-            screen.place(&mut raster, &input, variant, [start, count, first], mode);
-        }
-        let firsts = placed.map(|list| list.iter().map(|p| p.map(|(first, ..)| first)).collect::<Vec<_>>());
-        self.count_comets(encoder, inner, drawn, &firsts[0]);
-        (firsts, reads)
+        (reads, spans)
     }
 
     /// Counts again, from the records [`View::place`] just wrote, the comet slots due (see

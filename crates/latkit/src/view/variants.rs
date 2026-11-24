@@ -140,8 +140,12 @@ impl MarkVariants {
     /// cost less to place than a record does, so their draws place them, and areas draw from their
     /// triangles.
     pub(super) fn screen(&self) -> Option<Variant> {
+        let shader = match self.path {
+            PATH_BENDS | PATH_GEOMETRY => Shader::ScreenProjected,
+            _ => Shader::Screen,
+        };
         (self.kind.primitive() == Primitive::Strokes && self.path != PATH_TRACE)
-            .then(|| self.own(Variant::raster(Shader::Screen, "record")))
+            .then(|| self.own(Variant::raster(shader, "record")))
     }
 
     /// `variant` for this mark's path and projection, with the options its shader holds code for.
@@ -322,11 +326,12 @@ pub(super) struct Asking {
 
 impl Asking {
     /// Whether frames ask for `stage`: input only when they take it, and layers only where depth
-    /// varies (`deep`).
-    fn asks(&self, stage: Stage, deep: bool) -> bool {
+    /// varies, and fitting only when it must measure rows.
+    fn asks(&self, stage: Stage, deep: bool, measure: bool) -> bool {
         match stage {
             Stage::Input => self.input,
             Stage::Layers => deep,
+            Stage::Fit => measure,
             _ => true,
         }
     }
@@ -342,12 +347,13 @@ impl View {
     pub(super) fn ask(&mut self, inner: &mut Inner, target: (wgpu::TextureFormat, u32), input: bool) -> usize {
         let device = &self.gpu.0.device;
         let deep = self.deep();
+        let measure = self.measures();
         let at = if let Some(at) = self.asked.iter().position(|a| a.target == target && a.input == input) {
             at
         } else {
             let asking = Asking { target, input, stages: stages(&self.scene, target.0, target.1) };
             let later = |stage| matches!(stage, Stage::Layers | Stage::Fit);
-            for stage in Stage::ALL.into_iter().filter(|&stage| !later(stage) && asking.asks(stage, deep)) {
+            for stage in Stage::ALL.into_iter().filter(|&stage| !later(stage) && asking.asks(stage, deep, measure)) {
                 inner.pipelines.queue(asking.stages.of(stage), stage.urgency(input), &self.compile_waker);
             }
             self.asked.push(asking);
@@ -361,8 +367,10 @@ impl View {
                 &self.compile_waker,
             );
         }
-        let fit = if self.measures() { Urgency::Draw } else { Stage::Fit.urgency(input) };
-        inner.pipelines.queue(self.asked[at].stages.of(Stage::Fit), fit, &self.compile_waker);
+        // Explicit camera bounds and trace-window extents are already known on the CPU.
+        if measure {
+            inner.pipelines.queue(self.asked[at].stages.of(Stage::Fit), Urgency::Draw, &self.compile_waker);
+        }
         inner.pipelines.ask(device, &self.channels(), Urgency::Draw, &self.compile_waker);
         at
     }
@@ -407,13 +415,14 @@ impl View {
     pub(super) fn unready(&self, inner: &Inner, at: usize) -> (StageSet, StageSet) {
         let asking = &self.asked[at];
         let deep = self.deep();
+        let measure = self.measures();
         let (mut unready, mut asked) = (StageSet::default(), StageSet::default());
         for stage in Stage::ALL {
             let landed = inner.pipelines.ready(asking.stages.of(stage));
             let landed = landed && (stage != Stage::Draw || inner.pipelines.ready(&self.channels()));
             if !landed && (stage != Stage::Input || asking.input) {
                 unready = unready.with(stage);
-                if asking.asks(stage, deep) {
+                if asking.asks(stage, deep, measure) {
                     asked = asked.with(stage);
                 }
             }
@@ -501,8 +510,8 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         if any(&|mark| matches!(mark, Mark::Edges(_))) {
             stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::State, "ends")));
         }
-        stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Words, "fill")));
-        stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::Words, "maximum")));
+        stages.add(Stage::Fit, Asked::Shader(Variant::raster(Shader::Words, "fill")));
+        stages.add(Stage::Fit, Asked::Shader(Variant::raster(Shader::Words, "maximum")));
     }
     let controls = scene.controls;
     // The overlay draws a plot's grid lines and axes, the title, the legends, and the selection box
@@ -553,8 +562,14 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
 fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples: u32, stages: &mut Stages) {
     let variants = MarkVariants::of(mark, scene);
     stages.add(Stage::Draw, variants.draw(Draw::Rows, format, samples));
+    if variants.path == PATH_TRACE {
+        stages.add(Stage::Draw, Asked::Shader(Variant::raster(Shader::TracePoints, "point")));
+    }
     if let Some(screen) = variants.screen() {
         stages.add(Stage::Draw, Asked::Shader(screen));
+        if screen.shader() == Shader::ScreenProjected {
+            stages.add(Stage::Draw, Asked::Shader(variants.own(Variant::raster(Shader::Project, "point"))));
+        }
     }
     // Comets draw over their rows with the rows' program. Where the rows have records, a comet a
     // slot, which the frame counts from the records (see `raster/comets.wesl`).
@@ -814,6 +829,10 @@ mod tests {
         assert!(!fit.is_empty() && !view.asked[0].stages.of(Stage::Draw).iter().any(|need| fit.contains(need)));
         let hold = |needs: &[Asked]| needs.iter().for_each(|need| gpu.0.lock().pipelines.hold(need));
         let release = |needs: &[Asked]| needs.iter().for_each(|need| gpu.0.lock().pipelines.release(need));
+        // Only a measurement requests the fit pipelines. Build them once so the test can hold them pending.
+        view.fit(crate::Fit::All);
+        assert!(view.ready_for(format, 1.0, true));
+        view.fit(crate::Fit::Bounds { min: [-1.0, -1.0, 0.0], max: [1.0, 1.0, 0.0] });
         hold(&fit);
         assert!(view.ready_for(format, 1.0, true), "a box fit draws without them");
         assert!(!view.waiting().compiling);

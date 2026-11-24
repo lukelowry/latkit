@@ -1285,6 +1285,24 @@ fn frames_report_gpu_time_where_timestamps_are_supported() {
 }
 
 #[test]
+fn a_long_polyline_joins_its_segments_across_projection_pages() {
+    let Some(gpu) = gpu() else { return };
+    // Center a long row's page boundary on the canvas. A missing endpoint leaves a 12-pixel gap.
+    let boundary = (1 << 20) / (3 * 32) - 4;
+    let points: Vec<[f64; 2]> = (0..=boundary + 8).map(|i| [f64::from((i - boundary) * 12), 0.0]).collect();
+    let data = Data::new("d");
+    data.apply(Table::new("Path", Ids::count(1)).field("geometry", vec![points])).unwrap();
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(Lines::of("d", "Path").width(3.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene);
+    view.set_camera(camera());
+    view.set_sources([&data]).unwrap();
+    let pixels = frame(&gpu, &mut view);
+    for x in 4..SIZE - 4 {
+        assert!(at(&pixels, x, SIZE / 2)[0] > 200, "gap at x={x}");
+    }
+}
+
+#[test]
 fn dashes_run_on_across_a_paths_segments() {
     let Some(gpu) = gpu() else { return };
     // A dashed path of a hundred segments, each a pixel long. If each segment restarted its dashes,

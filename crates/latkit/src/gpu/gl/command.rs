@@ -39,6 +39,12 @@ pub(super) enum Command {
     Upload(Buffer, wgpu::TexelCopyBufferLayout, Image, wgpu::Extent3d),
     Clear(Buffer, u64, u64),
     Render(Render),
+    /// Writes the atlas only when this submission needs different geometry.
+    Placement {
+        contents: PlacementCache,
+        key: Option<u64>,
+        draws: Vec<Command>,
+    },
     /// Starts timing the GPU work that follows (see [`Elapsed`](super::Elapsed)).
     Begin(Rc<super::elapsed::Query>),
     /// Stops timing.
@@ -50,6 +56,26 @@ pub(super) struct Encoder {
     pub(super) commands: Rc<RefCell<Vec<Command>>>,
     state: Weak<State>,
 }
+/// The last placement actually executed on this texture. Encoders may be submitted in a
+/// different order from recording, or discarded altogether.
+#[derive(Clone, Default, Debug)]
+pub(crate) struct PlacementCache(Rc<std::cell::Cell<Option<u64>>>);
+
+impl PlacementCache {
+    pub(crate) fn begin(encoder: &wgpu::CommandEncoder) -> usize {
+        encoder.as_custom::<Encoder>().map_or(0, |e| e.commands.borrow().len())
+    }
+
+    pub(crate) fn end(&self, encoder: &wgpu::CommandEncoder, first: usize, key: Option<u64>) {
+        let Some(e) = encoder.as_custom::<Encoder>() else { return };
+        let mut commands = e.commands.borrow_mut();
+        if first < commands.len() {
+            let draws = commands.split_off(first);
+            commands.push(Command::Placement { contents: self.clone(), key, draws });
+        }
+    }
+}
+
 impl Encoder {
     pub(super) fn new(state: &Rc<State>) -> Self {
         Self { commands: Rc::default(), state: Rc::downgrade(state) }
@@ -224,6 +250,14 @@ impl Command {
                 super::transfer::upload(gl, super::transfer::Source::Buffer(from), *layout, to, *size);
             }
             Self::Render(render) => render.run(state),
+            Self::Placement { contents, key, draws } => {
+                if key.is_none() || contents.0.get() != *key {
+                    for draw in draws {
+                        draw.run(state);
+                    }
+                    contents.0.set(*key);
+                }
+            }
             // The submission times the commands between them (see `Queue::submit`).
             Self::Begin(_) | Self::End(_) => {}
         }

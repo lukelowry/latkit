@@ -2,7 +2,8 @@
 // paint records, compact unjoined segments in source order, or one compact anchor per row.
 import package::lib::types::{WordStep, NONE, MARK_EDGES, PATH_TRACE, READ_EMPTY, READ_PAINT, READ_ANCHORS, READ_ONE};
 import package::lib::bind::mark;
-import package::lib::screen::{record_word, STROKE_SHOWN};
+import package::lib::atlas::record_word;
+import package::lib::screen::STROKE_SHOWN;
 import package::lib::lists::list_start;
 import package::lib::path::{PATH, Segment, trace_screen, stroke_style, edge_style, line_style, path_count, path_segment};
 

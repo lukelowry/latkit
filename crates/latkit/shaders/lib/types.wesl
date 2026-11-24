@@ -707,7 +707,7 @@ struct Mark {
     // header of its digit counts, then the instance at each position. NONE when they draw in the
     // order they are numbered.
     height_order: u32,
-    // First canonical stroke record of this mark in this frame.
+    // First paint record or, for traces, the first projected sample texel (NONE for direct reads).
     screen_first: u32,
     // Where the mark's remap words start, while `gather` freezes its transition.
     remap: u32,

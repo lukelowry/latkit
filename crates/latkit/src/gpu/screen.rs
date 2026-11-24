@@ -3,9 +3,10 @@
 
 use super::listing::Inputs;
 use super::pipelines::Variant;
-use super::raster::Raster;
+use super::raster::{Draw, Raster, Shared};
 use super::retired::Retired;
 use super::shaders::{self, WORD_HEIGHT, WORD_WIDTH, WordStep};
+use super::words::Words;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) enum StrokeRead {
@@ -15,6 +16,7 @@ pub(crate) enum StrokeRead {
     Segments(u32),
     Anchors(u32),
     One(u32),
+    Trace(u32),
 }
 
 impl StrokeRead {
@@ -24,7 +26,7 @@ impl StrokeRead {
             Self::Segments(first) => (first, shaders::READ_SEGMENTS),
             Self::Anchors(first) => (first, shaders::READ_ANCHORS),
             Self::One(first) => (first, shaders::READ_ONE),
-            Self::Empty => (0, shaders::READ_EMPTY),
+            Self::Trace(_) | Self::Empty => (0, shaders::READ_EMPTY),
         }
     }
 }
@@ -41,17 +43,28 @@ pub(crate) struct Screen {
     /// Incremented whenever the texture is replaced, so the pass groups binding it are rebuilt.
     pub(crate) generation: u64,
     retired: Retired,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) cache: super::gl::PlacementCache,
 }
 
 impl Screen {
     pub(crate) fn new(device: &wgpu::Device, retired: &Retired) -> Self {
         let (texture, size) = make(device, 1);
-        Self { view: view(&texture), layers: layers(&texture), texture, size, generation: 0, retired: retired.clone() }
+        Self {
+            view: view(&texture),
+            layers: layers(&texture),
+            texture,
+            size,
+            generation: 0,
+            #[cfg(target_arch = "wasm32")]
+            cache: super::gl::PlacementCache::default(),
+            retired: retired.clone(),
+        }
     }
 
-    /// Reserves four texels per paint record and two per query span.
-    pub(crate) fn fit(&mut self, device: &wgpu::Device, records: u32, spans: u32) {
-        let records = records + spans.div_ceil(2);
+    /// Reserves four texels per paint record, two per query span and one per trace sample.
+    pub(crate) fn fit(&mut self, device: &wgpu::Device, records: u32, spans: u32, samples: u32) {
+        let records = records + (spans * 2 + samples).div_ceil(4);
         if records <= self.capacity() {
             return;
         }
@@ -82,66 +95,97 @@ impl Screen {
         variant: Variant,
         [start, count, at]: [u32; 3],
         mode: u32,
+        (scratch, page_bytes): (&mut Words, u32),
     ) {
         let shader = variant.shader();
-        let layout = raster.pipelines.pass_layout(raster.device, shader);
-        let pipeline = raster.pipelines.render(raster.device, variant);
-        let stride = if mode < shaders::PLACE_SPANS { 4 } else { 2 };
+        let stride = if shader == shaders::Shader::TracePoints {
+            1
+        } else if mode < shaders::PLACE_SPANS {
+            4
+        } else {
+            2
+        };
         let per = self.per_layer() / stride;
         let mut first = 0;
         while first < count {
             let slot = at + first;
             let layer = slot / per;
-            let points = (count - first).min(per - slot % per);
+            let left = (count - first).min(per - slot % per);
+            let (points, base) = if shader == shaders::Shader::ScreenProjected {
+                project_page(raster, input, (scratch, page_bytes), mode, [start, count, first, left])
+            } else {
+                (left, 0)
+            };
             let step = WordStep {
                 source: start + first,
+                other: base,
                 destination: (slot % per) * stride,
                 size: self.size,
                 value: mode,
                 ..WordStep::of(points)
             };
-            let uniform = raster.queue.uniform(raster.device, bytemuck::bytes_of(&step));
-            let entries: Vec<wgpu::BindGroupEntry<'_>> = shader
-                .source()
-                .pass
-                .iter()
-                .map(|binding| wgpu::BindGroupEntry {
-                    binding: binding.slot,
-                    resource: match binding.slot {
-                        0 => input.pages.binding(),
-                        9 => input.lists.binding(),
-                        19 => uniform.as_entire_binding(),
-                        other => unreachable!("no resource for the screen pass's binding {other}"),
-                    },
-                })
-                .collect();
-            let bindings = raster.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(shader.source().label),
-                layout: &layout,
-                entries: &entries,
+            raster.draw(Draw {
+                variant,
+                shared: Some(Shared { view: input.view, mark: input.mark, offset: input.offset }),
+                bindings: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: input.pages.binding() },
+                    wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
+                    wgpu::BindGroupEntry { binding: 18, resource: scratch.binding() },
+                ],
+                uniform: 19,
+                step,
+                target: &self.layers[layer as usize],
+                vertices: 3,
+                instances: points,
+                clear: false,
             });
-            let attachments = [Some(wgpu::RenderPassColorAttachment {
-                view: &self.layers[layer as usize],
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            })];
-            let mut pass = raster.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(shader.source().label),
-                color_attachments: &attachments,
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, input.view, &[]);
-            pass.set_bind_group(1, input.mark, &[input.offset]);
-            pass.set_bind_group(2, &bindings, &[]);
-            pass.draw(0..3, 0..step.count);
             first += points;
         }
     }
+}
+
+/// Projects the points for a batch plus its adjoining segments. Returns how many
+/// segments fit and which source slot starts the scratch page.
+fn project_page(
+    raster: &mut Raster<'_>,
+    input: &Inputs<'_>,
+    (scratch, page_bytes): (&mut Words, u32),
+    mode: u32,
+    [start, count, first, points]: [u32; 4],
+) -> (u32, u32) {
+    let dense = matches!(mode, shaders::PLACE_ROWS | shaders::PLACE_SPANS);
+    let slots = if dense { 3 } else { 6 };
+    // Reuse list-building scratch. Five segment slots fit one segment and its two neighbors on each side.
+    let words = if input.path == shaders::PATH_BENDS { 16 } else { 8 };
+    let capacity = (page_bytes / (4 * words * slots)).max(5);
+    let points = points.min(capacity - 4);
+    let lo = if dense { first.saturating_sub(2) } else { first };
+    let hi = if dense { (first + points).saturating_add(2) } else { first + points };
+    let base = start + lo;
+    let entries = (hi - lo) * slots;
+    scratch.ensure(raster.device, u64::from(entries) * u64::from(words));
+    let texture = scratch.texture();
+    raster.draw(Draw {
+        variant: Variant::raster(shaders::Shader::Project, "point").path(input.path).projection(input.projection),
+        shared: Some(Shared { view: input.view, mark: input.mark, offset: input.offset }),
+        bindings: &[
+            wgpu::BindGroupEntry { binding: 0, resource: input.pages.binding() },
+            wgpu::BindGroupEntry { binding: 9, resource: input.lists.binding() },
+        ],
+        uniform: 19,
+        step: WordStep {
+            source: base,
+            other: start + count - 1,
+            value: mode,
+            size: [texture.width(), texture.height()],
+            ..WordStep::of(hi - lo)
+        },
+        target: &scratch.attachment(0),
+        vertices: 3,
+        instances: entries,
+        clear: false,
+    });
+    (points, base)
 }
 
 /// Packs records into power-of-two rows. Additional layers start once a layer reaches `WORD_HEIGHT`.

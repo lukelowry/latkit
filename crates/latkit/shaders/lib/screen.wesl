@@ -1,15 +1,7 @@
-// Where each instance of a stroke or point mark lies on screen this frame, as every draw of the mark
-// places it: a segment, with its joints, distances along, comets, colors, and place in its path, or a
-// point's marker. Placing a segment of a path reads its path's points, projects them, and joins it
-// to its neighbors, work each corner of each draw would otherwise repeat: four corners in each of a
-// mark's opaque, rows, and comets draws. So a frame writes the record of each such segment once
-// (`raster/screen.wesl`) before it draws the mark, and every corner reads it. The lit draw's
-// instances, the rows the mark's focus lights, have records of their own. A trace's segment reads
-// two samples, and a point one vertex, which costs less than writing and reading a record, so their
-// draws place them with these same functions.
-//
-// Four consecutive texels hold a paint record. Height sorting changes draw order while
-// the record address stays tied to the source segment.
+// Network strokes share paint records across drawing and picking. Each record holds four
+// texels and follows the source segment even when height sorting changes the draw order.
+// Focused rows have separate records. Traces use projected samples when the visible window
+// fits the cache. Points project their marker directly.
 
 import package::lib::types::{NONE, STROKE_MARKED, STROKE_BLENDED, ALONG_UNITS, FLOW_UNITS, PATH_TRACE, STATUS};
 import package::lib::state::{row_at, edge_at, end_vertex};
@@ -26,7 +18,7 @@ import package::lib::stroke::{rims, comet_reach, COMET_RIM};
 import package::lib::drawn::drawn_instance;
 import package::lib::daylight::daylight;
 
-@group(2) @binding(11) var screen_records: texture_2d_array<u32>;
+import package::lib::atlas::record_word;
 
 // The four texels of a paint record.
 struct ScreenRecord {
@@ -391,12 +383,4 @@ fn comet_slot(i: u32) -> vec2u {
 // Texel `layer` of paint record `i`.
 fn record_texel(i: u32, layer: u32) -> vec4u {
     return record_word(i, layer, 4u);
-}
-
-fn record_word(i: u32, offset: u32, stride: u32) -> vec4u {
-    let size = textureDimensions(screen_records);
-    let texel = i * stride + offset;
-    let per = size.x * size.y;
-    let at = texel % per;
-    return textureLoad(screen_records, vec2i(i32(at % size.x), i32(at / size.x)), i32(texel / per), 0);
 }

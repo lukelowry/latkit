@@ -1,9 +1,9 @@
-import package::lib::types::{WordStep, NONE, PLACE_SPANS, PLACE_ANCHORS, PLACE_LIT};
-import package::lib::bind::mark;
+import package::lib::types::{WordStep, NONE, PLACE_SPANS, PLACE_LIT};
 import package::lib::record::{ProjectedStroke, projected_stroke, placed_stroke, record_position, PART_END, BEFORE, AFTER};
-import package::lib::path::{Segment, path_segment, path_count, numbered_segment, lit_segment, segment_points,
+import package::lib::path::{Segment, segment_points,
     project_segment, ends_part, stroke_style};
-import package::lib::lists::list_total;
+import package::lib::placement::placement;
+@if(projected) import package::lib::point_page::from_page;
 import package::lib::screen::{paint_stroke, stroke_record};
 
 @group(2) @binding(19) var<uniform> params: WordStep;
@@ -16,20 +16,13 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) i: u32) -
     empty.at = at;
     // Flat data comes from the first or last vertex, depending on the graphics backend.
     if corner == 1u { return empty; }
-    var s: Segment;
-    if params.value == PLACE_ANCHORS {
-        let count = path_count(instance);
-        if count == 0u { return empty; }
-        s = path_segment(instance, count / 2u, 0.0);
-    } else if params.value == PLACE_LIT {
-        s = lit_segment(instance);
-        if s.item >= mark.rows || s.index >= path_count(s.item) { return empty; }
-    } else {
-        if mark.per_row == NONE && instance >= list_total(mark.list) { return empty; }
-        s = numbered_segment(instance);
+    let s = placement(instance, params.value);
+    if s.item == NONE { return empty; }
+    @if(projected) { return from_page(at, s, i, params); }
+    @if(!projected) {
+        let p = segment_points(s);
+        return projected_stroke(at, s, p, project_segment(p), ends_part(s));
     }
-    let p = segment_points(s);
-    return projected_stroke(at, s, p, project_segment(p), ends_part(s));
 }
 
 @fragment

@@ -22,7 +22,8 @@ import package::lib::bind::{frame, eye, mark, focused};
 import package::lib::state::{row_at, edge_at, line_at, end_vertex, same_vertex, Vertex, Edge};
 import package::lib::project::{world, clip_of, plot_clip, shows, to_screen, geographic, PROJECTION};
 import package::lib::read::{missing_bits, bits_value, points_of, point_bits, Points};
-import package::lib::trace::{trace_sample, trace_pair, trace_around};
+import package::lib::trace::{trace_sample, trace_pair, trace_cursor, trace_read, projected_sample};
+import package::lib::atlas::record_word;
 import package::lib::focus::{faded, growth};
 import package::lib::mark::{px, px_per_length};
 import package::lib::points::vertex_half;
@@ -415,14 +416,11 @@ fn own_segments(bends: Points, count: u32, fanned: bool) -> u32 {
 // Shared endpoint state is read once for a segment, including when both points lie on its path.
 fn edge_point(a: PathPoint, b: PathPoint, bends: Points, last: u32, i: u32) -> PathPoint {
     let t = f32(i) / f32(max(last, 1u));
+    if i == 0u { return a; }
+    if i >= last { return b; }
     var p = middle_point(a, b, bends, t, i);
     p.color = mix(a.color, b.color, t);
     p.shown = p.shown & a.shown & b.shown;
-    if i == 0u {
-        p = a;
-    } else if i >= last {
-        p = b;
-    }
     return p;
 }
 
@@ -435,18 +433,17 @@ fn bends_of(row: u32) -> Points {
 }
 
 fn middle_point(a: PathPoint, b: PathPoint, bends: Points, t: f32, i: u32) -> PathPoint {
-    var p = between(a, b, t);
-    p.shown = true;
     if PATH == PATH_BENDS {
-        // The bend is read whatever the count, and taken only where there are bends.
-        let w = point_bits(bends, i - 1u);
         if bends.count > 0u {
+            let w = point_bits(bends, i - 1u);
             var bend: PathPoint;
             bend.hi = bitcast<vec2f>(w);
             bend.shown = !missing_bits(w.x) & !missing_bits(w.y);
             return bend;
         }
     }
+    var p = between(a, b, t);
+    p.shown = true;
     return p;
 }
 
@@ -676,26 +673,6 @@ fn segment_points(s: Segment) -> SegmentPoints {
     return out;
 }
 
-// A monitor reads its visible sample buckets directly. It never allocates path records.
-fn trace_points(s: Segment) -> SegmentPoints {
-    var out: SegmentPoints;
-    @if(joined) {
-        let samples = trace_around(s.row, s.index);
-        out.before = sample_point(samples[0]);
-        out.ends = PathEnds(sample_point(samples[1]), sample_point(samples[2]));
-        out.after = sample_point(samples[3]);
-    }
-    @if(!joined) {
-        let samples = trace_pair(s.row, s.index);
-        out.ends = PathEnds(sample_point(samples[0]), sample_point(samples[1]));
-    }
-    out.first = s.index == 0u;
-    out.last = s.index + 1u >= path_count(s.item);
-    out.before.shown = out.before.shown & !out.first;
-    out.after.shown = out.after.shown & !out.last;
-    return out;
-}
-
 // The joint at screen point `at`, between the segment from `before` and the one to `after`; z is 1
 // where a point shows (see `screen_point`). Both segments meeting at a point compute it from the
 // same three points, so they split its pixels along the same line. `miter` is how far, per pixel a
@@ -851,8 +828,55 @@ fn screen_length(ca: vec4f, cb: vec4f) -> f32 {
 
 // Segment `s` on screen (see `OnScreen`).
 fn trace_screen(s: Segment) -> OnScreen {
-    let p = trace_points(s);
-    return fit_segment(p, project_segment(p));
+    var out: OnScreen;
+    let cached = mark.screen_first != NONE;
+    let count = mark.trace_points;
+    let first = s.index == 0u;
+    let start = max(s.index, 1u) - 1u;
+    var skip = u32(first);
+    var head = start;
+    var wanted = 4u - skip;
+    @if(!joined) {
+        skip = 1u;
+        head = s.index;
+        wanted = 2u;
+    }
+    let n = min(wanted, count - min(head, count));
+    var base = vec3u(0u);
+    if !cached { base = trace_cursor(s.row); }
+    var before = vec3f(0.0);
+    var after = vec3f(0.0);
+    for (var i = 0u; i < n; i++) {
+        let k = head + i;
+        var bits: vec4u;
+        if cached {
+            bits = record_word(mark.screen_first + s.item * count + k, 0u, 1u);
+        } else {
+            bits = projected_sample(trace_read(base, k));
+        }
+        let valid = !missing_bits(bits.w);
+        let clip = vec4f(bitcast<vec2f>(bits.xy), eye.clip_from_world[3].zw);
+        let at = to_screen(clip);
+        let nearby = vec3f(at, f32(valid && clip.w > 0.0 && clip.z <= clip.w));
+        var p = position_point(bitcast<vec2f>(bits.zw), 0.0, vec4f(1.0));
+        p.shown = valid;
+        switch skip + i {
+            case 0u: { before = nearby; }
+            case 1u: { out.a = at; out.ca = clip; out.ends.a = p; }
+            case 2u: { out.b = at; out.cb = clip; out.ends.b = p; }
+            default: { after = nearby; }
+        }
+    }
+    out.shown = out.ends.a.shown && out.ends.b.shown;
+    out.kept = vec2f(0.0, 1.0);
+    out.visible = out.kept;
+    out.chord = length(out.b - out.a);
+    @if(joined) {
+        let a = vec3f(out.a, 1.0);
+        let b = vec3f(out.b, 1.0);
+        out.joints = joints_of(joint(before, a, b), joint(a, b, after));
+    }
+    return out;
 }
 
 // Clip coordinates of the visible endpoints and screen positions needed to join or offset them.
@@ -909,6 +933,11 @@ fn project_segment(p: SegmentPoints) -> ProjectedSegment {
         if k == 4u { vertex_a = on; }
         if k == 5u { vertex_b = on; }
     }
+    return clipped_segment(ca, cb, before, after, vec4f(vertex_a.xy, vertex_b.xy), shows(wa) | shows(wb));
+}
+
+fn clipped_segment(ca: vec4f, cb: vec4f, before: vec3f, after: vec3f, vertices: vec4f, ahead: bool) -> ProjectedSegment {
+    var out: ProjectedSegment;
     var cut = vec2f(0.0, 1.0);
     out.ca = ca;
     out.cb = cb;
@@ -923,11 +952,11 @@ fn project_segment(p: SegmentPoints) -> ProjectedSegment {
             out.cb = mix(ca, cb, cut.y);
         }
         // A segment reaching past the globe's edge still draws. The globe's depth clips it there.
-        out.shown = (shows(wa) | shows(wb)) & (cut.x < cut.y);
+        out.shown = ahead & (cut.x < cut.y);
     }
     out.before = before;
     out.after = after;
-    out.vertices = vec4f(vertex_a.xy, vertex_b.xy);
+    out.vertices = vertices;
     out.cut = cut;
     return out;
 }

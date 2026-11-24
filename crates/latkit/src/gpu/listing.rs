@@ -51,6 +51,11 @@ impl Listing {
         }
     }
 
+    /// Reuse the list pass's temporary target after its results have been copied out.
+    pub(crate) fn scratch(&mut self) -> &mut Words {
+        &mut self.work
+    }
+
     pub(crate) fn expand(&mut self, raster: &mut Raster<'_>, input: &Inputs<'_>, count: u32, destination: u32) {
         let words = count.next_multiple_of(4);
         self.work.ensure(raster.device, u64::from(words));
