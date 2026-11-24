@@ -2409,12 +2409,12 @@
               "$ref": "#/$defs/Marker"
             },
             "at": {
-              "description": "How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a\npath of one segment that is a fraction of the stroke as drawn, and on a longer one, of the\npath between its first and last points. At 0 or 1 it sits on the path's first or last\nsegment, which must have a length to carry it. Defaults to 1.",
+              "description": "How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a\npath of one segment that is a fraction of the stroke as drawn, and on a longer one, of the\npath between its first and last points. At 0 it sits where the stroke leaves its first\nvertex's marker, and at 1 where it reaches its last's. Defaults to 1.",
               "$ref": "#/$defs/Expr"
             },
             "offset": {
-              "description": "How far it moves along the path from there, toward the path's end: a number in CSS pixels,\nor `{ units }` in position units. Defaults to 0.",
-              "$ref": "#/$defs/Length"
+              "description": "How far each row's moves along the path from there, toward the path's end: a value in CSS\npixels, or `{ units }` in position units. Defaults to 0.",
+              "$ref": "#/$defs/Size"
             },
             "size": {
               "description": "Its width and height in CSS pixels, unless given in `units`. Defaults to twice the theme's\n`vertex.radius`, the size of a vertex's marker.",
@@ -2428,7 +2428,7 @@
               ]
             },
             "color": {
-              "description": "Each row's color. Defaults to the stroke's color there.",
+              "description": "Each row's color. Without one, it takes the stroke's color pixel by pixel along the path, so\nwhere the stroke changes color, the change runs through it.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Expr"
@@ -2769,9 +2769,8 @@
               "format": "float"
             },
             "dash": {
-              "description": "The dash period: one dash and one gap of equal length.",
-              "type": "number",
-              "format": "float"
+              "description": "The dash period, one dash and one gap of equal length: a number in CSS pixels, or\n`{ units }` in position units.",
+              "$ref": "#/$defs/Length"
             },
             "padding": {
               "description": "The space between the view's edge, inside its insets, and the guides beside it: titles,\nlegends, and a plot's axes. Defaults to 1.5 times the text size.",
@@ -2892,9 +2891,8 @@
           "description": "The vertex radius, in CSS pixels."
         },
         "corner": {
-          "type": "number",
-          "format": "float",
-          "description": "The corner radius of block markers, in CSS pixels. A block marker can set its own."
+          "$ref": "#/$defs/Length",
+          "description": "The corner radius of block markers: a number in CSS pixels, or `{ units }` in position\nunits. A block marker can set its own."
         }
       },
       "description": "Defaults for vertices."

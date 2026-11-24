@@ -1417,21 +1417,24 @@ export type StrokeMarker =
       /**
        * How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a path of
        * one segment that is a fraction of the stroke as drawn, and on a longer one, of the path between
-       * its first and last points. At 0 or 1 it sits on the path's first or last segment, which must
-       * have a length to carry it. Defaults to 1.
+       * its first and last points. At 0 it sits where the stroke leaves its first vertex's marker, and
+       * at 1 where it reaches its last's. Defaults to 1.
        */
       at?: ExprInput;
       /**
-       * How far it moves along the path from there, toward the path's end: a number in CSS pixels, or
-       * `{ units }` in position units. Defaults to 0.
+       * How far each row's moves along the path from there, toward the path's end: a value in CSS
+       * pixels, or `{ units }` in position units. Defaults to 0.
        */
-      offset?: Length;
+      offset?: Size;
       /**
        * Its width and height in CSS pixels, unless given in `units`. Defaults to twice the theme's
        * `vertex.radius`, the size of a vertex's marker.
        */
       size?: Size | null;
-      /** Each row's color. Defaults to the stroke's color there. */
+      /**
+       * Each row's color. Without one, it takes the stroke's color pixel by pixel along the path, so
+       * where the stroke changes color, the change runs through it.
+       */
       color?: ExprInput | null;
       /** Which rows show it. Defaults to all. */
       visible?: ExprInput;
@@ -1489,8 +1492,11 @@ export type Theme =
        * color. 3 is WCAG's minimum for graphics.
        */
       contrast?: number;
-      /** The dash period: one dash and one gap of equal length. */
-      dash?: number;
+      /**
+       * The dash period, one dash and one gap of equal length: a number in CSS pixels, or `{ units }` in
+       * position units.
+       */
+      dash?: Length;
       /**
        * The space between the view's edge, inside its insets, and the guides beside it: titles, legends,
        * and a plot's axes. Defaults to 1.5 times the text size.
@@ -1558,8 +1564,11 @@ export interface VertexTheme {
   color?: Color;
   /** The vertex radius, in CSS pixels. */
   radius?: number;
-  /** The corner radius of block markers, in CSS pixels. A block marker can set its own. */
-  corner?: number;
+  /**
+   * The corner radius of block markers: a number in CSS pixels, or `{ units }` in position units. A
+   * block marker can set its own.
+   */
+  corner?: Length;
 }
 
 /** Which way a plane's y grows on screen. */

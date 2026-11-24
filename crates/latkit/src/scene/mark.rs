@@ -666,31 +666,36 @@ impl Mark {
     }
 }
 
-/// Compiles where a stroke mark's rows change color, its `blend`. A place the same for every row
-/// goes in the mark's uniform, and one that reads data in an extra row word, which both places
-/// share when they are the same.
+/// Compiles where a stroke mark's rows change color, its `blend`. Both places share one value when
+/// they are the same.
 fn compile_blend(blend: &[Expr; 2], c: &mut Compiler<'_>, drawing: &mut Drawing) -> Result<()> {
     if drawing.path == wgsl::PATH_TRACE {
         return Err(Error::invalid("a line that traces a field has one color"));
     }
-    let sides = [("from", wgsl::BLEND_FROM_ROW), ("to", wgsl::BLEND_TO_ROW)];
-    for (i, (place, (name, by_row))) in blend.iter().zip(sides).enumerate() {
-        if let Node::Number(fraction) = &*place.0 {
-            drawing.blend[i] = (*fraction as f32).to_bits();
-            continue;
-        }
-        drawing.flags |= by_row;
-        if i == 1 && blend[0] == blend[1] {
-            drawing.blend[1] = drawing.blend[0];
-            continue;
-        }
-        drawing.extras += 1;
-        let word = drawing.kind.stride() + drawing.extras - 1;
-        c.channel(name, place, Store::Number { word, fallback: None })?;
-        drawing.blend[i] = word;
-    }
+    let (from, from_row) = uniform_or_row(c, drawing, "from", &blend[0])?;
+    let (to, to_row) =
+        if blend[0] == blend[1] { (from, from_row) } else { uniform_or_row(c, drawing, "to", &blend[1])? };
+    drawing.blend = [from, to];
     drawing.flags |= wgsl::STROKE_BLENDED;
+    drawing.flags |= if from_row { wgsl::BLEND_FROM_ROW } else { 0 } | if to_row { wgsl::BLEND_TO_ROW } else { 0 };
     Ok(())
+}
+
+/// The next row word after the mark's others.
+fn extra_word(drawing: &mut Drawing) -> u32 {
+    drawing.extras += 1;
+    drawing.kind.stride() + drawing.extras - 1
+}
+
+/// Compiles `value` as a stroke mark's uniform holds it: its bits, when it is the same for every
+/// row, or with `true`, the row word that holds each row's (see `along_word` in `lib/along.wesl`).
+fn uniform_or_row(c: &mut Compiler<'_>, drawing: &mut Drawing, name: &str, value: &Expr) -> Result<(u32, bool)> {
+    if let Node::Number(same) = &*value.0 {
+        return Ok(((*same as f32).to_bits(), false));
+    }
+    let word = extra_word(drawing);
+    c.channel(name, value, Store::Number { word, fallback: None })?;
+    Ok((word, true))
 }
 
 /// Compiles a stroke mark's `markers` into their descriptors, and each option that differs by row
@@ -719,45 +724,28 @@ fn compile_markers(
             }
             let mut words = [0_u32; wgsl::STROKE_MARKER_WORDS as usize];
             let mut flags = 0_u32;
-            let mut bounds = Size::ANY;
-            // The row word a channel named `name` stores in, after the mark's others.
-            let row = |drawing: &mut Drawing| {
-                drawing.extras += 1;
-                drawing.kind.stride() + drawing.extras - 1
+            let row = extra_word;
+            // Stores `value` in word `at` of the marker's, with flag `by_row` where it reads data.
+            let mut set = |c: &mut Compiler<'_>, drawing: &mut Drawing, name: &str, value: &Expr, at: u32, by_row| {
+                let (word, read) = uniform_or_row(c, drawing, &format!("marker{k}{name}"), value)?;
+                words[at as usize] = word;
+                Ok::<u32, Error>(if read { by_row } else { 0 })
             };
-            match (marker.end(), &*marker.at.0) {
-                (Some(false), _) => flags |= wgsl::ALONG_START,
-                (Some(true), _) => flags |= wgsl::ALONG_END,
-                (None, Node::Number(fraction)) => words[wgsl::ALONG_AT as usize] = (*fraction as f32).to_bits(),
-                (None, _) => {
-                    let word = row(drawing);
-                    c.channel(&format!("marker{k}at"), &marker.at, Store::Number { word, fallback: None })?;
-                    words[wgsl::ALONG_AT as usize] = word;
-                    flags |= wgsl::ALONG_AT_ROW;
-                }
+            match marker.end() {
+                Some(false) => flags |= wgsl::ALONG_START,
+                Some(true) => flags |= wgsl::ALONG_END,
+                None => flags |= set(c, drawing, "at", &marker.at, wgsl::ALONG_AT, wgsl::ALONG_AT_ROW)?,
             }
-            words[wgsl::ALONG_OFFSET as usize] = marker.offset.value().to_bits();
-            if matches!(marker.offset, Length::Units(_)) {
-                flags |= wgsl::ALONG_OFFSET_UNITS;
+            if marker.offset.px != Size::ANY {
+                return Err(Error::invalid("a marker's offset takes no bounds").at("offset"));
             }
-            match &marker.size {
-                // The size of a vertex's marker.
-                None => words[wgsl::ALONG_SIZE as usize] = (2.0 * context.theme.vertex.radius).to_bits(),
-                Some(size) => {
-                    bounds = size.px;
-                    if size.units {
-                        flags |= wgsl::ALONG_SIZE_UNITS;
-                    }
-                    if let Node::Number(size) = &*size.expr.0 {
-                        words[wgsl::ALONG_SIZE as usize] = (*size as f32).to_bits();
-                    } else {
-                        let word = row(drawing);
-                        c.channel(&format!("marker{k}size"), &size.expr, Store::Number { word, fallback: None })?;
-                        words[wgsl::ALONG_SIZE as usize] = word;
-                        flags |= wgsl::ALONG_SIZE_ROW;
-                    }
-                }
-            }
+            flags |= set(c, drawing, "offset", &marker.offset.expr, wgsl::ALONG_OFFSET, wgsl::ALONG_OFFSET_ROW)?;
+            flags |= if marker.offset.units { wgsl::ALONG_OFFSET_UNITS } else { 0 };
+            // Without a size, that of a vertex's marker.
+            let size = marker.size.clone().unwrap_or_else(|| (2.0 * context.theme.vertex.radius).into());
+            let bounds = size.px;
+            flags |= set(c, drawing, "size", &size.expr, wgsl::ALONG_SIZE, wgsl::ALONG_SIZE_ROW)?;
+            flags |= if size.units { wgsl::ALONG_SIZE_UNITS } else { 0 };
             match marker.color.as_ref().map(|color| (&*color.0, color)) {
                 None => {}
                 Some((Node::Color(color), _)) => {

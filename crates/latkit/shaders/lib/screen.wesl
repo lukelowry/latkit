@@ -193,8 +193,10 @@ fn screen_stroke(instance: u32, lit: bool) -> ScreenStroke {
     }
     out.color_a = daylit(color_a, on.ends, on.kept.x);
     out.color_b = daylit(color_b, on.ends, on.kept.y);
-    out.first = s.index == 0u;
-    out.last = ends_part(s);
+    // The segment on which the stroke leaves its first vertex's marker is its first, and the one on
+    // which it reaches its last vertex's marker is its last, wherever in the path they come.
+    out.first = (s.index == 0u) | on.stops.x;
+    out.last = ends_part(s) | on.stops.y;
     out.dash = style.dash;
     out.rim = flows & rims(first.rgb);
     out.row = s.row;

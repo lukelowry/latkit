@@ -708,8 +708,9 @@ Lengths are in CSS pixels, except comet lengths given in position units.
   color. 3 is WCAG's minimum for graphics.
 
 {#theme-dash .member}
-**`dash`**`?: number` [¶](#theme-dash){.headerlink}
-: The dash period: one dash and one gap of equal length.
+**`dash`**`?:` [`Length`](#length) [¶](#theme-dash){.headerlink}
+: The dash period, one dash and one gap of equal length: a number in CSS pixels, or `{ units }` in
+  position units.
 
 {#theme-padding .member}
 **`padding`**`?: number | null` [¶](#theme-padding){.headerlink}
@@ -822,8 +823,9 @@ Defaults for vertices.
 : The vertex radius, in CSS pixels.
 
 {#vertextheme-corner .member}
-**`corner`**`?: number` [¶](#vertextheme-corner){.headerlink}
-: The corner radius of block markers, in CSS pixels. A block marker can set its own.
+**`corner`**`?:` [`Length`](#length) [¶](#vertextheme-corner){.headerlink}
+: The corner radius of block markers: a number in CSS pixels, or `{ units }` in position units. A
+  block marker can set its own.
 
 (edgetheme)=
 
@@ -1158,13 +1160,13 @@ takes at most four, each a shape, an icon, or a symbol.
 **`at`**`?:` [`ExprInput`](#exprinput) [¶](#strokemarker-at){.headerlink}
 : How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a path of
   one segment that is a fraction of the stroke as drawn, and on a longer one, of the path between
-  its first and last points. At 0 or 1 it sits on the path's first or last segment, which must
-  have a length to carry it. Defaults to 1.
+  its first and last points. At 0 it sits where the stroke leaves its first vertex's marker, and
+  at 1 where it reaches its last's. Defaults to 1.
 
 {#strokemarker-offset .member}
-**`offset`**`?:` [`Length`](#length) [¶](#strokemarker-offset){.headerlink}
-: How far it moves along the path from there, toward the path's end: a number in CSS pixels, or
-  `{ units }` in position units. Defaults to 0.
+**`offset`**`?:` [`Size`](#size) [¶](#strokemarker-offset){.headerlink}
+: How far each row's moves along the path from there, toward the path's end: a value in CSS
+  pixels, or `{ units }` in position units. Defaults to 0.
 
 {#strokemarker-size .member}
 **`size`**`?:` [`Size`](#size) `| null` [¶](#strokemarker-size){.headerlink}
@@ -1173,7 +1175,8 @@ takes at most four, each a shape, an icon, or a symbol.
 
 {#strokemarker-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#strokemarker-color){.headerlink}
-: Each row's color. Defaults to the stroke's color there.
+: Each row's color. Without one, it takes the stroke's color pixel by pixel along the path, so
+  where the stroke changes color, the change runs through it.
 
 {#strokemarker-visible .member}
 **`visible`**`?:` [`ExprInput`](#exprinput) [¶](#strokemarker-visible){.headerlink}

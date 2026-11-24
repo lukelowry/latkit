@@ -8,7 +8,7 @@
 
 import package::lib::types::{
     STATUS, MARKER_SHAPE, MARKER_GAUGE, MARKER_PIE, MARKER_ICON, MARKER_SYMBOL, DRAW_OPAQUE, ICON_SIZE,
-    SYMBOL_MARGIN, SYMBOL_SPREAD, MISSING_COLOR, ALONG_COLOR_ROW, ALONG_COLOR_OWN, STROKE_BLENDED,
+    SYMBOL_MARGIN, SYMBOL_SPREAD, MISSING_COLOR, ALONG_COLOR_ROW, ALONG_COLOR_OWN,
 };
 import package::lib::bind::{frame, mark, eye, ramp, program, focused, word};
 import package::lib::along::{along, along_word, blend_on, blend_weight};
@@ -52,6 +52,11 @@ struct Varyings {
     @location(4) @interpolate(flat) status: vec4f,
     // The row's focus bits, which choose the focus draw's glow.
     @location(5) @interpolate(flat) focus: u32,
+    // For a marker on a stroke (`ALONG`): the second of the two colors it is painted in, as `color`
+    // then holds the first, then where one gives way to the other on its segment (see `blend_on`),
+    // the marker's place on the segment, and the fraction of the segment a CSS pixel takes.
+    @location(6) @interpolate(flat) blend_to: vec4f,
+    @location(7) @interpolate(flat) blend: vec4f,
 }
 
 // Whether this variant draws lit rows, with quads enlarged for their glow.
@@ -115,16 +120,16 @@ fn on_stroke(corner: u32, instance: u32) -> Varyings {
     out.clip = nearer(to_clip(mix(s.a, s.b, on.at) + quad * extent, vec4f(0.0, 0.0, depth, 1.0)));
     out.p = quad * extent * vec2f(1.0, -1.0);
     out.row = s.row;
-    // The stroke's color there, or its own, which fades as its row does.
-    // How much of the stroke's second color shows there: as its draw blends them.
-    var second = on.at;
-    if (mark.flags & STROKE_BLENDED) != 0u {
-        second = blend_weight(blend_on(s), on.at);
-    }
-    let line = mix(s.color_a, s.color_b, second);
+    // A color of its own, whole, which fades as its row does. Without one it takes its stroke's
+    // color pixel by pixel along the path, so a change of color runs through it: the stroke's two
+    // colors, and where one gives way to the other.
     let given = along_word(mark.markers[1].x, s.row, (flags & ALONG_COLOR_ROW) != 0u);
     let own = unpack4x8unorm(given);
-    out.color = select(line, vec4f(own.rgb, own.a * line.a), ((flags & ALONG_COLOR_OWN) != 0u) & (given != MISSING_COLOR));
+    let owned = ((flags & ALONG_COLOR_OWN) != 0u) & (given != MISSING_COLOR);
+    let whole = vec4f(own.rgb, own.a * mix(s.color_a.a, s.color_b.a, on.at));
+    out.color = select(s.color_a, whole, owned);
+    out.blend_to = select(s.color_b, whole, owned);
+    out.blend = vec4f(blend_on(s), on.at, 1.0 / max(length(s.b - s.a), 1e-6));
     out.shape = vec4f(half, turn);
     out.status = vec4f(0.0);
     if LIT_DRAW {
@@ -227,7 +232,14 @@ fn colored(v: Varyings) -> MarkerColor {
         let turn = v.shape.zw;
         p = vec2f(turn.x * v.p.x - turn.y * v.p.y, turn.y * v.p.x + turn.x * v.p.y);
     }
-    let f = MarkerFragment(p, v.shape.xy, v.color, inputs(v.row));
+    var color = v.color;
+    @if(!custom) {
+        if ALONG {
+            // The pixel's place along the path, and the stroke's color there.
+            color = mix(v.color, v.blend_to, blend_weight(v.blend.xy, v.blend.z + p.y * v.blend.w));
+        }
+    }
+    let f = MarkerFragment(p, v.shape.xy, color, inputs(v.row));
     var m = marker(f);
     if ((mark.flags & STATUS) != 0u) & (v.status.a > 0.0) {
         m = status_ring(m, vec4f(v.status.rgb, v.status.a * v.color.a));

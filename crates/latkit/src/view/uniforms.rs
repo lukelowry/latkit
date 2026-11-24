@@ -63,7 +63,7 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, linear: bool, elapsed:
     frame.elapsed = elapsed as f32;
     frame.glow = theme.focus.glow;
     frame.dim = theme.focus.dim;
-    frame.dash = theme.dash;
+    frame.dash = px(theme.dash, scene, projected);
     // Comet spacing and length keep their own unit. A stroke converts them to pixels as it draws.
     frame.flow_spacing = theme.flow.spacing.value();
     frame.flow_length = theme.flow.length.value();
@@ -195,7 +195,7 @@ fn theme_slots(scene: &Scene, projected: &Projected) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_TEXT as usize] = theme.text.color.packed();
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
-    slots[wgsl::THEME_CORNER as usize] = theme.vertex.corner.to_bits();
+    slots[wgsl::THEME_CORNER as usize] = px(theme.vertex.corner, scene, projected).to_bits();
     slots[wgsl::THEME_EDGE_HALO as usize] = px(theme.edge.halo, scene, projected).max(0.0).to_bits();
     slots[wgsl::THEME_LINE_HALO as usize] = px(theme.line.halo, scene, projected).max(0.0).to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
@@ -210,15 +210,21 @@ pub(super) fn stroke_marker(
     scene: &Scene,
     projected: &Projected,
 ) -> wgsl::Mark {
-    let markers = &marking.markers;
     mark.markers = described(std::slice::from_ref(marking));
+    drawn_as(&mut mark, &marking.markers, scene, projected);
+    mark.palette += marking.palette;
+    mark
+}
+
+/// Sets how `mark` draws markers as `markers` says: their kind, shape, and inputs.
+fn drawn_as(mark: &mut wgsl::Mark, markers: &crate::scene::mark::Markers, scene: &Scene, projected: &Projected) {
     mark.marker = markers.marker;
     mark.shape = markers.shape;
     mark.corner = markers.corner;
+    // A symbol's stroke takes the place of a pie's hole.
     mark.hole = markers.stroke.map_or(markers.hole, |width| px(width, scene, projected).max(0.0));
+    // How many inputs in the low byte, and above it the extra word of the first.
     mark.inputs = markers.inputs | markers.input << 8;
-    mark.palette += marking.palette;
-    mark
 }
 
 /// The words describing `markings`, a stroke mark's markers, as its uniform holds them.
@@ -314,14 +320,7 @@ pub(crate) fn mark(
         }
         mark.markers = described(&drawing.stroke_markers);
         [mark.blend_from, mark.blend_to] = drawing.blend;
-        let markers = &drawing.markers;
-        mark.marker = markers.marker;
-        mark.shape = markers.shape;
-        mark.corner = markers.corner;
-        // A symbol's stroke takes the place of a pie's hole.
-        mark.hole = markers.stroke.map_or(markers.hole, |width| px(width, scene, projected).max(0.0));
-        // How many inputs in the low byte, and above it the extra word of the first.
-        mark.inputs = markers.inputs | markers.input << 8;
+        drawn_as(&mut mark, &drawing.markers, scene, projected);
         if let Some(shading) = &drawing.shade {
             mark.shade_inputs = shading.inputs | shading.input << 8;
         }

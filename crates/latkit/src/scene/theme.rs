@@ -27,8 +27,9 @@ pub struct Theme {
     /// keep. A color with less is made lighter or darker, keeping its hue. Defaults to 1, which
     /// changes no color. 3 is WCAG's minimum for graphics.
     pub contrast: f32,
-    /// The dash period: one dash and one gap of equal length.
-    pub dash: f32,
+    /// The dash period, one dash and one gap of equal length: a number in CSS pixels, or
+    /// `{ units }` in position units.
+    pub dash: Length,
     /// The space between the view's edge, inside its insets, and the guides beside it: titles,
     /// legends, and a plot's axes. Defaults to 1.5 times the text size.
     pub padding: Option<f32>,
@@ -92,8 +93,9 @@ pub struct VertexTheme {
     pub color: Color,
     /// The vertex radius, in CSS pixels.
     pub radius: f32,
-    /// The corner radius of block markers, in CSS pixels. A block marker can set its own.
-    pub corner: f32,
+    /// The corner radius of block markers: a number in CSS pixels, or `{ units }` in position
+    /// units. A block marker can set its own.
+    pub corner: Length,
 }
 
 /// Defaults for edges, and how parallel edges look.
@@ -250,7 +252,7 @@ impl Theme {
             grid: GridTheme { color: Color::WHITE.alpha(0.07), width: 1.0, spacing: 24.0 },
             missing: hex("#6b7480"),
             contrast: 1.0,
-            dash: 8.0,
+            dash: Length::Px(8.0),
             padding: None,
             text: TextTheme {
                 color: hex("#a8b2c2"),
@@ -258,7 +260,7 @@ impl Theme {
                 size: 11.0,
                 halo: Length::Px(2.0),
             },
-            vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0, corner: 6.0 },
+            vertex: VertexTheme { color: hex("#7cc4ff"), radius: 4.0, corner: Length::Px(6.0) },
             edge: EdgeTheme { color: None, width: 1.5, halo: Length::Px(0.0), parallel: Some(Parallel::default()) },
             line: LineTheme { color: hex("#7cc4ff"), width: 1.5, halo: Length::Px(0.0) },
             area: AreaTheme { color: hex("#2b3d50") },

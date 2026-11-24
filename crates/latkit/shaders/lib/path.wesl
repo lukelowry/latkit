@@ -138,7 +138,9 @@ struct Joints {
 
 // A segment on screen: its end points in position units, its ends in CSS pixels and in clip space,
 // whether it shows, the drawn part as fractions along it, and where it meets the segments beside it.
-// The drawn part is cut at the near plane and stops at the markers of the vertices at its ends.
+// The drawn part is cut at the near plane and stops at the markers of its path's end vertices
+// (`stops` says at which of its ends it does), on whichever segment the path leaves or reaches
+// them: a segment that lies wholly on one draws nothing.
 // `chord` is the length in CSS pixels, between its points and cut at the near plane, of the path's
 // segment it draws or runs beside, as a segment list measures it (see `screen_length`), and
 // `visible` the drawn part as fractions of that cut segment. A fan (`fan`, see `SegmentPoints`)
@@ -155,6 +157,7 @@ struct OnScreen {
     visible: vec2f,
     joints: Joints,
     fan: u32,
+    stops: vec2<bool>,
 }
 
 // Segment `instance` as the mark numbers them. Rows have a fixed number of segments, or the mark's
@@ -622,6 +625,8 @@ struct SegmentPoints {
     vertex_a: PathPoint,
     vertex_b: PathPoint,
     width: f32,
+    // Whether its row's path passes through bends, which may lie on the markers of its end vertices.
+    bent: bool,
 }
 
 // Segment `s`'s points, from one read of its row's path. Like every path read, it reads whatever it
@@ -654,6 +659,7 @@ fn segment_points(s: Segment) -> SegmentPoints {
             out.vertex_a = vertex_shape(e.a);
             out.vertex_b = vertex_shape(e.b);
             out.width = e.width;
+            out.bent = e.bends.count > 0u;
         }
         // The points beside the segment, where the path runs on through its ends.
         let before = select(NONE, i - 1u, joins() & (i > 0u));
@@ -841,7 +847,7 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
     // segment joins nothing and runs between its ends.
     let single = p.first & p.last;
     let neighbors = joins() & !single;
-    let centers = has_end_vertices() & (p.lane.offset != 0.0) & !single;
+    let centers = has_end_vertices() & ((p.lane.offset != 0.0) | p.bent) & !single;
     let n = 2u + select(0u, 2u, neighbors) + select(0u, 2u, centers);
     var wa = vec3f(0.0);
     var wb = vec3f(0.0);
@@ -1003,10 +1009,19 @@ fn on_screen(p: SegmentPoints) -> OnScreen {
         if length_along > 1e-3 {
             let u = along / length_along;
             let room = 0.5 * length_along;
+            // On a path through bends, a segment that is not the first may still start on the first
+            // vertex's marker, where a bend lies on it, and one that is not the last may end on the
+            // last's. Each stops at that marker too, and one that lies wholly on it draws nothing.
+            let inner = p.bent & !single;
             let stops = vec2f(
                 select(0.0, exit_marker(p.ends.a, center_a, a, u), at_from & (cut.x == 0.0)),
                 select(0.0, exit_marker(p.ends.b, center_b, b, -u), at_to & (cut.y == 1.0)),
+            ) + vec2f(
+                select(0.0, exit_marker(p.vertex_a, vertex_a.xy, a, u), inner & !at_from & (cut.x == 0.0)),
+                select(0.0, exit_marker(p.vertex_b, vertex_b.xy, b, -u), inner & !at_to & (cut.y == 1.0)),
             );
+            out.shown = out.shown & !(inner & any(stops >= vec2f(length_along)));
+            out.stops = stops > vec2f(0.0);
             let short = min(stops, vec2f(room));
             a += u * short.x;
             b -= u * short.y;

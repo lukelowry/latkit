@@ -104,19 +104,15 @@ impl MarkVariants {
                 _ => 0,
             },
             along: std::array::from_fn(|k| mark.stroke_markers().get(k).map_or(NONE, |marker| marker.marker.code())),
-            options: Options {
-                meet: mark.meets(),
-                turned: mark.turns(),
-                placed: mark.places_labels(),
-                halo: match mark {
+            options: Options::MEET.when(mark.meets())
+                | Options::TURNED.when(mark.turns())
+                | Options::PLACED.when(mark.places_labels())
+                | Options::HALO.when(match mark {
                     Mark::Edges(_) => scene.theme.edge.halo.value() > 0.0,
                     Mark::Lines(_) => scene.theme.line.halo.value() > 0.0,
                     Mark::Vertices(_) | Mark::Areas(_) => false,
-                },
-                marked: mark.marked(),
-                along: false,
-                blended: mark.blended(),
-            },
+                })
+                | Options::ALONG.when(mark.marked() || mark.blended()),
             hooks: mark.hooks(),
         }
     }
@@ -168,7 +164,7 @@ impl MarkVariants {
     pub(super) fn marker(&self, k: usize, draw: Draw, format: wgpu::TextureFormat, samples: u32) -> Option<Variant> {
         let code = self.along.get(k).copied().filter(|&code| code != NONE)?;
         let shader = if draw == Draw::Lit { Shader::PointsFocus } else { Shader::Points };
-        let options = Options { turned: true, along: true, ..Options::NONE };
+        let options = Options::TURNED | Options::ALONG;
         Some(Variant::draw(shader, format, samples).projection(self.projection).marker(code).options(options))
     }
 

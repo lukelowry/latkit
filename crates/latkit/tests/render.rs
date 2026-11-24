@@ -342,8 +342,13 @@ fn an_edge_whose_color_is_missing_blends_its_ends_where_its_blend_says() {
     assert!(close(at(&pixels, center, center - 20), [0, 0, 255, 255]), "{:?}", at(&pixels, center, center - 20));
     let middle = at(&pixels, center, center + 20);
     assert!(middle[0] > 90 && middle[1] > 90 && middle[2] < 10, "red and green meet halfway: {middle:?}");
-    // With a blend at one place, a quarter of the way along, the color changes sharply there.
-    let pixels = drawn(Edges::of("grid", "Line").blend(0.25, 0.25));
+    // With a blend at one place, a quarter of the way along, the color changes sharply there. A
+    // marker without a color of its own, set on the change, takes the line's color pixel by pixel:
+    // red before the change and green after it.
+    let square = latkit::StrokeMarker::new(latkit::Shape::Rectangle).at(0.25).size(10.0);
+    let pixels = drawn(Edges::of("grid", "Line").blend(0.25, 0.25).markers([square]));
+    let beside = |dx: i32| at(&pixels, (center as i32 + dx) as u32, center + 24);
+    assert!(close(beside(-22), [255, 0, 0, 255]) && close(beside(-15), [0, 255, 0, 255]), "{:?}", beside(-22));
     assert!(
         close(at(&pixels, center - 30, center + 20), [255, 0, 0, 255]),
         "{:?}",

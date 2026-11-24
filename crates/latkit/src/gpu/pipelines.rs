@@ -140,26 +140,49 @@ pub(crate) struct Variant {
     draw: Draw,
 }
 
-/// What a mark's shaders hold only when the mark uses it: edges that end where their paths meet
-/// their vertices' markers (`MEET`), markers turned by a bearing (`TURNED`), labels with a place or
-/// an offset (`LABEL_PLACED`), strokes with a halo (`HALO`), strokes that part under markers along
-/// them (`MARKED`), the draw of such a marker (`ALONG`), and strokes that say where their colors
-/// change (`BLEND`). A pipeline without one compiles none
-/// of its code, so a mark that uses none draws with the shaders it would without them.
+/// What a mark's shaders hold only when the mark uses it, each a constant its shaders read: edges
+/// that end where their paths meet their vertices' markers (`MEET`), markers turned by a bearing
+/// (`TURNED`), labels with a place or an offset (`LABEL_PLACED`), strokes with a halo (`HALO`), and
+/// places along a stroke (`ALONG`): in a stroke's draw, parting under its markers and changing
+/// color where its row says, and in a marker's, drawing it there. A pipeline without one compiles
+/// none of its code, so a mark that uses none draws with the shaders it would without them.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub(crate) struct Options {
-    pub(crate) meet: bool,
-    pub(crate) turned: bool,
-    pub(crate) placed: bool,
-    pub(crate) halo: bool,
-    pub(crate) marked: bool,
-    pub(crate) along: bool,
-    pub(crate) blended: bool,
-}
+pub(crate) struct Options(u8);
 
 impl Options {
-    pub(crate) const NONE: Options =
-        Options { meet: false, turned: false, placed: false, halo: false, marked: false, along: false, blended: false };
+    pub(crate) const NONE: Options = Options(0);
+    pub(crate) const MEET: Options = Options(1);
+    pub(crate) const TURNED: Options = Options(2);
+    pub(crate) const PLACED: Options = Options(4);
+    pub(crate) const HALO: Options = Options(8);
+    pub(crate) const ALONG: Options = Options(16);
+
+    /// Each option's constant, in the order of its bit.
+    const NAMES: [&'static str; 5] = ["MEET", "TURNED", "LABEL_PLACED", "HALO", "ALONG"];
+
+    /// These options, or none unless `on`.
+    #[must_use]
+    pub(crate) fn when(self, on: bool) -> Options {
+        if on { self } else { Options::NONE }
+    }
+
+    /// The value of the constant `name`, if it is an option's.
+    fn value(self, name: &str) -> Option<u32> {
+        Self::NAMES.iter().position(|option| *option == name).map(|bit| u32::from(self.0 >> bit & 1))
+    }
+
+    /// The constants of the options set.
+    fn names(self) -> impl Iterator<Item = &'static str> {
+        Self::NAMES.into_iter().enumerate().filter(move |(bit, _)| self.0 >> bit & 1 != 0).map(|(_, name)| name)
+    }
+}
+
+impl std::ops::BitOr for Options {
+    type Output = Options;
+
+    fn bitor(self, other: Options) -> Options {
+        Options(self.0 | other.0)
+    }
 }
 
 /// What a mark's channels read besides its own table's static fields: other tables' fields by row
@@ -312,15 +335,10 @@ impl Variant {
         let edges = matches!(self.path, PATH_ENDS | super::shaders::PATH_BENDS);
         let placing = edges && self.entry != "vertex";
         let recorded = self.path != super::shaders::PATH_TRACE;
-        self.options = Options {
-            meet: options.meet && placing && self.reads_constant("MEET"),
-            turned: options.turned && self.reads_constant("TURNED"),
-            placed: options.placed && self.reads_constant("LABEL_PLACED"),
-            halo: options.halo && self.reads_constant("HALO"),
-            marked: options.marked && recorded && self.reads_constant("MARKED"),
-            along: options.along && self.reads_constant("ALONG"),
-            blended: options.blended && recorded && self.reads_constant("BLEND"),
-        };
+        let held = Options::NAMES.iter().enumerate().filter(|(_, name)| self.reads_constant(name));
+        let held = held.fold(0, |bits, (bit, _)| bits | 1 << bit);
+        let refused = Options::MEET.when(!placing) | Options::ALONG.when(!recorded);
+        self.options = Options(options.0 & held & !refused.0);
         self
     }
 
@@ -375,19 +393,7 @@ impl Variant {
     fn label(&self) -> String {
         let Reads { joined, timed, viewed } = self.reads;
         let target = self.target.map(|(format, samples)| format!(" {format:?}x{samples}")).unwrap_or_default();
-        let Options { meet, turned, placed, halo, marked, along, blended } = self.options;
-        let options: String = [
-            (meet, " MEET"),
-            (turned, " TURNED"),
-            (placed, " LABEL_PLACED"),
-            (halo, " HALO"),
-            (marked, " MARKED"),
-            (along, " ALONG"),
-            (blended, " BLEND"),
-        ]
-        .into_iter()
-        .filter_map(|(on, name)| on.then_some(name))
-        .collect();
+        let options: String = self.options.names().flat_map(|name| [" ", name]).collect();
         format!(
             "latkit {:?} {} PRIMITIVE={} PATH={} JOINED={} TIMED={} VIEWED={} PROJECTION={:?} PAINTED={} MARKER={} DRAW={:?}{options}{target}",
             self.shader,
@@ -432,14 +438,7 @@ impl Specialized {
             "PROJECTION" => self.projection.code(),
             "PAINTED" => self.painted.into(),
             "MARKER" => self.marker,
-            "MEET" => self.options.meet.into(),
-            "TURNED" => self.options.turned.into(),
-            "LABEL_PLACED" => self.options.placed.into(),
-            "HALO" => self.options.halo.into(),
-            "MARKED" => self.options.marked.into(),
-            "ALONG" => self.options.along.into(),
-            "BLEND" => self.options.blended.into(),
-            other => unreachable!("no value for the constant {other}"),
+            other => self.options.value(other).unwrap_or_else(|| unreachable!("no value for the constant {other}")),
         }
     }
 

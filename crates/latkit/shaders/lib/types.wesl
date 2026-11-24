@@ -470,6 +470,7 @@ const ALONG_VISIBLE_SHIFT: u32 = 16u;
 const ALONG_START: u32 = 1u;
 const ALONG_END: u32 = 2u;
 const ALONG_AT_ROW: u32 = 4u;
+const ALONG_OFFSET_ROW: u32 = 1024u;
 const ALONG_SIZE_ROW: u32 = 8u;
 const ALONG_COLOR_ROW: u32 = 16u;
 const ALONG_VISIBLE_ROW: u32 = 32u;

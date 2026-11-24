@@ -358,15 +358,18 @@ fn neighbors_follow_edges_and_nets() {
 fn edges_meet_a_bar_where_their_path_leads_and_a_halo_parts_the_edge_under_it() {
     let Some(gpu) = gpu() else { return };
     // A bar 100 wide over a small vertex 30 right of its middle, and an edge that crosses theirs.
+    // The first edge has a bend on the bar itself, so its first segment lies wholly on the bar.
     let data = Data::new("graph");
     let places = nodes(vec![0.0, 30.0, -20.0, 50.0], vec![30.0, -30.0, 0.0, 0.0]);
-    data.apply(Patch::new().set(places.field("w", vec![100.0, 4.0, 4.0, 4.0])).set(
-        Table::new("Link", Ids::count(2)).reference("from", "Node", vec![1_u64, 3]).reference(
-            "to",
-            "Node",
-            vec![2_u64, 4],
+    let bends: Vec<Vec<[f64; 2]>> = vec![vec![[30.0, 30.0]], vec![]];
+    data.apply(
+        Patch::new().set(places.field("w", vec![100.0, 4.0, 4.0, 4.0])).set(
+            Table::new("Link", Ids::count(2))
+                .reference("from", "Node", vec![1_u64, 3])
+                .reference("to", "Node", vec![2_u64, 4])
+                .field("bends", bends),
         ),
-    ))
+    )
     .expect("valid");
     let theme = latkit::Theme { edge: latkit::EdgeTheme { halo: 6.0.into(), ..plain_theme().edge }, ..plain_theme() };
     let scene = Scene::new(plane())
@@ -374,9 +377,14 @@ fn edges_meet_a_bar_where_their_path_leads_and_a_halo_parts_the_edge_under_it() 
         .draw(
             Edges::of("graph", "Link")
                 .ends("from", "to")
+                .bends("bends")
                 .meet(latkit::Meet::Nearest)
                 .width(2.0)
-                .color(latkit::Color::WHITE),
+                .color(latkit::Color::WHITE)
+                .markers([StrokeMarker::new(Shape::Rectangle)
+                    .at(0.0)
+                    .size(8.0)
+                    .color(latkit::Color::rgb(1.0, 0.0, 0.0))]),
         )
         .draw(
             Vertices::of("graph", "Node")
@@ -391,6 +399,10 @@ fn edges_meet_a_bar_where_their_path_leads_and_a_halo_parts_the_edge_under_it() 
     // The first edge drops square from the bar at the small vertex's x, where their boxes overlap.
     assert!(lit(at(&pixels, C + 30, C - 15)) && lit(at(&pixels, C + 30, C + 15)), "a square drop at x 30");
     assert!(!lit(at(&pixels, C + 8, C - 15)), "not aimed at the bar's middle");
+    // The stroke starts where its path leaves the bar, on its second segment, and the marker at its
+    // start sits there: a red square whose near edge is the bar's.
+    let start = at(&pixels, C + 30, C - 24);
+    assert!(start[0] > 200 && start[1] < 60, "a marker where the stroke leaves the bar: {start:?}");
     // The second edge, drawn after it, crosses it at y 0, and its halo parts the first beside it.
     assert!(lit(at(&pixels, C + 30, C)), "the edge on top");
     assert!(!lit(at(&pixels, C + 30, C - 4)) && !lit(at(&pixels, C + 30, C + 4)), "parts the one under it");

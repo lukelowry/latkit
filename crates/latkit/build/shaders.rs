@@ -204,8 +204,6 @@ const OVERRIDES: &[(&str, &[&str])] = &[
     ("TURNED", &["false", "true"]),
     ("LABEL_PLACED", &["false", "true"]),
     ("HALO", &["false", "true"]),
-    ("MARKED", &["false", "true"]),
-    ("BLEND", &["false", "true"]),
     ("ALONG", &["false", "true"]),
 ];
 
@@ -821,19 +819,18 @@ fn made(module: &str, name: &str, constants: &[(&str, u32)], types: &naga::Modul
             return false;
         }
     }
-    // A stroke parts under its markers, and changes color where its row says, by the distances
-    // along that only a painted program reads, on a path with records.
-    let placed = value("MARKED") == Some(1) || value("BLEND") == Some(1);
-    if placed && (value("PAINTED") == Some(0) || path == Some(type_constant(types, "PATH_TRACE"))) {
-        return false;
-    }
-    // A stroke's marker turns to run along its path. It is a shape, an icon, or a symbol, drawn by
-    // the plain programs: its rows, and the lit ones.
+    // A program that works with places along a stroke. A stroke's draw parts under its markers and
+    // changes color where its row says, by the distances along that only a painted program reads,
+    // on a path with records. A marker's turns to run along its path: it is a shape, an icon, or a
+    // symbol, drawn by the plain points programs, its rows' and the lit ones'.
     if value("ALONG") == Some(1) {
+        let stroke = module == "draw::strokes";
+        let unplaced = value("PAINTED") == Some(0) || path == Some(type_constant(types, "PATH_TRACE"));
         let pictured = ["MARKER_SHAPE", "MARKER_ICON", "MARKER_SYMBOL"]
             .iter()
             .any(|kind| value("MARKER") == Some(type_constant(types, kind)));
-        if value("TURNED") != Some(1) || !pictured || !matches!(name, "Points" | "PointsFocus") {
+        let marker = value("TURNED") == Some(1) && pictured && matches!(name, "Points" | "PointsFocus");
+        if if stroke { unplaced } else { !marker } {
             return false;
         }
     }

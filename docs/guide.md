@@ -232,7 +232,8 @@ bend. The stroke stops at its box and goes on after it.
 An edge with no color of its own takes the colors of its two ends and blends them from end to end.
 `blend` says where the color changes instead, as a fraction of the path: `blend: 0.5` changes
 sharply halfway, `blend: '$where'` where each row says, and `blend: [0.4, 0.6]` blends between two
-places.
+places. A marker without a color takes the stroke's color pixel by pixel, so one set on the change
+shows both.
 
 `flow` animates comets along a stroke, toward its second end, or backward where the speed is
 negative, so they show which way a row flows. `theme.flow` sizes them in pixels, which hold on
@@ -332,8 +333,8 @@ failure (see [Events](#events)), and the mark draws nothing.
   vertex, `'fan'` angles them in to each vertex's center, and `'straight'` stops each at its
   vertex's outline. `parallel: null` draws them over one another.
 - `edge.halo` and `line.halo` draw a band of the background's color beside each stroke, which
-  covers the strokes drawn under it, so a stroke that crosses another parts it. They and
-  `text.halo` take pixels or `units(n)`.
+  covers the strokes drawn under it, so a stroke that crosses another parts it. They, `text.halo`,
+  `dash`, and `vertex.corner` take pixels or `units(n)`.
 - `controls` sets what the pointer and keys do. By default the pointer pans, zooms, turns, and
   hovers. `gestures` binds each input to what it does, as in
   `{ gestures: { wheel: 'pan', 'control+wheel': 'zoom', 'shift+primary': 'box' } }`. `'inspect'`

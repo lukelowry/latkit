@@ -223,7 +223,7 @@ impl Shape {
 pub struct StrokeMarker {
     pub(crate) marker: Marker,
     pub(crate) at: Expr,
-    pub(crate) offset: Length,
+    pub(crate) offset: Size,
     pub(crate) size: Option<Size>,
     pub(crate) color: Option<Expr>,
     pub(crate) visible: Expr,
@@ -235,7 +235,7 @@ impl StrokeMarker {
         StrokeMarker {
             marker: marker.into(),
             at: 1.0.into(),
-            offset: Length::Px(0.0),
+            offset: 0.0.into(),
             size: None,
             color: None,
             visible: true.into(),
@@ -244,17 +244,18 @@ impl StrokeMarker {
 
     /// Sets how far along each row's path it sits, from 0 at the path's start to 1 at its end. On
     /// a path of one segment that is a fraction of the stroke as drawn, and on a longer one, of
-    /// the path between its first and last points. At 0 or 1 it sits on the path's first or last
-    /// segment, which must have a length to carry it.
+    /// the path between its first and last points. At 0 it sits where the stroke leaves its first
+    /// vertex's marker, and at 1 where it reaches its last's.
     #[must_use]
     pub fn at(mut self, fraction: impl Into<Expr>) -> StrokeMarker {
         self.at = fraction.into();
         self
     }
 
-    /// Sets how far it moves along the path from its place, toward the path's end.
+    /// Sets how far each row's moves along the path from its place, toward the path's end, in CSS
+    /// pixels unless given in [`units`](crate::units).
     #[must_use]
-    pub fn offset(mut self, offset: impl Into<Length>) -> StrokeMarker {
+    pub fn offset(mut self, offset: impl Into<Size>) -> StrokeMarker {
         self.offset = offset.into();
         self
     }
@@ -267,7 +268,8 @@ impl StrokeMarker {
         self
     }
 
-    /// Sets each row's color. Without one, a marker takes its stroke's color there.
+    /// Sets each row's color. Without one, a marker takes its stroke's color pixel by pixel along
+    /// the path, so where the stroke changes color, the change runs through the marker.
     #[must_use]
     pub fn color(mut self, color: impl Into<Expr>) -> StrokeMarker {
         self.color = Some(color.into());
@@ -297,7 +299,7 @@ impl StrokeMarker {
         self.size
             .iter()
             .map(|size| &size.expr)
-            .chain([&self.at, &self.visible])
+            .chain([&self.at, &self.offset.expr, &self.visible])
             .chain(&self.color)
             .chain(self.marker.inputs())
     }
@@ -318,19 +320,20 @@ struct StrokeMarkerForm {
     marker: Marker,
     /// How far along each row's path it sits, from 0 at the path's start to 1 at its end. On a
     /// path of one segment that is a fraction of the stroke as drawn, and on a longer one, of the
-    /// path between its first and last points. At 0 or 1 it sits on the path's first or last
-    /// segment, which must have a length to carry it. Defaults to 1.
+    /// path between its first and last points. At 0 it sits where the stroke leaves its first
+    /// vertex's marker, and at 1 where it reaches its last's. Defaults to 1.
     #[serde(default = "at_end")]
     at: Expr,
-    /// How far it moves along the path from there, toward the path's end: a number in CSS pixels,
-    /// or `{ units }` in position units. Defaults to 0.
+    /// How far each row's moves along the path from there, toward the path's end: a value in CSS
+    /// pixels, or `{ units }` in position units. Defaults to 0.
     #[serde(default = "nowhere")]
-    offset: Length,
+    offset: Size,
     /// Its width and height in CSS pixels, unless given in `units`. Defaults to twice the theme's
     /// `vertex.radius`, the size of a vertex's marker.
     #[serde(default)]
     size: Option<Size>,
-    /// Each row's color. Defaults to the stroke's color there.
+    /// Each row's color. Without one, it takes the stroke's color pixel by pixel along the path, so
+    /// where the stroke changes color, the change runs through it.
     #[serde(default)]
     color: Option<Expr>,
     /// Which rows show it. Defaults to all.
@@ -338,8 +341,8 @@ struct StrokeMarkerForm {
     visible: Expr,
 }
 
-fn nowhere() -> Length {
-    Length::Px(0.0)
+fn nowhere() -> Size {
+    0.0.into()
 }
 
 fn at_end() -> Expr {

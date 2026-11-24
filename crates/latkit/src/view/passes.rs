@@ -240,19 +240,19 @@ impl Marks<'_> {
         let Some(first) = self.firsts[usize::from(lit)][i].filter(|_| count > 0) else { return };
         let variants = MarkVariants::shown(shown, self.scene);
         let shader = if lit { Shader::PointsFocus } else { Shader::Points };
-        let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
-        let corners = Primitive::Points.corners();
         for k in 0..count {
             let Some(variant) = variants.marker(k, draw, self.format, self.samples) else { continue };
-            pass.set_bind_group(1, &self.groups.mark, &[offset(self.markers[i] + k)]);
-            pass.set_pipeline(&inner.pipelines.render(self.device, variant));
-            pass.set_bind_group(2, group, &[]);
-            if lit {
-                drawn.draw_range(pass, corners, first..first + shown.lit.rows * shown.lit.pieces);
-            } else {
-                shown.record(pass, drawn, corners, first);
-            }
+            self.bind(pass, &inner.pipelines.render(self.device, variant), shader, self.markers[i] + k);
+            shown.record(pass, drawn, Primitive::Points.corners(), first, lit);
         }
+    }
+
+    /// Binds the marks' uniform `at` and `pipeline`, with `shader`'s pass group.
+    fn bind(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline, shader: Shader, at: usize) {
+        let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
+        pass.set_bind_group(1, &self.groups.mark, &[offset(at)]);
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(2, group, &[]);
     }
 
     /// Draws a frame that starts from the still at `cut`: the still, then within `clip` the comets
@@ -343,7 +343,6 @@ impl Marks<'_> {
         };
         let Some(pipeline) = pipeline else { return };
         let corners = shown.kind().primitive().corners();
-        let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         // An opaque draw and a comets draw share the rows' program and bind the copy of the uniform
         // that says which they are.
         let at = match draw {
@@ -351,9 +350,7 @@ impl Marks<'_> {
             Draw::Comets => 2 * self.count + i,
             Draw::Rows | Draw::Lit | Draw::Depth => i,
         };
-        pass.set_bind_group(1, &self.groups.mark, &[offset(at)]);
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(2, group, &[]);
+        self.bind(pass, &pipeline, shader, at);
         // A recorded mark's instances are numbered from its first record for the draw, which they
         // read. Other marks place their own instances, from 0.
         let first = match variants.screen() {
@@ -361,12 +358,10 @@ impl Marks<'_> {
             None => 0,
         };
         // A comets draw with comet slots draws a slot an instance, each naming its record.
-        if draw == Draw::Lit {
-            drawn.draw_range(pass, corners, first..first + shown.lit.rows * shown.lit.pieces);
-        } else if draw == Draw::Comets && shown.comets.list.is_some() {
+        if draw == Draw::Comets && shown.comets.list.is_some() {
             drawn.draw(pass, corners, shown.comets.drawn());
         } else {
-            shown.record(pass, drawn, corners, first);
+            shown.record(pass, drawn, corners, first, draw == Draw::Lit);
         }
     }
 }
@@ -553,10 +548,19 @@ impl super::marks::Shown {
         }
     }
 
-    /// Records a bounded instance draw, numbering its instances from `first`. Listed shaders reject
-    /// the unused tail before geometry reads.
-    pub(super) fn record(&self, pass: &mut wgpu::RenderPass<'_>, drawn: &mut Drawn, corners: u32, first: u32) {
-        drawn.draw_range(pass, corners, first..first + self.counted_instances(self.instances()));
+    /// Records a bounded instance draw, numbering its instances from `first`: those of the rows its
+    /// focus lights with `lit`, else every one. Listed shaders reject the unused tail before
+    /// geometry reads.
+    pub(super) fn record(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        corners: u32,
+        first: u32,
+        lit: bool,
+    ) {
+        let count = if lit { self.lit.rows * self.lit.pieces } else { self.counted_instances(self.instances()) };
+        drawn.draw_range(pass, corners, first..first + count);
     }
 }
 

@@ -13,7 +13,8 @@
 
 import package::lib::types::{
     VISIBLE, ALONG_UNITS, ALONG_PRESENT, ALONG_START, ALONG_END, ALONG_AT_ROW, ALONG_SIZE_ROW, ALONG_VISIBLE_ROW,
-    ALONG_SIZE_UNITS, ALONG_OFFSET_UNITS, ALONG_VISIBLE_SHIFT, BLEND_FROM_ROW, BLEND_TO_ROW,
+    ALONG_SIZE_UNITS, ALONG_OFFSET_UNITS, ALONG_OFFSET_ROW, ALONG_VISIBLE_SHIFT, STROKE_BLENDED, BLEND_FROM_ROW,
+    BLEND_TO_ROW,
 };
 import package::lib::bind::{mark, word};
 import package::lib::state::row_at;
@@ -49,8 +50,12 @@ fn along_range(s: ScreenStroke) -> vec2f {
 // Where the color of segment `s`'s row goes from its first to its second, on this segment: the
 // middle of the change as a fraction of the segment, and one over how much of the segment it takes,
 // at least a pixel of it, so a change at one place is a sharp edge. The mark's `blend` gives where
-// the change starts and ends, as fractions of the path, as a marker's place is.
+// the change starts and ends, as fractions of the path, as a marker's place is. Without one, the
+// segment's colors are those at its two ends, and blend from one to the other.
 fn blend_on(s: ScreenStroke) -> vec2f {
+    if (mark.flags & STROKE_BLENDED) == 0u {
+        return vec2f(0.5, 1.0);
+    }
     let starts = bitcast<f32>(along_word(mark.blend_from, s.row, (mark.flags & BLEND_FROM_ROW) != 0u));
     let ends = bitcast<f32>(along_word(mark.blend_to, s.row, (mark.flags & BLEND_TO_ROW) != 0u));
     let range = along_range(s);
@@ -94,7 +99,8 @@ fn along(k: u32, s: ScreenStroke) -> Along {
     let given = bitcast<f32>(along_word(placed.w, s.row, (flags & ALONG_SIZE_ROW) != 0u));
     let bounds = bitcast<vec2f>(mark.markers[2u * k + 1u].yz);
     let size = clamp(select(given, given * units, (flags & ALONG_SIZE_UNITS) != 0u), bounds.x, bounds.y);
-    let offset = bitcast<f32>(placed.z) * select(1.0, units, (flags & ALONG_OFFSET_UNITS) != 0u) / scale;
+    let moved = bitcast<f32>(along_word(placed.z, s.row, (flags & ALONG_OFFSET_ROW) != 0u));
+    let offset = moved * select(1.0, units, (flags & ALONG_OFFSET_UNITS) != 0u) / scale;
     let half = 0.5 * size / scale;
     let fraction = bitcast<f32>(along_word(placed.y, s.row, (flags & ALONG_AT_ROW) != 0u));
     let starts = (flags & ALONG_START) != 0u;

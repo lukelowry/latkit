@@ -40,14 +40,11 @@ override PAINTED: bool = true;
 @if(!focused)
 override HALO: bool = false;
 
-// Whether the mark's strokes carry markers, fixed when the pipeline is created. Only the pipelines
-// of such marks hold the code that parts a stroke under them.
-override MARKED: bool = false;
-
-// Whether the mark says where its rows' colors change (its `blend`), fixed when the pipeline is
-// created. Only the pipelines of such marks blend a row's two colors pixel by pixel. Others draw
+// Whether the mark's strokes read places along their paths (see `lib/along.wesl`), fixed when the
+// pipeline is created: they carry markers, or say where their colors change. Only the pipelines of
+// such marks part a stroke under its markers and blend its two colors pixel by pixel. Others draw
 // the color their corners carry.
-override BLEND: bool = false;
+override ALONG: bool = false;
 
 struct Varyings {
     // The corner in clip space. In the fragment, the target pixel, which `pixel` reads. Invariant,
@@ -71,7 +68,7 @@ struct Varyings {
     // and half its length, as fractions of the segment. A marker elsewhere parts nothing.
     @location(6) @interpolate(flat) parts: vec4f,
     @location(7) @interpolate(flat) part_halves: vec4f,
-    // With `BLEND`: the row's second color, as `color` then holds its first, and where on the
+    // With `ALONG`: the segment's second color, as `color` then holds its first, and where on the
     // segment one gives way to the other (see `blend_on`).
     @location(8) @interpolate(flat) blend_to: vec4f,
     @location(9) @interpolate(flat) blend: vec2f,
@@ -192,7 +189,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.ends = vec4f(s.a, s.b);
     // This corner's color: its end's, or for a comets quad, between them where its corner lies.
     out.color = mix(s.color_a, s.color_b, mix(span.x, span.y, t));
-    if BLEND {
+    if ALONG {
         out.color = s.color_a;
         out.blend_to = s.color_b;
         out.blend = blend_on(s);
@@ -204,7 +201,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.bits.x = (u32(s.dash) << 1u) | (u32(shares.x) << 2u) | (u32(shares.y) << 3u) | (u32(rim) << 4u);
     out.parts = vec4f(-1.0);
     out.part_halves = vec4f(0.0);
-    if MARKED {
+    if ALONG {
         // Each marker on this segment, less half a pixel at each side, which the stroke tucks under
         // the marker's edge so that no seam shows between them.
         var parts = array<vec2f, 4>(vec2f(-1.0, 0.0), vec2f(-1.0, 0.0), vec2f(-1.0, 0.0), vec2f(-1.0, 0.0));
@@ -250,23 +247,19 @@ fn segment_of(v: Varyings) -> Stroke {
 fn fragment_color(v: Varyings, opaque: bool) -> vec4f {
     var s = segment_of(v);
     let p = pixel(v);
-    if BLEND {
-        // The row's first color gives way to its second where the row says.
-        let ab = s.b - s.a;
-        let t = clamp(dot(p - s.a, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
-        s.color = mix(v.color, v.blend_to, blend_weight(v.blend, t));
-    }
     // Past a shared end, the segment beyond draws the line (see `owns`).
     if !owns(p, s) {
         discard;
     }
-    if MARKED {
-        // The stroke, its comets, and its glow give way to each marker on the segment.
+    if ALONG {
+        // The stroke, its comets, and its glow give way to each marker on the segment, and its
+        // first color gives way to its second where its row says.
         let ab = s.b - s.a;
         let t = clamp(dot(p - s.a, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
         if any(abs(vec4f(t) - v.parts) <= v.part_halves) {
             discard;
         }
+        s.color = mix(v.color, v.blend_to, blend_weight(v.blend, t));
     }
     // The opaque test, color, and focus glow all use this same distance. Evaluating it once
     // avoids repeating the segment projection for each covered pixel.
